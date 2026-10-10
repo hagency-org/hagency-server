@@ -257,6 +257,8 @@ pub struct RoutingScope {
     pub active: bool,
     #[diesel(sql_type=Bool)]
     pub service_paused: bool,
+    #[diesel(sql_type=Bool)]
+    pub thread_auto_reply: bool,
 }
 #[derive(diesel::QueryableByName)]
 struct Flag {
@@ -370,7 +372,7 @@ impl TransportStore {
         Ok((now, auth.valid_until_ms))
     }
     async fn scope(db: &mut AsyncPgConnection, binding: &str) -> Result<RoutingScope> {
-        sql_query("SELECT b.id AS binding_id,a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,a.id AS agent_id,b.room_id,coalesce(p.space_id,'') AS space_id,b.generation AS binding_generation,(u.active AND a.state='active' AND b.state='active' AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS active,(u.active AND a.state='active' AND b.state='suspended' AND b.owner_service_paused AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS service_paused FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.id=$1")
+        sql_query("SELECT b.id AS binding_id,a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,a.id AS agent_id,b.room_id,coalesce(p.space_id,'') AS space_id,b.generation AS binding_generation,b.thread_auto_reply,(u.active AND a.state='active' AND b.state='active' AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS active,(u.active AND a.state='active' AND b.state='suspended' AND b.owner_service_paused AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS service_paused FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.id=$1")
             .bind::<Text,_>(binding).get_result(db).await.map_err(unauthorized)
     }
     /// Trusted gateway lookup, never directly exposed as a user HTTP endpoint.
@@ -393,7 +395,7 @@ impl TransportStore {
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
-            let rows=sql_query("SELECT b.id AS binding_id,a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,a.id AS agent_id,b.room_id,coalesce(p.space_id,'') AS space_id,b.generation AS binding_generation,(u.active AND a.state='active' AND b.state='active' AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS active,(u.active AND a.state='active' AND b.state='suspended' AND b.owner_service_paused AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS service_paused FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.room_id=$1")
+            let rows=sql_query("SELECT b.id AS binding_id,a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,a.id AS agent_id,b.room_id,coalesce(p.space_id,'') AS space_id,b.generation AS binding_generation,b.thread_auto_reply,(u.active AND a.state='active' AND b.state='active' AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS active,(u.active AND a.state='active' AND b.state='suspended' AND b.owner_service_paused AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS service_paused FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.room_id=$1")
                 .bind::<Text,_>(room_id).load::<RoutingScope>(db).await?;
             Ok(rows.into_iter().filter(|scope|scope.active||scope.service_paused).collect())
         }).await
@@ -646,7 +648,7 @@ impl TransportStore {
             let puppet_sender=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agents WHERE puppet_mxid=$1) AS matched").bind::<Text,_>(&event.sender_mxid).get_result::<Flag>(db).await?;
             if puppet_sender.matched || event.sender_mxid.starts_with("@_hagency_") {return Ok(RouteResult::Ignored);}
             let known=match &event.thread_root {Some(root)=>sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agent_threads WHERE binding_id=$1 AND thread_root=$2) AS matched").bind::<Text,_>(binding).bind::<Text,_>(root).get_result::<Flag>(db).await?.matched,None=>false};
-            if !scope.space_id.is_empty()&&!event.mentioned_mxids.contains(&scope.puppet_mxid)&&!known {return Ok(RouteResult::Ignored);}
+            if !scope.space_id.is_empty()&&!event.mentioned_mxids.contains(&scope.puppet_mxid)&&!(scope.thread_auto_reply && known) {return Ok(RouteResult::Ignored);}
             if scope.service_paused {
                 return self.queue_pause_notice(db,&scope,&event,&digest,received_at_ms,now).await;
             }

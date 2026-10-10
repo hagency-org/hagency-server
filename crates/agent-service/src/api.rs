@@ -458,6 +458,23 @@ impl App {
                 if parts.len() == 6 && method == salvo::http::Method::GET {
                     return Ok(json!({"binding":binding}));
                 }
+                if parts.len() == 7
+                    && parts[6] == "reply-policy"
+                    && method == salvo::http::Method::PUT
+                {
+                    #[derive(Deserialize)]
+                    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                    struct ReplyPolicy {
+                        thread_auto_reply: bool,
+                    }
+                    let body: ReplyPolicy = req
+                        .parse_json()
+                        .await
+                        .map_err(|_| Error::Invalid("invalid_arguments"))?;
+                    return Ok(
+                        json!({"binding":domain.set_thread_auto_reply(&principal,&binding.id,body.thread_auto_reply,now_ms()).await?}),
+                    );
+                }
                 if parts.len() == 6 && method == salvo::http::Method::DELETE {
                     // Durable desired state comes first. A trusted lifecycle worker
                     // completes the actual Matrix departure independently of login.

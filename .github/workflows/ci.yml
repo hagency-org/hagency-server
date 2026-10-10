@@ -1,0 +1,204 @@
+name: Hagency Server CI and images
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_BUILD_JOBS: 2
+  # Override the developer-specific absolute path in .cargo/config.toml.
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: hagency_ci
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: hagency_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U hagency_ci -d hagency_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      HAGENCY_AGENT_TEST_DATABASE_URL: postgres://hagency_ci:ci-only-password@127.0.0.1:5432/hagency_ci
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - run: sudo apt-get update && sudo apt-get install -y libpq-dev cmake clang pkg-config
+      - uses: Swatinem/rust-cache@v2
+      - name: Check release version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, tomllib
+          version = tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version']
+          assert os.environ['TAG'] == 'v' + version, 'Tag must match workspace version'
+          PY
+      - run: cargo fmt --all -- --check
+      - run: python3 scripts/validate-agent-openapi.py --self-test
+      - run: cargo clippy --locked -p hagency-server -p hagency-agent-service -p hagency-xtask --all-targets -- -D warnings
+      - run: cargo test --locked -p hagency-server -p hagency-xtask
+      - name: Agent service tests including PostgreSQL
+        # Dedicated disposable DB; serialize fixtures that share schema state.
+        run: cargo test --locked -p hagency-agent-service -- --include-ignored --test-threads=1
+      - run: cargo check --locked -p hagency-frontend --target wasm32-unknown-unknown
+
+  image:
+    name: Container (${{ matrix.arch }})
+    needs: quality
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Image name
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "name=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build full image including browser assets
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          tags: ${{ steps.image.outputs.name }}:ci-${{ github.sha }}-${{ matrix.arch }}
+          outputs: ${{ github.event_name == 'pull_request' && 'type=docker' || format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', steps.image.outputs.name) }}
+          cache-from: type=gha,scope=server-${{ matrix.arch }}
+          cache-to: type=gha,scope=server-${{ matrix.arch }},mode=max
+          provenance: ${{ github.event_name != 'pull_request' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+      - name: Verify native executable and packaged assets
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+          CI_TAG: ci-${{ github.sha }}-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          if [[ "$IS_PR" == true ]]; then
+            image_id="$IMAGE:$CI_TAG"
+          else
+            image_id="$IMAGE@$DIGEST"
+          fi
+          test -n "$image_id"
+          docker run --rm --entrypoint /bin/sh "$image_id" -ec '
+            hagency-server --help
+            test -d /app/resources/pasion
+            test -f /app/resources/frontend/public/index.html
+          '
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish multi-platform manifest
+    needs: image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Image name
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: echo "name=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: Merge and verify architectures
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          METADATA: ${{ steps.meta.outputs.json }}
+        run: |
+          set -euo pipefail
+          test "$(find . -type f | wc -l)" -eq 2
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$METADATA")
+          args=()
+          for tag in "${tags[@]}"; do args+=(-t "$tag"); done
+          digests=()
+          for digest in *; do digests+=("$IMAGE@sha256:$digest"); done
+          docker buildx imagetools create "${args[@]}" "${digests[@]}"
+          docker buildx imagetools inspect "${tags[0]}" --raw > manifest.json
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' manifest.json

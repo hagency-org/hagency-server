@@ -265,6 +265,10 @@ async fn postgres_queue_ack_execution_reply_and_unknown_retry_are_distinct() {
             .unwrap(),
         RouteResult::Ignored
     ));
+    f.domain
+        .set_thread_auto_reply(&f.p, &f.binding, true, now)
+        .await
+        .unwrap();
     assert!(matches!(
         f.transport
             .ingest_routed(
@@ -2483,4 +2487,154 @@ async fn postgres_paused_owner_direct_notices_require_the_exact_owner_and_privat
             .is_err(),
         "privacy denial is permanent for this original event"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_thread_auto_reply_is_owner_opt_in_and_binding_scoped() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    enqueue(&f, "reply-policy-root").await;
+    assert!(
+        !f.domain
+            .binding(&f.p, &f.binding, now)
+            .await
+            .unwrap()
+            .thread_auto_reply
+    );
+    let route = |id, root| event(&f, id, false, root);
+    assert!(matches!(
+        f.transport
+            .ingest_routed(
+                &f.binding,
+                route("default-followup", Some("$reply-policy-root")),
+                &f.facts,
+                now
+            )
+            .await
+            .unwrap(),
+        RouteResult::Ignored
+    ));
+    // Another fixture has a different owner and Room binding.
+    let other = fixture().await;
+    assert!(
+        f.domain
+            .set_thread_auto_reply(&other.p, &f.binding, true, now)
+            .await
+            .is_err()
+    );
+    f.domain
+        .set_thread_auto_reply(&f.p, &f.binding, true, now)
+        .await
+        .unwrap();
+    assert!(
+        f.domain
+            .binding(&f.p, &f.binding, now)
+            .await
+            .unwrap()
+            .thread_auto_reply
+    );
+    let reopened = DomainStore::open(
+        &std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap(),
+        "example.test",
+        "_hagency_test_",
+    )
+    .await
+    .unwrap();
+    assert!(
+        reopened
+            .binding(&f.p, &f.binding, now)
+            .await
+            .unwrap()
+            .thread_auto_reply
+    );
+
+    assert!(matches!(
+        f.transport
+            .ingest_routed(
+                &f.binding,
+                route("enabled-followup", Some("$reply-policy-root")),
+                &f.facts,
+                now
+            )
+            .await
+            .unwrap(),
+        RouteResult::Queued { .. }
+    ));
+    let mut member_event = event(&f, "member-followup", false, Some("$reply-policy-root"));
+    let mut member_facts = f.facts.clone();
+    member_event.sender_mxid = "@another_member:example.test".into();
+    member_facts.requester_mxid = member_event.sender_mxid.clone();
+    assert!(matches!(
+        f.transport
+            .ingest_routed(&f.binding, member_event, &member_facts, now)
+            .await
+            .unwrap(),
+        RouteResult::Queued { .. }
+    ));
+    assert!(matches!(
+        f.transport
+            .ingest_routed(
+                &f.binding,
+                route("unknown-thread", Some("$other-root")),
+                &f.facts,
+                now
+            )
+            .await
+            .unwrap(),
+        RouteResult::Ignored
+    ));
+    assert!(matches!(
+        f.transport
+            .ingest_routed(
+                &f.binding,
+                route("ordinary-no-mention", None),
+                &f.facts,
+                now
+            )
+            .await
+            .unwrap(),
+        RouteResult::Ignored
+    ));
+    assert!(matches!(
+        other
+            .transport
+            .ingest_routed(
+                &other.binding,
+                event(&other, "isolated", false, Some("$reply-policy-root")),
+                &other.facts,
+                now
+            )
+            .await
+            .unwrap(),
+        RouteResult::Ignored
+    ));
+    f.domain
+        .set_thread_auto_reply(&f.p, &f.binding, false, now)
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.transport
+            .ingest_routed(
+                &f.binding,
+                route("disabled-followup", Some("$reply-policy-root")),
+                &f.facts,
+                now
+            )
+            .await
+            .unwrap(),
+        RouteResult::Ignored
+    ));
+    assert!(matches!(
+        f.transport
+            .ingest_routed(
+                &f.binding,
+                event(&f, "mentioned-followup", true, Some("$reply-policy-root")),
+                &f.facts,
+                now
+            )
+            .await
+            .unwrap(),
+        RouteResult::Queued { .. }
+    ));
 }

@@ -88,3 +88,5 @@ Hagency workflow architecture: [English](docs/OPERATIONS.md) · [中文](docs/OP
 
 Local operations: [connection/TLS diagnostics](docs/LOCAL_DEPLOYMENT.md) ·
 [isolated testing](docs/TESTING.md).
+
+[GitHub CI and releases](docs/github-ci.md)

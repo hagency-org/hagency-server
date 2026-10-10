@@ -85,3 +85,5 @@ Hagency 业务架构与迁移：[中文](docs/OPERATIONS.zh-CN.md) · [English](
 
 本地操作：[连接与 TLS 排障](docs/LOCAL_DEPLOYMENT.zh-CN.md) ·
 [隔离测试](docs/TESTING.zh-CN.md)。
+
+[GitHub CI 与发布](docs/github-ci.md)

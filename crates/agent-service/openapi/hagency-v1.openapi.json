@@ -5250,6 +5250,134 @@
           ]
         }
       }
+    },
+    "/api/hagency/v1/bindings/{bindingId}/reply-policy": {
+      "put": {
+        "operationId": "setOwnedBindingReplyPolicy",
+        "summary": "Set collaboration Room reply behavior",
+        "description": "Agent owner only; active or suspended project bindings only. This persistent option does not change private-chat behavior or cancel previously admitted requests.",
+        "security": [
+          {
+            "userBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "bindingId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Percent-encode this single path segment."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "binding": {
+                      "$ref": "#/components/schemas/Binding"
+                    }
+                  },
+                  "required": [
+                    "binding"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api.rs",
+          "anchors": [
+            "parts[4] == \"bindings\"",
+            "parts[6] == \"reply-policy\"",
+            "method == salvo::http::Method::PUT",
+            "domain.set_thread_auto_reply"
+          ]
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "threadAutoReply": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "threadAutoReply"
+                ],
+                "additionalProperties": false
+              },
+              "example": {
+                "threadAutoReply": true
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5615,6 +5743,11 @@
           "ownerServicePaused": {
             "type": "boolean",
             "description": "True only when this binding was explicitly paused by its owner. Membership or administrator suspension is not an owner pause."
+          },
+          "threadAutoReply": {
+            "type": "boolean",
+            "default": false,
+            "description": "Owner opt-in per project binding: authorized members may follow up without another mention in an already activated thread. Default false requires a canonical mention for every project Room message. Owner-direct chat is unaffected."
           }
         },
         "required": [
@@ -5625,7 +5758,8 @@
           "state",
           "generation",
           "scopeKind",
-          "ownerServicePaused"
+          "ownerServicePaused",
+          "threadAutoReply"
         ],
         "additionalProperties": false,
         "x-rust-dto": {
@@ -5639,7 +5773,8 @@
             "state",
             "generation",
             "scope_kind",
-            "owner_service_paused"
+            "owner_service_paused",
+            "thread_auto_reply"
           ],
           "strictInput": false
         },
@@ -5652,7 +5787,8 @@
             "state": "joining",
             "generation": 1,
             "scopeKind": "project",
-            "ownerServicePaused": false
+            "ownerServicePaused": false,
+            "threadAutoReply": false
           }
         ]
       },
@@ -5700,7 +5836,8 @@
               "state": "joining",
               "generation": 1,
               "scopeKind": "project",
-              "ownerServicePaused": false
+              "ownerServicePaused": false,
+              "threadAutoReply": false
             }
           }
         ]
@@ -7106,7 +7243,8 @@
                 "state": "joining",
                 "generation": 1,
                 "scopeKind": "project",
-                "ownerServicePaused": false
+                "ownerServicePaused": false,
+                "threadAutoReply": false
               }
             },
             "pendingReason": null
@@ -7172,7 +7310,8 @@
                 "state": "joining",
                 "generation": 1,
                 "scopeKind": "project",
-                "ownerServicePaused": false
+                "ownerServicePaused": false,
+                "threadAutoReply": false
               }
             }
           }
@@ -7760,7 +7899,7 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "a578000d9fa406dd8cb45cf7e4ecdb8f655e08bdd7ef740f7970d686092efc48",
+    "crates/agent-service/src/api.rs": "994aca4fecf2e0fcf099c5da0e4bed5ff5ff52f34265d8f5020dfa5369a6d1e2",
     "crates/agent-service/src/api_transport.rs": "c40f753d6fe7783fedecb078a77a99a1486704d76276bae2b9c0437190dcde27",
     "crates/agent-service/src/transport_history.rs": "b7f48bb284938bae50da7988fb569ea5e891749e41792f8eb4033b734d9d328c"
   },

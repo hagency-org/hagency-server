@@ -87,7 +87,7 @@ async fn postgres_room_discovery_and_roster_require_live_independent_memberships
         .await
         .unwrap();
     let suffix = secret_token();
-    let (_, owner) = user(&store, &format!("owner_{suffix}")).await;
+    let (owner_token, owner) = user(&store, &format!("owner_{suffix}")).await;
     let (caller_token, caller) = user(&store, &format!("member_{suffix}")).await;
     let (room_only_token, room_only) = user(&store, &format!("room_only_{suffix}")).await;
     let space = format!("!space_{suffix}:example.test");
@@ -203,6 +203,59 @@ async fn postgres_room_discovery_and_roster_require_live_independent_memberships
     )
     .with_domain(domain.clone(), gateway);
     let service = Service::new(app.router());
+    let reply_policy = format!(
+        "https://example.test/api/hagency/v1/bindings/{}/reply-policy",
+        created.binding.id
+    );
+    assert!(
+        !domain
+            .binding(&owner, &created.binding.id, now_ms())
+            .await
+            .unwrap()
+            .thread_auto_reply
+    );
+    for invalid in [
+        json!({}),
+        json!({"threadAutoReply":"true"}),
+        json!({"threadAutoReply":true,"extra":1}),
+    ] {
+        let response = TestClient::put(&reply_policy)
+            .add_header("host", "example.test", true)
+            .bearer_auth(&owner_token)
+            .json(&invalid)
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::BAD_REQUEST));
+    }
+    let response = TestClient::put(&reply_policy)
+        .add_header("host", "example.test", true)
+        .bearer_auth(&caller_token)
+        .json(&json!({"threadAutoReply":true}))
+        .send(&service)
+        .await;
+    assert_ne!(response.status_code, Some(StatusCode::OK));
+    for enabled in [true, false] {
+        let mut response = TestClient::put(&reply_policy)
+            .add_header("host", "example.test", true)
+            .bearer_auth(&owner_token)
+            .json(&json!({"threadAutoReply":enabled}))
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+        assert_eq!(
+            response.take_json::<Value>().await.unwrap()["binding"]["threadAutoReply"],
+            enabled
+        );
+        assert_eq!(
+            domain
+                .binding(&owner, &created.binding.id, now_ms())
+                .await
+                .unwrap()
+                .thread_auto_reply,
+            enabled
+        );
+    }
+
     let list = format!("/api/hagency/v1/projects/{}/rooms", project.id);
     let roster = format!(
         "{list}/{}/agents",

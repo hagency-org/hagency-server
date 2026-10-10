@@ -287,7 +287,10 @@ mod tests {
             .unwrap();
         crate::assert_entity_id(&s.user_id, "usr_");
         crate::assert_entity_id(&device.device_id, "dev_");
-        let principal = store.authenticate(&s.token, base + 10_000, false).await.unwrap();
+        let principal = store
+            .authenticate(&s.token, base + 10_000, false)
+            .await
+            .unwrap();
         crate::assert_entity_id(&principal.session_id, "ses_");
         assert_eq!(s.token.len(), 64);
         assert_eq!(device.token.len(), 64);

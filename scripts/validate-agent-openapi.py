@@ -185,7 +185,7 @@ def validate(doc):
         require({p for p, _ in operations if p.startswith('/api/hagency/v1/execution/')} == {p for p, _ in literal if p.startswith('/api/hagency/v1/execution/')}, 'invented transport route')
         require(('/api/hagency/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
         require(('/api/hagency/v1/projects/{projectId}/rooms', 'post') not in operations, 'unimplemented Room creation advertised')
-        require(len(operations) == 51, 'reviewed owner route count drift')
+        require(len(operations) == 52, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)

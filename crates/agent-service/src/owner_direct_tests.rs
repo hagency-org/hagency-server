@@ -207,6 +207,13 @@ async fn postgres_owner_direct_is_private_independent_and_executes_only_owner_wi
         encrypted: false,
         is_edit: false,
     };
+    assert!(
+        f.domain
+            .set_thread_auto_reply(&f.p, &created.binding.id, true, now)
+            .await
+            .is_err(),
+        "Room reply policy is not applicable to private chat"
+    );
     let queued = f
         .transport
         .ingest_routed(
