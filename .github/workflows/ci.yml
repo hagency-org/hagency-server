@@ -1,4 +1,4 @@
-name: Hagency Server CI and images
+name: Hagency Server CI
 
 on:
   push:
@@ -72,6 +72,7 @@ jobs:
   image:
     name: Container (${{ matrix.arch }})
     needs: quality
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     permissions:
@@ -96,7 +97,6 @@ jobs:
         run: echo "name=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -107,12 +107,11 @@ jobs:
         with:
           context: .
           platforms: linux/${{ matrix.arch }}
-          tags: ${{ steps.image.outputs.name }}:ci-${{ github.sha }}-${{ matrix.arch }}
-          outputs: ${{ github.event_name == 'pull_request' && 'type=docker' || format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', steps.image.outputs.name) }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=server-${{ matrix.arch }}
           cache-to: type=gha,scope=server-${{ matrix.arch }},mode=max
-          provenance: ${{ github.event_name != 'pull_request' }}
-          sbom: ${{ github.event_name != 'pull_request' }}
+          provenance: true
+          sbom: true
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -121,30 +120,20 @@ jobs:
         env:
           IMAGE: ${{ steps.image.outputs.name }}
           DIGEST: ${{ steps.build.outputs.digest }}
-          IS_PR: ${{ github.event_name == 'pull_request' }}
-          CI_TAG: ci-${{ github.sha }}-${{ matrix.arch }}
         run: |
           set -euo pipefail
-          if [[ "$IS_PR" == true ]]; then
-            image_id="$IMAGE:$CI_TAG"
-          else
-            image_id="$IMAGE@$DIGEST"
-          fi
-          test -n "$image_id"
-          docker run --rm --entrypoint /bin/sh "$image_id" -ec '
+          docker run --rm --entrypoint /bin/sh "$IMAGE@$DIGEST" -ec '
             hagency-server --help
             test -d /app/resources/pasion
             test -f /app/resources/frontend/public/index.html
           '
       - name: Export digest
-        if: github.event_name != 'pull_request'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           mkdir -p "$RUNNER_TEMP/digests"
           touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
       - uses: actions/upload-artifact@v4
-        if: github.event_name != 'pull_request'
         with:
           name: digest-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
@@ -154,7 +143,7 @@ jobs:
   publish:
     name: Publish multi-platform manifest
     needs: image
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

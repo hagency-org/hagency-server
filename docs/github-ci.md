@@ -9,12 +9,14 @@ OpenAPI drift guard and its self-tests, and a wasm32 frontend compile check.
 CI overrides the local absolute Cargo target directory. A version tag must equal
 `v` plus `workspace.package.version` in Cargo.toml, including any prerelease suffix.
 
-After quality succeeds, native amd64 and arm64 runners build the complete existing
+PRs and manual dispatch run quality checks only. Container jobs are skipped.
+Only a push to main or a `v*` version tag can build/publish images, after quality
+succeeds. Native amd64 and arm64 runners build the complete existing
 Dockerfile, including both browser applications. Each image is smoke-tested for
 executable startup (`--help`) and packaged browser assets. This is not a running
 Matrix/Pasion/Appservice deployment or a `/readyz` integration test.
 
-PR builds do not push. Main/tag/manual builds push by digest to
+Main/tag image builds push by digest to
 `ghcr.io/<repository-owner>/hagency-server`, with OCI source/revision labels,
 SBOM and provenance. The final job publishes tags only after **both** smoke tests
 succeed and verifies that the manifest contains both Linux architectures:
@@ -44,5 +46,9 @@ Appservice operations, with 10 guard tests passing. The 5 xtask tests passed.
 Publication check: rustfmt passes after formatting reply-policy changes and
 re-reviewing the router fingerprint. Agent-service unit tests pass (15 tests);
 43 PostgreSQL-dependent tests remain ignored locally and are enabled by CI.
-The new GitHub workflow has not yet been pushed/run. No multi-architecture image
+The workflow has been pushed and GitHub runs are tracked separately. No multi-architecture image
 or live integration qualification is claimed by these local checks.
+
+Trigger correction: PRs (including Dependabot PRs) and manual dispatch cannot
+start the container matrix or manifest publication. Both jobs explicitly require
+a push to main or a version tag.
