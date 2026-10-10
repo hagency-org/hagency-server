@@ -21,11 +21,11 @@ Main/tag image builds push by digest to
 SBOM and provenance. The final job publishes tags only after **both** smoke tests
 succeed and verifies that the manifest contains both Linux architectures:
 
-- `edge`: main branch builds.
+- `latest`, `edge`: main branch builds, published after both architectures pass.
 - `sha-<short-commit>`: immutable source identification (reruns can rebuild it).
 - `0.1.0`, `0.1`: example stable version tags for a `v0.1.0` source tag.
 - Prerelease versions retain their full suffix; they do not update stable aliases.
-- Docker metadata's stable semver policy also publishes `latest` for stable releases.
+- Stable version releases also update `latest`; prereleases do not.
 
 The workflow uses the repository's GITHUB_TOKEN with `packages: write`; no Docker
 Hub credentials are required. The organization must permit Actions and package
