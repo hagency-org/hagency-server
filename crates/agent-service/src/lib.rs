@@ -3,8 +3,8 @@ pub mod api;
 #[cfg(test)]
 mod api_discovery_tests;
 mod api_transport;
-mod database;
 pub mod appservice;
+mod database;
 pub mod domain;
 pub mod gateway;
 pub mod identity;

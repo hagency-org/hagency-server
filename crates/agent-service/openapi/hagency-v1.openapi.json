@@ -7899,7 +7899,7 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "e6be2c6661264b69820c82ab40f9decce50b30c06b422c6c29ee1984f5121c7d",
+    "crates/agent-service/src/api.rs": "043e0421ef7b988bf9049cb3af2e7868653913897cf117e06135041ac21047e9",
     "crates/agent-service/src/api_transport.rs": "572e64784679c2c40ff2da96b4ff558c38c157b67ff2544e576540b7922087f7",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92"
   },

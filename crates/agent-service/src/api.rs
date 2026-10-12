@@ -198,11 +198,18 @@ impl App {
                 .map_err(|_| Error::Invalid("invalid_arguments"))?;
             let started = std::time::Instant::now();
             let identity = self.verifier.verify(&body.access_token, now_ms()).await?;
-            tracing::debug!(stage="session_create_store",elapsed_ms=started.elapsed().as_millis() as u64,"OAuth proof verified; creating owner session");
+            tracing::debug!(
+                stage = "session_create_store",
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "OAuth proof verified; creating owner session"
+            );
             let grant = self.store.sign_in(identity, now_ms()).await?;
-            tracing::debug!(stage="session_create_store",elapsed_ms=started.elapsed().as_millis() as u64,"Owner session created");
-            return serde_json::to_value(grant)
-                .map_err(|_| Error::Unavailable("encoding_failed"));
+            tracing::debug!(
+                stage = "session_create_store",
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "Owner session created"
+            );
+            return serde_json::to_value(grant).map_err(|_| Error::Unavailable("encoding_failed"));
         }
         let credential = req
             .headers()
@@ -218,9 +225,17 @@ impl App {
                 .map_err(|_| Error::Invalid("invalid_arguments"))?;
             let started = std::time::Instant::now();
             let identity = self.verifier.verify(&body.access_token, now_ms()).await?;
-            tracing::debug!(stage="session_renew_store",elapsed_ms=started.elapsed().as_millis() as u64,"OAuth proof verified; renewing owner session");
-            let until = self.store.renew(&credential,identity,now).await?;
-            tracing::debug!(stage="session_renew_store",elapsed_ms=started.elapsed().as_millis() as u64,"Owner session renewed");
+            tracing::debug!(
+                stage = "session_renew_store",
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "OAuth proof verified; renewing owner session"
+            );
+            let until = self.store.renew(&credential, identity, now).await?;
+            tracing::debug!(
+                stage = "session_renew_store",
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "Owner session renewed"
+            );
             return Ok(json!({"validUntilMs":until}));
         }
         if path == "/hagency/api/v1/sessions/current" && method == salvo::http::Method::DELETE {

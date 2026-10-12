@@ -16,7 +16,7 @@ sql(f"CREATE DATABASE {name}")
 env = os.environ.copy()
 env["HAGENCY_AGENT_TEST_DATABASE_URL"] = "postgres://" + quote(user, safe="") + ":" + quote(password, safe="") + "@127.0.0.1:" + port + "/" + name
 try:
-    result = subprocess.run(["cargo", "test", "-p", "hagency-agent-service", "--offline", "--", "--include-ignored"], env=env)
+    result = subprocess.run(["cargo", "test", "--locked", "-p", "hagency-agent-service", "--offline", "--", "--include-ignored", "--test-threads=1"], env=env)
 finally:
     sql(f"DROP DATABASE {name}")
 raise SystemExit(result.returncode)

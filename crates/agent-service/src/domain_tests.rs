@@ -1874,6 +1874,75 @@ async fn postgres_membership_controller_leaves_paused_and_joining_rooms_and_retr
     result.unwrap();
 }
 
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn membership_controller_rechecks_replaced_connection_without_stacking_locks() {
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let first = DomainStore::open(&url, "example.test", "_hagency_test_")
+        .await
+        .unwrap();
+    let second = DomainStore::open(&url, "example.test", "_hagency_test_")
+        .await
+        .unwrap();
+    assert!(first.try_membership_controller().await.unwrap());
+    assert!(first.try_membership_controller().await.unwrap());
+    assert!(!second.try_membership_controller().await.unwrap());
+    // Repeated checks must not require multiple unlocks.
+    first
+        .db
+        .lock()
+        .await
+        .unwrap()
+        .batch_execute("SELECT pg_advisory_unlock(5210750088328905)")
+        .await
+        .unwrap();
+    assert!(second.try_membership_controller().await.unwrap());
+    second
+        .db
+        .lock()
+        .await
+        .unwrap()
+        .batch_execute("SELECT pg_advisory_unlock(5210750088328905)")
+        .await
+        .unwrap();
+    assert!(first.try_membership_controller().await.unwrap());
+
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let mut operation = Box::pin(async {
+        let mut guard = first.db.lock().await.unwrap();
+        (*guard)
+            .transaction::<_, diesel::result::Error, _>(async |conn: &mut AsyncPgConnection| {
+                conn.batch_execute("SELECT 1").await?;
+                ready_tx.send(()).unwrap();
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    });
+    tokio::select! { _ = &mut operation => panic!("must remain pending"), _ = ready_rx => () }
+    drop(operation);
+    // Terminating the cancelled leader's connection must allow another replica
+    // to take over. The previous leader's new connection must yield to it.
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        while !second.try_membership_controller().await.unwrap() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!first.try_membership_controller().await.unwrap());
+    second
+        .db
+        .lock()
+        .await
+        .unwrap()
+        .batch_execute("SELECT pg_advisory_unlock(5210750088328905)")
+        .await
+        .unwrap();
+    assert!(first.try_membership_controller().await.unwrap());
+}
+
 async fn exercise_membership_controller(url: &str) {
     use crate::{gateway::Gateway, matrix_client::MatrixClient};
     use std::{

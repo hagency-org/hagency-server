@@ -407,18 +407,16 @@ pub(crate) fn start_cleanup(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut cursor = String::new();
-        let mut leader = false;
         let mut cleanup_cursor = (String::new(), String::new());
         let mut identity_cursor = String::new();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            if !leader {
-                leader = domain.try_membership_controller().await.unwrap_or(false);
-                if !leader {
-                    continue;
-                }
+            // A cancelled transaction can replace the DomainStore connection
+            // and release its session lock. Never cache leadership across ticks.
+            if !domain.try_membership_controller().await.unwrap_or(false) {
+                continue;
             }
             if let Ok(agents) = domain
                 .identity_provisioning_candidates(&identity_cursor, 20)

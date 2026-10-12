@@ -148,9 +148,16 @@ impl Store {
             return Err(Error::Unauthorized("authentication_required"));
         }
         let started = std::time::Instant::now();
-        tracing::debug!(stage="session_create_lock", "Waiting for owner session connection");
+        tracing::debug!(
+            stage = "session_create_lock",
+            "Waiting for owner session connection"
+        );
         let mut db = self.db.lock().await?;
-        tracing::debug!(stage="session_create_lock",elapsed_ms=started.elapsed().as_millis() as u64,"Owner session connection acquired");
+        tracing::debug!(
+            stage = "session_create_lock",
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "Owner session connection acquired"
+        );
         (*db).transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
             // Unique identity lock also serializes conflicting subject/MXID registrations.
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328903)").await?;
@@ -219,9 +226,16 @@ impl Store {
             return Err(Error::Unauthorized("authentication_required"));
         }
         let started = std::time::Instant::now();
-        tracing::debug!(stage="session_renew_lock", "Waiting for owner renewal connection");
+        tracing::debug!(
+            stage = "session_renew_lock",
+            "Waiting for owner renewal connection"
+        );
         let mut db = self.db.lock().await?;
-        tracing::debug!(stage="session_renew_lock",elapsed_ms=started.elapsed().as_millis() as u64,"Owner renewal connection acquired");
+        tracing::debug!(
+            stage = "session_renew_lock",
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "Owner renewal connection acquired"
+        );
         (*db)
             .transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
                 // An expired session may renew only with fresh matching upstream proof.

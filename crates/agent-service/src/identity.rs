@@ -89,7 +89,10 @@ impl Verifier {
             return Err(Error::Unauthorized("authentication_required"));
         }
         let started = std::time::Instant::now();
-        tracing::debug!(stage="identity_introspection", "Verifying owner OAuth proof");
+        tracing::debug!(
+            stage = "identity_introspection",
+            "Verifying owner OAuth proof"
+        );
         let response = self
             .http
             .post(self.introspection.clone())
@@ -98,8 +101,12 @@ impl Verifier {
             .send()
             .await
             .map_err(|_| Error::Unavailable("pasion_unavailable"))?;
-        tracing::debug!(stage="identity_introspection",elapsed_ms=started.elapsed().as_millis() as u64,
-            status=response.status().as_u16(),"OAuth introspection responded");
+        tracing::debug!(
+            stage = "identity_introspection",
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            status = response.status().as_u16(),
+            "OAuth introspection responded"
+        );
         let raw = bounded(response, "pasion_unavailable").await?;
         let introspection: Introspection = serde_json::from_slice(&raw)
             .map_err(|_| Error::Unavailable("invalid_identity_response"))?;
@@ -109,7 +116,11 @@ impl Verifier {
             .map_err(|_| Error::Invalid("invalid_identity_configuration"))?;
         // Validate inactive/expired tokens BEFORE forwarding them to Matrix.
         fields(&introspection, now_ms)?;
-        tracing::debug!(stage="identity_matrix",elapsed_ms=started.elapsed().as_millis() as u64,"Checking Matrix identity");
+        tracing::debug!(
+            stage = "identity_matrix",
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "Checking Matrix identity"
+        );
         let response = self
             .http
             .get(endpoint)
@@ -117,8 +128,12 @@ impl Verifier {
             .send()
             .await
             .map_err(|_| Error::Unavailable("matrix_unavailable"))?;
-        tracing::debug!(stage="identity_matrix",elapsed_ms=started.elapsed().as_millis() as u64,
-            status=response.status().as_u16(),"Matrix identity responded");
+        tracing::debug!(
+            stage = "identity_matrix",
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            status = response.status().as_u16(),
+            "Matrix identity responded"
+        );
         let raw = bounded(response, "matrix_unavailable").await?;
         let who: Whoami = serde_json::from_slice(&raw)
             .map_err(|_| Error::Unavailable("invalid_identity_response"))?;

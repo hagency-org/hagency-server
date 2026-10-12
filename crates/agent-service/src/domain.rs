@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 
 use std::{collections::BTreeSet, sync::Arc};
 
-
 #[path = "domain_discovery.rs"]
 mod discovery;
 pub use discovery::RoomAgent;
@@ -919,11 +918,12 @@ impl DomainStore {
         }).await
     }
     /// Session-scoped PostgreSQL lock elects one Matrix membership controller
-    /// across replicas. It is released by connection/process termination.
+    /// across replicas. Recheck after connection replacement without stacking
+    /// PostgreSQL's reentrant lock count on the same connection.
     pub async fn try_membership_controller(&self) -> Result<bool> {
         let mut db = self.db.lock().await?;
         Ok(
-            sql_query("SELECT pg_try_advisory_lock(5210750088328905) AS matched")
+            sql_query("SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND pid=pg_backend_pid() AND classid=(5210750088328905::bigint >> 32)::oid AND objid=(5210750088328905::bigint & 4294967295)::oid AND objsubid=1 AND granted) THEN true ELSE pg_try_advisory_lock(5210750088328905) END AS matched")
                 .get_result::<Flag>(&mut *db)
                 .await?
                 .matched,
