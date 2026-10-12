@@ -448,6 +448,6 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/appservice.rs": "958143750786e94ab52c9296de5aa96c0dc513aa03efea909c17ad44267c1839"
+    "crates/agent-service/src/appservice.rs": "7f3c42ede27984420e0c89a04d0d1dd12e380aa8e6bad3c4a8651e3b787516f8"
   }
 }

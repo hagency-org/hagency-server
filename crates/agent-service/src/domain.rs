@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 
 use std::{collections::BTreeSet, sync::Arc};
 
-use tokio::sync::Mutex;
 
 #[path = "domain_discovery.rs"]
 mod discovery;
@@ -380,7 +379,7 @@ struct Flag {
 
 #[derive(Clone)]
 pub struct DomainStore {
-    db: Arc<Mutex<AsyncPgConnection>>,
+    db: Arc<crate::database::Database>,
     server: String,
     namespace: String,
 }
@@ -388,7 +387,7 @@ pub struct DomainStore {
 impl DomainStore {
     /// Trusted Appservice existence query; cannot allocate an ownerless puppet.
     pub async fn known_puppet(&self, mxid: &str) -> Result<bool> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         Ok(sql_query(
             "SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agents WHERE puppet_mxid=$1) AS matched",
         )
@@ -450,7 +449,7 @@ impl DomainStore {
 ).await?;
 
         Ok(Self {
-            db: Arc::new(Mutex::new(db)),
+            db: Arc::new(crate::database::Database::new(db, url)),
             server: server.into(),
             namespace: namespace.into(),
         })
@@ -586,7 +585,7 @@ impl DomainStore {
             return Err(Error::Invalid("project_requires_space"));
         }
 
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection| {
 
@@ -612,7 +611,7 @@ impl DomainStore {
     ) -> Result<Room> {
         matrix_id(room, '!')?;
 
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection| {
 
@@ -655,7 +654,7 @@ impl DomainStore {
 
         let encoded = encode(&policy)?;
 
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -685,7 +684,7 @@ impl DomainStore {
 
         let encoded = encode(&policy)?;
 
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -711,7 +710,7 @@ impl DomainStore {
             return Err(Error::Invalid("unsupported_command"));
         }
         key(command_key)?;
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;
             let command=sql_query("SELECT digest,agent_id,binding_id FROM hagency_agent_v1.domain_commands WHERE actor_user_id=$1 AND operation=$2 AND key=$3").bind::<Text,_>(&p.user_id).bind::<Text,_>(operation).bind::<Text,_>(command_key).get_result::<Command>(db).await.optional()?.ok_or(Error::NotFound("command_not_found"))?;
@@ -775,7 +774,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_agent_name"));
         }
         let digest = hash(&encode(&request)?);
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;
             if let Some(command)=sql_query("SELECT digest,agent_id,binding_id FROM hagency_agent_v1.domain_commands WHERE actor_user_id=$1 AND operation='agent.create' AND key=$2").bind::<Text,_>(&p.user_id).bind::<Text,_>(&request.idempotency_key).get_result::<Command>(db).await.optional()? {
@@ -798,12 +797,12 @@ impl DomainStore {
         if !(1..=128).contains(&limit) {
             return Err(Error::Invalid("invalid_limit"));
         }
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         Ok(sql_query("SELECT a.id,a.owner_user_id,a.puppet_mxid,a.display_name,a.state,a.generation,a.owner_direct_room_id,a.execution_device_id FROM hagency_agent_v1.agents a JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id WHERE a.state='creating' AND u.active ORDER BY (a.id<=$1),a.id LIMIT $2").bind::<Text,_>(after).bind::<BigInt,_>(limit).load(&mut *db).await?)
     }
     /// Only after the trusted worker verified the exact puppet through Matrix.
     pub async fn confirm_identity_provisioned(&self, id: &str, generation: i64) -> Result<()> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             let n=sql_query("UPDATE hagency_agent_v1.agents a SET state='active' WHERE id=$1 AND generation=$2 AND state='creating' AND EXISTS(SELECT 1 FROM hagency_agent_v1.users u WHERE u.id=a.owner_user_id AND u.active)").bind::<Text,_>(id).bind::<BigInt,_>(generation).execute(db).await?;
@@ -838,7 +837,7 @@ impl DomainStore {
 
         let digest = hash(&format!("{agent_id}:{}", encode(&request)?));
 
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -912,7 +911,7 @@ impl DomainStore {
         if limit == 0 || limit > 1000 {
             return Err(Error::Invalid("invalid_cleanup_limit"));
         }
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
@@ -922,7 +921,7 @@ impl DomainStore {
     /// Session-scoped PostgreSQL lock elects one Matrix membership controller
     /// across replicas. It is released by connection/process termination.
     pub async fn try_membership_controller(&self) -> Result<bool> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         Ok(
             sql_query("SELECT pg_try_advisory_lock(5210750088328905) AS matched")
                 .get_result::<Flag>(&mut *db)
@@ -940,7 +939,7 @@ impl DomainStore {
         if limit == 0 || limit > 1000 {
             return Err(Error::Invalid("invalid_cleanup_limit"));
         }
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         Ok(sql_query("SELECT a.id AS agent_id,a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,a.state AS agent_state,a.generation AS agent_generation,b.id AS binding_id,b.state AS binding_state,b.generation AS binding_generation,b.room_id,coalesce(p.space_id,'') AS space_id FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id WHERE b.id>$1 AND b.state IN ('joining','active','suspended','leaving','left','revoked') ORDER BY b.id LIMIT $2")
             .bind::<Text,_>(after).bind::<BigInt,_>(limit as i64).load(&mut *db).await?)
     }
@@ -966,7 +965,7 @@ impl DomainStore {
         require_joined: bool,
         now: i64,
     ) -> Result<bool> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db)
             .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
                 db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
@@ -984,7 +983,7 @@ impl DomainStore {
         facts: &RoomFacts,
         now: i64,
     ) -> Result<()> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db)
             .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, now).await?;
@@ -1059,7 +1058,7 @@ impl DomainStore {
         Ok(true)
     }
     pub async fn departure_desired_trusted(&self, id: &str, generation: i64) -> Result<bool> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.bindings WHERE id=$1 AND generation=$2 AND state IN ('left','leaving','revoked')) AS matched").bind::<Text,_>(id).bind::<BigInt,_>(generation).get_result::<Flag>(&mut *db).await?.matched)
     }
     /// Verify a previously committed creation intent against current authority.
@@ -1076,7 +1075,7 @@ impl DomainStore {
         // departure after the remote JOIN has already completed.
         self.retire_membership_loss(id, generation, f, activate, now)
             .await?;
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db: &mut AsyncPgConnection| {
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             let b=sql_query("SELECT id,agent_id,project_id,room_id,state,generation,scope_kind,owner_service_paused,thread_auto_reply FROM hagency_agent_v1.bindings WHERE id=$1").bind::<Text,_>(id).get_result::<Binding>(db).await.map_err(hidden)?;
@@ -1112,7 +1111,7 @@ impl DomainStore {
         f: &RoomFacts,
         now: i64,
     ) -> Result<Binding> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
@@ -1137,7 +1136,7 @@ impl DomainStore {
         generation: i64,
         now: i64,
     ) -> Result<Agent> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
@@ -1161,7 +1160,7 @@ impl DomainStore {
         f: &RoomFacts,
         now: i64,
     ) -> Result<Binding> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1222,7 +1221,7 @@ impl DomainStore {
         now: i64,
     ) -> Result<AgentBinding> {
         self.observe_owner_membership(p, id, f, now).await?;
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db)
             .transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
@@ -1259,7 +1258,7 @@ impl DomainStore {
     /// Host gateway lookup. HTTP handlers must verify current Space membership
     /// before exposing project metadata or policy exception lists.
     pub async fn project(&self, p: &Principal, id: &str, now: i64) -> Result<Project> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db)
             .transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
@@ -1278,7 +1277,7 @@ impl DomainStore {
         room_id: &str,
         now: i64,
     ) -> Result<Room> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db)
             .transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
@@ -1292,7 +1291,7 @@ impl DomainStore {
     /// Host gateway discovery input. Filter this list with fresh Matrix membership
     /// before returning it to clients; authentication alone is not discoverability.
     pub async fn projects(&self, p: &Principal, now: i64) -> Result<Vec<Project>> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1303,7 +1302,7 @@ impl DomainStore {
     }
 
     pub async fn agent(&self, p: &Principal, id: &str, now: i64) -> Result<Agent> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db)
             .transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
@@ -1315,7 +1314,7 @@ impl DomainStore {
     }
 
     pub async fn binding(&self, p: &Principal, id: &str, now: i64) -> Result<Binding> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db)
             .transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
@@ -1334,7 +1333,7 @@ impl DomainStore {
         enabled: bool,
         now: i64,
     ) -> Result<Binding> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
             Self::authorize(db, p, now).await?;
             let binding = Self::binding_db(db, p, id).await?;
@@ -1351,7 +1350,7 @@ impl DomainStore {
     }
 
     pub async fn agents(&self, p: &Principal, now: i64) -> Result<Vec<Agent>> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1362,7 +1361,7 @@ impl DomainStore {
     }
 
     pub async fn bindings(&self, p: &Principal, agent_id: &str, now: i64) -> Result<Vec<Binding>> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1390,7 +1389,7 @@ impl DomainStore {
         target: &str,
         now: i64,
     ) -> Result<Agent> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1440,7 +1439,7 @@ impl DomainStore {
         target: &str,
         now: i64,
     ) -> Result<Binding> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1489,7 +1488,7 @@ impl DomainStore {
         now: i64,
     ) -> Result<Binding> {
         self.observe_owner_membership(p, id, f, now).await?;
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1532,7 +1531,7 @@ impl DomainStore {
         room_id: Option<&str>,
         now: i64,
     ) -> Result<serde_json::Value> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;
             let project=Self::project_db(db,project_id).await?;
@@ -1551,7 +1550,7 @@ impl DomainStore {
         f: &AdminFacts,
         now: i64,
     ) -> Result<usize> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1575,7 +1574,7 @@ impl DomainStore {
         f: &AdminFacts,
         now: i64,
     ) -> Result<usize> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1599,7 +1598,7 @@ impl DomainStore {
         f: &AdminFacts,
         now: i64,
     ) -> Result<usize> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1623,7 +1622,7 @@ impl DomainStore {
         f: &AdminFacts,
         now: i64,
     ) -> Result<usize> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1640,7 +1639,7 @@ impl DomainStore {
     }
 
     pub async fn retire_agent(&self, p: &Principal, id: &str, now: i64) -> Result<Agent> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1669,7 +1668,7 @@ impl DomainStore {
         f: &RoomFacts,
         now: i64,
     ) -> Result<Binding> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
@@ -1707,7 +1706,7 @@ impl DomainStore {
         generation: i64,
         now: i64,
     ) -> Result<Agent> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
 
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 

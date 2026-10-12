@@ -275,13 +275,13 @@ try:
                         raise RuntimeError("client fixture server stopped")
                     time.sleep(1)
                 raise RuntimeError("native OwnerHost tester did not complete")
-            # Password login exercises the real Pasion-delegated Matrix account
-            # and joint verifier. It does not stand in for native PKCE browser QA.
-            human = request(origin, "POST", "/_matrix/client/v3/login", {
-                "type": "m.login.password", "identifier": {"type": "m.id.user", "user": "agent_smoke_owner"},
-                "password": (folder / "bootstrap-password").read_text()})
-            matrix_token = human["access_token"]
             if os.environ.get("HAGENCY_TEST_HOLD_PKCE") != "1" and not NATIVE_PKCE:
+                # This optional compatibility probe is separate from native OAuth.
+                # Native PKCE must not depend on legacy Matrix password login.
+                human = request(origin, "POST", "/_matrix/client/v3/login", {
+                    "type": "m.login.password", "identifier": {"type": "m.id.user", "user": "agent_smoke_owner"},
+                    "password": (folder / "bootstrap-password").read_text()})
+                matrix_token = human["access_token"]
                 try:
                     request(origin, "POST", "/hagency/api/v1/sessions/pasion", {"accessToken": matrix_token})
                 except RuntimeError as e:
@@ -310,6 +310,7 @@ try:
                 browser_api_paths(origin, (folder / "bootstrap-password").read_text())
                 matrix_token=native_oauth(origin,(folder/"bootstrap-password").read_text())
                 print("PASS: real Pasion native DCR + PKCE + consent protocol grant")
+            human = request(origin, "GET", "/_matrix/client/v3/account/whoami", token=matrix_token)
             session = request(origin, "POST", "/hagency/api/v1/sessions/pasion", {"accessToken": matrix_token})
             user_token = session["token"]
             space = request(origin, "POST", "/_matrix/client/v3/createRoom", {

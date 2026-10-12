@@ -75,7 +75,7 @@ impl TransportStore {
     ) -> Result<ProcessingReceipt> {
         key(execution_id)?;
         self.observe_event_authority(p, dispatch_id, f, now).await?;
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;
             let e=Self::dispatch(db,p,dispatch_id).await?;
@@ -114,7 +114,7 @@ impl TransportStore {
         if limit == 0 || limit > self.limits.max_batch {
             return Err(Error::Invalid("invalid_batch_limit"));
         }
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
             sql_query("UPDATE hagency_agent_v1.processing_outbox o SET state='cancelled' WHERE state='pending' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.processing_sendable v WHERE v.id=o.id)").execute(db).await?;
@@ -129,7 +129,7 @@ impl TransportStore {
         now: i64,
     ) -> Result<ProcessingIntent> {
         let candidate = {
-            let mut db = self.db.lock().await;
+            let mut db = self.db.lock().await?;
             Self::processing(&mut db, id).await?
         };
         self.observe_delivery_authority(
@@ -141,7 +141,7 @@ impl TransportStore {
             now,
         )
         .await?;
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
             let current=Self::clock(db,now).await?;
@@ -165,7 +165,7 @@ impl TransportStore {
         now: i64,
     ) -> Result<()> {
         let candidate = {
-            let mut db = self.db.lock().await;
+            let mut db = self.db.lock().await?;
             Self::processing(&mut db, id).await?
         };
         self.observe_delivery_authority(
@@ -187,7 +187,7 @@ impl TransportStore {
         f: &DeliveryFacts,
         now: i64,
     ) -> Result<()> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let current=Self::clock(db,now).await?;
             let candidate=Self::processing(db,id).await?;
@@ -210,7 +210,7 @@ impl TransportStore {
         if let Some(event) = event {
             matrix_id(event, '$')?;
         }
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let intent=Self::processing(db,id).await?;
             if intent.worker_token.as_deref()!=Some(worker) {return Err(Error::Conflict("stale_processing_worker"));}

@@ -178,7 +178,7 @@ impl TransportStore {
         if let Some(expected) = expected {
             expected.validate()?;
         }
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authenticate(db,p,now).await?;
             let current=snapshot(db,p,agent).await?;

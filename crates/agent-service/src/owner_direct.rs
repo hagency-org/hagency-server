@@ -10,7 +10,7 @@ impl DomainStore {
         now: i64,
     ) -> Result<AgentBinding> {
         matrix_id(room, '!')?;
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;let a=Self::agent_db(db,p,agent).await?;
             if a.state!="active" {return Err(Error::Conflict("agent_identity_not_active"));}

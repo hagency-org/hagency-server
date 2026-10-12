@@ -533,7 +533,7 @@ async fn postgres_takeover_and_device_revocation_fence_old_execution() {
         .await
         .unwrap();
     assert_eq!(reclaimed.state, "offered");
-    let mut db = f.transport.db.lock().await;
+    let mut db = f.transport.db.lock().await.unwrap();
     let state =
         sql_query("SELECT state AS id,digest FROM hagency_agent_v1.owner_events WHERE id=$1")
             .bind::<Text, _>(&run)
@@ -696,7 +696,7 @@ async fn postgres_transport_owner_isolation_and_terminal_unknown_constraints() {
         .finish_without_reply(&f.p, &lease, &id, "exec-unknown", "unknown", now)
         .await
         .unwrap();
-    let mut db = f.transport.db.lock().await;
+    let mut db = f.transport.db.lock().await.unwrap();
     assert!(
         sql_query("UPDATE hagency_agent_v1.owner_events SET state='pending' WHERE id=$1")
             .bind::<Text, _>(&id)
@@ -733,7 +733,7 @@ async fn postgres_transport_owner_isolation_and_terminal_unknown_constraints() {
         .await
         .unwrap();
     assert!(f.transport.invalidate_stale_dispatches(now).await.unwrap() > 0);
-    let mut db = f.transport.db.lock().await;
+    let mut db = f.transport.db.lock().await.unwrap();
     let cancelled =
         sql_query("SELECT state AS id,digest FROM hagency_agent_v1.owner_events WHERE id=$1")
             .bind::<Text, _>(&queued)
@@ -843,7 +843,7 @@ async fn postgres_definitive_member_denial_does_not_starve_other_events_and_pres
             .await
             .is_err()
     );
-    let mut db = f.transport.db.lock().await;
+    let mut db = f.transport.db.lock().await.unwrap();
     let preserved = TransportStore::reply(&mut db, &intent.id).await.unwrap();
     assert_eq!(preserved.state, "unknown");
     assert_eq!(preserved.matrix_txn_id, intent.matrix_txn_id);
@@ -983,7 +983,7 @@ async fn postgres_known_reply_recovers_under_new_epoch_without_reexecuting_unkno
             .await
             .is_err()
     );
-    let mut db = f.transport.db.lock().await;
+    let mut db = f.transport.db.lock().await.unwrap();
     let dispatch = TransportStore::dispatch(&mut db, &f.second, &id)
         .await
         .unwrap();
@@ -1149,7 +1149,7 @@ async fn postgres_known_reply_reauthorizes_only_unsent_cancel_and_preserves_ambi
             .await
             .is_err()
     );
-    let mut db = f.transport.db.lock().await;
+    let mut db = f.transport.db.lock().await.unwrap();
     assert!(
         sql_query("UPDATE hagency_agent_v1.reply_outbox SET delivery_epoch=$1 WHERE id=$2")
             .bind::<BigInt, _>(old.epoch)
@@ -1239,7 +1239,7 @@ async fn postgres_speaking_permission_loss_is_durable_and_unknown_send_is_not_re
             .is_err()
     );
     let stored = {
-        let mut db = f.transport.db.lock().await;
+        let mut db = f.transport.db.lock().await.unwrap();
         TransportStore::reply(&mut db, &intent.id).await.unwrap()
     };
     assert!(stored.delivery_blocked);
@@ -1324,7 +1324,7 @@ async fn postgres_ttl_blocks_stale_admission_and_tools_but_preserves_started_kno
     let run = enqueue(&f, "ttl-started").await;
     running(&f, &lease, &run, "ttl-execution").await;
     {
-        let mut db = f.transport.db.lock().await;
+        let mut db = f.transport.db.lock().await.unwrap();
         for id in [&pending, &offered, &ack, &run] {
             sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=$1 WHERE id=$2")
                 .bind::<BigInt, _>(now - f.transport.limits.event_ttl_ms)
@@ -1392,7 +1392,7 @@ async fn postgres_ttl_blocks_stale_admission_and_tools_but_preserves_started_kno
             .unwrap()
             .is_empty()
     );
-    let mut db = f.transport.db.lock().await;
+    let mut db = f.transport.db.lock().await.unwrap();
     for id in [pending, offered, ack] {
         let record = TransportStore::dispatch(&mut db, &f.p, &id).await.unwrap();
         assert_eq!(record.state, "cancelled");
@@ -1444,7 +1444,7 @@ async fn postgres_delayed_appservice_routing_never_resets_the_original_request_t
     else {
         panic!("live request not queued")
     };
-    let mut db = f.transport.db.lock().await;
+    let mut db = f.transport.db.lock().await.unwrap();
     let stored =
         sql_query("SELECT created_at_ms AS now_ms FROM hagency_agent_v1.owner_events WHERE id=$1")
             .bind::<Text, _>(&dispatch_id)
@@ -1608,7 +1608,7 @@ async fn postgres_failed_tool_authorization_still_commits_owner_membership_gener
     let binding = f.domain.binding(&owner, &f.binding, now).await.unwrap();
     assert_eq!(binding.state, "leaving");
     let old = {
-        let mut db = f.transport.db.lock().await;
+        let mut db = f.transport.db.lock().await.unwrap();
         TransportStore::dispatch(&mut db, &f.p, &id).await.unwrap()
     };
     assert!(binding.generation > old.binding_generation);
@@ -1955,7 +1955,7 @@ async fn postgres_processing_reaction_is_fixed_durable_and_lease_fenced() {
             .await
             .is_err()
     );
-    let mut db = f.transport.db.lock().await;
+    let mut db = f.transport.db.lock().await.unwrap();
     assert!(
         sql_query("UPDATE hagency_agent_v1.processing_outbox SET content='{}'::jsonb WHERE id=$1")
             .bind::<Text, _>(&receipt.id)
@@ -2082,7 +2082,7 @@ async fn postgres_processing_expired_observation_after_lock_wait_does_not_perman
         task.await.unwrap(),
         Err(Error::Unavailable("matrix_state_unavailable"))
     ));
-    let mut db = f.transport.db.lock().await;
+    let mut db = f.transport.db.lock().await.unwrap();
     let intent=sql_query("SELECT state AS id,delivery_blocked::text AS digest FROM hagency_agent_v1.processing_outbox WHERE id=$1")
         .bind::<Text,_>(&receipt.id).get_result::<Existing>(&mut *db).await.unwrap();
     assert_eq!(intent.id, "pending");
@@ -2161,7 +2161,7 @@ async fn postgres_paused_room_feedback_is_durable_deduplicated_and_never_infers(
             .await,
         Err(Error::Conflict("event_payload_changed"))
     ));
-    let mut guard = f.transport.db.lock().await;
+    let mut guard = f.transport.db.lock().await.unwrap();
     let count = sql_query(
         "SELECT count(*) AS total FROM hagency_agent_v1.owner_events WHERE binding_id=$1",
     )

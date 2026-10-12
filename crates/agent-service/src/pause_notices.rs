@@ -107,7 +107,7 @@ impl TransportStore {
         cursor: &str,
         now: i64,
     ) -> Result<Vec<PauseNotice>> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
             let now = Self::clock(db,now).await?;
@@ -122,7 +122,7 @@ impl TransportStore {
         }).await
     }
     pub(crate) async fn pause_notice_scope(&self, binding: &str) -> Result<RoutingScope> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let scope = Self::scope(&mut guard, binding).await?;
         if !scope.service_paused {
             return Err(Error::Unauthorized("binding_not_paused"));
@@ -135,7 +135,7 @@ impl TransportStore {
         f: &DeliveryFacts,
         now: i64,
     ) -> Result<PauseNotice> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?; let now = Self::clock(db,now).await?;
             let n = sql_query(format!("{SELECT} WHERE id=$1"))
@@ -168,7 +168,7 @@ impl TransportStore {
         outcome: &Result<String>,
         now: i64,
     ) -> Result<()> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let state = match outcome {
             Ok(_) => "sent",
             Err(Error::Conflict("matrix_permission_missing")) => "cancelled",

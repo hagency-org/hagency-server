@@ -24,7 +24,7 @@ impl DomainStore {
         now: i64,
     ) -> Result<Vec<Room>> {
         key(project)?;
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         (*guard).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
             Self::authorize(db, p, now).await?;
             if !Self::project_db(db, project).await?.active {
@@ -43,7 +43,7 @@ impl DomainStore {
     ) -> Result<Vec<RoomAgent>> {
         key(project)?;
         matrix_id(room, '!')?;
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         (*guard).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
             Self::authorize(db, p, now).await?;
             if !Self::project_db(db, project).await?.active || !Self::room_db(db, room, project).await?.active {

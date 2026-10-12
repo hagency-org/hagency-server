@@ -9,7 +9,6 @@ use salvo::prelude::*;
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin, sync::Arc};
 use subtle::ConstantTimeEq;
-use tokio::sync::Mutex;
 
 #[derive(Clone, Copy)]
 pub struct Limits {
@@ -28,7 +27,7 @@ impl Default for Limits {
 }
 #[derive(Clone)]
 pub struct Inbox {
-    db: Arc<Mutex<AsyncPgConnection>>,
+    db: Arc<crate::database::Database>,
     hs_token: String,
     limits: Limits,
     known_user: Option<KnownUser>,
@@ -53,7 +52,7 @@ impl Inbox {
         }
         Ok(
             sql_query("SELECT room_id FROM hagency_agent_v1.readiness_room WHERE singleton")
-                .load::<Room>(&mut *self.db.lock().await)
+                .load::<Room>(&mut *self.db.lock().await?)
                 .await?
                 .into_iter()
                 .next()
@@ -61,7 +60,7 @@ impl Inbox {
         )
     }
     pub(crate) async fn retain_probe_room(&self, room: &str) -> Result<()> {
-        sql_query("INSERT INTO hagency_agent_v1.readiness_room(singleton,room_id) VALUES(true,$1) ON CONFLICT DO NOTHING").bind::<Text,_>(room).execute(&mut *self.db.lock().await).await?;
+        sql_query("INSERT INTO hagency_agent_v1.readiness_room(singleton,room_id) VALUES(true,$1) ON CONFLICT DO NOTHING").bind::<Text,_>(room).execute(&mut *self.db.lock().await?).await?;
         Ok(())
     }
     pub(crate) async fn observed_event(&self, event: &str) -> Result<bool> {
@@ -70,14 +69,14 @@ impl Inbox {
             #[diesel(sql_type=Bool)]
             matched: bool,
         }
-        Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.readiness_receipts WHERE event_id=$2) OR EXISTS(SELECT 1 FROM hagency_agent_v1.inbound_transactions WHERE body->'events' @> $1::jsonb) AS matched").bind::<Jsonb,_>(json!([{"event_id":event}])).bind::<Text,_>(event).get_result::<Observed>(&mut *self.db.lock().await).await?.matched)
+        Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.readiness_receipts WHERE event_id=$2) OR EXISTS(SELECT 1 FROM hagency_agent_v1.inbound_transactions WHERE body->'events' @> $1::jsonb) AS matched").bind::<Jsonb,_>(json!([{"event_id":event}])).bind::<Text,_>(event).get_result::<Observed>(&mut *self.db.lock().await?).await?.matched)
     }
     pub(crate) async fn pending(&self) -> Result<Vec<PendingTransaction>> {
         Ok(sql_query("SELECT t.id,t.body,t.received_at_ms FROM hagency_agent_v1.inbound_transactions t JOIN hagency_agent_v1.routing_jobs j ON j.transaction_id=t.id WHERE j.state='pending' ORDER BY j.received_at_ms,t.id LIMIT 10")
-            .load(&mut *self.db.lock().await).await?)
+            .load(&mut *self.db.lock().await?).await?)
     }
     pub(crate) async fn routed(&self, id: &str) -> Result<()> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             sql_query("UPDATE hagency_agent_v1.routing_jobs SET state='routed' WHERE transaction_id=$1").bind::<Text,_>(id).execute(db).await?;
@@ -107,7 +106,7 @@ impl Inbox {
             Ok(())
         }).await?;
         Ok(Self {
-            db: Arc::new(Mutex::new(db)),
+            db: Arc::new(crate::database::Database::new(db, url)),
             hs_token,
             limits: Limits::default(),
             known_user: None,
@@ -133,7 +132,7 @@ impl Inbox {
         // Bounded metadata samples per transaction, without duplicating bodies.
         sql_query("INSERT INTO hagency_agent_v1.routing_rejections(transaction_id,event_id,binding_id,reason) SELECT $1,$2,$3,$4 WHERE (SELECT count(*) FROM hagency_agent_v1.routing_rejections WHERE transaction_id=$1)<16 ON CONFLICT DO NOTHING")
             .bind::<Text,_>(transaction).bind::<Text,_>(event).bind::<Text,_>(binding).bind::<Text,_>(reason)
-            .execute(&mut *self.db.lock().await).await?;
+            .execute(&mut *self.db.lock().await?).await?;
         Ok(())
     }
     pub fn router(&self) -> Router {
@@ -173,7 +172,7 @@ impl Inbox {
         }
         let digest = hash(&encoded);
         let limits = self.limits;
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection| {
             #[derive(diesel::QueryableByName)] struct Existing {#[diesel(sql_type=Text)] digest:String}
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
@@ -337,7 +336,7 @@ mod tests {
         let jobs =
             sql_query("SELECT state FROM hagency_agent_v1.routing_jobs WHERE transaction_id=$1")
                 .bind::<Text, _>(&id)
-                .load::<Job>(&mut *reopened.db.lock().await)
+                .load::<Job>(&mut *reopened.db.lock().await.unwrap())
                 .await
                 .unwrap();
         assert_eq!(jobs.len(), 1);
@@ -401,7 +400,7 @@ mod tests {
         let stored =
             sql_query("SELECT body FROM hagency_agent_v1.inbound_transactions WHERE id=$1")
                 .bind::<Text, _>(&id)
-                .get_result::<Compact>(&mut *inbox.db.lock().await)
+                .get_result::<Compact>(&mut *inbox.db.lock().await.unwrap())
                 .await
                 .unwrap();
         assert_eq!(stored.body, json!({"events":[]}));

@@ -413,7 +413,7 @@ async fn postgres_domain_ownership_policy_isolation_and_lifecycle() {
             .await
             .is_err()
     );
-    let mut db = store.db.lock().await;
+    let mut db = store.db.lock().await.unwrap();
     assert!(
         sql_query("UPDATE hagency_agent_v1.agents SET owner_user_id=$1 WHERE id=$2")
             .bind::<Text, _>(&other.user_id)
@@ -775,7 +775,7 @@ async fn postgres_trusted_cleanup_converges_after_owner_logout_and_disable_witho
         .unwrap();
     let binding = store.binding(&p, &created.binding.id, *NOW).await.unwrap();
     auth.sign_out(&credential).await.unwrap();
-    let mut db = store.db.lock().await;
+    let mut db = store.db.lock().await.unwrap();
     sql_query("UPDATE hagency_agent_v1.users SET active=false WHERE id=$1")
         .bind::<Text, _>(&p.user_id)
         .execute(&mut *db)
@@ -872,7 +872,7 @@ async fn postgres_trusted_cleanup_converges_after_owner_logout_and_disable_witho
             .iter()
             .any(|s| s.agent_id == retired.id)
     );
-    let mut db = store.db.lock().await;
+    let mut db = store.db.lock().await.unwrap();
     let audited=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.domain_audit WHERE actor_user_id=$1 AND object_id=$2 AND operation='worker.agent.retired') AS matched").bind::<Text,_>(&p.user_id).bind::<Text,_>(&retired.id).get_result::<Flag>(&mut *db).await.unwrap();
     assert!(audited.matched);
 }
@@ -1525,13 +1525,13 @@ async fn postgres_membership_loss_is_durable_and_old_dispatch_cannot_revive() {
     }
     let state = sql_query("SELECT state FROM hagency_agent_v1.owner_events WHERE id=$1")
         .bind::<Text, _>(&dispatch_id)
-        .get_result::<EventState>(&mut *domain.db.lock().await)
+        .get_result::<EventState>(&mut *domain.db.lock().await.unwrap())
         .await
         .unwrap();
     assert_eq!(state.state, "unknown");
     let queued = sql_query("SELECT state FROM hagency_agent_v1.owner_events WHERE id=$1")
         .bind::<Text, _>(&queued_id)
-        .get_result::<EventState>(&mut *domain.db.lock().await)
+        .get_result::<EventState>(&mut *domain.db.lock().await.unwrap())
         .await
         .unwrap();
     assert_eq!(queued.state, "cancelled");

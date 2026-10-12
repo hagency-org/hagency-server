@@ -6,11 +6,10 @@ use diesel::{
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct Store {
-    db: Arc<Mutex<AsyncPgConnection>>,
+    db: Arc<crate::database::Database>,
     issuer: String,
 }
 #[derive(diesel::QueryableByName)]
@@ -140,7 +139,7 @@ impl Store {
             Ok(())
         }).await?;
         Ok(Self {
-            db: Arc::new(Mutex::new(db)),
+            db: Arc::new(crate::database::Database::new(db, url)),
             issuer: issuer.into(),
         })
     }
@@ -148,7 +147,10 @@ impl Store {
         if identity.issuer != self.issuer || identity.valid_until_ms <= now {
             return Err(Error::Unauthorized("authentication_required"));
         }
-        let mut db = self.db.lock().await;
+        let started = std::time::Instant::now();
+        tracing::debug!(stage="session_create_lock", "Waiting for owner session connection");
+        let mut db = self.db.lock().await?;
+        tracing::debug!(stage="session_create_lock",elapsed_ms=started.elapsed().as_millis() as u64,"Owner session connection acquired");
         (*db).transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
             // Unique identity lock also serializes conflicting subject/MXID registrations.
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328903)").await?;
@@ -210,13 +212,16 @@ impl Store {
         now: i64,
         device: bool,
     ) -> Result<Principal> {
-        Self::principal(&mut *self.db.lock().await, credential, now, device).await
+        Self::principal(&mut *self.db.lock().await?, credential, now, device).await
     }
     pub async fn renew(&self, credential: &str, identity: Identity, now: i64) -> Result<i64> {
         if identity.issuer != self.issuer || identity.valid_until_ms <= now {
             return Err(Error::Unauthorized("authentication_required"));
         }
-        let mut db = self.db.lock().await;
+        let started = std::time::Instant::now();
+        tracing::debug!(stage="session_renew_lock", "Waiting for owner renewal connection");
+        let mut db = self.db.lock().await?;
+        tracing::debug!(stage="session_renew_lock",elapsed_ms=started.elapsed().as_millis() as u64,"Owner renewal connection acquired");
         (*db)
             .transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
                 // An expired session may renew only with fresh matching upstream proof.
@@ -262,7 +267,7 @@ impl Store {
         {
             return Err(Error::Invalid("invalid_device_name"));
         }
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
             let p=Self::principal(db,credential,now,false).await?;
             let device_token=secret_token();
@@ -274,7 +279,7 @@ impl Store {
     }
     pub async fn revoke_device(&self, credential: &str, id: &str, now: i64) -> Result<()> {
         key(id)?;
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
             let p=Self::principal(db,credential,now,false).await?;
             let changed=sql_query("UPDATE hagency_agent_v1.devices SET revoked=true,generation=generation+1 WHERE id=$1 AND user_id=$2")
@@ -286,7 +291,7 @@ impl Store {
         // Idempotent even after expiry; revocation closes every device attached to this session.
         sql_query("UPDATE hagency_agent_v1.sessions SET revoked=true WHERE token_hash=$1")
             .bind::<Text, _>(hash(credential))
-            .execute(&mut *self.db.lock().await)
+            .execute(&mut *self.db.lock().await?)
             .await?;
         Ok(())
     }
@@ -559,7 +564,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        let mut db = store.db.lock().await;
+        let mut db = store.db.lock().await.unwrap();
         assert!(
             sql_query("UPDATE hagency_agent_v1.users SET subject='reassigned' WHERE id=$1")
                 .bind::<Text, _>(&s.user_id)

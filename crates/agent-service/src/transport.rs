@@ -9,7 +9,6 @@ use diesel::{
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
-use tokio::sync::Mutex;
 
 #[path = "transport_history.rs"]
 mod history;
@@ -289,7 +288,7 @@ struct Existing {
 }
 #[derive(Clone)]
 pub struct TransportStore {
-    db: Arc<Mutex<AsyncPgConnection>>,
+    db: Arc<crate::database::Database>,
     limits: Limits,
 }
 impl TransportStore {
@@ -336,7 +335,7 @@ impl TransportStore {
         })
         .await?;
         Ok(Self {
-            db: Arc::new(Mutex::new(db)),
+            db: Arc::new(crate::database::Database::new(db, url)),
             limits,
         })
     }
@@ -377,7 +376,7 @@ impl TransportStore {
     }
     /// Trusted gateway lookup, never directly exposed as a user HTTP endpoint.
     pub async fn binding_scope(&self, binding_id: &str) -> Result<RoutingScope> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
             Self::lock(db).await?;
@@ -391,7 +390,7 @@ impl TransportStore {
     }
     /// Trusted AS routing discovery. Actual Matrix memberships still require live facts.
     pub async fn routing_scopes(&self, room_id: &str) -> Result<Vec<RoutingScope>> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
@@ -409,7 +408,7 @@ impl TransportStore {
         now: i64,
     ) -> Result<EventHeader> {
         key(id)?;
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authenticate(db,p,now).await?;
@@ -444,7 +443,7 @@ impl TransportStore {
         if !(1000..=self.limits.max_lease_ms).contains(&ttl_ms) {
             return Err(Error::Invalid("invalid_lease_ttl"));
         }
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;Self::agent_active(db,p,agent).await?;
@@ -486,7 +485,7 @@ impl TransportStore {
         if !(1000..=self.limits.max_lease_ms).contains(&ttl_ms) {
             return Err(Error::Invalid("invalid_lease_ttl"));
         }
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,until)=Self::authenticate(db,p,now).await?;Self::agent_active(db,p,&reference.agent_id).await?;Self::lease(db,p,reference,now).await?;
@@ -494,7 +493,7 @@ impl TransportStore {
         }).await
     }
     pub async fn release_lease(&self, p: &Principal, reference: &LeaseRef, now: i64) -> Result<()> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
             let (now, _) = Self::authenticate(db, p, now).await?;
@@ -520,7 +519,7 @@ impl TransportStore {
         facts: &DeliveryFacts,
         now: i64,
     ) -> Result<()> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         (*guard).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
             Self::lock(db).await?;
             let now = Self::clock(db, now).await?;
@@ -562,7 +561,7 @@ impl TransportStore {
         now: i64,
     ) -> Result<()> {
         let event = {
-            let mut guard = self.db.lock().await;
+            let mut guard = self.db.lock().await?;
             Self::dispatch(&mut guard, p, id).await?
         };
         self.observe_delivery_authority(
@@ -634,7 +633,7 @@ impl TransportStore {
         }
         let digest =
             hash(&serde_json::to_string(&event).map_err(|_| Error::Invalid("invalid_event"))?);
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;let scope=Self::scope(db,binding).await?;
@@ -704,7 +703,7 @@ impl TransportStore {
         if limit == 0 || limit > self.limits.max_batch {
             return Err(Error::Invalid("invalid_batch_limit"));
         }
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;Self::lease(db,p,reference,now).await?;Self::agent_active(db,p,&reference.agent_id).await?;
@@ -751,7 +750,7 @@ impl TransportStore {
     ) -> Result<Dispatch> {
         self.observe_event_authority(p, id, f, now).await?;
         key(id)?;
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;let event=Self::dispatch(db,p,id).await?;Self::dispatch_scope(db,p,reference,&event,f,now).await?;
@@ -769,7 +768,7 @@ impl TransportStore {
         id: &str,
         now: i64,
     ) -> Result<()> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
             let (now, _) = Self::authenticate(db, p, now).await?;
@@ -808,7 +807,7 @@ impl TransportStore {
     ) -> Result<ExecutionStart> {
         self.observe_event_authority(p, id, f, now).await?;
         key(execution_id)?;
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;let e=Self::dispatch(db,p,id).await?;Self::dispatch_scope(db,p,reference,&e,f,now).await?;fenced(&e,p,reference)?;
@@ -832,7 +831,7 @@ impl TransportStore {
     ) -> Result<Dispatch> {
         self.observe_event_authority(p, id, f, now).await?;
         key(execution_id)?;
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
             let (now, _) = Self::authenticate(db, p, now).await?;
@@ -863,7 +862,7 @@ impl TransportStore {
         if !matches!(outcome, "rejected" | "failed" | "unknown") {
             return Err(Error::Invalid("invalid_execution_outcome"));
         }
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
             let (now, _) = Self::authenticate(db, p, now).await?;
@@ -912,7 +911,7 @@ impl TransportStore {
         message(&request.body, self.limits.max_message_bytes)?;
         let digest =
             hash(&serde_json::to_string(&request).map_err(|_| Error::Invalid("invalid_reply"))?);
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;let e=Self::dispatch(db,p,&request.dispatch_id).await?;let scope=Self::dispatch_scope(db,p,reference,&e,f,now).await?;fenced(&e,p,reference)?;
@@ -944,7 +943,7 @@ impl TransportStore {
         message(&request.body, self.limits.max_message_bytes)?;
         let digest =
             hash(&serde_json::to_string(&request).map_err(|_| Error::Invalid("invalid_reply"))?);
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;
@@ -1001,7 +1000,7 @@ impl TransportStore {
         f: &DeliveryFacts,
         now: i64,
     ) -> Result<bool> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;
@@ -1020,7 +1019,7 @@ impl TransportStore {
         f: &DeliveryFacts,
         now: i64,
     ) -> Result<bool> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;let intent=Self::reply(db,id).await?;
@@ -1035,7 +1034,7 @@ impl TransportStore {
     /// that has not started. Matrix membership changes are checked by gateway facts
     /// at every sensitive operation, independently of this database maintenance.
     pub async fn invalidate_stale_dispatches(&self, now: i64) -> Result<usize> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;
@@ -1062,7 +1061,7 @@ impl TransportStore {
         if limit == 0 || limit > self.limits.max_batch {
             return Err(Error::Invalid("invalid_batch_limit"));
         }
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         Ok(sql_query("SELECT id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,delivery_blocked,worker_token,worker_until_ms,matrix_event_id,(SELECT requester_mxid FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS requester_mxid FROM hagency_agent_v1.reply_outbox o WHERE state IN ('pending','unknown','sending') AND NOT delivery_blocked AND EXISTS(SELECT 1 FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id JOIN hagency_agent_v1.execution_leases l ON l.agent_id=a.id JOIN hagency_agent_v1.devices d ON d.id=l.device_id JOIN hagency_agent_v1.sessions s ON s.id=d.session_id WHERE b.id=o.binding_id AND b.generation=o.binding_generation AND b.state='active' AND a.state='active' AND u.active AND ((b.scope_kind='project' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id)) AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND l.epoch=o.delivery_epoch AND a.execution_device_id=l.device_id AND l.device_generation=d.generation AND NOT d.revoked AND NOT s.revoked AND d.user_id=o.owner_user_id AND s.user_id=o.owner_user_id AND l.expires_at_ms>greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint) AND s.valid_until_ms>greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint)) AND worker_until_ms<=greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint) ORDER BY (id<=$3),id LIMIT $2")
             .bind::<BigInt,_>(now).bind::<BigInt,_>(limit as i64).bind::<Text,_>(cursor).load(&mut *db).await?)
     }
@@ -1076,14 +1075,14 @@ impl TransportStore {
         if limit == 0 || limit > 100 {
             return Err(Error::Invalid("invalid_batch_limit"));
         }
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         Ok(sql_query("SELECT t.id,t.body,t.received_at_ms FROM hagency_agent_v1.inbound_transactions t JOIN hagency_agent_v1.routing_jobs j ON j.transaction_id=t.id WHERE j.state='pending' ORDER BY (t.id<=$1),t.id LIMIT $2").bind::<Text,_>(cursor).bind::<BigInt,_>(limit as i64).load(&mut *db).await?)
     }
     /// Durable send intent before network I/O. Retrying unknown/sending uses the
     /// original sender, room, payload and Matrix transaction ID unchanged.
     pub async fn claim_reply(&self, id: &str, f: &DeliveryFacts, now: i64) -> Result<ReplyIntent> {
         let candidate = {
-            let mut guard = self.db.lock().await;
+            let mut guard = self.db.lock().await?;
             Self::reply(&mut guard, id).await?
         };
         self.observe_delivery_authority(
@@ -1095,7 +1094,7 @@ impl TransportStore {
             now,
         )
         .await?;
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;let intent=Self::reply(db,id).await?;
@@ -1126,7 +1125,7 @@ impl TransportStore {
         now: i64,
     ) -> Result<ReplyIntent> {
         matrix_id(&observed.event_id, '$')?;
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;let intent=Self::reply(db,id).await?;
@@ -1146,7 +1145,7 @@ impl TransportStore {
         worker: &str,
         now: i64,
     ) -> Result<ReplyIntent> {
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         (*guard).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
             Self::lock(db).await?;
             let current = Self::clock(db, now).await?;
@@ -1171,7 +1170,7 @@ impl TransportStore {
         if let Some(event) = event_id {
             matrix_id(event, '$')?;
         }
-        let mut guard = self.db.lock().await;
+        let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let intent=Self::reply(db,id).await?;

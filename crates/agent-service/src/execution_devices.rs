@@ -33,7 +33,7 @@ pub(crate) async fn require_assigned(
 }
 impl DomainStore {
     pub async fn owner_devices(&self, p: &Principal, now: i64) -> Result<Vec<OwnerDevice>> {
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {Self::authorize(db,p,now).await?;
  Ok(sql_query("SELECT id,name,generation,revoked FROM hagency_agent_v1.devices WHERE user_id=$1 ORDER BY id").bind::<Text,_>(&p.user_id).load(db).await?) }).await
     }
@@ -51,7 +51,7 @@ impl DomainStore {
             .device_id
             .as_deref()
             .ok_or(Error::Unauthorized("device_authorization_required"))?;
-        let mut db = self.db.lock().await;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
  Self::authorize(db,p,now).await?;let current=Self::agent_db(db,p,agent).await?;
  if !matches!(current.state.as_str(),"creating"|"active"|"suspended") {return Err(Error::Conflict("agent_retired"));}
