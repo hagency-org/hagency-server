@@ -34,10 +34,10 @@ js-sys = "0.3.95"
 libc = "0.2"
 log = "0.4.29"
 opentelemetry = { version = "0.32", features = ["trace"] }
-palpo = { git = "https://github.com/palpo-im/palpo.git", rev = "c8568d9844a6be0a3172d98d7c9810e3a1f7521c" }
-pasion-backend = { git = "https://github.com/meldry-com/pasion.git", rev = "03cd9f94c0c0593c3979de68a0b11ee443f23933", features = ["cedar"] }
-pasion-config = { git = "https://github.com/meldry-com/pasion.git", rev = "03cd9f94c0c0593c3979de68a0b11ee443f23933" }
-pasion-data = { git = "https://github.com/meldry-com/pasion.git", rev = "03cd9f94c0c0593c3979de68a0b11ee443f23933" }
+palpo = { git = "https://github.com/palpo-im/palpo.git", branch = "main" }
+pasion-backend = { git = "https://github.com/meldry-com/pasion.git", branch = "main", features = ["cedar"] }
+pasion-config = { git = "https://github.com/meldry-com/pasion.git", branch = "main" }
+pasion-data = { git = "https://github.com/meldry-com/pasion.git", branch = "main" }
 percent-encoding = "2.3"
 rand = "0.10"
 rand_chacha = "0.3"
