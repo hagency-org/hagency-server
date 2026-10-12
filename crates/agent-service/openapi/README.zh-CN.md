@@ -10,7 +10,7 @@ OpenAPI 中的 `x-source` 指向每个操作的真实路由条件。`x-rust-dto`
 
 ## 身份、权限和状态边界
 
-`/api/hagency/v1` 面向 native HTTP 调用：必须恰好一个与配置公开 authority 相同的 Host；禁止 Origin、Cookie、X-Forwarded-Host 和重复 Authorization。需要 Bearer 的操作区分有限期 **用户会话 token** 与 **设备 token**，不能互换。前者用于管理自己的 Agent/Binding 及获 Matrix 管理权的作用域，后者用于租约与执行。上游 Pasion token 只作为 `sessions/pasion` 或 renew 的证明提交，不是此 API 的设备 token。首次证明的授权窗口上限为 30 秒；设备依附其用户会话，续期不能复活已撤销会话或旧设备 generation。模型不能得到上述管理凭据。
+`/hagency/api/v1` 面向 native HTTP 调用：必须恰好一个与配置公开 authority 相同的 Host；禁止 Origin、Cookie、X-Forwarded-Host 和重复 Authorization。需要 Bearer 的操作区分有限期 **用户会话 token** 与 **设备 token**，不能互换。前者用于管理自己的 Agent/Binding 及获 Matrix 管理权的作用域，后者用于租约与执行。上游 Pasion token 只作为 `sessions/pasion` 或 renew 的证明提交，不是此 API 的设备 token。首次证明的授权窗口上限为 30 秒；设备依附其用户会话，续期不能复活已撤销会话或旧设备 generation。模型不能得到上述管理凭据。
 
 Agent 的 `ownerUserId` 只来自经过验证的会话，终身不变。没有转让、owner 修改或旧 Fleet/Engagement 导入 API。Project 是登记过的现有 Matrix Space；Room 是登记过且仍有真实父子关联的 Matrix Room，成员集合独立。创建权限同时受 Project 与 Room 策略约束，deny 优先，客户端不能上传可信成员/管理员事实。管理员的创建权限和服务暂停接口不批准用户的模型凭据、资源、token 配额或工具放行。
 
@@ -20,7 +20,7 @@ Agent 的 `ownerUserId` 只来自经过验证的会话，终身不变。没有�
 
 Agent 创建与绑定提交的是**持久化接入意图**。首次通常返回 HTTP **202**、`commandState: pending`，后台 worker 执行 Matrix puppet 注册/加入及真实状态核验。HTTP 200/active 才证明绑定已激活。使用同一 owner/operation/idempotencyKey 重试，参数改变返回冲突；命令查询的 operation 是 `agent.create` 或 `agent.bind`。取消 HTTP 请求不删除已提交意图。离开和退休也依赖后台清理。管理员解除服务暂停不自动恢复 owner 暂停的绑定。
 
-`/readyz` 在启动 AS 真实 send→receive 探针成功前返回 503，之后返回 200；这是启动 latch，不是持续健康探针。`/api/hagency/v1/readiness` 的返回码始终为 200，通过字段表达是否就绪，仍受 native-origin 校验。
+`/readyz` 在启动 AS 真实 send→receive 探针成功前返回 503，之后返回 200；这是启动 latch，不是持续健康探针。`/hagency/api/v1/readiness` 的返回码始终为 200，通过字段表达是否就绪，仍受 native-origin 校验。
 
 ## 执行、审批及回复恢复
 
@@ -36,9 +36,9 @@ Appservice 的 **hs_token** 与 owner/device token 是不同凭据。推荐 Auth
 
 当前不是以下草案 API 的实现：
 
-- `POST /api/hagency/v1/projects`：直接创建 Matrix Space。
-- `POST /api/hagency/v1/projects/{projectId}/rooms`：直接创建 Matrix Room。
-- `GET /api/hagency/v1/rooms`：全局 Room catalog。
+- `POST /hagency/api/v1/projects`：直接创建 Matrix Space。
+- `POST /hagency/api/v1/projects/{projectId}/rooms`：直接创建 Matrix Room。
+- `GET /hagency/api/v1/rooms`：全局 Room catalog。
 - Agent E2EE 解密执行路径：加密 Room 不能按明文路径处理。
 
 创建 Space/Room 应由使用者自己的 Matrix 授权，通过 Palpo 正常 Matrix API 完成，再调用 adopt；这里没有修改 Palpo 默认功能。Agent 转让、服务端模型凭据保管/资源审批属于明确禁止的设计，不是等待新增的 API。

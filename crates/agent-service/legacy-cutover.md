@@ -16,7 +16,7 @@
 
 `backend/src/admin/api.rs` 没有通用用户/Room/Space CRUD。通用前端 `api/users.rs`、`api/rooms.rs`、`api/palpo_admin.rs` 直接携带个人 Bearer 调用 `/_palpo/admin/...`；`api/pasion.rs` 调用 `/_pasion/...`。这些 API 来自现有 Matrix/Pasion router，应保留。
 
-但是，整个前端 OAuth 回调、管理员检查及退出仍调用 `frontend/src/api/hagency.rs` 的通用 cookie 会话桥：`POST /api/login/token`、`GET /api/session`、`POST /api/logout`。`api/auth.rs::verify_admin` 和 authenticated layout 依赖它。直接删除旧 Admin 会同时破坏 Palpo/Pasion 的正常管理登录。
+但是，整个前端 OAuth 回调、管理员检查及退出仍调用 `frontend/src/api/hagency.rs` 的通用 cookie 会话桥：`POST /hagency/api/login/token`、`GET /hagency/api/session`、`POST /hagency/api/logout`。`api/auth.rs::verify_admin` 和 authenticated layout 依赖它。直接删除旧 Admin 会同时破坏 Palpo/Pasion 的正常管理登录。
 
 **实施选择：先提取不依赖旧 Store/Operations 的独立 BrowserAuth，再切除旧 Admin。** 三个通用登录接口可继续作为当前网页的正常会话接口；它们不处理 Fleet，不接受旧业务数据，不构成旧模式。后续可以统一重命名前端 auth 模块，但不得以重命名为理由保留旧业务 router。
 
@@ -119,7 +119,7 @@ Config/main 的旧 Fleet/账号审批/authority import 已由宿主负责者切�
 justfile 新检查命令已同步。前端改为独立 browser_auth 模块、新 Project/Agent 页，旧
 业务页面、Fleet 别名、审批导航、密码代理与 legacy runtime 标记已经移除。
 
-网页 BFF 为 `/api/browser/hagency/v1`，只白名单 owner Agent/Binding 操作与经过真实
+网页 BFF 为 `/hagency/api/browser/v1`，只白名单 owner Agent/Binding 操作与经过真实
 Space/Room 管理权检查的 Project adoption/creation-policy 操作。Cookie+CSRF、固定
 Host/同源约束先通过，随后服务器保存的个人 OAuth token 调用新 native sessions/pasion
 获取独立短期授权，再调用现有 domain API，最后注销该短期 session。凭据不返回网页，

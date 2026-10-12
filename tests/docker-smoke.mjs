@@ -41,9 +41,9 @@ async function browserLogin(username,secret){
 async function adminLogin(){
  await until(()=>sql('palpo',`SELECT is_admin FROM users WHERE id=${scalar('@admin:'+name)}`)==='t','Administrator Matrix provisioning');
  const pasionCookie=await browserLogin('admin',password);const upstream=await oauth(base,pasionCookie,true);
- const {value,response}=await api('/api/login/token',{method:'POST',origin:base,token:upstream.access_token,body:{}});assert.equal(value.isAdmin,true);assert.ok(value.csrf);
+ const {value,response}=await api('/hagency/api/login/token',{method:'POST',origin:base,token:upstream.access_token,body:{}});assert.equal(value.isAdmin,true);assert.ok(value.csrf);
  const cookie=response.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
- assert.equal((await api('/api/session',{origin:base,cookie})).value.userId,'@admin:'+name);
+ assert.equal((await api('/hagency/api/session',{origin:base,cookie})).value.userId,'@admin:'+name);
  assert.equal((await fetch(base+'/_palpo/admin/v1/server_version',{headers:{Authorization:'Bearer '+upstream.access_token}})).status,200);
  return {cookie,csrf:value.csrf};
 }
@@ -68,17 +68,17 @@ async function memberLogin(register){
  }
  await until(()=>sql('palpo',`SELECT is_admin FROM users WHERE id=${scalar('@member:'+name)}`)==='f','Ordinary member Matrix provisioning');
  const cookie=await browserLogin('member',memberPassword),upstream=await nativeOAuth(cookie);
- const {value:session}=await api('/api/hagency/v1/sessions/pasion',{method:'POST',body:{accessToken:upstream}});assert.equal(session.mxid,'@member:'+name);assert.ok(session.token);assert.ok(session.validUntilMs>Date.now());
+ const {value:session}=await api('/hagency/api/v1/sessions/pasion',{method:'POST',body:{accessToken:upstream}});assert.equal(session.mxid,'@member:'+name);assert.ok(session.token);assert.ok(session.validUntilMs>Date.now());
  assert.equal((await fetch(base+'/_palpo/admin/v1/server_version',{headers:{Authorization:'Bearer '+upstream}})).status,403,'Member grant cannot administer Palpo');
  return {upstream,session};
 }
 let context;
 async function exerciseOwner(member,create){
- const renew=async()=>api('/api/hagency/v1/sessions/current/renew',{method:'POST',token:member.session.token,body:{accessToken:member.upstream}});
- const owner=async(path,method='GET',body)=>{await renew();return api('/api/hagency/v1/'+path,{method,token:member.session.token,body,status:[200,202]});};
+ const renew=async()=>api('/hagency/api/v1/sessions/current/renew',{method:'POST',token:member.session.token,body:{accessToken:member.upstream}});
+ const owner=async(path,method='GET',body)=>{await renew();return api('/hagency/api/v1/'+path,{method,token:member.session.token,body,status:[200,202]});};
  const matrix=async(path,method='GET',body)=>api('/_matrix/client/v3/'+path,{method,token:member.upstream,body});
  if(create){
-  const discovery=(await api('/api/hagency/v1/discovery')).value;assert.equal(discovery.protocolVersion,1);assert.equal(discovery.serviceMxid,'@_hagency_service:'+name);
+  const discovery=(await api('/hagency/api/v1/discovery')).value;assert.equal(discovery.protocolVersion,1);assert.equal(discovery.serviceMxid,'@_hagency_service:'+name);
   const space=(await matrix('createRoom','POST',{preset:'private_chat',name:'Docker owner project',creation_content:{type:'m.space'}})).value.room_id;
   const room=(await matrix('createRoom','POST',{preset:'private_chat',name:'Private discussion',invite:[discovery.serviceMxid]})).value.room_id;
   await matrix('rooms/'+encodeURIComponent(space)+'/state/m.space.child/'+encodeURIComponent(room),'PUT',{via:[name]});
@@ -94,7 +94,7 @@ async function exerciseOwner(member,create){
  assert.ok((await owner('projects/'+project.id+'/rooms')).value.rooms.some(r=>r.roomId===room));
  const roster=(await owner('projects/'+project.id+'/rooms/'+encodeURIComponent(room)+'/agents')).value.agents;assert.ok(roster.some(a=>a.agentId===agent.id&&a.ownerMxid===member.session.mxid));
  const device=(await owner('devices','POST',{installationId:'docker-owner-installation',name:'Docker protocol fixture'})).value;
- const deviceCall=(path,body,status=[200])=>api('/api/hagency/v1/execution/'+path,{method:'POST',token:device.token,body,status});
+ const deviceCall=(path,body,status=[200])=>api('/hagency/api/v1/execution/'+path,{method:'POST',token:device.token,body,status});
  const history=async()=>{
   const page=(await deviceCall('history',{agentId:agent.id})).value.history;
   const rows=[...page.executions];let cursor=page.nextCursor;
@@ -136,8 +136,8 @@ try{
  assert.ok(tableNames('hagency','hagency_agent_v1').includes('owner_events'));assert.ok(tableNames('hagency','hagency_agent_v1').includes('reply_outbox'));assert.ok(!tableNames('hagency','public').includes('hagency_admin_state'));assert.ok(tableNames('palpo','public').includes('users'));assert.ok(tableNames('pasion','public').length>1);
  assert.equal(sql('palpo',"SELECT count(*) FROM appservice_registrations WHERE id='hagency_agents_v1'"),'1');
  assert.ok(Number(sql('hagency',"SELECT count(*) FROM hagency_agent_v1.readiness_receipts"))>0,'startup readiness requires a persisted real AS receipt');
- const homepage=await(await fetch(base)).text();assert.match(homepage,/<title>Hagency<\/title>/);assert.ok(homepage.includes('href="/hagency/home"'));
- const frontend=await(await fetch(base+'/hagency/home')).text();assert.match(frontend,/<title>Hagency Server<\/title>/);assert.notEqual(homepage,frontend);assert.equal(await(await fetch(base+'/hagency/agents')).text(),frontend);
+ const homepage=await(await fetch(base)).text();assert.match(homepage,/<title>Hagency Server<\/title>/);assert.equal(await(await fetch(base+'/login')).text(),homepage);
+ const frontend=await(await fetch(base+'/hagency/home')).text();assert.match(frontend,/<title>Hagency Server<\/title>/);assert.equal(homepage,frontend);assert.equal(await(await fetch(base+'/hagency/agents')).text(),frontend);
  const frontScript=frontend.match(/src="([^"]+\.js)"/)[1],module=await(await fetch(new URL(frontScript,base))).text(),frontWasm=module.match(/module_or_path:\s*"([^"]+\.wasm)"/)[1];
  const wasmResponse=await fetch(new URL(frontWasm,base));assert.equal(wasmResponse.status,200);assert.match(wasmResponse.headers.get('content-type'),/application\/wasm/);assert.equal(Buffer.from(await wasmResponse.arrayBuffer()).subarray(0,4).toString('hex'),'0061736d');
  const runtime=await(await fetch(base+'/config.json')).json();assert.equal(runtime.pasion_enabled,true);assert.equal(runtime.oauth_enabled,true);
@@ -148,7 +148,7 @@ try{
  console.log('PASS three databases, administrator auth, frontend, removed Fleet APIs and private non-root runtime');
  const member=await memberLogin(true);console.log('PASS ordinary member native Pasion DCR/PKCE and non-admin privileges');
  const firstDevice=await exerciseOwner(member,true),identity=persistedIdentity();console.log('PASS ordinary owner Space/Room/Agent and actual puppet Matrix reply');
- run('stop','server');await writeFile(compose,definition(false));run('up','-d','server');await ready();assert.equal((await fetch(base+'/api/session',{headers:{Cookie:admin.cookie,Origin:base}})).status,401,'In-memory browser session is not revived after restart');await adminLogin();
+ run('stop','server');await writeFile(compose,definition(false));run('up','-d','server');await ready();assert.equal((await fetch(base+'/hagency/api/session',{headers:{Cookie:admin.cookie,Origin:base}})).status,401,'In-memory browser session is not revived after restart');await adminLogin();
  console.log('PASS restarted mandatory appservice ready and stale browser session rejection');
  assert.equal(persistedIdentity(),identity);assert.deepEqual(await(await fetch(base+'/auth/oauth2/keys.json')).json(),keys);assert.equal(sql('palpo',"SELECT count(*) FROM appservice_registrations WHERE id='hagency_agents_v1'"),'1');
  const secondMember=await memberLogin(false);assert.equal(secondMember.session.userId,member.session.userId);const secondDevice=await exerciseOwner(secondMember,false);assert.equal(secondDevice.deviceId,firstDevice.deviceId);assert.ok(secondDevice.generation>firstDevice.generation);

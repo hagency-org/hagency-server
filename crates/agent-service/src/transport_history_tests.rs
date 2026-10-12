@@ -356,8 +356,8 @@ async fn postgres_execution_history_real_routes_require_device_and_atomic_witnes
         assert_eq!(actual, Some(status), "response: {value}");
         value
     }
-    let history_path = "/api/hagency/v1/execution/history";
-    let acquire_path = "/api/hagency/v1/execution/leases/acquire";
+    let history_path = "/hagency/api/v1/execution/history";
+    let acquire_path = "/hagency/api/v1/execution/leases/acquire";
     post(
         &service,
         history_path,

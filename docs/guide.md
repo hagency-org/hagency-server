@@ -23,8 +23,14 @@ The public site homepage is served at `/`; the authenticated member Home is at
 `/hagency/home`, Projects and My agents at `/hagency/projects` and `/hagency/agents`,
 and administrator pages under `/admin`. Matrix endpoints remain at `/_matrix`,
 Palpo administration at `/_palpo`, discovery at `/.well-known/matrix`, and
-native Hagency APIs at `/api/hagency/v1` and browser management at
-`/api/browser/hagency/v1`. Pasion remains mounted at `/auth/`.
+native Hagency APIs at `/hagency/api/v1` and browser management at
+`/hagency/api/browser/v1`. Pasion remains mounted at `/auth/`.
+Browser login/session/logout use `/hagency/api/login/token`, `/hagency/api/session`
+and `/hagency/api/logout`. Hagency custom APIs live under `/hagency/`;
+`/_matrix/` is reserved for Matrix protocol endpoints, including the standard
+Application Service callbacks. Former `/api/hagency/v1`, `/api/browser/hagency/v1`
+and browser session URLs return 404. Upgrade Server, Client/Desktop and browser
+assets together; this path change does not change the OAuth issuer or stored identities.
 `/healthz` reports process HTTP availability.
 
 ## Contents
@@ -103,7 +109,7 @@ server running. Frontend Rust/CSS changes rebuild the WASM assets, which the
 running host serves immediately; refresh the browser to load them. Frontend-only
 changes do not restart the backend. No Docker image rebuild is required.
 Browser access/refresh tokens remain in memory. On reload, Project/Agent pages
-revalidate the HttpOnly session through `/api/session` and use the restricted BFF.
+revalidate the HttpOnly session through `/hagency/api/session` and use the restricted BFF.
 Generic Matrix administration re-enters Pasion PKCE when a Matrix bearer is needed.
 Expired or revoked sessions require fresh login; tokens are not saved in browser storage.
 
@@ -144,7 +150,7 @@ transport, without another password/account database.
 
 The host provisions the reserved public OAuth client and derives its
 `/oauth/callback` URL; no client secret or separate frontend deployment is needed.
-The resulting token is verified at `POST /api/login/token` before issuing an
+The resulting token is verified at `POST /hagency/api/login/token` before issuing an
 HttpOnly session cookie and CSRF token. Palpo administration additionally checks
 Pasion's live introspection and the exact `urn:palpo:admin:*` scope at the host
 boundary; a member-only token is insufficient even for an administrator account.
@@ -160,7 +166,7 @@ Frontend source provenance and upstream licensing are recorded in `NOTICE`
 ## Native client login and Agent ownership
 
 `chrislearn/hagency-client` uses the user's own Matrix account through Pasion PKCE.
-Native `/api/hagency/v1` verifies Pasion proof and Matrix whoami, issues short user
+Native `/hagency/api/v1` verifies Pasion proof and Matrix whoami, issues short user
 sessions, and registers local device credentials. Cookie/Origin requests are
 rejected on native APIs. Device rotation/revocation and real-time session expiry
 are rechecked during sensitive transactions.
@@ -171,37 +177,23 @@ Project/Room bindings. Space managers set default creation permission with
 allow/deny lists; deny wins and disabling creation does not pause existing Agents.
 The local client controls Codex, resource budgets and tool risk decisions.
 
-The browser uses the closed `/api/browser/hagency/v1` BFF and pages
+The browser uses the closed `/hagency/api/browser/v1` BFF and pages
 `/hagency/projects` and `/hagency/agents`; it never receives a native device or
 session credential. See [Agent architecture](OPERATIONS.md) for the full boundary.
 
 ## Public homepage
 
-Set `home_page` at the top level of **hagency.toml**, before any TOML table:
+The public `/` and `/login` routes display the same sign-in page, using the
+console's shared Soft Orbit styles, language selector and light/dark appearance.
+Sign in with your personal account to enter `/hagency/home`; a verified existing
+browser session can continue directly to the workspace. Account creation and
+account-center links are available when Pasion is enabled. Management pages are
+only available after their existing authorization checks.
 
-```toml
-# Choose a local HTML file or a remote HTTP(S) page.
-home_page = "home.html"
-# home_page = "https://example.com/home.html"
-```
-
-`GET /` serves this page without login or session verification. With no setting,
-the server serves a built-in welcome page with console links. Local paths resolve
-relative to `hagency.toml`; files are read on every request, and an unreadable file
-returns 503 with a server log. Remote URLs are fetched on every request, with a
-10-second deadline; fetch failures are logged and serve the built-in welcome page,
-as in standalone Palpo. The remote content type is preserved, but browser cookies
-and authorization headers are not forwarded and upstream cookies are not copied.
-
-The setting supplies one document, not a static directory or reverse proxy.
-Use inline resources or explicit asset URLs; relative URLs resolve against this
-server's `/`, not against the upstream page URL or local file directory. Custom
-HTML uses its own scripts/styles rather than the console's SPA content policy.
-`/login`, `/hagency/home`, `/hagency/projects`, `/hagency/agents`, `/admin`, `/auth/`
-and all APIs keep their existing authentication and authorization checks.
-The embedded Palpo component's `home_page` setting is not used by Hagency.
-Restart the server after changing the setting; the page content itself needs no
-restart. In Docker, the configured file must be readable inside the container.
+The homepage is part of the bundled frontend. There is no `home_page` host
+setting, local HTML override or remote-page fetch. Remove a previous `home_page`
+entry from hagency.toml before starting this version. The embedded Palpo
+homepage setting does not control the Hagency homepage.
 
 ## Configuration and initial administrator
 

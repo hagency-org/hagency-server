@@ -63,7 +63,7 @@ try{
  const matrixLogin=await fetch(base+'/_matrix/client/v3/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({type:'m.login.password',identifier:{type:'m.id.user',user:'prefixuser'},password})});const token=await matrixLogin.json();assert.equal(matrixLogin.status,200,JSON.stringify(token));assert.ok(token.access_token);
  const me=await fetch(base+'/_matrix/client/v3/account/whoami',{headers:{authorization:'Bearer '+token.access_token}});assert.equal(me.status,200,await me.clone().text());assert.equal((await me.json()).user_id,`@prefixuser:localhost:${port}`);
  const runtime=await(await fetch(base+'/config.json')).json();assert.equal(runtime.oauth_enabled,true);assert.equal(runtime.oauth_client_id,'01KMQPADM1N000000000000000');
- const bridge=await fetch(base+'/api/login/token',{method:'POST',headers:{'content-type':'application/json',Origin:base,authorization:'Bearer '+token.access_token},body:'{}'});assert.equal(bridge.status,200,await bridge.clone().text());assert.equal((await bridge.json()).isAdmin,false);
+ const bridge=await fetch(base+'/hagency/api/login/token',{method:'POST',headers:{'content-type':'application/json',Origin:base,authorization:'Bearer '+token.access_token},body:'{}'});assert.equal(bridge.status,200,await bridge.clone().text());assert.equal((await bridge.json()).isAdmin,false);
 
  // The bootstrap uses Pasion, and its normal worker creates the Matrix identity.
  await until(async()=>execFileSync('psql',[matrix,'-Atc',`SELECT count(*) FROM users WHERE id='@serveradmin:localhost:${port}' AND is_admin`],{encoding:'utf8'}).trim()==='1');
@@ -72,10 +72,10 @@ try{
  const adminCookie=cookie;
  const limited=await oauth(adminCookie);assert.ok(limited.access_token);
  assert.equal((await fetch(base+'/_palpo/admin/v1/server_version',{headers:{Authorization:'Bearer '+limited.access_token}})).status,403,'A Pasion administrator using a member-only token cannot access Matrix administration');
- const limitedBridge=await fetch(base+'/api/login/token',{method:'POST',headers:{Origin:base,Authorization:'Bearer '+limited.access_token,'content-type':'application/json'},body:'{}'});assert.equal(limitedBridge.status,200);const limitedSession=limitedBridge.headers.get('set-cookie').split(';')[0];assert.equal((await limitedBridge.json()).isAdmin,false);
+ const limitedBridge=await fetch(base+'/hagency/api/login/token',{method:'POST',headers:{Origin:base,Authorization:'Bearer '+limited.access_token,'content-type':'application/json'},body:'{}'});assert.equal(limitedBridge.status,200);const limitedSession=limitedBridge.headers.get('set-cookie').split(';')[0];assert.equal((await limitedBridge.json()).isAdmin,false);
  const administrative=await oauth(adminCookie,true);assert.ok(administrative.access_token);assert.ok(administrative.scope.includes('urn:pasion:admin'));
  assert.equal((await fetch(base+'/_palpo/admin/v1/server_version',{headers:{Authorization:'Bearer '+administrative.access_token}})).status,200);
- const adminBridge=await fetch(base+'/api/login/token',{method:'POST',headers:{Origin:base,Cookie:limitedSession,Authorization:'Bearer '+administrative.access_token,'content-type':'application/json'},body:'{}'});assert.equal(adminBridge.status,200);assert.equal((await adminBridge.json()).isAdmin,true);
+ const adminBridge=await fetch(base+'/hagency/api/login/token',{method:'POST',headers:{Origin:base,Cookie:limitedSession,Authorization:'Bearer '+administrative.access_token,'content-type':'application/json'},body:'{}'});assert.equal(adminBridge.status,200);assert.equal((await adminBridge.json()).isAdmin,true);
  assert.equal((await fetch(base+'/_matrix/client/v3/account/whoami',{headers:{Authorization:'Bearer '+limited.access_token}})).status,401,'The host revokes the preliminary grant after successful authorization handover');
  assert.equal((await fetch(base+'/_matrix/client/v3/account/whoami',{headers:{Authorization:'Bearer '+administrative.access_token}})).status,200,'Replacement authorization keeps its Matrix device');
  const prefixId=encodeURIComponent(`@prefixuser:localhost:${port}`);
@@ -89,7 +89,7 @@ try{
  await adminApi(administrative.access_token,'/users/'+prefix.id,{admin:true});
  await until(async()=>execFileSync('psql',[matrix,'-Atc',`SELECT is_admin FROM users WHERE id='@prefixuser:localhost:${port}'`],{encoding:'utf8'}).trim()==='t');
  const promoted=await oauth(memberCookie,true);assert.ok(promoted.access_token);
- const promotedBridge=await fetch(base+'/api/login/token',{method:'POST',headers:{Origin:base,Authorization:'Bearer '+promoted.access_token,'content-type':'application/json'},body:'{}'});assert.equal(promotedBridge.status,200);const promotedSession=promotedBridge.headers.get('set-cookie').split(';')[0];assert.equal((await promotedBridge.json()).isAdmin,true);
+ const promotedBridge=await fetch(base+'/hagency/api/login/token',{method:'POST',headers:{Origin:base,Authorization:'Bearer '+promoted.access_token,'content-type':'application/json'},body:'{}'});assert.equal(promotedBridge.status,200);const promotedSession=promotedBridge.headers.get('set-cookie').split(';')[0];assert.equal((await promotedBridge.json()).isAdmin,true);
  await adminApi(administrative.access_token,'/users/'+prefix.id,{admin:false});
  assert.equal((await fetch(base+'/_palpo/admin/v1/server_version',{headers:{Authorization:'Bearer '+promoted.access_token}})).status,403,'Role revocation blocks the next call with an existing OAuth token');
  assert.equal((await fetch(base+'/api/fleets',{headers:{cookie:promotedSession}})).status,404,'Removed Fleet endpoint stays unavailable with an existing browser cookie');

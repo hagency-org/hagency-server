@@ -88,10 +88,10 @@ impl BrowserAuth {
     }
     pub fn router(&self) -> Router {
         Router::new()
-            .push(Router::with_path("api/login/token").post(self.clone()))
-            .push(Router::with_path("api/session").get(self.clone()))
-            .push(Router::with_path("api/logout").post(self.clone()))
-            .push(Router::with_path("api/browser/hagency/v1/{**path}").goal(self.clone()))
+            .push(Router::with_path("hagency/api/login/token").post(self.clone()))
+            .push(Router::with_path("hagency/api/session").get(self.clone()))
+            .push(Router::with_path("hagency/api/logout").post(self.clone()))
+            .push(Router::with_path("hagency/api/browser/v1/{**path}").goal(self.clone()))
     }
     async fn matrix(&self, path: &str, token: &str, post: bool) -> Result<Value> {
         let url = self
@@ -317,7 +317,7 @@ impl BrowserAuth {
         let relative = req
             .uri()
             .path()
-            .strip_prefix("/api/browser/hagency/v1/")
+            .strip_prefix("/hagency/api/browser/v1/")
             .ok_or_else(|| err(404, "not_found", "Unknown browser operation."))?;
         if !allowed_operation(req.method().as_str(), relative) || req.uri().query().is_some() {
             return Err(err(404, "not_found", "Unknown browser operation."));
@@ -333,7 +333,7 @@ impl BrowserAuth {
         {
             return Err(err(403, "csrf_forbidden", "Refresh your browser session."));
         }
-        let path = format!("/api/hagency/v1/{relative}");
+        let path = format!("/hagency/api/v1/{relative}");
         let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
             .map_err(|_| err(400, "invalid_method", "Unsupported operation."))?;
         let body = if req.method() == salvo::http::Method::GET
@@ -380,7 +380,7 @@ impl BrowserAuth {
         // The browser cannot submit another user's identity or a service credential.
         let grant = self
             .native(
-                "/api/hagency/v1/sessions/pasion",
+                "/hagency/api/v1/sessions/pasion",
                 reqwest::Method::POST,
                 None,
                 Some(&json!({"accessToken":session.token})),
@@ -399,7 +399,7 @@ impl BrowserAuth {
         if grant["mxid"] != session.user_id {
             let _ = self
                 .native(
-                    "/api/hagency/v1/sessions/current",
+                    "/hagency/api/v1/sessions/current",
                     reqwest::Method::DELETE,
                     Some(token),
                     None,
@@ -414,7 +414,7 @@ impl BrowserAuth {
         if session.expires <= millis() {
             let _ = self
                 .native(
-                    "/api/hagency/v1/sessions/current",
+                    "/hagency/api/v1/sessions/current",
                     reqwest::Method::DELETE,
                     Some(token),
                     None,
@@ -435,7 +435,7 @@ impl BrowserAuth {
                 .await;
             if this
                 .native(
-                    "/api/hagency/v1/sessions/current",
+                    "/hagency/api/v1/sessions/current",
                     reqwest::Method::DELETE,
                     Some(&token),
                     None,
@@ -522,7 +522,7 @@ impl BrowserAuth {
                 "Cross-origin authorization is forbidden.",
             ));
         }
-        if path == "/api/login/token" && req.method() == salvo::http::Method::POST {
+        if path == "/hagency/api/login/token" && req.method() == salvo::http::Method::POST {
             self.rate(format!("login:{}", req.remote_addr()), 120, 900_000)
                 .await?;
             Self::body(req).await?;
@@ -561,7 +561,7 @@ impl BrowserAuth {
                 .cloned()
                 .ok_or_else(|| err(401, "sign_in_required", "Sign in again."))?
         };
-        if path == "/api/logout" && req.method() == salvo::http::Method::POST {
+        if path == "/hagency/api/logout" && req.method() == salvo::http::Method::POST {
             let _guard = self.handover.lock().await;
             if !same(
                 req.headers()
@@ -587,7 +587,7 @@ impl BrowserAuth {
             }
             return Ok(json!({}));
         }
-        if path.starts_with("/api/browser/hagency/v1/") {
+        if path.starts_with("/hagency/api/browser/v1/") {
             let (user, _) = self.identity(&session.token).await?;
             if user != session.user_id
                 || self
@@ -605,7 +605,7 @@ impl BrowserAuth {
             }
             return self.browser_domain(req, &session).await;
         }
-        if path != "/api/session" || req.method() != salvo::http::Method::GET {
+        if path != "/hagency/api/session" || req.method() != salvo::http::Method::GET {
             return Err(err(
                 404,
                 "not_found",
@@ -849,7 +849,7 @@ mod tests {
                             200,
                             json!({"token":"a".repeat(64),"mxid":"@owner:example.test"}),
                         )
-                    } else if request.contains("/api/hagency/v1/agents") {
+                    } else if request.contains("/hagency/api/v1/agents") {
                         assert!(request.contains("Bearer "));
                         (200, json!({"agents":[]}))
                     } else {
@@ -892,6 +892,10 @@ mod tests {
             "api/hafleets",
             "api/operations/call",
             "api/login",
+            "api/login/token",
+            "api/session",
+            "api/logout",
+            "api/browser/hagency/v1/agents",
             "_hagency/client/v1/fleets",
             "_palpo/miniapp/v1/call",
         ] {
@@ -901,7 +905,7 @@ mod tests {
                 .await;
             assert_eq!(response.status_code, Some(StatusCode::NOT_FOUND), "{path}");
         }
-        let mut login = TestClient::post("http://example.test/api/login/token")
+        let mut login = TestClient::post("http://example.test/hagency/api/login/token")
             .add_header("host", "example.test", true)
             .add_header("authorization", "Bearer personal-token", true)
             .json(&json!({}))
@@ -931,28 +935,28 @@ mod tests {
         assert_eq!(session["isAdmin"], true);
         assert!(session.get("outboundAvailable").is_none());
         admin.store(false, std::sync::atomic::Ordering::SeqCst);
-        let mut check = TestClient::get("http://example.test/api/session")
+        let mut check = TestClient::get("http://example.test/hagency/api/session")
             .add_header("host", "example.test", true)
             .add_header("cookie", &cookie, true)
             .send(&service)
             .await;
         assert_eq!(check.status_code, Some(StatusCode::OK));
         assert_eq!(check.take_json::<Value>().await.unwrap()["isAdmin"], false);
-        let mut listing = TestClient::get("http://example.test/api/browser/hagency/v1/agents")
+        let mut listing = TestClient::get("http://example.test/hagency/api/browser/v1/agents")
             .add_header("host", "example.test", true)
             .add_header("cookie", &cookie, true)
             .send(&service)
             .await;
         let listing_body = listing.take_json::<Value>().await.unwrap();
         assert_eq!(listing.status_code, Some(StatusCode::OK), "{listing_body}");
-        let csrf = TestClient::post("http://example.test/api/browser/hagency/v1/agents")
+        let csrf = TestClient::post("http://example.test/hagency/api/browser/v1/agents")
             .add_header("host", "example.test", true)
             .add_header("cookie", &cookie, true)
             .json(&json!({}))
             .send(&service)
             .await;
         assert_eq!(csrf.status_code, Some(StatusCode::FORBIDDEN));
-        let hidden = TestClient::post("http://example.test/api/browser/hagency/v1/devices")
+        let hidden = TestClient::post("http://example.test/hagency/api/browser/v1/devices")
             .add_header("host", "example.test", true)
             .add_header("cookie", &cookie, true)
             .add_header("x-csrf-token", session["csrf"].as_str().unwrap(), true)
@@ -960,14 +964,14 @@ mod tests {
             .send(&service)
             .await;
         assert_eq!(hidden.status_code, Some(StatusCode::NOT_FOUND));
-        let cross = TestClient::post("http://example.test/api/login/token")
+        let cross = TestClient::post("http://example.test/hagency/api/login/token")
             .add_header("host", "example.test", true)
             .add_header("origin", "https://evil.test", true)
             .json(&json!({}))
             .send(&service)
             .await;
         assert_eq!(cross.status_code, Some(StatusCode::FORBIDDEN));
-        let logout = TestClient::post("http://example.test/api/logout")
+        let logout = TestClient::post("http://example.test/hagency/api/logout")
             .add_header("host", "example.test", true)
             .add_header("cookie", &cookie, true)
             .add_header("x-csrf-token", session["csrf"].as_str().unwrap(), true)
@@ -975,7 +979,7 @@ mod tests {
             .send(&service)
             .await;
         assert_eq!(logout.status_code, Some(StatusCode::OK));
-        let stale = TestClient::get("http://example.test/api/session")
+        let stale = TestClient::get("http://example.test/hagency/api/session")
             .add_header("host", "example.test", true)
             .add_header("cookie", &cookie, true)
             .send(&service)

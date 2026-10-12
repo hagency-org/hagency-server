@@ -8,6 +8,9 @@ use crate::utils::i18n::t;
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
 pub enum Route {
+    #[route("/")]
+    Landing {},
+
     #[route("/login")]
     LoginPage {},
 
@@ -122,7 +125,8 @@ impl Route {
     pub fn requires_admin(&self) -> bool {
         !matches!(
             self,
-            Self::Home {}
+            Self::Landing {}
+                | Self::Home {}
                 | Self::HagencyProjects {}
                 | Self::HagencyAgents {}
                 | Self::LoginPage {}
@@ -177,7 +181,10 @@ pub fn restorable_route(path: &str, admin: bool) -> Option<Route> {
     let route: Route = path.parse().ok()?;
     if matches!(
         route,
-        Route::LoginPage {} | Route::OAuthCallback { .. } | Route::NotFound { .. }
+        Route::Landing {}
+            | Route::LoginPage {}
+            | Route::OAuthCallback { .. }
+            | Route::NotFound { .. }
     ) {
         return None;
     }
@@ -329,6 +336,11 @@ fn AuthenticatedLayout() -> Element {
             }
         },
     }
+}
+
+#[component]
+fn Landing() -> Element {
+    rsx! { pages::login::LoginPage {} }
 }
 
 #[component]

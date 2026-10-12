@@ -19,12 +19,12 @@ The current Hagency pages are `/hagency/projects` and `/hagency/agents`. Users s
 in with their personal Matrix account through Pasion. Generic Palpo/Pasion admin
 pages and their upstream APIs retain their existing role checks.
 
-Browser authentication uses only `/api/login/token`, `/api/session`, and
-`/api/logout`. Agent management goes through the closed cookie/CSRF BFF at
-`/api/browser/hagency/v1`; the BFF derives identity from the stored personal OAuth
+Browser authentication uses only `/hagency/api/login/token`, `/hagency/api/session`, and
+`/hagency/api/logout`. Agent management goes through the closed cookie/CSRF BFF at
+`/hagency/api/browser/v1`; the BFF derives identity from the stored personal OAuth
 grant and obtains a short, separately verified server authorization for each
 operation. It never exposes native session credentials or offers device/execution
-operations. The native `/api/hagency/v1` keeps rejecting browser Cookie/Origin.
+operations. The native `/hagency/api/v1` keeps rejecting browser Cookie/Origin.
 
 Projects register existing Matrix Spaces and Rooms and edit creation policy with
 a revision check. Matrix Space administration rights are checked on the server.
@@ -35,7 +35,7 @@ Codex configuration and risky tool policy belong in the local hagency-client.
 Fleet/Hafleet, resource allocation/Engagement approvals, custom account approval
 and native password-login pages have been removed. There are no old route aliases.
 
-Browser sessions are revalidated through `/api/session` after reload. Project and
+Browser sessions are revalidated through `/hagency/api/session` after reload. Project and
 Agent pages use the restricted cookie/CSRF BFF without storing OAuth bearers in
 browser persistent storage. Generic Palpo/Pasion administrative pages request a
 fresh native Pasion PKCE grant when their memory-only bearer is absent.

@@ -78,7 +78,7 @@ not relax ordinary submit fencing or release unknown usage/side-effect holds.
 Availability of that operation depends on the current transport API/tests.
 
 Explicit known-result recovery is implemented at
-`/api/hagency/v1/execution/replies/reconcile-known`. Original `dispatchEpoch` stays
+`/hagency/api/v1/execution/replies/reconcile-known`. Original `dispatchEpoch` stays
 fixed; separate `deliveryEpoch` records current send authorization. Sent receipts
 retain their original event ID. Pending/unknown retries retain the transaction
 and payload; a delivery block cannot be cleared. See the
@@ -86,15 +86,15 @@ and payload; a delivery block cannot be cleared. See the
 
 ## Browser and native APIs
 
-BrowserAuth provides `/api/login/token`, `/api/session` and `/api/logout`, with
+BrowserAuth provides `/hagency/api/login/token`, `/hagency/api/session` and `/hagency/api/logout`, with
 live identity/admin rechecks, cookie/CSRF/origin protection and OAuth handover.
 It has no old business store.
 
-`/api/browser/hagency/v1` is a closed management BFF. It uses the saved personal
+`/hagency/api/browser/v1` is a closed management BFF. It uses the saved personal
 OAuth grant to obtain a separately verified short authorization and revokes it
 after the operation. Credentials are never returned to the browser. It allows
 Project/Agent/binding operations only, without device execution or an arbitrary
-HTTP proxy. Native `/api/hagency/v1` continues rejecting browser Cookie/Origin;
+HTTP proxy. Native `/hagency/api/v1` continues rejecting browser Cookie/Origin;
 it provides Pasion proof, device and execution protocols. AS keeps Matrix AS APIs.
 
 Browser pages are `/hagency/projects` and `/hagency/agents`. Local quotas, model

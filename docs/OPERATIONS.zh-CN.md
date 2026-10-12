@@ -67,20 +67,20 @@ Room/Space/owner/requester 的成员事实与 active Agent/binding/generation �
 对账必须是显式操作，不能放松原 submit_reply fencing，也不能释放未知模型费用/工具
 副作用 holds。实施情况以新 transport API/测试为准，尚未实现的操作不能宣称可用。
 
-显式已知结果恢复已由 `/api/hagency/v1/execution/replies/reconcile-known` 实现。
+显式已知结果恢复已由 `/hagency/api/v1/execution/replies/reconcile-known` 实现。
 它保留原 `dispatchEpoch`，通过独立 `deliveryEpoch` 记录当前授权。已有 sent receipt
 返回原 event ID；pending/unknown 仍使用原 txn/payload，blocked 不可解除。
 见 [transport 合同](../crates/agent-service/src/transport-README.md)。
 
 ## 网页与原生 API
 
-网页通过 Pasion 登录。通用 BrowserAuth 只提供 `/api/login/token`、`/api/session`、
-`/api/logout`；session 每次重验身份/管理员资格，保留 cookie、CSRF、同源与 OAuth
+网页通过 Pasion 登录。通用 BrowserAuth 只提供 `/hagency/api/login/token`、`/hagency/api/session`、
+`/hagency/api/logout`；session 每次重验身份/管理员资格，保留 cookie、CSRF、同源与 OAuth
 handover 的安全处理，不初始化旧业务 store。
 
-网页 `/api/browser/hagency/v1` 是封闭 BFF，只允许 Project、Agent、binding 的管理
+网页 `/hagency/api/browser/v1` 是封闭 BFF，只允许 Project、Agent、binding 的管理
 操作。服务器从已保存的个人 OAuth grant 获取新服务授权，操作后注销，凭据不返回
-网页；不开放设备执行或通用 HTTP 转发。原生 `/api/hagency/v1` 拒绝 browser
+网页；不开放设备执行或通用 HTTP 转发。原生 `/hagency/api/v1` 拒绝 browser
 Cookie/Origin，负责 Pasion proof、设备和执行协议。AS 使用原有 Matrix AS 路由。
 
 网页入口为 `/hagency/projects` 和 `/hagency/agents`。本地 token 配额、模型与工具

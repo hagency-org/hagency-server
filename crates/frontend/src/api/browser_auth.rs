@@ -28,7 +28,7 @@ pub async fn bind_current_token() -> Result<Session, HttpError> {
     let token =
         storage::get_item("access_token").ok_or_else(|| HttpError::message("Sign in first."))?;
     let value = fetch(
-        "/api/login/token",
+        "/hagency/api/login/token",
         "POST",
         Some(json!({})),
         None,
@@ -101,12 +101,12 @@ async fn fetch(
 
 /// Revalidate the browser session, rebuilding it after a host restart if needed.
 pub async fn ensure_session() -> Result<Session, HttpError> {
-    let value = match fetch("/api/session", "GET", None, None, None).await {
+    let value = match fetch("/hagency/api/session", "GET", None, None, None).await {
         Ok(value) => value,
         Err(e) if e.status == 401 => {
             let token = storage::get_item("access_token").ok_or(e)?;
             fetch(
-                "/api/login/token",
+                "/hagency/api/login/token",
                 "POST",
                 Some(json!({})),
                 None,
@@ -137,7 +137,7 @@ pub async fn call(path: &str, method: &str, body: Option<Value>) -> Result<Value
         None => ensure_session().await?,
     };
     let result = fetch(
-        &format!("/api/browser/hagency/v1{path}"),
+        &format!("/hagency/api/browser/v1{path}"),
         method,
         body.clone(),
         Some(&session.csrf),
@@ -148,7 +148,7 @@ pub async fn call(path: &str, method: &str, body: Option<Value>) -> Result<Value
         clear_session();
         let session = ensure_session().await?;
         return fetch(
-            &format!("/api/browser/hagency/v1{path}"),
+            &format!("/hagency/api/browser/v1{path}"),
             method,
             body,
             Some(&session.csrf),
@@ -162,7 +162,7 @@ pub async fn call(path: &str, method: &str, body: Option<Value>) -> Result<Value
 pub async fn logout() {
     if let Ok(session) = ensure_session().await {
         let _ = fetch(
-            "/api/logout",
+            "/hagency/api/logout",
             "POST",
             Some(json!({})),
             Some(&session.csrf),

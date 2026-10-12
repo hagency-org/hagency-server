@@ -508,7 +508,7 @@ online association/delegation are not advertised as implemented.
   present. At the inspected 1200×730 viewport forms remained readable and scrollable.
 - Found and fixed a real reload defect: the frontend previously rejected a valid
   HttpOnly browser session after its memory-only OAuth bearer was lost. Owner
-  pages now revalidate `/api/session` and use the restricted BFF. Generic Matrix
+  pages now revalidate `/hagency/api/session` and use the restricted BFF. Generic Matrix
   management re-enters real Pasion PKCE authorization when a bearer is needed;
   access and refresh tokens remain out of browser persistent storage.
 - Repeated with a newly registered ordinary user through Pasion's native account

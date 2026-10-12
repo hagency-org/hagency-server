@@ -167,11 +167,11 @@ def validate(doc):
             require('responses' in operation and operation['responses'], 'no responses')
             for security in operation['security']:
                 require(set(security) <= set(doc['components']['securitySchemes']), 'security scheme missing')
-            if path.startswith('/api/hagency/v1/execution/'):
+            if path.startswith('/hagency/api/v1/execution/'):
                 require(operation['security'] == [{'deviceBearer': []}] and method == 'post', 'execution bearer/method drift')
-            elif (path == '/api/hagency/v1/agents' and method == 'post') or (path == '/api/hagency/v1/agents/{agentId}/execution-device' and method == 'put'):
+            elif (path == '/hagency/api/v1/agents' and method == 'post') or (path == '/hagency/api/v1/agents/{agentId}/execution-device' and method == 'put'):
                 require(operation['security'] == [{'deviceBearer': []}], 'device management security drift')
-            elif path.startswith('/api/hagency/v1/') and path not in ['/api/hagency/v1/discovery', '/api/hagency/v1/readiness', '/api/hagency/v1/sessions/pasion']:
+            elif path.startswith('/hagency/api/v1/') and path not in ['/hagency/api/v1/discovery', '/hagency/api/v1/readiness', '/hagency/api/v1/sessions/pasion']:
                 require(operation['security'] == [{'userBearer': []}], 'owner session security drift')
     for schema in doc['components']['schemas'].values():
         if 'x-rust-dto' in schema:
@@ -179,12 +179,12 @@ def validate(doc):
     if 'userBearer' in doc['components']['securitySchemes']:
         api = (ROOT / 'crates/agent-service/src/api.rs').read_text()
         transport = (ROOT / 'crates/agent-service/src/api_transport.rs').read_text()
-        literal = set((p, m.lower()) for p, m in re.findall(r'path\s*==\s*"(/api/hagency/v1/[^"]+)"\s*&&\s*method\s*==\s*salvo::http::Method::(\w+)', api))
-        literal |= {(p, 'post') for p in re.findall(r'"(/api/hagency/v1/execution/[^"]+)" =>', transport)}
+        literal = set((p, m.lower()) for p, m in re.findall(r'path\s*==\s*"(/hagency/api/v1/[^"]+)"\s*&&\s*method\s*==\s*salvo::http::Method::(\w+)', api))
+        literal |= {(p, 'post') for p in re.findall(r'"(/hagency/api/v1/execution/[^"]+)" =>', transport)}
         require(literal <= operations, 'source literal route omitted: ' + str(literal - operations))
-        require({p for p, _ in operations if p.startswith('/api/hagency/v1/execution/')} == {p for p, _ in literal if p.startswith('/api/hagency/v1/execution/')}, 'invented transport route')
-        require(('/api/hagency/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
-        require(('/api/hagency/v1/projects/{projectId}/rooms', 'post') not in operations, 'unimplemented Room creation advertised')
+        require({p for p, _ in operations if p.startswith('/hagency/api/v1/execution/')} == {p for p, _ in literal if p.startswith('/hagency/api/v1/execution/')}, 'invented transport route')
+        require(('/hagency/api/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
+        require(('/hagency/api/v1/projects/{projectId}/rooms', 'post') not in operations, 'unimplemented Room creation advertised')
         require(len(operations) == 52, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
@@ -199,15 +199,15 @@ class GuardTests(unittest.TestCase):
         with self.assertRaises((ValueError, KeyError, TypeError)):
             validate(doc)
     def test_missing_real_route(self):
-        self.rejection(lambda d: d['paths'].pop('/api/hagency/v1/execution/events/authorize-tool'))
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/events/authorize-tool'))
     def test_wrong_method(self):
-        self.rejection(lambda d: d['paths']['/api/hagency/v1/execution/events/ack'].update(get=d['paths']['/api/hagency/v1/execution/events/ack'].pop('post')))
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/events/ack'].update(get=d['paths']['/hagency/api/v1/execution/events/ack'].pop('post')))
     def test_wrong_bearer(self):
-        self.rejection(lambda d: d['paths']['/api/hagency/v1/execution/events/start']['post'].update(security=[{'userBearer': []}]))
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/events/start']['post'].update(security=[{'userBearer': []}]))
     def test_create_requires_current_device(self):
-        self.rejection(lambda d: d['paths']['/api/hagency/v1/agents']['post'].update(security=[{'userBearer': []}]))
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/agents']['post'].update(security=[{'userBearer': []}]))
     def test_assign_requires_current_device(self):
-        self.rejection(lambda d: d['paths']['/api/hagency/v1/agents/{agentId}/execution-device']['put'].update(security=[{'userBearer': []}]))
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/agents/{agentId}/execution-device']['put'].update(security=[{'userBearer': []}]))
     def test_private_or_missing_field(self):
         self.rejection(lambda d: d['components']['schemas']['ReplyIntent']['properties'].update(workerToken={'type': 'string'}))
     def test_rust_type_drift(self):

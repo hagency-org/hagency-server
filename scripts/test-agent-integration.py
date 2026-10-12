@@ -110,6 +110,42 @@ def native_oauth(origin, password):
     assert parsed.scheme=="http" and parsed.netloc=="127.0.0.1:13377" and query["state"]==[state]
     return call("/auth/oauth2/token",{"grant_type":"authorization_code","client_id":registered["client_id"],"redirect_uri":redirect,"code":query["code"][0],"code_verifier":verifier},form=True)["access_token"]
 
+def browser_api_paths(origin, password):
+    """Exercise the migrated browser BFF against the real embedded server."""
+    token = native_oauth(origin, password)
+    cookies = http.cookiejar.CookieJar()
+    opener = build_opener(ProxyHandler({}), HTTPCookieProcessor(cookies))
+
+    def call(path, method="GET", body=None, expected=200, extra=None):
+        headers = {"Content-Type": "application/json", "Origin": origin}
+        headers.update(extra or {})
+        data = None if body is None else json.dumps(body).encode()
+        req = Request(origin + path, data=data, headers=headers, method=method)
+        try:
+            reply = opener.open(req, timeout=15)
+        except HTTPError as error:
+            reply = error
+        with reply:
+            assert reply.code == expected, "browser API status mismatch at " + path
+            assert reply.headers.get_content_type() == "application/json", "API returned SPA HTML"
+            return json.load(reply)
+
+    session = call("/hagency/api/login/token", "POST", {},
+                   extra={"Authorization": "Bearer " + token})
+    assert session["userId"].startswith("@agent_smoke_owner:")
+    assert any(cookie.name == "palpo_admin" and "HttpOnly" in cookie._rest for cookie in cookies)
+    assert call("/hagency/api/session")["userId"] == session["userId"]
+    assert isinstance(call("/hagency/api/browser/v1/agents")["agents"], list)
+    assert call("/hagency/api/browser/v1/agents", "POST", {}, 403)["code"] == "csrf_forbidden"
+    assert call("/hagency/api/browser/v1/unknown", expected=404)["code"] == "not_found"
+    for path in ["/api/login/token", "/api/session", "/api/logout", "/api/browser/hagency/v1/agents"]:
+        call(path, expected=404)
+        call(path, "POST", {}, 404)
+    call("/hagency/api/logout", "POST", {}, extra={"x-csrf-token": session["csrf"]})
+    call("/hagency/api/session", expected=401)
+    print("PASS: migrated browser login/session/Agent bridge/CSRF/logout and retired URLs")
+
+
 try:
     with contextlib.nullcontext(tempfile.mkdtemp(prefix="hagency-agent-integration-")) as temporary:
         folder = Path(temporary)
@@ -155,7 +191,7 @@ try:
                 if SERVER.poll() is not None:
                     raise RuntimeError("isolated embedded server failed to start; logs were kept private")
                 try:
-                    discovery = request(origin, "GET", "/api/hagency/v1/discovery")
+                    discovery = request(origin, "GET", "/hagency/api/v1/discovery")
                     assert discovery["protocolVersion"] == 3
                     assert discovery["serverName"] == server_name
                     assert discovery["issuer"] == origin + "/auth/"
@@ -167,27 +203,30 @@ try:
             else:
                 raise RuntimeError("isolated embedded server startup timeout")
             for _ in range(60):
-                if request(origin,"GET","/api/hagency/v1/readiness")["startupRoundtripConfirmed"]:
+                if request(origin,"GET","/hagency/api/v1/readiness")["startupRoundtripConfirmed"]:
                     break
                 time.sleep(0.5)
             else:
                 raise RuntimeError("production startup roundtrip gate did not become ready")
             print("PASS: production startup gate verified its own Matrix event in durable AS inbox")
             homepage = urlopen(origin + "/").read().decode()
-            assert '<title>Hagency</title>' in homepage
-            assert 'href="/hagency/home"' in homepage and '.wasm' not in homepage
+            assert '<title>Hagency Server</title>' in homepage
             console = urlopen(origin + "/hagency/home").read().decode()
-            assert '<title>Hagency Server</title>' in console and console != homepage
+            assert '<title>Hagency Server</title>' in console and console == homepage
+            assert urlopen(origin + "/login").read().decode() == homepage
             assert urlopen(origin + "/hagency/projects").read().decode() == console
-            print("PASS: public homepage is separate from authenticated console routes")
-            for legacy in ["/api/fleets","/api/approvals","/api/accounts","/api/registrations"]:
+            print("PASS: public sign-in and authenticated console routes share the bundled frontend")
+            for legacy in ["/api/fleets", "/api/approvals", "/api/accounts", "/api/registrations",
+                           "/api/hagency/v1/discovery", "/api/browser/hagency/v1/agents",
+                           "/api/login/token", "/api/session", "/api/logout",
+                           "/hagency/api/unknown"]:
                 try:
                     request(origin,"GET",legacy)
                 except RuntimeError as e:
                     assert str(e).startswith("HTTP 404 at "+legacy+":"), "legacy API was not removed"
                 else:
                     raise RuntimeError("legacy API is still reachable")
-            print("PASS: retired Fleet/approval/account/registration HTTP APIs return 404")
+            print("PASS: retired API namespaces and unknown Hagency API paths return 404, never SPA HTML")
             registration = json.loads((folder / "data/agent-appservice.json").read_text())
             service = "@_hagency_service:" + server_name
             query = "?user_id=" + quote(service, safe="")
@@ -244,9 +283,9 @@ try:
             matrix_token = human["access_token"]
             if os.environ.get("HAGENCY_TEST_HOLD_PKCE") != "1" and not NATIVE_PKCE:
                 try:
-                    request(origin, "POST", "/api/hagency/v1/sessions/pasion", {"accessToken": matrix_token})
+                    request(origin, "POST", "/hagency/api/v1/sessions/pasion", {"accessToken": matrix_token})
                 except RuntimeError as e:
-                    assert str(e).startswith("HTTP 401 at /api/hagency/v1/sessions/pasion:"), "unexpected compatibility proof failure"
+                    assert str(e).startswith("HTTP 401 at /hagency/api/v1/sessions/pasion:"), "unexpected compatibility proof failure"
                 else:
                     raise RuntimeError("compatibility password token incorrectly established native OAuth authority")
                 print("PASS: compatibility password token cannot bypass native Pasion OAuth identity requirements")
@@ -268,27 +307,28 @@ try:
                 else:
                     raise RuntimeError("real native PKCE tester did not supply a grant")
             if NATIVE_PKCE:
+                browser_api_paths(origin, (folder / "bootstrap-password").read_text())
                 matrix_token=native_oauth(origin,(folder/"bootstrap-password").read_text())
                 print("PASS: real Pasion native DCR + PKCE + consent protocol grant")
-            session = request(origin, "POST", "/api/hagency/v1/sessions/pasion", {"accessToken": matrix_token})
+            session = request(origin, "POST", "/hagency/api/v1/sessions/pasion", {"accessToken": matrix_token})
             user_token = session["token"]
             space = request(origin, "POST", "/_matrix/client/v3/createRoom", {
                 "preset": "private_chat", "name": "Agent smoke Space", "creation_content": {"type": "m.space"}}, matrix_token)["room_id"]
             discussion = request(origin, "POST", "/_matrix/client/v3/createRoom", {
                 "preset": "private_chat", "name": "Agent smoke discussion", "invite": [service]}, matrix_token)["room_id"]
             request(origin, "PUT", "/_matrix/client/v3/rooms/" + quote(space, safe="") + "/state/m.space.child/" + quote(discussion, safe=""), {"via": [server_name]}, matrix_token)
-            project = request(origin, "POST", "/api/hagency/v1/projects/adopt", {"spaceId": space}, user_token)["project"]
-            request(origin, "POST", "/api/hagency/v1/projects/" + project["id"] + "/rooms/adopt", {"roomId": discussion}, user_token)
-            device = request(origin, "POST", "/api/hagency/v1/devices", {"installationId": "smoke_device", "name": "disposable integration device"}, user_token)
-            request(origin, "POST", "/api/hagency/v1/sessions/current/renew", {"accessToken": matrix_token}, user_token)
+            project = request(origin, "POST", "/hagency/api/v1/projects/adopt", {"spaceId": space}, user_token)["project"]
+            request(origin, "POST", "/hagency/api/v1/projects/" + project["id"] + "/rooms/adopt", {"roomId": discussion}, user_token)
+            device = request(origin, "POST", "/hagency/api/v1/devices", {"installationId": "smoke_device", "name": "disposable integration device"}, user_token)
+            request(origin, "POST", "/hagency/api/v1/sessions/current/renew", {"accessToken": matrix_token}, user_token)
             device_token = device["token"]
             create_body = {"displayName": "Smoke Agent", "idempotencyKey": "smoke_create"}
-            assert request(origin,"GET","/api/hagency/v1/commands/agent.create/smoke_create",token=user_token,expected_status=404)["code"]=="command_not_found"
-            creation = request(origin, "POST", "/api/hagency/v1/agents", create_body, device_token)
+            assert request(origin,"GET","/hagency/api/v1/commands/agent.create/smoke_create",token=user_token,expected_status=404)["code"]=="command_not_found"
+            creation = request(origin, "POST", "/hagency/api/v1/agents", create_body, device_token)
             for _ in range(60):
                 if creation["commandState"] == "active": break
                 time.sleep(0.5)
-                creation = request(origin, "POST", "/api/hagency/v1/agents", create_body, device_token)
+                creation = request(origin, "POST", "/hagency/api/v1/agents", create_body, device_token)
             assert creation["commandState"] == "active", "global puppet identity provisioning stayed pending"
             agent = creation["creation"]["agent"]
             entity_id(agent["id"], "agt_")
@@ -296,9 +336,9 @@ try:
             entity_id(session["userId"], "usr_")
             assert agent["puppetMxid"] == "@_hagency_" + agent["id"] + ":" + human["user_id"].split(":", 1)[1]
             assert "binding" not in creation["creation"] and agent["ownerUserId"] == session["userId"]
-            bind_path = "/api/hagency/v1/agents/"+agent["id"]+"/bindings"
+            bind_path = "/hagency/api/v1/agents/"+agent["id"]+"/bindings"
             bind_body = {"projectId": project["id"], "roomId": discussion, "idempotencyKey": "smoke_bind"}
-            project_path = "/api/hagency/v1/projects/" + project["id"]
+            project_path = "/hagency/api/v1/projects/" + project["id"]
             room_path = project_path + "/rooms/" + quote(discussion, safe="")
             assert not request(origin,"GET",project_path+"/service-state",token=user_token)["servicePaused"]
             room_state=request(origin,"GET",room_path+"/service-state",token=user_token)
@@ -308,7 +348,7 @@ try:
                 rejection=request(origin,"POST",bind_path,body,user_token,expected_status=401)
                 assert rejection["code"]==code, "unexpected authorization rejection"
                 assert request(origin,"GET",bind_path,token=user_token)["bindings"]==[], "denied binding allocated a scope"
-                assert request(origin,"GET","/api/hagency/v1/commands/agent.bind/"+key,token=user_token,expected_status=404)["code"]=="command_not_found"
+                assert request(origin,"GET","/hagency/api/v1/commands/agent.bind/"+key,token=user_token,expected_status=404)["code"]=="command_not_found"
             # Persisted scope pauses must block creation even with zero bindings.
             paused=request(origin,"POST",project_path+"/pause-service",token=user_token)
             assert paused["affectedBindings"]==0
@@ -338,14 +378,14 @@ try:
             assert bound_first["commandState"] == "active", "independent Room binding stayed pending"
             binding = bound_first["creation"]["binding"]
             assert binding["scopeKind"] == "project" and binding["projectId"] == project["id"]
-            repeat = request(origin, "POST", "/api/hagency/v1/agents", create_body, device_token)
+            repeat = request(origin, "POST", "/hagency/api/v1/agents", create_body, device_token)
             assert repeat["creation"]["agent"]["id"] == agent["id"]
-            status=request(origin,"GET","/api/hagency/v1/commands/agent.create/smoke_create",token=user_token)
+            status=request(origin,"GET","/hagency/api/v1/commands/agent.create/smoke_create",token=user_token)
             assert status["commandState"]=="active" and status["creation"]["agent"]["id"]==agent["id"] and "binding" not in status["creation"]
             changed=dict(create_body,displayName="Changed replay must fail")
-            request(origin,"POST","/api/hagency/v1/agents",changed,device_token,expected_status=409)
+            request(origin,"POST","/hagency/api/v1/agents",changed,device_token,expected_status=409)
             # No bearerless command discovery.
-            request(origin,"GET","/api/hagency/v1/commands/agent.create/smoke_create",expected_status=401)
+            request(origin,"GET","/hagency/api/v1/commands/agent.create/smoke_create",expected_status=401)
             print("PASS: owner command-status and stable same-key replay; changed payload conflicts and unauthenticated discovery denied")
             restricted = request(origin, "POST", "/_matrix/client/v3/createRoom", {
                 "preset": "private_chat", "name": "Restricted Space discussion", "invite": [service],
@@ -354,12 +394,12 @@ try:
             request(origin, "PUT", "/_matrix/client/v3/rooms/" + quote(space, safe="") + "/state/m.space.child/" + quote(restricted, safe=""), {"via": [server_name]}, matrix_token)
             request(origin, "POST", project_path + "/rooms/adopt", {"roomId": restricted}, user_token)
             restricted_body = {"projectId": project["id"], "roomId": restricted, "idempotencyKey": "smoke_restricted_bind"}
-            bound = request(origin, "POST", "/api/hagency/v1/agents/" + agent["id"] + "/bindings", restricted_body, user_token)
+            bound = request(origin, "POST", "/hagency/api/v1/agents/" + agent["id"] + "/bindings", restricted_body, user_token)
             for _ in range(30):
                 if bound["commandState"] == "active":
                     break
                 time.sleep(0.5)
-                bound = request(origin, "GET", "/api/hagency/v1/commands/agent.bind/smoke_restricted_bind", token=user_token)
+                bound = request(origin, "GET", "/hagency/api/v1/commands/agent.bind/smoke_restricted_bind", token=user_token)
             assert bound["commandState"] == "active", "restricted Room provisioning stayed pending"
             assert bound["creation"]["agent"]["id"] == agent["id"] and bound["creation"]["binding"]["roomId"] == restricted
             assert request(origin, "GET", "/_matrix/client/v3/rooms/" + quote(restricted, safe="") + "/state/m.room.join_rules", token=matrix_token)["join_rule"] == "restricted"
@@ -373,51 +413,51 @@ try:
             print("PASS: live registered Room discovery and public Agent roster match actual Matrix membership without exposing internal owner authority")
             entity_id(device["deviceId"], "dev_")
             assert len(device_token) == 64 and len(user_token) == 64
-            device_path="/api/hagency/v1/agents/"+agent["id"]+"/execution-device"
+            device_path="/hagency/api/v1/agents/"+agent["id"]+"/execution-device"
             assert agent["executionDeviceId"]==device["deviceId"]
             unchanged=request(origin,"PUT",device_path,{"expectedGeneration":agent["generation"]},device_token)["agent"]
             assert unchanged["generation"]==agent["generation"]
-            assert any(d["id"]==device["deviceId"] for d in request(origin,"GET","/api/hagency/v1/devices",token=user_token)["devices"])
-            history = request(origin, "POST", "/api/hagency/v1/execution/history", {"agentId": agent["id"], "cursor": None, "snapshot": None}, device_token)["history"]
+            assert any(d["id"]==device["deviceId"] for d in request(origin,"GET","/hagency/api/v1/devices",token=user_token)["devices"])
+            history = request(origin, "POST", "/hagency/api/v1/execution/history", {"agentId": agent["id"], "cursor": None, "snapshot": None}, device_token)["history"]
             assert history["snapshot"]["count"] == 0 and history["executions"] == []
-            lease = request(origin, "POST", "/api/hagency/v1/execution/leases/acquire", {"agentId": agent["id"], "ttlMs": 20000, "takeover": False, "historySnapshot": history["snapshot"]}, device_token)["lease"]
+            lease = request(origin, "POST", "/hagency/api/v1/execution/leases/acquire", {"agentId": agent["id"], "ttlMs": 20000, "takeover": False, "historySnapshot": history["snapshot"]}, device_token)["lease"]
             reference = {"agentId": agent["id"], "epoch": lease["epoch"]}
             message = request(origin, "PUT", "/_matrix/client/v3/rooms/" + quote(discussion, safe="") + "/send/m.room.message/human_probe", {
                 "msgtype": "m.text", "body": "hello smoke Agent", "m.mentions": {"user_ids": [agent["puppetMxid"]]}}, matrix_token)["event_id"]
             dispatch = None
             for _ in range(15):
-                events = request(origin, "POST", "/api/hagency/v1/execution/events/poll", {"lease": reference, "bindingId": binding["id"], "limit": 10}, device_token)["events"]
+                events = request(origin, "POST", "/hagency/api/v1/execution/events/poll", {"lease": reference, "bindingId": binding["id"], "limit": 10}, device_token)["events"]
                 dispatch = next((e for e in events if e["eventId"] == message), None)
                 if dispatch is not None:
                     break
                 time.sleep(0.5)
             assert dispatch is not None, "mentioned event did not reach owner device"
             assert dispatch["bindingId"] == binding["id"] and dispatch["requesterMxid"] == human["user_id"]
-            request(origin, "POST", "/api/hagency/v1/execution/events/ack", {"lease": reference, "dispatchId": dispatch["id"]}, device_token)
+            request(origin, "POST", "/hagency/api/v1/execution/events/ack", {"lease": reference, "dispatchId": dispatch["id"]}, device_token)
             start_body = {"lease": reference, "dispatchId": dispatch["id"], "executionId": "smoke_execution"}
-            assert request(origin, "POST", "/api/hagency/v1/execution/events/start", start_body, device_token)["execution"]["newlyStarted"]
-            assert not request(origin, "POST", "/api/hagency/v1/execution/events/start", start_body, device_token)["execution"]["newlyStarted"]
-            processing_path="/api/hagency/v1/execution/events/processing"
+            assert request(origin, "POST", "/hagency/api/v1/execution/events/start", start_body, device_token)["execution"]["newlyStarted"]
+            assert not request(origin, "POST", "/hagency/api/v1/execution/events/start", start_body, device_token)["execution"]["newlyStarted"]
+            processing_path="/hagency/api/v1/execution/events/processing"
             request(origin,"POST",processing_path,start_body,user_token,expected_status=401)
             request(origin,"POST",processing_path,dict(start_body,roomId=discussion),device_token,expected_status=400)
             request(origin,"POST",processing_path,dict(start_body,executionId="wrong-execution"),device_token,expected_status=409)
             processing=request(origin,"POST",processing_path,start_body,device_token)["processing"]
             assert request(origin,"POST",processing_path,start_body,device_token)["processing"]["id"]==processing["id"]
-            proof=request(origin,"POST","/api/hagency/v1/execution/events/authorize-tool",start_body,device_token)["dispatch"]
+            proof=request(origin,"POST","/hagency/api/v1/execution/events/authorize-tool",start_body,device_token)["dispatch"]
             assert proof["id"]==dispatch["id"] and proof["executionId"]=="smoke_execution" and proof["state"]=="running"
             try:
-                request(origin,"POST","/api/hagency/v1/execution/events/authorize-tool",dict(start_body,executionId="different_execution"),device_token)
+                request(origin,"POST","/hagency/api/v1/execution/events/authorize-tool",dict(start_body,executionId="different_execution"),device_token)
             except RuntimeError as error:
-                assert str(error).startswith("HTTP 409 at /api/hagency/v1/execution/events/authorize-tool:")
+                assert str(error).startswith("HTTP 409 at /hagency/api/v1/execution/events/authorize-tool:")
             else:raise RuntimeError("tool eligibility proof accepted a foreign execution")
             # Fixture completion checks transport; no AI model is called.
             reply_body = {"lease": reference, "reply": {"dispatchId": dispatch["id"], "executionId": "smoke_execution", "body": "fixture reply, no model invocation"}}
-            reply = request(origin, "POST", "/api/hagency/v1/execution/replies", reply_body, device_token)["reply"]
+            reply = request(origin, "POST", "/hagency/api/v1/execution/replies", reply_body, device_token)["reply"]
             entity_id(dispatch["id"], "evt_")
             entity_id(binding["id"], "bnd_")
             entity_id(reply["id"], "rep_")
             assert "workerToken" not in reply
-            assert request(origin, "POST", "/api/hagency/v1/execution/replies", reply_body, device_token)["reply"]["id"] == reply["id"]
+            assert request(origin, "POST", "/hagency/api/v1/execution/replies", reply_body, device_token)["reply"]["id"] == reply["id"]
             for _ in range(20):
                 sent = sql(DBS[0], "SELECT count(*) FROM hagency_agent_v1.reply_outbox WHERE id='" + reply["id"] + "' AND state='sent' AND matrix_event_id IS NOT NULL", True)
                 if int(sent) == 1:
@@ -437,9 +477,9 @@ try:
             assert sql(DBS[0],"SELECT count(*) FROM hagency_agent_v1.processing_outbox WHERE owner_event_id='"+dispatch["id"]+"'",True)=="1"
             print("PASS: exact running device processing receipt sent one stable puppet annotation reaction; same-attempt completed replay returns the same sent receipt")
             print("PASS: real delegated user identity, Space/Room authorization, permanent owner puppet, device lease, mention delivery, distinct ACK/start and idempotent reply outbox")
-            request(origin,"POST","/api/hagency/v1/execution/leases/renew",{"lease":reference,"ttlMs":60000},device_token)
+            request(origin,"POST","/hagency/api/v1/execution/leases/renew",{"lease":reference,"ttlMs":60000},device_token)
             direct_room=request(origin,"POST","/_matrix/client/v3/createRoom",{"preset":"private_chat","is_direct":True,"name":"Owner Agent DM","invite":[agent["puppetMxid"]],"initial_state":[{"type":"m.room.guest_access","state_key":"","content":{"guest_access":"forbidden"}},{"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"joined"}}]},matrix_token)["room_id"]
-            direct_path="/api/hagency/v1/agents/"+agent["id"]+"/owner-direct"
+            direct_path="/hagency/api/v1/agents/"+agent["id"]+"/owner-direct"
             direct=request(origin,"POST",direct_path,{"roomId":direct_room},user_token)
             for _ in range(30):
                 if direct["commandState"]=="active":break
@@ -452,16 +492,16 @@ try:
             direct_message=request(origin,"PUT","/_matrix/client/v3/rooms/"+quote(direct_room,safe="")+"/send/m.room.message/owner_direct_probe",{"msgtype":"m.text","body":"direct owner request without mentions"},matrix_token)["event_id"]
             direct_dispatch=None
             for _ in range(30):
-                direct_events=request(origin,"POST","/api/hagency/v1/execution/events/poll",{"lease":reference,"bindingId":direct_binding["id"],"limit":10},device_token)["events"]
+                direct_events=request(origin,"POST","/hagency/api/v1/execution/events/poll",{"lease":reference,"bindingId":direct_binding["id"],"limit":10},device_token)["events"]
                 direct_dispatch=next((e for e in direct_events if e["eventId"]==direct_message),None)
                 if direct_dispatch:break
                 time.sleep(0.5)
             assert direct_dispatch is not None,"owner DM request did not route without mentions"
-            request(origin,"POST","/api/hagency/v1/execution/events/ack",{"lease":reference,"dispatchId":direct_dispatch["id"]},device_token)
+            request(origin,"POST","/hagency/api/v1/execution/events/ack",{"lease":reference,"dispatchId":direct_dispatch["id"]},device_token)
             direct_start={"lease":reference,"dispatchId":direct_dispatch["id"],"executionId":"owner_direct_fixture_execution"}
-            request(origin,"POST","/api/hagency/v1/execution/events/start",direct_start,device_token)
+            request(origin,"POST","/hagency/api/v1/execution/events/start",direct_start,device_token)
             direct_processing=request(origin,"POST",processing_path,direct_start,device_token)["processing"]
-            direct_reply=request(origin,"POST","/api/hagency/v1/execution/replies",{"lease":reference,"reply":{"dispatchId":direct_dispatch["id"],"executionId":direct_start["executionId"],"body":"owner DM fixture reply; no model"}},device_token)["reply"]
+            direct_reply=request(origin,"POST","/hagency/api/v1/execution/replies",{"lease":reference,"reply":{"dispatchId":direct_dispatch["id"],"executionId":direct_start["executionId"],"body":"owner DM fixture reply; no model"}},device_token)["reply"]
             for _ in range(30):
                 if sql(DBS[0],"SELECT state FROM hagency_agent_v1.reply_outbox WHERE id='"+direct_reply["id"]+"'",True)=="sent":break
                 time.sleep(0.5)
@@ -485,18 +525,18 @@ try:
                 media_download="/_matrix/client/v1/media/download/"+quote(media_parts.netloc,safe="")+"/"+quote(media_parts.path.lstrip("/"),safe="")
                 # Keep one authenticated-but-unfinished execution in the snapshot.
                 # No model/tool runs; after authority revocation it must be unknown.
-                request(origin,"POST","/api/hagency/v1/execution/leases/renew",{"lease":reference,"ttlMs":60000},device_token)
+                request(origin,"POST","/hagency/api/v1/execution/leases/renew",{"lease":reference,"ttlMs":60000},device_token)
                 unfinished_message=request(origin,"PUT","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/send/m.room.message/before_backup_running",{"msgtype":"m.text","body":"unfinished fixture execution","m.mentions":{"user_ids":[agent["puppetMxid"]]}},matrix_token)["event_id"]
                 unfinished=None
                 for _ in range(30):
-                    events=request(origin,"POST","/api/hagency/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},device_token)["events"]
+                    events=request(origin,"POST","/hagency/api/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},device_token)["events"]
                     unfinished=next((e for e in events if e["eventId"]==unfinished_message),None)
                     if unfinished:break
                     time.sleep(0.5)
                 assert unfinished is not None
-                request(origin,"POST","/api/hagency/v1/execution/events/ack",{"lease":reference,"dispatchId":unfinished["id"]},device_token)
+                request(origin,"POST","/hagency/api/v1/execution/events/ack",{"lease":reference,"dispatchId":unfinished["id"]},device_token)
                 unfinished_body={"lease":reference,"dispatchId":unfinished["id"],"executionId":"backup_unfinished"}
-                request(origin,"POST","/api/hagency/v1/execution/events/start",unfinished_body,device_token)
+                request(origin,"POST","/hagency/api/v1/execution/events/start",unfinished_body,device_token)
                 # Stop the sole fixture before all three snapshots. No parallel AS
                 # instance, no production DB, no credentials in process arguments.
                 SERVER.terminate()
@@ -580,7 +620,7 @@ try:
                 for _ in range(120):
                     if SERVER.poll() is not None:raise RuntimeError("restored fixture server stopped; private logs retained")
                     try:
-                        if request(origin,"GET","/api/hagency/v1/readiness")["startupRoundtripConfirmed"]:break
+                        if request(origin,"GET","/hagency/api/v1/readiness")["startupRoundtripConfirmed"]:break
                     except (URLError,TimeoutError):pass
                     time.sleep(0.5)
                 else:raise RuntimeError("restored startup AS gate did not become ready")
@@ -588,28 +628,28 @@ try:
                 for transaction,digest in json.loads(before_as).items():
                     assert json.loads(sql(DBS[0],"SELECT coalesce(jsonb_object_agg(id,digest),'{}'::jsonb)::text FROM hagency_agent_v1.inbound_transactions",True))[transaction]==digest
                 matrix_token=native_oauth(origin,(folder/"bootstrap-password").read_text())
-                recovered_session=request(origin,"POST","/api/hagency/v1/sessions/pasion",{"accessToken":matrix_token})
+                recovered_session=request(origin,"POST","/hagency/api/v1/sessions/pasion",{"accessToken":matrix_token})
                 assert recovered_session["userId"]==session["userId"]
                 user_token=recovered_session["token"]
                 for key_file in required-{"hagency.toml","palpo.toml","pasion.toml"}:
                     assert hashlib.sha256((folder/key_file).read_bytes()).digest()==original_manifest[key_file][0],"restart rotated restored identity/pepper"
                 with urlopen(Request(origin+media_download,headers={"Authorization":"Bearer "+matrix_token}),timeout=15) as downloaded:
                     assert downloaded.read()==media_body,"restored real Matrix media changed"
-                recovered_agent=request(origin,"GET","/api/hagency/v1/agents/"+agent["id"],token=user_token)["agent"]
+                recovered_agent=request(origin,"GET","/hagency/api/v1/agents/"+agent["id"],token=user_token)["agent"]
                 assert recovered_agent["ownerUserId"]==agent["ownerUserId"] and recovered_agent["puppetMxid"]==agent["puppetMxid"]
-                recovered_command=request(origin,"GET","/api/hagency/v1/commands/agent.create/smoke_create",token=user_token)
+                recovered_command=request(origin,"GET","/hagency/api/v1/commands/agent.create/smoke_create",token=user_token)
                 assert recovered_command["creation"]["agent"]["id"]==agent["id"]
                 old_device_token=device_token
-                request(origin,"DELETE","/api/hagency/v1/devices/"+device["deviceId"],token=user_token)
-                request(origin,"POST","/api/hagency/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},old_device_token,expected_status=401)
-                device=request(origin,"POST","/api/hagency/v1/devices",{"installationId":"restored_smoke_device","name":"fresh recovery authority"},user_token)
+                request(origin,"DELETE","/hagency/api/v1/devices/"+device["deviceId"],token=user_token)
+                request(origin,"POST","/hagency/api/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},old_device_token,expected_status=401)
+                device=request(origin,"POST","/hagency/api/v1/devices",{"installationId":"restored_smoke_device","name":"fresh recovery authority"},user_token)
                 device_token=device["token"]
-                request(origin,"POST","/api/hagency/v1/execution/leases/acquire",{"agentId":agent["id"],"ttlMs":60000,"takeover":True,"historySnapshot":history["snapshot"]},device_token,expected_status=401)
+                request(origin,"POST","/hagency/api/v1/execution/leases/acquire",{"agentId":agent["id"],"ttlMs":60000,"takeover":True,"historySnapshot":history["snapshot"]},device_token,expected_status=401)
                 agent=request(origin,"PUT",device_path,{"expectedGeneration":recovered_agent["generation"]},device_token)["agent"]
-                restored_history=request(origin,"POST","/api/hagency/v1/execution/history",{"agentId":agent["id"],"cursor":None,"snapshot":None},device_token)["history"]
+                restored_history=request(origin,"POST","/hagency/api/v1/execution/history",{"agentId":agent["id"],"cursor":None,"snapshot":None},device_token)["history"]
                 assert restored_history["snapshot"]["count"] >= 2 and restored_history["nextCursor"] is None
                 assert all("body" not in entry for entry in restored_history["executions"])
-                recovered_lease=request(origin,"POST","/api/hagency/v1/execution/leases/acquire",{"agentId":agent["id"],"ttlMs":60000,"takeover":True,"historySnapshot":restored_history["snapshot"]},device_token)["lease"]
+                recovered_lease=request(origin,"POST","/hagency/api/v1/execution/leases/acquire",{"agentId":agent["id"],"ttlMs":60000,"takeover":True,"historySnapshot":restored_history["snapshot"]},device_token)["lease"]
                 assert recovered_lease["epoch"]>reference["epoch"]
                 reference={"agentId":agent["id"],"epoch":recovered_lease["epoch"]}
                 for _ in range(30):
@@ -617,8 +657,8 @@ try:
                     if state=="unknown":break
                     time.sleep(0.5)
                 assert state=="unknown","unfinished restored execution was not fenced unknown"
-                request(origin,"POST","/api/hagency/v1/execution/events/start",dict(unfinished_body,lease=reference),device_token,expected_status=401)
-                recovered_reply=request(origin,"POST","/api/hagency/v1/execution/replies/reconcile-known",dict(reply_body,lease=reference),device_token)["reply"]
+                request(origin,"POST","/hagency/api/v1/execution/events/start",dict(unfinished_body,lease=reference),device_token,expected_status=401)
+                recovered_reply=request(origin,"POST","/hagency/api/v1/execution/replies/reconcile-known",dict(reply_body,lease=reference),device_token)["reply"]
                 saved=json.loads(before_reply)
                 assert recovered_reply["state"]=="sent" and recovered_reply["matrixEventId"]==saved["matrix_event_id"] and recovered_reply["matrixTxnId"]==saved["matrix_txn_id"] and recovered_reply["body"]==saved["body"]
                 original_event=request(origin,"GET","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/event/"+quote(saved["matrix_event_id"],safe=""),token=matrix_token)
@@ -626,15 +666,15 @@ try:
                 fresh_message=request(origin,"PUT","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/send/m.room.message/after_restore_probe",{"msgtype":"m.text","body":"post restore fixture","m.mentions":{"user_ids":[agent["puppetMxid"]]}},matrix_token)["event_id"]
                 fresh=None
                 for _ in range(30):
-                    events=request(origin,"POST","/api/hagency/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},device_token)["events"]
+                    events=request(origin,"POST","/hagency/api/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},device_token)["events"]
                     assert all(e["id"]!=unfinished["id"] and e["id"]!=dispatch["id"] for e in events)
                     fresh=next((e for e in events if e["eventId"]==fresh_message),None)
                     if fresh:break
                     time.sleep(0.5)
                 assert fresh is not None
-                request(origin,"POST","/api/hagency/v1/execution/events/ack",{"lease":reference,"dispatchId":fresh["id"]},device_token)
-                request(origin,"POST","/api/hagency/v1/execution/events/start",{"lease":reference,"dispatchId":fresh["id"],"executionId":"after_restore_execution"},device_token)
-                fresh_reply=request(origin,"POST","/api/hagency/v1/execution/replies",{"lease":reference,"reply":{"dispatchId":fresh["id"],"executionId":"after_restore_execution","body":"post restore reply without model"}},device_token)["reply"]
+                request(origin,"POST","/hagency/api/v1/execution/events/ack",{"lease":reference,"dispatchId":fresh["id"]},device_token)
+                request(origin,"POST","/hagency/api/v1/execution/events/start",{"lease":reference,"dispatchId":fresh["id"],"executionId":"after_restore_execution"},device_token)
+                fresh_reply=request(origin,"POST","/hagency/api/v1/execution/replies",{"lease":reference,"reply":{"dispatchId":fresh["id"],"executionId":"after_restore_execution","body":"post restore reply without model"}},device_token)["reply"]
                 for _ in range(30):
                     if sql(DBS[0],"SELECT state FROM hagency_agent_v1.reply_outbox WHERE id='"+fresh_reply["id"]+"'",True)=="sent":break
                     time.sleep(0.5)
@@ -644,23 +684,23 @@ try:
                 print("PASS: stopped three-database and independent private filesystem restore; AS/Matrix/Pasion keys and pepper byte-identical, real media retained, permanent identity/digests/stable sent reply retained, old device revoked, unfinished execution unknown, fresh native-login/device request roundtrip completed without inference")
             # Actual membership loss is committed by the failed sensitive API,
             # even if Matrix rejoin happens before the periodic controller sweep.
-            request(origin,"POST","/api/hagency/v1/sessions/current/renew",{"accessToken":matrix_token},user_token)
-            request(origin,"POST","/api/hagency/v1/execution/leases/renew",{"lease":reference,"ttlMs":60000},device_token)
+            request(origin,"POST","/hagency/api/v1/sessions/current/renew",{"accessToken":matrix_token},user_token)
+            request(origin,"POST","/hagency/api/v1/execution/leases/renew",{"lease":reference,"ttlMs":60000},device_token)
             membership_message=request(origin,"PUT","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/send/m.room.message/membership_fence_probe",{"msgtype":"m.text","body":"membership fixture execution","m.mentions":{"user_ids":[agent["puppetMxid"]]}},matrix_token)["event_id"]
             membership_dispatch=None
             for _ in range(30):
-                events=request(origin,"POST","/api/hagency/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},device_token)["events"]
+                events=request(origin,"POST","/hagency/api/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},device_token)["events"]
                 membership_dispatch=next((e for e in events if e["eventId"]==membership_message),None)
                 if membership_dispatch:break
                 time.sleep(0.5)
             assert membership_dispatch is not None
-            request(origin,"POST","/api/hagency/v1/execution/events/ack",{"lease":reference,"dispatchId":membership_dispatch["id"]},device_token)
+            request(origin,"POST","/hagency/api/v1/execution/events/ack",{"lease":reference,"dispatchId":membership_dispatch["id"]},device_token)
             membership_start={"lease":reference,"dispatchId":membership_dispatch["id"],"executionId":"membership_fence_execution"}
-            request(origin,"POST","/api/hagency/v1/execution/events/start",membership_start,device_token)
-            binding_path="/api/hagency/v1/bindings/"+binding["id"]
+            request(origin,"POST","/hagency/api/v1/execution/events/start",membership_start,device_token)
+            binding_path="/hagency/api/v1/bindings/"+binding["id"]
             before_kick=request(origin,"GET",binding_path,token=user_token)["binding"]
             request(origin,"POST","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/kick",{"user_id":agent["puppetMxid"],"reason":"isolated membership fencing fixture"},matrix_token)
-            request(origin,"POST","/api/hagency/v1/execution/events/authorize-tool",membership_start,device_token,expected_status=401)
+            request(origin,"POST","/hagency/api/v1/execution/events/authorize-tool",membership_start,device_token,expected_status=401)
             paused=request(origin,"GET",binding_path,token=user_token)["binding"]
             assert paused["state"] in ("leaving", "left") and paused["generation"]>before_kick["generation"]
             # Fixture-only AS invitation/join restores Matrix membership, not
@@ -668,7 +708,7 @@ try:
             request(origin,"POST","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/invite"+query,{"user_id":agent["puppetMxid"]},registration["as_token"])
             request(origin,"POST","/_matrix/client/v3/join/"+quote(discussion,safe="")+"?user_id="+quote(agent["puppetMxid"],safe=""),{},registration["as_token"])
             assert request(origin,"GET",binding_path,token=user_token)["binding"]["state"] in ("leaving", "left")
-            request(origin,"POST","/api/hagency/v1/execution/events/authorize-tool",membership_start,device_token,expected_status=401)
+            request(origin,"POST","/hagency/api/v1/execution/events/authorize-tool",membership_start,device_token,expected_status=401)
             request(origin,"POST",binding_path+"/resume",token=user_token,expected_status=409)
             for _ in range(30):
                 departed = request(origin,"GET",binding_path,token=user_token)["binding"]
@@ -677,66 +717,66 @@ try:
                 time.sleep(0.5)
             else: raise RuntimeError("retired membership did not converge to physical departure")
             rebound_body = {"projectId": project["id"], "roomId": discussion, "idempotencyKey": "membership_rebind"}
-            rebound = request(origin,"POST","/api/hagency/v1/agents/"+agent["id"]+"/bindings",rebound_body,user_token)
+            rebound = request(origin,"POST","/hagency/api/v1/agents/"+agent["id"]+"/bindings",rebound_body,user_token)
             for _ in range(30):
                 if rebound["commandState"] == "active": break
                 time.sleep(0.5)
-                rebound = request(origin,"GET","/api/hagency/v1/commands/agent.bind/membership_rebind",token=user_token)
+                rebound = request(origin,"GET","/hagency/api/v1/commands/agent.bind/membership_rebind",token=user_token)
             assert rebound["commandState"] == "active"
             resumed = rebound["creation"]["binding"]
             assert resumed["id"] == binding["id"] and resumed["generation"]>paused["generation"]
-            request(origin,"POST","/api/hagency/v1/execution/events/start",membership_start,device_token,expected_status=401)
-            request(origin,"POST","/api/hagency/v1/execution/events/authorize-tool",membership_start,device_token,expected_status=401)
+            request(origin,"POST","/hagency/api/v1/execution/events/start",membership_start,device_token,expected_status=401)
+            request(origin,"POST","/hagency/api/v1/execution/events/authorize-tool",membership_start,device_token,expected_status=401)
             # The restricted second Room remains authorized throughout this loss.
             second_binding=bound["creation"]["binding"]
-            assert request(origin,"GET","/api/hagency/v1/bindings/"+second_binding["id"],token=user_token)["binding"]["state"]=="active"
+            assert request(origin,"GET","/hagency/api/v1/bindings/"+second_binding["id"],token=user_token)["binding"]["state"]=="active"
             after_resume_message=request(origin,"PUT","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/send/m.room.message/after_membership_resume",{"msgtype":"m.text","body":"fresh request after explicit rebind","m.mentions":{"user_ids":[agent["puppetMxid"]]}},matrix_token)["event_id"]
             resumed_dispatch=None
             for _ in range(30):
-                events=request(origin,"POST","/api/hagency/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},device_token)["events"]
+                events=request(origin,"POST","/hagency/api/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},device_token)["events"]
                 assert all(e["id"]!=membership_dispatch["id"] for e in events)
                 resumed_dispatch=next((e for e in events if e["eventId"]==after_resume_message),None)
                 if resumed_dispatch:break
                 time.sleep(0.5)
             assert resumed_dispatch is not None and resumed_dispatch["bindingGeneration"]==resumed["generation"]
-            request(origin,"POST","/api/hagency/v1/execution/events/ack",{"lease":reference,"dispatchId":resumed_dispatch["id"]},device_token)
-            request(origin,"POST","/api/hagency/v1/execution/events/start",{"lease":reference,"dispatchId":resumed_dispatch["id"],"executionId":"membership_resumed_execution"},device_token)
-            resumed_reply=request(origin,"POST","/api/hagency/v1/execution/replies",{"lease":reference,"reply":{"dispatchId":resumed_dispatch["id"],"executionId":"membership_resumed_execution","body":"explicit rebind fixture reply without model"}},device_token)["reply"]
+            request(origin,"POST","/hagency/api/v1/execution/events/ack",{"lease":reference,"dispatchId":resumed_dispatch["id"]},device_token)
+            request(origin,"POST","/hagency/api/v1/execution/events/start",{"lease":reference,"dispatchId":resumed_dispatch["id"],"executionId":"membership_resumed_execution"},device_token)
+            resumed_reply=request(origin,"POST","/hagency/api/v1/execution/replies",{"lease":reference,"reply":{"dispatchId":resumed_dispatch["id"],"executionId":"membership_resumed_execution","body":"explicit rebind fixture reply without model"}},device_token)["reply"]
             for _ in range(30):
                 if sql(DBS[0],"SELECT state FROM hagency_agent_v1.reply_outbox WHERE id='"+resumed_reply["id"]+"'",True)=="sent":break
                 time.sleep(0.5)
             else:raise RuntimeError("fresh resumed-generation reply did not reach Matrix")
             assert sql(DBS[0],"SELECT state FROM hagency_agent_v1.owner_events WHERE id='"+membership_dispatch["id"]+"'",True)=="unknown"
             print("PASS: actual puppet kick persisted departure through denied tool authorization; rejoin and resume did not restore authority, explicit owner rebind fenced old dispatch, independent binding remained active and fresh request replied")
-            request(origin,"POST","/api/hagency/v1/sessions/current/renew",{"accessToken":matrix_token},user_token)
-            request(origin,"POST","/api/hagency/v1/execution/leases/renew",{"lease":reference,"ttlMs":60000},device_token)
+            request(origin,"POST","/hagency/api/v1/sessions/current/renew",{"accessToken":matrix_token},user_token)
+            request(origin,"POST","/hagency/api/v1/execution/leases/renew",{"lease":reference,"ttlMs":60000},device_token)
             power_message=request(origin,"PUT","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/send/m.room.message/power_fence_probe",{"msgtype":"m.text","body":"power fixture execution","m.mentions":{"user_ids":[agent["puppetMxid"]]}},matrix_token)["event_id"]
             power_dispatch=None
             for _ in range(30):
-                events=request(origin,"POST","/api/hagency/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},device_token)["events"]
+                events=request(origin,"POST","/hagency/api/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},device_token)["events"]
                 power_dispatch=next((e for e in events if e["eventId"]==power_message),None)
                 if power_dispatch:break
                 time.sleep(0.5)
             assert power_dispatch is not None
-            request(origin,"POST","/api/hagency/v1/execution/events/ack",{"lease":reference,"dispatchId":power_dispatch["id"]},device_token)
+            request(origin,"POST","/hagency/api/v1/execution/events/ack",{"lease":reference,"dispatchId":power_dispatch["id"]},device_token)
             power_start={"lease":reference,"dispatchId":power_dispatch["id"],"executionId":"power_fence_execution"}
-            request(origin,"POST","/api/hagency/v1/execution/events/start",power_start,device_token)
+            request(origin,"POST","/hagency/api/v1/execution/events/start",power_start,device_token)
             power_path="/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/state/m.room.power_levels"
             original_power=request(origin,"GET",power_path,token=matrix_token)
             denied_power=json.loads(json.dumps(original_power))
             denied_power.setdefault("events",{})["m.room.message"]=100
             denied_power.setdefault("users",{})[agent["puppetMxid"]]=0
             request(origin,"PUT",power_path,denied_power,matrix_token)
-            request(origin,"POST","/api/hagency/v1/execution/events/authorize-tool",power_start,device_token,expected_status=401)
+            request(origin,"POST","/hagency/api/v1/execution/events/authorize-tool",power_start,device_token,expected_status=401)
             assert sql(DBS[0],"SELECT state FROM hagency_agent_v1.owner_events WHERE id='"+power_dispatch["id"]+"'",True)=="unknown"
             request(origin,"PUT",power_path,original_power,matrix_token)
-            request(origin,"POST","/api/hagency/v1/execution/events/authorize-tool",power_start,device_token,expected_status=409)
+            request(origin,"POST","/hagency/api/v1/execution/events/authorize-tool",power_start,device_token,expected_status=409)
             assert sql(DBS[0],"SELECT count(*) FROM hagency_agent_v1.reply_outbox WHERE owner_event_id='"+power_dispatch["id"]+"'",True)=="0"
             print("PASS: real Matrix power-level speaking denial permanently fenced running dispatch; restoring power did not authorize old tool execution or create a reply")
-            request(origin,"POST","/api/hagency/v1/sessions/current/renew",{"accessToken":matrix_token},user_token)
-            request(origin,"DELETE","/api/hagency/v1/agents/"+agent["id"],token=user_token)
+            request(origin,"POST","/hagency/api/v1/sessions/current/renew",{"accessToken":matrix_token},user_token)
+            request(origin,"DELETE","/hagency/api/v1/agents/"+agent["id"],token=user_token)
             for _ in range(30):
-                retired=request(origin,"GET","/api/hagency/v1/agents/"+agent["id"],token=user_token)["agent"]
+                retired=request(origin,"GET","/hagency/api/v1/agents/"+agent["id"],token=user_token)["agent"]
                 if retired["state"]=="retired":break
                 time.sleep(0.5)
             else:raise RuntimeError("durable retirement did not converge")
@@ -749,7 +789,7 @@ try:
                 if request(origin,"GET",member_path,token=registration["as_token"])["membership"]=="leave":break
                 time.sleep(0.5)
             else:raise RuntimeError("late Matrix join escaped terminal reconciliation")
-            assert request(origin,"GET","/api/hagency/v1/agents/"+agent["id"],token=user_token)["agent"]["ownerUserId"]==session["userId"]
+            assert request(origin,"GET","/hagency/api/v1/agents/"+agent["id"],token=user_token)["agent"]["ownerUserId"]==session["userId"]
             print("PASS: retirement physically left Room; a late real Matrix join was removed while permanent owner identity remained intact")
             SUCCESS = True
 finally:

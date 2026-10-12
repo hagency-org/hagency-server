@@ -199,65 +199,33 @@ fn offline_request_ttl_is_bounded_and_configurable() {
 }
 
 #[test]
-fn home_page_paths_are_relative_to_the_host_config_and_urls_stay_remote() {
+fn removed_home_page_setting_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let path = fixture(dir.path()).canonicalize().unwrap();
-    assert!(Config::load(&path).unwrap().home_page.is_none());
-    for source in [
-        "home.html",
-        "/srv/site/home.html",
-        "https://example.com/home?lang=zh",
-    ] {
-        std::fs::write(&path, format!("home_page = {source:?}\n{HOST}")).unwrap();
-        let conf = Config::load(&path).unwrap();
-        let expected = if source == "home.html" {
-            path.parent()
-                .unwrap()
-                .join(source)
-                .to_str()
-                .unwrap()
-                .to_owned()
-        } else {
-            source.to_owned()
-        };
-        assert_eq!(conf.home_page.as_deref(), Some(expected.as_str()));
-    }
-    for source in [
-        "",
-        "  ",
-        "http://",
-        "https://user:secret@example.com",
-        "ftp://example.com/home",
-    ] {
-        std::fs::write(&path, format!("home_page = {source:?}\n{HOST}")).unwrap();
-        assert!(Config::load(&path).is_err(), "accepted {source:?}");
-    }
+    let path = fixture(dir.path());
+    std::fs::write(&path, format!("home_page = \"home.html\"\n{HOST}")).unwrap();
+    assert!(
+        Config::load(&path)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("invalid Hagency configuration")
+    );
 }
 
 #[tokio::test]
-async fn configured_public_home_and_console_serve_independent_documents() {
-    use hagency_server::{frontend::Frontend, home_page::HomePage};
+async fn public_home_and_console_use_the_same_frontend_and_content_policy() {
+    use hagency_server::frontend::Frontend;
     use salvo::{
         prelude::*,
         test::{ResponseExt, TestClient},
     };
     let dir = tempfile::tempdir().unwrap();
     let path = fixture(dir.path());
-    std::fs::write(&path, format!("home_page = \"home.html\"\n{HOST}")).unwrap();
-    std::fs::write(
-        path.parent().unwrap().join("home.html"),
-        "<h1>Public homepage</h1>",
-    )
-    .unwrap();
     let conf = Config::load(&path).unwrap();
     let public_dir = conf.public_dir.as_ref().unwrap();
     std::fs::create_dir_all(public_dir).unwrap();
-    std::fs::write(public_dir.join("index.html"), "<h1>Console SPA</h1>").unwrap();
-    let service = Service::new(
-        Router::new()
-            .push(Router::new().get(HomePage::new(&conf)))
-            .push(Frontend::new(&conf).router()),
-    );
+    std::fs::write(public_dir.join("index.html"), "<h1>Hagency frontend</h1>").unwrap();
+    let service = Service::new(Frontend::new(&conf).router());
     for route in [
         "/",
         "/login",
@@ -270,17 +238,22 @@ async fn configured_public_home_and_console_serve_independent_documents() {
             .send(&service)
             .await;
         assert_eq!(response.status_code, Some(StatusCode::OK));
-        assert_eq!(
-            response.headers().contains_key("content-security-policy"),
-            route != "/"
-        );
+        assert!(response.headers().contains_key("content-security-policy"));
         assert_eq!(
             response.take_string().await.unwrap(),
-            if route == "/" {
-                "<h1>Public homepage</h1>"
-            } else {
-                "<h1>Console SPA</h1>"
-            }
+            "<h1>Hagency frontend</h1>"
         );
     }
+    for route in ["/unknown", "/_matrix/client/versions", "/auth/"] {
+        let response = TestClient::get(format!("http://127.0.0.1:8088{route}"))
+            .add_header("host", "127.0.0.1:8088", true)
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::NOT_FOUND));
+    }
+    let response = TestClient::get("http://other.test/")
+        .add_header("host", "other.test", true)
+        .send(&service)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::FORBIDDEN));
 }

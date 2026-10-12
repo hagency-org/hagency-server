@@ -204,7 +204,7 @@ async fn postgres_room_discovery_and_roster_require_live_independent_memberships
     .with_domain(domain.clone(), gateway);
     let service = Service::new(app.router());
     let reply_policy = format!(
-        "https://example.test/api/hagency/v1/bindings/{}/reply-policy",
+        "https://example.test/hagency/api/v1/bindings/{}/reply-policy",
         created.binding.id
     );
     assert!(
@@ -256,14 +256,14 @@ async fn postgres_room_discovery_and_roster_require_live_independent_memberships
         );
     }
 
-    let list = format!("/api/hagency/v1/projects/{}/rooms", project.id);
+    let list = format!("/hagency/api/v1/projects/{}/rooms", project.id);
     let roster = format!(
         "{list}/{}/agents",
         percent_encoding::utf8_percent_encode(&room, percent_encoding::NON_ALPHANUMERIC)
     );
     // Being a member/Agent owner is not a policy-administrator grant. UI hints
     // follow the same actual Matrix thresholds as the write endpoints.
-    let project_state = format!("/api/hagency/v1/projects/{}/service-state", project.id);
+    let project_state = format!("/hagency/api/v1/projects/{}/service-state", project.id);
     let room_state = format!(
         "{list}/{}/service-state",
         percent_encoding::utf8_percent_encode(&room, percent_encoding::NON_ALPHANUMERIC)
@@ -277,7 +277,7 @@ async fn postgres_room_discovery_and_roster_require_live_independent_memberships
         false
     );
     let policy_path = format!(
-        "https://example.test/api/hagency/v1/projects/{}/creation-policy",
+        "https://example.test/hagency/api/v1/projects/{}/creation-policy",
         project.id
     );
     let denied = TestClient::put(&policy_path).add_header("host","example.test",true).bearer_auth(&caller_token)
@@ -327,7 +327,7 @@ async fn postgres_room_discovery_and_roster_require_live_independent_memberships
     assert!(visible["rooms"][0]["topic"].is_null());
     let projects = get(
         &service,
-        "/api/hagency/v1/projects",
+        "/hagency/api/v1/projects",
         &caller_token,
         StatusCode::OK,
     )
@@ -350,7 +350,7 @@ async fn postgres_room_discovery_and_roster_require_live_independent_memberships
         .unwrap()["content"]["name"] = json!("Renamed Project");
     let renamed = get(
         &service,
-        "/api/hagency/v1/projects",
+        "/hagency/api/v1/projects",
         &caller_token,
         StatusCode::OK,
     )
@@ -367,7 +367,7 @@ async fn postgres_room_discovery_and_roster_require_live_independent_memberships
     assert!(
         get(
             &service,
-            "/api/hagency/v1/projects",
+            "/hagency/api/v1/projects",
             &room_only_token,
             StatusCode::OK
         )
@@ -686,7 +686,7 @@ async fn readiness_guard_exercise(url: &str) {
     );
     let absent = get(
         &service,
-        "/api/hagency/v1/commands/agent.create/ready-create",
+        "/hagency/api/v1/commands/agent.create/ready-create",
         &credential,
         StatusCode::NOT_FOUND,
     )
@@ -695,7 +695,7 @@ async fn readiness_guard_exercise(url: &str) {
     let create =
         json!({"displayName":"new accepted only after readiness","idempotencyKey":"ready-create"});
     let bind = json!({"projectId":project.id,"roomId":second,"idempotencyKey":"ready-bind"});
-    let bind_path = format!("/api/hagency/v1/agents/{}/bindings", existing.agent.id);
+    let bind_path = format!("/hagency/api/v1/agents/{}/bindings", existing.agent.id);
     let mut db = AsyncPgConnection::establish(url).await.unwrap();
     #[derive(diesel::QueryableByName, Debug, PartialEq)]
     struct Counts {
@@ -717,12 +717,12 @@ async fn readiness_guard_exercise(url: &str) {
     assert_eq!(before.bindings, 1);
     assert_eq!(before.commands, 2);
     for (path, body) in [
-        ("/api/hagency/v1/agents", &create),
+        ("/hagency/api/v1/agents", &create),
         (bind_path.as_str(), &bind),
     ] {
         let mut response = TestClient::post(format!("https://example.test{path}"))
             .add_header("host", "example.test", true)
-            .bearer_auth(if path == "/api/hagency/v1/agents" {
+            .bearer_auth(if path == "/hagency/api/v1/agents" {
                 &device.token
             } else {
                 &credential
@@ -736,7 +736,7 @@ async fn readiness_guard_exercise(url: &str) {
             "appservice_startup_not_ready"
         );
     }
-    let response = TestClient::post("https://example.test/api/hagency/v1/agents")
+    let response = TestClient::post("https://example.test/hagency/api/v1/agents")
         .add_header("host", "example.test", true)
         .bearer_auth(&credential)
         .json(&create)
@@ -747,7 +747,7 @@ async fn readiness_guard_exercise(url: &str) {
         Some(StatusCode::UNAUTHORIZED),
         "a user session cannot select an execution device for creation"
     );
-    let response = TestClient::post("https://example.test/api/hagency/v1/agents")
+    let response = TestClient::post("https://example.test/hagency/api/v1/agents")
         .add_header("host", "example.test", true)
         .bearer_auth("not-a-real-session")
         .json(&create)
@@ -787,7 +787,7 @@ async fn readiness_guard_exercise(url: &str) {
     assert_eq!(existing_after.generation, existing.agent.generation);
     let state = get(
         &service,
-        "/api/hagency/v1/readiness",
+        "/hagency/api/v1/readiness",
         &credential,
         StatusCode::OK,
     )
@@ -828,12 +828,12 @@ async fn readiness_guard_exercise(url: &str) {
     let calls_after_probe = matrix_calls.as_ref().load(Ordering::SeqCst);
     assert!(calls_after_probe >= 3);
     for (path, body) in [
-        ("/api/hagency/v1/agents", &create),
+        ("/hagency/api/v1/agents", &create),
         (bind_path.as_str(), &bind),
     ] {
         let mut response = TestClient::post(format!("https://example.test{path}"))
             .add_header("host", "example.test", true)
-            .bearer_auth(if path == "/api/hagency/v1/agents" {
+            .bearer_auth(if path == "/hagency/api/v1/agents" {
                 &device.token
             } else {
                 &credential
@@ -844,7 +844,7 @@ async fn readiness_guard_exercise(url: &str) {
         assert_eq!(response.status_code, Some(StatusCode::ACCEPTED));
         let result = response.take_json::<Value>().await.unwrap();
         assert_eq!(result["commandState"], "pending");
-        if path == "/api/hagency/v1/agents" {
+        if path == "/hagency/api/v1/agents" {
             assert!(result["creation"].get("binding").is_none());
             assert_eq!(result["creation"]["agent"]["state"], "creating");
         } else {
@@ -854,7 +854,7 @@ async fn readiness_guard_exercise(url: &str) {
     }
     let known = get(
         &service,
-        "/api/hagency/v1/commands/agent.create/ready-create",
+        "/hagency/api/v1/commands/agent.create/ready-create",
         &credential,
         StatusCode::ACCEPTED,
     )
@@ -863,7 +863,7 @@ async fn readiness_guard_exercise(url: &str) {
     assert!(known["creation"].get("binding").is_none());
     let foreign = get(
         &service,
-        "/api/hagency/v1/commands/agent.create/ready-create",
+        "/hagency/api/v1/commands/agent.create/ready-create",
         &foreign_credential,
         StatusCode::NOT_FOUND,
     )
@@ -874,7 +874,7 @@ async fn readiness_guard_exercise(url: &str) {
     );
     let devices = get(
         &service,
-        "/api/hagency/v1/devices",
+        "/hagency/api/v1/devices",
         &credential,
         StatusCode::OK,
     )
@@ -892,7 +892,7 @@ async fn readiness_guard_exercise(url: &str) {
             .await
             .unwrap();
     let device_path = format!(
-        "/api/hagency/v1/agents/{}/execution-device",
+        "/hagency/api/v1/agents/{}/execution-device",
         existing.agent.id
     );
     let response = TestClient::put(format!("https://example.test{device_path}"))
@@ -925,14 +925,14 @@ async fn readiness_guard_exercise(url: &str) {
     get(
         &service,
         &format!(
-            "/api/hagency/v1/agents/{}/execution-instance",
+            "/hagency/api/v1/agents/{}/execution-instance",
             existing.agent.id
         ),
         &credential,
         StatusCode::BAD_REQUEST,
     )
     .await;
-    let direct_path = format!("/api/hagency/v1/agents/{}/owner-direct", existing.agent.id);
+    let direct_path = format!("/hagency/api/v1/agents/{}/owner-direct", existing.agent.id);
     let direct = get(&service, &direct_path, &credential, StatusCode::OK).await;
     assert!(direct["ownerDirectRoomId"].is_null() && direct["binding"].is_null());
     let after = sql_query(query)
@@ -972,7 +972,7 @@ async fn postgres_public_discovery_identifies_hagency_without_granting_authority
     .unwrap();
     let service =
         Service::new(App::new(store, verifier, public, issuer, "example.test".into()).router());
-    let mut reply = TestClient::get("https://example.test/api/hagency/v1/discovery")
+    let mut reply = TestClient::get("https://example.test/hagency/api/v1/discovery")
         .add_header("host", "example.test", true)
         .send(&service)
         .await;
@@ -1000,12 +1000,12 @@ async fn postgres_public_discovery_identifies_hagency_without_granting_authority
         ])
     );
     assert!(value.get("token").is_none());
-    let reply = TestClient::get("https://example.test/api/hagency/v1/projects")
+    let reply = TestClient::get("https://example.test/hagency/api/v1/projects")
         .add_header("host", "example.test", true)
         .send(&service)
         .await;
     assert_eq!(reply.status_code, Some(StatusCode::UNAUTHORIZED));
-    let reply = TestClient::get("https://other.test/api/hagency/v1/discovery")
+    let reply = TestClient::get("https://other.test/hagency/api/v1/discovery")
         .add_header("host", "other.test", true)
         .send(&service)
         .await;

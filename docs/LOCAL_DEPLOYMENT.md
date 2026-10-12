@@ -25,7 +25,7 @@ volumes; do not use `down -v` to solve a missing database or password mismatch.
 just check-config config/dev/hagency.toml
 curl --fail --silent --show-error http://127.0.0.1:8088/healthz
 curl --fail --silent --show-error http://127.0.0.1:8088/readyz
-curl --fail --silent --show-error http://127.0.0.1:8088/api/hagency/v1/discovery
+curl --fail --silent --show-error http://127.0.0.1:8088/hagency/api/v1/discovery
 curl --fail --silent --show-error http://127.0.0.1:8088/_matrix/client/versions
 curl --fail --silent --show-error http://127.0.0.1:8088/_matrix/client/v1/auth_metadata
 curl --fail --silent --show-error http://127.0.0.1:8088/auth/.well-known/openid-configuration

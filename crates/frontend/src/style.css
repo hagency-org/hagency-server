@@ -839,3 +839,33 @@ svg { display: block; }
 
 .hg-button:focus-visible {outline:2px solid hsl(var(--ring));outline-offset:2px}
 .hg-access-denied {display:flex;align-items:center;justify-content:center;min-height:min(32rem,calc(100vh - 8rem));padding:1rem}
+
+/* Public welcome uses the same Soft Orbit tokens and buttons as the console. */
+.hg-welcome { min-height:100svh; display:flex; flex-direction:column; }
+.hg-welcome-header { width:100%; max-width:76rem; margin:0 auto; padding:1.5rem 2rem; display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+.hg-welcome-brand { display:flex; align-items:center; gap:.65rem; font-size:1.15rem; font-weight:750; letter-spacing:-.03em; }
+.hg-welcome-controls { display:flex; align-items:center; gap:.75rem; }
+.hg-welcome-controls select { width:auto; min-height:2.75rem; font-size:.8rem; }
+.hg-welcome-theme { display:grid; place-items:center; width:2.75rem; height:2.75rem; border:1px solid hsl(var(--border)); border-radius:.5rem; background:hsl(var(--card)); cursor:pointer; }
+.hg-welcome-theme:hover { background:hsl(var(--accent)); }
+.hg-welcome a:focus-visible,.hg-welcome-theme:focus-visible { outline:2px solid hsl(var(--ring)); outline-offset:4px; }
+.hg-welcome-main { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:2rem 1.25rem 6rem; }
+.hg-welcome-card { width:100%; max-width:28rem; padding:2.5rem; text-align:center; border-radius:1.5rem; box-shadow:0 20px 60px -24px hsl(var(--foreground)/.14); }
+.hg-welcome-mark { width:3.5rem; height:3.5rem; display:grid; place-items:center; margin:0 auto 1.75rem; border-radius:1.1rem; background:hsl(var(--accent)); color:hsl(var(--violet)); }
+.hg-welcome-card h1 { font-size:1.85rem; line-height:1.25; letter-spacing:-.045em; font-weight:750; }
+.hg-welcome-description { margin-top:.85rem; color:hsl(var(--muted-foreground)); font-size:.95rem; line-height:1.7; }
+.hg-welcome-server { display:inline-flex; align-items:center; justify-content:center; gap:.4rem; max-width:100%; margin-top:1.25rem; padding:.3rem .65rem; border-radius:.5rem; background:hsl(var(--muted)); font-size:.75rem; color:hsl(var(--muted-foreground)); overflow-wrap:anywhere; }
+.hg-welcome-server svg { flex-shrink:0; }
+.hg-welcome-signin { display:grid; gap:1rem; margin-top:2rem; }
+.hg-welcome-primary { width:100%; gap:.65rem; }
+.hg-welcome-links { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:1.5rem; padding-top:1.5rem; margin-top:1.5rem; border-top:1px solid hsl(var(--border)); font-size:.8rem; }
+.hg-welcome-links a { color:hsl(var(--muted-foreground)); text-decoration:none; }
+.hg-welcome-links a:hover { color:hsl(var(--primary)); text-decoration:underline; }
+.hg-welcome-caption { margin-top:1.5rem; max-width:28rem; text-align:center; font-size:.75rem; color:hsl(var(--muted-foreground)); }
+@media(max-width:480px) {
+  .hg-welcome-header { padding:1rem; }
+  .hg-welcome-controls { gap:.5rem; }
+  .hg-welcome-main { padding:1.5rem 1rem 3rem; }
+  .hg-welcome-card { padding:2rem 1.5rem; }
+  .hg-welcome-card h1 { font-size:1.65rem; }
+}

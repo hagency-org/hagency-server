@@ -17,7 +17,9 @@ resources/   # 生成的前端与 Pasion 资源，不提交到 Git
 ```
 
 前端将 Padmin 的通用 Matrix/Pasion 管理页面与新的永久 Agent 归属、Project/Room 绑定和创建政策界面结合。
-Rust 后端在 `/` 提供无需登录的站点首页；成员 Home 位于 `/hagency/home`，项目和我的 Agent 位于 `/hagency/projects`、`/hagency/agents`，管理员页面位于 `/admin` 下。Matrix 路径为 `/_matrix`，Palpo 管理 API 为 `/_palpo`，Matrix 发现路径为 `/.well-known/matrix`，原生 Hagency API 为 `/api/hagency/v1`，网页管理 BFF 为 `/api/browser/hagency/v1`，Pasion 挂载在 `/auth/`。
+Rust 后端在 `/` 提供无需登录的站点首页；成员 Home 位于 `/hagency/home`，项目和我的 Agent 位于 `/hagency/projects`、`/hagency/agents`，管理员页面位于 `/admin` 下。Matrix 路径为 `/_matrix`，Palpo 管理 API 为 `/_palpo`，Matrix 发现路径为 `/.well-known/matrix`，原生 Hagency API 为 `/hagency/api/v1`，网页管理 BFF 为 `/hagency/api/browser/v1`，Pasion 挂载在 `/auth/`。
+
+网页登录、会话查询和退出分别使用 `/hagency/api/login/token`、`/hagency/api/session` 和 `/hagency/api/logout`。Hagency 自定义 API 统一位于 `/hagency/` 下；`/_matrix/` 仅承载 Matrix 协议定义的接口，包括标准 Appservice 回调。旧 `/api/hagency/v1`、`/api/browser/hagency/v1` 及网页会话地址返回 404。升级时需同步更新 Server、Client/Desktop 和网页资源；此次路径变更不改变 OAuth issuer 或存储中的用户身份。
 `/healthz` 表示进程 HTTP 服务可访问，不代表异步账号同步已经完成。
 
 ## 目录
@@ -84,7 +86,7 @@ just dev
 前端 Rust/CSS 修改会重新生成 WASM 资源，运行中的宿主直接读取这些资源，刷新浏览器即可生效。仅前端修改不会重启后端，不需要重新构建 Docker 镜像。
 
 浏览器 access/refresh token 只保存在内存中。整页刷新后 Project/Agent 页面通过
-`/api/session` 验证 HttpOnly 会话并使用封闭 BFF；通用 Matrix 管理需要 bearer 时重新
+`/hagency/api/session` 验证 HttpOnly 会话并使用封闭 BFF；通用 Matrix 管理需要 bearer 时重新
 进入 Pasion PKCE。会话到期或撤销需重新登录，token 不写入浏览器持久存储。
 
 开发 Palpo 源码时，使用具有 MatrixServer API 的本地仓库：
@@ -110,7 +112,7 @@ Pasion 管理密码、注册、账号状态和管理员角色，后台 provision
 Hagency 保存永久 Agent owner、Project/Room 创建权和持久化投递，不建立另一套密码账号库。
 
 宿主创建预留的公开 OAuth 客户端，并自动推导 `/oauth/callback`，无需客户端密钥或单独部署前端。
-`POST /api/login/token` 验证 token 后发放 HttpOnly 会话 cookie 和 CSRF token。
+`POST /hagency/api/login/token` 验证 token 后发放 HttpOnly 会话 cookie 和 CSRF token。
 Palpo 管理接口还在宿主边界检查 Pasion 实时 introspection 与精确的 `urn:palpo:admin:*` scope；即使账号是管理员，仅有成员 scope 的 token 也无法管理服务器。
 关闭 introspection 缓存后，撤销角色或 token 会在下一次请求生效。Pasion 自身的管理 API 也检查 scope 和当前角色。
 
@@ -122,7 +124,7 @@ Palpo 管理接口还在宿主边界检查 Pasion 实时 introspection 与精确
 ## 客户端 Pasion 登录与自助接入
 
 `chrislearn/hagency-client` 使用用户自己的 Matrix 账号通过 Pasion PKCE 登录。
-原生 `/api/hagency/v1` 核验 Pasion proof 与 Matrix whoami 后建立短期用户授权、
+原生 `/hagency/api/v1` 核验 Pasion proof 与 Matrix whoami 后建立短期用户授权、
 登记本地设备；拒绝 browser Cookie/Origin。设备轮换/撤销、session 与真实时钟在
 敏感事务内重验。
 
@@ -131,31 +133,19 @@ Agent 的 owner 永久固定，Project/Room bindings 独立。Space 管理者设
 创建权和 allow/deny 清单，deny 优先；禁止新建不会暂停已有 Agent。本地 Codex、
 资源额度和工具风险决策由客户端管理。
 
-网页使用封闭 `/api/browser/hagency/v1` BFF，页面为 `/hagency/projects` 与
+网页使用封闭 `/hagency/api/browser/v1` BFF，页面为 `/hagency/projects` 与
 `/hagency/agents`，不向网页返回原生授权/设备凭据。详见 [Agent 架构](OPERATIONS.zh-CN.md)。
 
-## 自定义公共首页
+## 公开首页
 
-在 **hagency.toml** 顶层、任何 TOML 表之前设置 `home_page`：
+公开路径 `/` 与 `/login` 使用同一登录页面，沿用控制台的 Soft Orbit 样式、
+中英文切换和明暗主题。使用个人账号登录后进入 `/hagency/home`；已有经过验证的
+网页会话可以直接进入工作台。启用 Pasion 时显示创建账号与账号中心入口。
+管理页面继续执行原有权限检查。
 
-```toml
-# 选择本地 HTML 文件或远程 HTTP(S) 页面。
-home_page = "home.html"
-# home_page = "https://example.com/home.html"
-```
-
-`GET /` 无需登录或账户校验即可访问。未配置时显示内置欢迎页和控制台入口。
-本地相对路径以 `hagency.toml` 所在目录为基准，每次请求重新读取；文件无法读取时
-返回 503 并记录日志。远程 URL 每次请求抓取，整个请求限时 10 秒；失败时记录日志，
-并像独立 Palpo 一样显示内置欢迎页。保留远程内容类型，不向远程转发浏览器 Cookie
-或授权信息，也不复制远程响应的 Cookie。
-
-此设置提供一个页面，不托管整个静态目录，也不代理其子资源。使用内联资源或明确的
-资源 URL；相对资源地址相对于本站 `/`，而非远程页面 URL 或本地文件目录。
-自定义 HTML 可使用自己的脚本、样式，不套用控制台 SPA 的内容策略。
-`/login`、`/hagency/home`、`/hagency/projects`、`/hagency/agents`、`/admin`、`/auth/`
-及所有 API 的认证与授权检查保留。Palpo 组件配置中的 `home_page` 不用于 Hagency。
-修改设置后重启服务器；仅修改页面内容无需重启。Docker 中的本地文件须在容器内可读。
+首页是随前端一起构建的页面，不再提供 `home_page` 配置、本地 HTML 覆盖或
+远程页面获取。升级时请删除 hagency.toml 中已有的 `home_page` 字段。
+Palpo 组件的首页配置不控制 Hagency 首页。
 
 ## 组件配置与首次管理员
 

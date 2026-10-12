@@ -552,29 +552,6 @@ fn PasionDiagnosticsPanel(base_url: String) -> Element {
                 }
             }
 
-            // Check 4: Consent/account endpoint (common MAS path)
-            let consent_url = format!("{url}/_matrix/consent");
-            match Request::get(&consent_url).send().await {
-                Ok(resp) => {
-                    checks.push(DiagnosticCheck {
-                        label: "Consent Endpoint".to_string(),
-                        status: if resp.status() < 500 {
-                            DiagnosticStatus::Pass
-                        } else {
-                            DiagnosticStatus::Warn
-                        },
-                        detail: format!("HTTP {}", resp.status()),
-                    });
-                }
-                Err(_) => {
-                    checks.push(DiagnosticCheck {
-                        label: "Consent Endpoint".to_string(),
-                        status: DiagnosticStatus::Skipped,
-                        detail: "Not available (may not apply)".to_string(),
-                    });
-                }
-            }
-
             results.set(checks);
             running.set(false);
         });

@@ -1,6 +1,6 @@
 # Hagency service discovery / 服务识别
 
-`GET /api/hagency/v1/discovery` is public native-client metadata. It grants no session or device authority and returns `Cache-Control: no-store`. The request must carry the exact public Host and no browser Origin/Cookie or forwarded-host header.
+`GET /hagency/api/v1/discovery` is public native-client metadata. It grants no session or device authority and returns `Cache-Control: no-store`. The request must carry the exact public Host and no browser Origin/Cookie or forwarded-host header.
 
 原生客户端登录前须验证 `product == "hagency-server"`、支持的 `protocolVersion == 3`，以及 `capabilities` 同时包含 `pasion-oauth` 和 `owner-agent-appservice-v1`。普通 Matrix 服务不是 Hagency 服务；不能仅凭 `serviceMxid` 字段存在判定。`version` 是当前 Cargo package version，不是 wire protocol version。HTTPS 认证与 issuer 校验仍不可省略。
 
@@ -31,4 +31,4 @@ Existing fields remain: `serverName`, `homeserver`, `serviceMxid`, `issuer`, `au
 
 Regression: PostgreSQL-backed real routing proves unauthenticated metadata retrieval, explicit product/version/capabilities, no issued credential/cookie, protected Projects still unauthorized, and mismatched Host rejection.
 
-Protocol 3 assigns each new Agent to the current authenticated owner device. `executionDeviceId` is nullable for an unassigned identity; one device may execute several Agents. `PUT /api/hagency/v1/agents/{id}/execution-device` accepts only `expectedGeneration`, targets the authenticated device, and uses Agent generation as CAS. The removed execution-instance resource has no compatibility handler. Domain schema version 4 refuses earlier versions at startup; offline maintenance is explicit and backed up.
+Protocol 3 assigns each new Agent to the current authenticated owner device. `executionDeviceId` is nullable for an unassigned identity; one device may execute several Agents. `PUT /hagency/api/v1/agents/{id}/execution-device` accepts only `expectedGeneration`, targets the authenticated device, and uses Agent generation as CAS. The removed execution-instance resource has no compatibility handler. Domain schema version 4 refuses earlier versions at startup; offline maintenance is explicit and backed up.

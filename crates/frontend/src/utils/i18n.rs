@@ -70,6 +70,34 @@ impl I18n {
 
     fn load_en() -> HashMap<String, String> {
         let mut m = HashMap::new();
+        m.insert("welcome.title".into(), "Welcome to Hagency".into());
+        m.insert(
+            "welcome.description".into(),
+            "Sign in to work with your agents, projects and conversations.".into(),
+        );
+        m.insert("welcome.sign_in".into(), "Sign in".into());
+        m.insert("welcome.signing_in".into(), "Connecting…".into());
+        m.insert("welcome.continue".into(), "Open your workspace".into());
+        m.insert(
+            "welcome.signed_in".into(),
+            "You’re signed in. Your workspace is ready.".into(),
+        );
+        m.insert(
+            "welcome.sign_in_hint".into(),
+            "Use your account to continue.".into(),
+        );
+        m.insert("welcome.loading".into(), "Loading sign-in…".into());
+        m.insert(
+            "welcome.unavailable".into(),
+            "Sign-in is unavailable on this server.".into(),
+        );
+        m.insert("welcome.create_account".into(), "Create an account".into());
+        m.insert("welcome.account_links".into(), "Account options".into());
+        m.insert(
+            "welcome.caption".into(),
+            "A shared place for your projects and agents.".into(),
+        );
+        m.insert("welcome.theme".into(), "Switch appearance".into());
 
         // Auth
         m.insert("auth.welcome".into(), "Welcome to {name}".into());
@@ -1169,6 +1197,32 @@ impl I18n {
 
     fn load_zh_cn() -> HashMap<String, String> {
         let mut m = HashMap::new();
+        m.insert("welcome.title".into(), "欢迎来到 Hagency".into());
+        m.insert(
+            "welcome.description".into(),
+            "登录后，开始与 Agent 协作，管理项目和对话。".into(),
+        );
+        m.insert("welcome.sign_in".into(), "登录".into());
+        m.insert("welcome.signing_in".into(), "正在跳转…".into());
+        m.insert("welcome.continue".into(), "进入工作台".into());
+        m.insert(
+            "welcome.signed_in".into(),
+            "你已登录，可以进入工作台。".into(),
+        );
+        m.insert("welcome.sign_in_hint".into(), "使用你的账号继续。".into());
+        m.insert("welcome.loading".into(), "正在加载登录…".into());
+        m.insert(
+            "welcome.unavailable".into(),
+            "此服务器暂未开放登录。".into(),
+        );
+        m.insert("welcome.create_account".into(), "创建账号".into());
+        m.insert("welcome.account_links".into(), "账号选项".into());
+        m.insert(
+            "welcome.caption".into(),
+            "让项目与 Agent 在同一个空间协作。".into(),
+        );
+        m.insert("welcome.theme".into(), "切换明暗主题".into());
+
         m.insert("home.title".into(), "首页".into());
         m.insert(
             "home.description".into(),

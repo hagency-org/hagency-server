@@ -278,10 +278,10 @@ async fn run() -> anyhow::Result<()> {
     }
     let mut router = router
         .push(browser_auth.router())
+        .push(Router::with_path("hagency/api/{**path}").goal(unknown_hagency_api))
         .push(Router::with_path("api/{**path}").goal(unknown_hagency_api))
         .push(matrix_router)
         .push(Router::with_path("healthz").get(health))
-        .push(Router::new().get(hagency_server::home_page::HomePage::new(&conf)))
         .push(Frontend::new(&conf).router());
     if let Some(pasion) = &pasion {
         router = Router::new()

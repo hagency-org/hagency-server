@@ -46,7 +46,7 @@ sender 对确定不可发送的 intent 调用 `block_reply_delivery`：未发送
 
 ## 显式恢复已知旧结果
 
-`POST /api/hagency/v1/execution/replies/reconcile-known` 使用当前有效设备授权，body
+`POST /hagency/api/v1/execution/replies/reconcile-known` 使用当前有效设备授权，body
 为 `{lease:{agentId,epoch},reply:{dispatchId,executionId,body}}`；未知字段拒绝。
 HTTP gateway 从 owner-checked dispatch 元数据取得真实 requester/Room，重新观察 facts，
 调用 `reconcile_known_reply`。不能从 DTO 提交 owner、Room、sender 或 Matrix facts。
@@ -107,7 +107,7 @@ must back up all databases and private keys before changing a deployed schema.
 
 ## Processing-start reactions
 
-`POST /api/hagency/v1/execution/events/processing` uses a device bearer and strict
+`POST /hagency/api/v1/execution/events/processing` uses a device bearer and strict
 `{lease,dispatchId,executionId}` (the Start DTO), returning
 `{processing:{id,dispatchId,executionId,state,matrixEventId}}`. Call only after the
 provider accepted the actual model turn. Enqueue requires an exact running

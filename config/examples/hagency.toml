@@ -8,10 +8,6 @@ palpo_config = "palpo.toml"
 pasion_config = "pasion.toml"
 # Compiled Dioxus assets; the host reads them on each request.
 public_dir = "../../resources/frontend/public"
-# Public homepage at / (no login). Omit for the built-in welcome page.
-# Local HTML paths are relative to this file; HTTP(S) URLs are fetched per request.
-# home_page = "../../resources/home.html"
-# home_page = "https://example.com/home.html"
 
 [queue]
 # Do not start stale offline requests; trusted server receipt time, 24h default.

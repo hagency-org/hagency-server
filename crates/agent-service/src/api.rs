@@ -81,7 +81,7 @@ impl App {
         ))
     }
     pub fn router(&self) -> Router {
-        Router::with_path("api/hagency/v1/{**path}")
+        Router::with_path("hagency/api/v1/{**path}")
             .hoop(salvo::size_limiter::max_size(131072))
             .goal(self.clone())
     }
@@ -171,10 +171,10 @@ impl App {
         }
         let path = req.uri().path().to_owned();
         let method = req.method().clone();
-        if path == "/api/hagency/v1/readiness" && method == salvo::http::Method::GET {
+        if path == "/hagency/api/v1/readiness" && method == salvo::http::Method::GET {
             return Ok(json!({"startupRoundtripConfirmed":self.startup_ready()}));
         }
-        if path == "/api/hagency/v1/discovery" && method == salvo::http::Method::GET {
+        if path == "/hagency/api/v1/discovery" && method == salvo::http::Method::GET {
             return Ok(
                 json!({"product":"hagency-server","version":env!("CARGO_PKG_VERSION"),
                 "capabilities":["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","processing-reaction-v1"],
@@ -190,7 +190,7 @@ impl App {
             access_token: String,
         }
         let now = now_ms();
-        if path == "/api/hagency/v1/sessions/pasion" && method == salvo::http::Method::POST {
+        if path == "/hagency/api/v1/sessions/pasion" && method == salvo::http::Method::POST {
             let body: Proof = req
                 .parse_json()
                 .await
@@ -206,7 +206,7 @@ impl App {
             .and_then(|h| h.strip_prefix("Bearer "))
             .ok_or(Error::Unauthorized("authentication_required"))?
             .to_owned();
-        if path == "/api/hagency/v1/sessions/current/renew" && method == salvo::http::Method::POST {
+        if path == "/hagency/api/v1/sessions/current/renew" && method == salvo::http::Method::POST {
             let body: Proof = req
                 .parse_json()
                 .await
@@ -214,17 +214,17 @@ impl App {
             let identity = self.verifier.verify(&body.access_token, now_ms()).await?;
             return Ok(json!({"validUntilMs":self.store.renew(&credential,identity,now).await?}));
         }
-        if path == "/api/hagency/v1/sessions/current" && method == salvo::http::Method::DELETE {
+        if path == "/hagency/api/v1/sessions/current" && method == salvo::http::Method::DELETE {
             self.store.sign_out(&credential).await?;
             return Ok(json!({"signedOut":true}));
         }
-        if path == "/api/hagency/v1/identity" && method == salvo::http::Method::GET {
+        if path == "/hagency/api/v1/identity" && method == salvo::http::Method::GET {
             let p = self.store.authenticate(&credential, now, false).await?;
             return Ok(
                 json!({"userId":p.user_id,"mxid":p.mxid,"subject":p.subject,"clientId":p.client_id,"validUntilMs":p.valid_until_ms,"issuer":self.issuer}),
             );
         }
-        if path == "/api/hagency/v1/devices" && method == salvo::http::Method::POST {
+        if path == "/hagency/api/v1/devices" && method == salvo::http::Method::POST {
             let body: RegisterDevice = req
                 .parse_json()
                 .await
@@ -236,13 +236,13 @@ impl App {
             )
             .map_err(|_| Error::Unavailable("encoding_failed"));
         }
-        if let Some(id) = path.strip_prefix("/api/hagency/v1/devices/")
+        if let Some(id) = path.strip_prefix("/hagency/api/v1/devices/")
             && method == salvo::http::Method::DELETE
         {
             self.store.revoke_device(&credential, id, now).await?;
             return Ok(json!({"revoked":true}));
         }
-        if path.starts_with("/api/hagency/v1/execution/") {
+        if path.starts_with("/hagency/api/v1/execution/") {
             let principal = self.store.authenticate(&credential, now_ms(), true).await?;
             let transport = self
                 .transport
@@ -255,7 +255,7 @@ impl App {
                 .1;
             return crate::api_transport::call(transport, gateway, &principal, req).await;
         }
-        let device_management = (path == "/api/hagency/v1/agents"
+        let device_management = (path == "/hagency/api/v1/agents"
             && method == salvo::http::Method::POST)
             || (path.ends_with("/execution-device") && method == salvo::http::Method::PUT);
         let principal = self
@@ -263,10 +263,10 @@ impl App {
             .authenticate(&credential, now, device_management)
             .await?;
         if let Some((domain, gateway)) = &self.domain {
-            if path == "/api/hagency/v1/agents" && method == salvo::http::Method::GET {
+            if path == "/hagency/api/v1/agents" && method == salvo::http::Method::GET {
                 return Ok(json!({"agents":domain.agents(&principal,now).await?}));
             }
-            if path == "/api/hagency/v1/projects" && method == salvo::http::Method::GET {
+            if path == "/hagency/api/v1/projects" && method == salvo::http::Method::GET {
                 let mut projects = Vec::new();
                 for project in domain.projects(&principal, now).await? {
                     if let Some(metadata) = gateway
@@ -285,7 +285,7 @@ impl App {
                     .await?;
                 return Ok(json!({"projects":projects}));
             }
-            if path == "/api/hagency/v1/projects/adopt" && method == salvo::http::Method::POST {
+            if path == "/hagency/api/v1/projects/adopt" && method == salvo::http::Method::POST {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase", deny_unknown_fields)]
                 struct Adopt {
@@ -300,10 +300,10 @@ impl App {
                     json!({"project":domain.register_project(&principal,&body.space_id,&facts,now_ms()).await?}),
                 );
             }
-            if path == "/api/hagency/v1/devices" && method == salvo::http::Method::GET {
+            if path == "/hagency/api/v1/devices" && method == salvo::http::Method::GET {
                 return Ok(json!({"devices":domain.owner_devices(&principal,now_ms()).await?}));
             }
-            if path == "/api/hagency/v1/agents" && method == salvo::http::Method::POST {
+            if path == "/hagency/api/v1/agents" && method == salvo::http::Method::POST {
                 if !self.startup_ready() {
                     return Err(Error::Unavailable("appservice_startup_not_ready"));
                 }

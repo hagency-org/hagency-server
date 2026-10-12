@@ -98,28 +98,28 @@ pub(crate) async fn call(
         reply: SubmitReply,
     }
     match path.as_str() {
-        "/api/hagency/v1/execution/history" => {
+        "/hagency/api/v1/execution/history" => {
             let b: History = body(req).await?;
             Ok(
                 json!({"history":t.execution_history(p,&b.agent_id,b.cursor.as_deref(),b.snapshot.as_ref(),now_ms()).await?}),
             )
         }
-        "/api/hagency/v1/execution/leases/acquire" => {
+        "/hagency/api/v1/execution/leases/acquire" => {
             let b: Acquire = body(req).await?;
             Ok(
                 json!({"lease":t.acquire_lease(p,&b.agent_id,b.ttl_ms,b.takeover,&b.history_snapshot,now_ms()).await?}),
             )
         }
-        "/api/hagency/v1/execution/leases/renew" => {
+        "/hagency/api/v1/execution/leases/renew" => {
             let b: Renew = body(req).await?;
             Ok(json!({"lease":t.renew_lease(p,&b.lease,b.ttl_ms,now_ms()).await?}))
         }
-        "/api/hagency/v1/execution/leases/release" => {
+        "/hagency/api/v1/execution/leases/release" => {
             let b: Ref = body(req).await?;
             t.release_lease(p, &b.lease, now_ms()).await?;
             Ok(json!({"released":true}))
         }
-        "/api/hagency/v1/execution/events/poll" => {
+        "/hagency/api/v1/execution/events/poll" => {
             let b: Poll = body(req).await?;
             let mut events = Vec::new();
             for header in t
@@ -145,33 +145,33 @@ pub(crate) async fn call(
             t.event_candidates(p, &b.lease, 1, now_ms()).await?;
             Ok(json!({"events":events}))
         }
-        "/api/hagency/v1/execution/events/ack" => {
+        "/hagency/api/v1/execution/events/ack" => {
             let b: Ack = body(req).await?;
             t.acknowledge(p, &b.lease, &b.dispatch_id, now_ms()).await?;
             Ok(json!({"acknowledged":true}))
         }
-        "/api/hagency/v1/execution/events/start" => {
+        "/hagency/api/v1/execution/events/start" => {
             let b: Start = body(req).await?;
             let f = facts(t, g, p, &b.dispatch_id).await?;
             Ok(
                 json!({"execution":t.start_execution(p,&b.lease,&b.dispatch_id,&b.execution_id,&f,now_ms()).await?}),
             )
         }
-        "/api/hagency/v1/execution/events/processing" => {
+        "/hagency/api/v1/execution/events/processing" => {
             let b: Start = body(req).await?;
             let f = facts(t, g, p, &b.dispatch_id).await?;
             Ok(
                 json!({"processing":t.mark_processing(p,&b.lease,&b.dispatch_id,&b.execution_id,&f,now_ms()).await?}),
             )
         }
-        "/api/hagency/v1/execution/events/authorize-tool" => {
+        "/hagency/api/v1/execution/events/authorize-tool" => {
             let b: Start = body(req).await?;
             let f = facts(t, g, p, &b.dispatch_id).await?;
             Ok(
                 json!({"dispatch":t.authorize_tool_execution(p,&b.lease,&b.dispatch_id,&b.execution_id,&f,now_ms()).await?}),
             )
         }
-        "/api/hagency/v1/execution/events/finish" => {
+        "/hagency/api/v1/execution/events/finish" => {
             let b: Finish = body(req).await?;
             t.finish_without_reply(
                 p,
@@ -184,12 +184,12 @@ pub(crate) async fn call(
             .await?;
             Ok(json!({"finished":true}))
         }
-        "/api/hagency/v1/execution/replies" => {
+        "/hagency/api/v1/execution/replies" => {
             let b: Reply = body(req).await?;
             let f = facts(t, g, p, &b.reply.dispatch_id).await?;
             Ok(json!({"reply":t.submit_reply(p,&b.lease,b.reply,&f,now_ms()).await?}))
         }
-        "/api/hagency/v1/execution/replies/reconcile-known" => {
+        "/hagency/api/v1/execution/replies/reconcile-known" => {
             let b: Reply = body(req).await?;
             let f = facts(t, g, p, &b.reply.dispatch_id).await?;
             Ok(json!({"reply":t.reconcile_known_reply(p,&b.lease,b.reply,&f,now_ms()).await?}))
