@@ -2638,3 +2638,288 @@ async fn postgres_thread_auto_reply_is_owner_opt_in_and_binding_scoped() {
         RouteResult::Queued { .. }
     ));
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_failed_request_feedback_is_idempotent_and_next_request_runs() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    let lease = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: f
+            .transport
+            .acquire_for_test(&f.p, &f.agent, 30_000, false, now)
+            .await
+            .unwrap()
+            .epoch,
+    };
+    let id = enqueue(&f, "failed-feedback").await;
+    running(&f, &lease, &id, "failed-feedback-run").await;
+    f.transport
+        .finish_without_reply(&f.p, &lease, &id, "failed-feedback-run", "failed", now)
+        .await
+        .unwrap();
+    let next = enqueue(&f, "after-failure").await;
+    let events = f
+        .transport
+        .event_candidates_for_binding(&f.p, &lease, &f.binding, 1, now)
+        .await
+        .unwrap();
+    assert!(events.iter().any(|e| e.id == next));
+    let candidates = f
+        .transport
+        .request_notice_candidates("", now)
+        .await
+        .unwrap();
+    let n = candidates.iter().find(|n| n.owner_event_id == id).unwrap();
+    assert_eq!(n.kind, "failed");
+    assert_eq!(n.event_id, "$failed-feedback");
+    let first = f
+        .transport
+        .claim_request_notice(&n.id, &f.facts, now)
+        .await
+        .unwrap();
+    assert!(
+        f.transport
+            .claim_request_notice(&n.id, &f.facts, now)
+            .await
+            .is_err()
+    );
+    f.transport
+        .confirm_request_notice(
+            &first.id,
+            first.worker_token.as_deref().unwrap(),
+            &Err(Error::Unavailable("matrix_unavailable")),
+            now,
+        )
+        .await
+        .unwrap();
+    let retry = f
+        .transport
+        .claim_request_notice(&n.id, &f.facts, now + 6000)
+        .await
+        .unwrap();
+    assert_eq!(retry.matrix_txn_id, first.matrix_txn_id);
+    f.transport
+        .confirm_request_notice(
+            &retry.id,
+            retry.worker_token.as_deref().unwrap(),
+            &Ok("$failure-notice:example.test".into()),
+            now + 6000,
+        )
+        .await
+        .unwrap();
+    assert!(
+        f.transport
+            .request_notice_candidates("", now + 6000)
+            .await
+            .unwrap()
+            .iter()
+            .all(|n| n.owner_event_id != id)
+    );
+    assert!(
+        TransportStore::reply_for_event(&mut f.transport.db.lock().await.unwrap(), &id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_offline_feedback_keeps_request_queued_and_stale_notice_is_suppressed() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    let id = enqueue(&f, "offline-feedback").await;
+    assert!(
+        f.transport
+            .request_notice_candidates("", now)
+            .await
+            .unwrap()
+            .iter()
+            .all(|n| n.owner_event_id != id)
+    );
+    {
+        let mut db = f.transport.db.lock().await.unwrap();
+        sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=$1 WHERE id=$2")
+            .bind::<BigInt, _>(now - 31_000)
+            .bind::<Text, _>(&id)
+            .execute(&mut *db)
+            .await
+            .unwrap();
+        sql_query("UPDATE hagency_agent_v1.request_notice_deployment SET since_ms=$1")
+            .bind::<BigInt, _>(now - 32_000)
+            .execute(&mut *db)
+            .await
+            .unwrap();
+    }
+    let candidates = f
+        .transport
+        .request_notice_candidates("", now)
+        .await
+        .unwrap();
+    let n = candidates.iter().find(|n| n.owner_event_id == id).unwrap();
+    assert_eq!(n.kind, "waiting");
+    let mut denied = f.facts.clone();
+    denied.puppet_can_send_message = false;
+    assert!(
+        f.transport
+            .claim_request_notice(&n.id, &denied, now)
+            .await
+            .is_err()
+    );
+    // A denial for one notice is permanent, but cannot cancel queued inference.
+    let e = TransportStore::dispatch(&mut f.transport.db.lock().await.unwrap(), &f.p, &id)
+        .await
+        .unwrap();
+    assert_eq!(e.state, "pending");
+    let second = enqueue(&f, "offline-next").await;
+    {
+        let mut db = f.transport.db.lock().await.unwrap();
+        sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=$1 WHERE id=$2")
+            .bind::<BigInt, _>(now - 31_000)
+            .bind::<Text, _>(&second)
+            .execute(&mut *db)
+            .await
+            .unwrap();
+    }
+    let candidates = f
+        .transport
+        .request_notice_candidates("", now)
+        .await
+        .unwrap();
+    let n = candidates
+        .iter()
+        .find(|n| n.owner_event_id == second)
+        .unwrap();
+    let lease = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: f
+            .transport
+            .acquire_for_test(&f.p, &f.agent, 30_000, false, now)
+            .await
+            .unwrap()
+            .epoch,
+    };
+    running(&f, &lease, &second, "offline-restored").await;
+    assert!(
+        f.transport
+            .claim_request_notice(&n.id, &f.facts, now)
+            .await
+            .is_err(),
+        "do not send an obsolete waiting notice after start"
+    );
+    f.transport
+        .finish_without_reply(&f.p, &lease, &second, "offline-restored", "unknown", now)
+        .await
+        .unwrap();
+    let candidates = f
+        .transport
+        .request_notice_candidates("", now)
+        .await
+        .unwrap();
+    let n = candidates
+        .iter()
+        .find(|n| n.owner_event_id == second)
+        .unwrap();
+    assert_eq!(n.kind, "interrupted");
+    // Status notices do not need a live device lease.
+    f.transport.release_lease(&f.p, &lease, now).await.unwrap();
+    assert!(
+        f.transport
+            .claim_request_notice(&n.id, &f.facts, now)
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_lost_start_can_retire_unstarted_offer_without_poisoning_next_request() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    let lease = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: f
+            .transport
+            .acquire_for_test(&f.p, &f.agent, 30_000, false, now)
+            .await
+            .unwrap()
+            .epoch,
+    };
+    for (index, outcome) in ["unknown", "failed", "rejected"].into_iter().enumerate() {
+        let id = enqueue(&f, &format!("lost-start-{index}")).await;
+        f.transport
+            .claim_event(&f.p, &lease, &id, &f.facts, now)
+            .await
+            .unwrap();
+        if index != 0 {
+            f.transport
+                .acknowledge(&f.p, &lease, &id, now)
+                .await
+                .unwrap();
+        }
+        assert!(
+            f.transport
+                .finish_without_reply(&f.second, &lease, &id, "never-started", outcome, now)
+                .await
+                .is_err()
+        );
+        let mut stale = lease.clone();
+        stale.epoch += 1;
+        assert!(
+            f.transport
+                .finish_without_reply(&f.p, &stale, &id, "never-started", outcome, now)
+                .await
+                .is_err()
+        );
+        f.transport
+            .finish_without_reply(&f.p, &lease, &id, "never-started", outcome, now)
+            .await
+            .unwrap();
+        f.transport
+            .finish_without_reply(&f.p, &lease, &id, "never-started", outcome, now)
+            .await
+            .unwrap();
+        let e = {
+            let mut db = f.transport.db.lock().await.unwrap();
+            TransportStore::dispatch(&mut db, &f.p, &id).await.unwrap()
+        };
+        assert_eq!(e.state, "cancelled");
+        assert!(
+            e.execution_id.is_none(),
+            "retiring an offer must not manufacture execution history"
+        );
+        let notices = f
+            .transport
+            .request_notice_candidates("", now)
+            .await
+            .unwrap();
+        assert!(notices.iter().any(|n| n.owner_event_id == id
+            && n.kind
+                == if outcome == "unknown" {
+                    "failed"
+                } else {
+                    outcome
+                }));
+    }
+    let next = enqueue(&f, "after-unstarted-failure").await;
+    let candidates = f
+        .transport
+        .event_candidates_for_binding(&f.p, &lease, &f.binding, 1, now)
+        .await
+        .unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, next);
+    running(&f, &lease, &next, "actual-next-execution").await;
+    assert!(
+        f.transport
+            .finish_without_reply(&f.p, &lease, &next, "wrong-execution", "unknown", now)
+            .await
+            .is_err()
+    );
+    f.transport
+        .finish_without_reply(&f.p, &lease, &next, "actual-next-execution", "failed", now)
+        .await
+        .unwrap();
+}

@@ -471,6 +471,254 @@ async fn exercise(url: &str) {
     let held=sql_query("SELECT count(*) AS n FROM hagency_agent_v1.processing_outbox WHERE id=$1 AND state='unknown' AND delivery_blocked AND matrix_txn_id=$2 AND content=$3")
         .bind::<Text,_>(&processing.id).bind::<Text,_>(txn).bind::<Jsonb,_>(content).get_result::<Count>(&mut db).await.unwrap();
     assert_eq!(held.n, 1);
+    // Per-request failures must deliver feedback even when another Room is
+    // unavailable and after the executing device has released its lease.
+    for i in 0..22 {
+        let (room, binding) = if i == 21 {
+            (good, &bound.binding.id)
+        } else {
+            (bad, &created.binding.id)
+        };
+        let facts = delivery(room);
+        let event = parse_event(&raw(room, &format!("$failure{i}"))).unwrap();
+        let dispatch = match transport
+            .ingest_routed(binding, event, &facts, now_ms())
+            .await
+            .unwrap()
+        {
+            crate::transport::RouteResult::Queued { dispatch_id } => dispatch_id,
+            _ => panic!("fixture queue"),
+        };
+        transport
+            .claim_event(&p, &lease_ref, &dispatch, &facts, now_ms())
+            .await
+            .unwrap();
+        transport
+            .acknowledge(&p, &lease_ref, &dispatch, now_ms())
+            .await
+            .unwrap();
+        let exec = format!("failure-{i}");
+        transport
+            .start_execution(&p, &lease_ref, &dispatch, &exec, &facts, now_ms())
+            .await
+            .unwrap();
+        transport
+            .finish_without_reply(&p, &lease_ref, &dispatch, &exec, "failed", now_ms())
+            .await
+            .unwrap();
+    }
+    transport
+        .release_lease(&p, &lease_ref, now_ms())
+        .await
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let contents = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let captured = contents.clone();
+    let status_server = tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut bytes = Vec::new();
+            loop {
+                let mut buffer = [0u8; 4096];
+                let count = socket.read(&mut buffer).await.unwrap();
+                if count == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buffer[..count]);
+                let text = String::from_utf8_lossy(&bytes);
+                let Some((headers, body)) = text.split_once("\r\n\r\n") else {
+                    continue;
+                };
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|s| s.trim().parse::<usize>().ok())
+                    })
+                    .unwrap();
+                if body.len() < length {
+                    continue;
+                }
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_str(body).unwrap());
+                let body = r#"{"event_id":"$status-sent:example.test"}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+                break;
+            }
+        }
+    });
+    let status_matrix = MatrixClient::new(
+        format!("http://{address}").parse().unwrap(),
+        "fixture-AS-token-no-real-secret".into(),
+        "example.test".into(),
+    )
+    .unwrap();
+    let mut status_cursor = String::new();
+    for _ in 0..4 {
+        send_request_notices(&transport, &gateway, &status_matrix, &mut status_cursor)
+            .await
+            .unwrap();
+    }
+    {
+        let messages = contents.lock().unwrap();
+        assert_eq!(
+            messages.len(),
+            1,
+            "unavailable Rooms cannot starve the healthy failure notice"
+        );
+        assert_eq!(messages[0]["msgtype"], "m.notice");
+        assert_eq!(
+            messages[0]["m.relates_to"]["m.in_reply_to"]["event_id"],
+            "$failure21"
+        );
+        assert_eq!(
+            messages[0]["body"],
+            crate::transport::request_notices::body("failed")
+        );
+    }
+    let sent = sql_query(
+        "SELECT count(*) AS n FROM hagency_agent_v1.request_notice_outbox WHERE state='sent'",
+    )
+    .get_result::<Count>(&mut db)
+    .await
+    .unwrap();
+    assert_eq!(sent.n, 1);
+    // Keep routing stuck in a real Gateway future beyond several clock ticks.
+    // A failure accepted after the first tick still has to be delivered by the
+    // independent status queue, before that routing proof times out.
+    sql_query("UPDATE hagency_agent_v1.request_notice_outbox n SET state='cancelled' FROM hagency_agent_v1.owner_events e WHERE n.owner_event_id=e.id AND e.room_id=$1 AND n.state='pending'")
+        .bind::<Text,_>(bad).execute(&mut db).await.unwrap();
+    let slow_seen = std::sync::Arc::new(tokio::sync::Notify::new());
+    let active_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = slow_seen.clone();
+    let active = active_reads.clone();
+    let slow_state = vec![
+        json!({"type":"m.room.member","state_key":owner.mxid,"content":{"membership":"join"}}),
+        json!({"type":"m.room.member","state_key":created.agent.puppet_mxid,"content":{"membership":"join"}}),
+        json!({"type":"m.space.child","state_key":good,"content":{"via":["example.test"]}}),
+    ];
+    let slow_gateway = Gateway::new(
+        std::sync::Arc::new(move |room| {
+            let state = slow_state.clone();
+            let seen = seen.clone();
+            let active = active.clone();
+            Box::pin(async move {
+                if room == bad {
+                    struct ActiveRead(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+                    impl Drop for ActiveRead {
+                        fn drop(&mut self) {
+                            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                    active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let _guard = ActiveRead(active);
+                    seen.notify_one();
+                    std::future::pending::<()>().await;
+                }
+                Ok(state)
+            })
+        }),
+        "@_hagency_service:example.test".into(),
+    );
+    let worker = start(
+        inbox.clone(),
+        transport.clone(),
+        slow_gateway,
+        status_matrix.clone(),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), slow_seen.notified())
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let fresh_lease = LeaseRef {
+        agent_id: created.agent.id.clone(),
+        epoch: transport
+            .acquire_for_test(&p, &created.agent.id, 30_000, false, now_ms())
+            .await
+            .unwrap()
+            .epoch,
+    };
+    let facts = delivery(good);
+    let dispatch = match transport
+        .ingest_routed(
+            &bound.binding.id,
+            parse_event(&raw(good, "$failure-after-slow-tick")).unwrap(),
+            &facts,
+            now_ms(),
+        )
+        .await
+        .unwrap()
+    {
+        crate::transport::RouteResult::Queued { dispatch_id } => dispatch_id,
+        _ => panic!("independent worker fixture queue"),
+    };
+    transport
+        .claim_event(&p, &fresh_lease, &dispatch, &facts, now_ms())
+        .await
+        .unwrap();
+    transport
+        .acknowledge(&p, &fresh_lease, &dispatch, now_ms())
+        .await
+        .unwrap();
+    transport
+        .start_execution(
+            &p,
+            &fresh_lease,
+            &dispatch,
+            "independent-status-run",
+            &facts,
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    transport
+        .finish_without_reply(
+            &p,
+            &fresh_lease,
+            &dispatch,
+            "independent-status-run",
+            "failed",
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        loop {
+            if contents.lock().unwrap().iter().any(|m| {
+                m["m.relates_to"]["m.in_reply_to"]["event_id"] == "$failure-after-slow-tick"
+            }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("a slow routing pass must not block the next status tick");
+    assert!(
+        active_reads
+            .as_ref()
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0
+    );
+    worker.abort();
+    let _ = worker.await;
+    assert_eq!(
+        active_reads
+            .as_ref()
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "parent shutdown must drop all queue futures"
+    );
+    status_server.abort();
+    let _ = status_server.await;
     server.abort();
     let _ = server.await;
 }

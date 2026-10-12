@@ -4131,7 +4131,7 @@
       "post": {
         "operationId": "finishExecution",
         "summary": "finishExecution",
-        "description": "Record rejected/failed/unknown. Unknown must never automatically replay model or tools; local unsettled budget/tool holds remain conservative.",
+        "description": "Record rejected/failed/unknown for the exact running execution under the current fenced device and lease. The same outcome is idempotent. If Start never reached the server, the current fenced device may retire its offered/acknowledged dispatch without creating execution history. Started execution identity remains immutable and uncertain model or tool work must never automatically replay. Missing local usage contributes zero and does not block later requests; independent server status notices provide request feedback.",
         "security": [
           {
             "deviceBearer": []

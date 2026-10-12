@@ -15,7 +15,7 @@
 3. 网关通过 `event_candidates` 获取内部候选元数据，再取得实时 facts，调用 `claim_event` 返回正文。候选列表不是把所有正文直接暴露给设备的依据。
 4. 客户端先在本地 inbox 持久化 event，再 `acknowledge`。ACK 只表示持久收件，服务器不将它当作模型完成。
 5. 客户端在任何模型或工具调用前持久化本地 execution identity，然后 `start_execution`。首次返回 `newlyStarted=true`；同一 execution ID 重放返回 false，不能据此自动再启动模型。崩溃窗口必须与本地运行器状态核对。
-6. 本地策略拒绝、执行失败或用量/工具结果不明时，用 `finish_without_reply` 记录 `rejected`、`failed` 或 `unknown`。它不会产生回复。客户端预算由本地账本按真实已知/未知状态处理，服务器不控制额度。
+6. 本地策略拒绝、执行失败或用量/工具结果不明时，用 `finish_without_reply` 记录 `rejected`、`failed` 或 `unknown`。它不会产生模型回复，独立的状态通知队列负责向原请求反馈。开始请求未到达服务端时，当前有效设备/租约也可结束其 offered/acknowledged 请求，不伪造 execution_id 或开始记录；已经开始的请求仍必须匹配原 execution_id。客户端按实际已记录用量结算，缺失用量按0处理，服务器不控制额度。
 7. `submit_reply` 仅允许相同 owner、device、epoch、dispatch、execution、binding generation 和当前 Room 授权；正文并不包含可选 Room、发送者或 owner。事务中同时完成 dispatch 并持久化 reply outbox。重复相同内容返回相同 intent，改变内容返回 conflict。
 8. 可信 sender worker 从 `reply_candidates` 取内部候选，重新读取 facts，然后 `claim_reply` 持久化发送意图，再通过既有 Matrix API 按 intent 的精确 puppet、Room、thread 和 `matrix_txn_id` 发送。HTTP 成功后 `confirm_reply(event_id)`；超时或不明确则 `confirm_reply(None)`。
 9. 不明确的网络发送只重试原 intent 和原 Matrix transaction ID，绝不重新调用模型。worker nonce 防止旧 worker 把新尝试的结果写错。worker token 不在用户 JSON 响应中序列化。
@@ -57,7 +57,7 @@ binding generation、sender/Room/thread、正文摘要和 Matrix transaction ID 
 发送授权。普通 `submit_reply` 的 original device/epoch fencing 完全保留。
 
 - 原 execution 已 unknown 且没有 outbox 时，可建立该原执行的固定回复 intent；
-  execution 仍保持 unknown，不据此解除模型用量或 tool 副作用 holds。
+  execution 仍保持 unknown；未记录用量由本地自动按0结算，未知 tool 副作用仍不允许自动重跑。
 - 因旧 lease 失效取消的**确定尚未发送** intent 只在更高当前 epoch、没有 worker token、
   当前 Room scope 有效且未 delivery_blocked 时恢复 pending；ID/txn/payload 不变。
 - unknown/sending 的历史网络意图保留同 txn/payload；活跃 worker 仍有 lease 时返回
@@ -134,3 +134,19 @@ Schema 4 strictly rejects earlier domain versions. The standalone offline
 indexes, guards/view and advances the exact version-3 marker in one transaction.
 It never resets identities, execution devices, generations, leases or messages.
 Do not run it against a live deployment; first stop its sole server and back up.
+
+### Request feedback
+
+The server owns a separate `request_notice_outbox` for processing feedback. An
+accepted request waiting over 30 seconds gets a waiting notice; a running request
+older than 120 seconds gets a prolonged-processing notice. Failed, rejected,
+interrupted, expired and delayed-reply delivery states have separate notices.
+Each notice replies to the exact request event using `m.notice`; it cannot enter
+the model queue. One deterministic transaction per event/status makes retries
+idempotent. A notice requires fresh Matrix membership and speaking permission,
+but no running device lease or model quota. It never reruns interrupted work or
+changes admission of later requests. Obsolete notices are suppressed after a
+state change. The deployment watermark skips historical requests at rollout.
+
+
+Request failure isolation: each routing, reply, processing, pause-notice and request-status queue runs on its own one-second clock. A slow or failed pass cannot delay another queue's next pass. The parent task owns all queue futures and drops them together on shutdown. The existing deterministic Matrix transaction IDs retain idempotent recovery after cancellation. Finishing an unstarted offer preserves its no-execution state, removes it from admission, and produces ordinary per-request status feedback; it never authorizes provider replay.

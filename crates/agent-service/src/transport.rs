@@ -16,6 +16,8 @@ mod history;
 pub(crate) mod pause_notices;
 #[path = "processing.rs"]
 mod processing;
+#[path = "request_notices.rs"]
+pub(crate) mod request_notices;
 pub use history::{ExecutionHistoryPage, ExecutionHistorySnapshot, HistoryExecution};
 pub use processing::ProcessingReceipt;
 
@@ -325,6 +327,10 @@ impl TransportStore {
             let pause_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.pause_notice_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !pause_initialized.matched {
                 db.batch_execute(include_str!("pause_notices_schema.sql")).await?;
+            }
+            let notices_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.request_notice_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !notices_initialized.matched {
+                db.batch_execute(include_str!("request_notices_schema.sql")).await?;
             }
             db.batch_execute("SELECT id FROM hagency_agent_v1.processing_sendable LIMIT 0").await
                 .map_err(|_| Error::Conflict("processing_schema_incompatible"))?;
@@ -848,8 +854,8 @@ impl TransportStore {
         })
         .await
     }
-    /// Completes a rejected/failed run without a reply. `unknown` is conservative
-    /// when model usage or tool side effects cannot be established.
+    /// Completes a rejected/failed/interrupted run. Server status notices provide
+    /// feedback without fabricating model output or replaying side effects.
     pub async fn finish_without_reply(
         &self,
         p: &Principal,
@@ -872,6 +878,19 @@ impl TransportStore {
             let scope = Self::scope(db, &e.binding_id).await?;
             if !scope.active || scope.binding_generation != e.binding_generation {
                 return Err(Error::Unauthorized("dispatch_scope_revoked"));
+            }
+            if e.execution_id.is_none() {
+                // A lost Start RPC may never have reached us. The current fenced
+                // device can retire its offer, without fabricating a started run.
+                if e.state == "cancelled" && e.outcome.as_deref() == Some(outcome) {
+                    return Ok(());
+                }
+                if !matches!(e.state.as_str(), "offered" | "acknowledged") {
+                    return Err(Error::Conflict("execution_not_running"));
+                }
+                sql_query("UPDATE hagency_agent_v1.owner_events SET state='cancelled',outcome=$1 WHERE id=$2")
+                    .bind::<Text,_>(outcome).bind::<Text,_>(id).execute(db).await?;
+                return Ok(());
             }
             if matches!(e.state.as_str(), "completed" | "unknown")
                 && e.execution_id.as_deref() == Some(execution_id)
