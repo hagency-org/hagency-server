@@ -19,7 +19,9 @@ resources/   # generated frontend and Pasion assets, ignored by Git
 
 The frontend combines Padmin's generic Matrix/Pasion administration with
 permanent Agent ownership, Project/Room bindings and creation policy.
-It is served at `/` by the Rust backend. Matrix endpoints remain at `/_matrix`,
+The public site homepage is served at `/`; the authenticated member Home is at
+`/hagency/home`, Projects and My agents at `/hagency/projects` and `/hagency/agents`,
+and administrator pages under `/admin`. Matrix endpoints remain at `/_matrix`,
 Palpo administration at `/_palpo`, discovery at `/.well-known/matrix`, and
 native Hagency APIs at `/api/hagency/v1` and browser management at
 `/api/browser/hagency/v1`. Pasion remains mounted at `/auth/`.
@@ -30,6 +32,7 @@ native Hagency APIs at `/api/hagency/v1` and browser management at
 - [Architecture](#architecture)
 - [Development](#development)
 - [Unified frontend authentication](#unified-frontend-authentication)
+- [Public homepage](#public-homepage)
 - [Configuration and initial administrator](#configuration-and-initial-administrator)
 - [Compose deployment](#compose-deployment)
 - [Retained behavior and limits](#behavior-retained-in-the-rust-port)
@@ -171,6 +174,34 @@ The local client controls Codex, resource budgets and tool risk decisions.
 The browser uses the closed `/api/browser/hagency/v1` BFF and pages
 `/hagency/projects` and `/hagency/agents`; it never receives a native device or
 session credential. See [Agent architecture](OPERATIONS.md) for the full boundary.
+
+## Public homepage
+
+Set `home_page` at the top level of **hagency.toml**, before any TOML table:
+
+```toml
+# Choose a local HTML file or a remote HTTP(S) page.
+home_page = "home.html"
+# home_page = "https://example.com/home.html"
+```
+
+`GET /` serves this page without login or session verification. With no setting,
+the server serves a built-in welcome page with console links. Local paths resolve
+relative to `hagency.toml`; files are read on every request, and an unreadable file
+returns 503 with a server log. Remote URLs are fetched on every request, with a
+10-second deadline; fetch failures are logged and serve the built-in welcome page,
+as in standalone Palpo. The remote content type is preserved, but browser cookies
+and authorization headers are not forwarded and upstream cookies are not copied.
+
+The setting supplies one document, not a static directory or reverse proxy.
+Use inline resources or explicit asset URLs; relative URLs resolve against this
+server's `/`, not against the upstream page URL or local file directory. Custom
+HTML uses its own scripts/styles rather than the console's SPA content policy.
+`/login`, `/hagency/home`, `/hagency/projects`, `/hagency/agents`, `/admin`, `/auth/`
+and all APIs keep their existing authentication and authorization checks.
+The embedded Palpo component's `home_page` setting is not used by Hagency.
+Restart the server after changing the setting; the page content itself needs no
+restart. In Docker, the configured file must be readable inside the container.
 
 ## Configuration and initial administrator
 
@@ -474,7 +505,7 @@ are still combined, review component separation independently before using the n
 
 ## Member pages and administrator pages
 
-The signed-in home `/`, Projects `/hagency/projects` and My agents
+The signed-in home `/hagency/home`, Projects `/hagency/projects` and My agents
 `/hagency/agents` are available to ordinary members and administrators.
 Server-wide user/room moderation, identity-provider administration, server
 operations and the administrative dashboard live under `/admin`. Navigation and

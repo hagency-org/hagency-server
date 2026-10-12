@@ -173,6 +173,13 @@ try:
             else:
                 raise RuntimeError("production startup roundtrip gate did not become ready")
             print("PASS: production startup gate verified its own Matrix event in durable AS inbox")
+            homepage = urlopen(origin + "/").read().decode()
+            assert '<title>Hagency</title>' in homepage
+            assert 'href="/hagency/home"' in homepage and '.wasm' not in homepage
+            console = urlopen(origin + "/hagency/home").read().decode()
+            assert '<title>Hagency Server</title>' in console and console != homepage
+            assert urlopen(origin + "/hagency/projects").read().decode() == console
+            print("PASS: public homepage is separate from authenticated console routes")
             for legacy in ["/api/fleets","/api/approvals","/api/accounts","/api/registrations"]:
                 try:
                     request(origin,"GET",legacy)
@@ -209,7 +216,7 @@ try:
                     if done.exists():
                         assert done.stat().st_mode & 0o077 == 0
                         assert json.loads(done.read_text()).get("passed") is True
-                        print("PASS: real browser member/admin navigation and OAuth authorization", flush=True)
+                        print("PASS: real browser navigation and OAuth authorization", flush=True)
                         break
                     time.sleep(1)
                 else:

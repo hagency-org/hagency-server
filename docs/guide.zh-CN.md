@@ -17,7 +17,7 @@ resources/   # 生成的前端与 Pasion 资源，不提交到 Git
 ```
 
 前端将 Padmin 的通用 Matrix/Pasion 管理页面与新的永久 Agent 归属、Project/Room 绑定和创建政策界面结合。
-Rust 后端在 `/` 托管前端；Matrix 路径为 `/_matrix`，Palpo 管理 API 为 `/_palpo`，Matrix 发现路径为 `/.well-known/matrix`，原生 Hagency API 为 `/api/hagency/v1`，网页管理 BFF 为 `/api/browser/hagency/v1`，Pasion 挂载在 `/auth/`。
+Rust 后端在 `/` 提供无需登录的站点首页；成员 Home 位于 `/hagency/home`，项目和我的 Agent 位于 `/hagency/projects`、`/hagency/agents`，管理员页面位于 `/admin` 下。Matrix 路径为 `/_matrix`，Palpo 管理 API 为 `/_palpo`，Matrix 发现路径为 `/.well-known/matrix`，原生 Hagency API 为 `/api/hagency/v1`，网页管理 BFF 为 `/api/browser/hagency/v1`，Pasion 挂载在 `/auth/`。
 `/healthz` 表示进程 HTTP 服务可访问，不代表异步账号同步已经完成。
 
 ## 目录
@@ -25,6 +25,7 @@ Rust 后端在 `/` 托管前端；Matrix 路径为 `/_matrix`，Palpo 管理 API
 - [架构](#架构)
 - [开发环境](#开发环境)
 - [统一前端认证](#统一前端认证)
+- [自定义公共首页](#自定义公共首页)
 - [组件配置与首次管理员](#组件配置与首次管理员)
 - [Compose 部署](#compose-部署)
 - [保留的业务行为与限制](#保留的业务行为与限制)
@@ -132,6 +133,29 @@ Agent 的 owner 永久固定，Project/Room bindings 独立。Space 管理者设
 
 网页使用封闭 `/api/browser/hagency/v1` BFF，页面为 `/hagency/projects` 与
 `/hagency/agents`，不向网页返回原生授权/设备凭据。详见 [Agent 架构](OPERATIONS.zh-CN.md)。
+
+## 自定义公共首页
+
+在 **hagency.toml** 顶层、任何 TOML 表之前设置 `home_page`：
+
+```toml
+# 选择本地 HTML 文件或远程 HTTP(S) 页面。
+home_page = "home.html"
+# home_page = "https://example.com/home.html"
+```
+
+`GET /` 无需登录或账户校验即可访问。未配置时显示内置欢迎页和控制台入口。
+本地相对路径以 `hagency.toml` 所在目录为基准，每次请求重新读取；文件无法读取时
+返回 503 并记录日志。远程 URL 每次请求抓取，整个请求限时 10 秒；失败时记录日志，
+并像独立 Palpo 一样显示内置欢迎页。保留远程内容类型，不向远程转发浏览器 Cookie
+或授权信息，也不复制远程响应的 Cookie。
+
+此设置提供一个页面，不托管整个静态目录，也不代理其子资源。使用内联资源或明确的
+资源 URL；相对资源地址相对于本站 `/`，而非远程页面 URL 或本地文件目录。
+自定义 HTML 可使用自己的脚本、样式，不套用控制台 SPA 的内容策略。
+`/login`、`/hagency/home`、`/hagency/projects`、`/hagency/agents`、`/admin`、`/auth/`
+及所有 API 的认证与授权检查保留。Palpo 组件配置中的 `home_page` 不用于 Hagency。
+修改设置后重启服务器；仅修改页面内容无需重启。Docker 中的本地文件须在容器内可读。
 
 ## 组件配置与首次管理员
 
@@ -370,8 +394,8 @@ Padmin 源码和 Pasion 依赖仍保留其上游 AGPL 许可；修改项目清�
 
 ## 成员页面与管理员页面
 
-登录后的首页 `/`、项目 `/hagency/projects` 和我的 Agent `/hagency/agents`
-保留原位置，普通成员和管理员均可访问。全站用户/房间管理、审核、身份服务管理、
+登录后的首页 `/hagency/home`、项目 `/hagency/projects` 和我的 Agent `/hagency/agents`
+普通成员和管理员均可访问。公共站点首页 `/` 无需登录。全站用户/房间管理、审核、身份服务管理、
 服务器操作和管理仪表盘放在 `/admin` 下。页面加载时验证当前登录账号，不定时轮询。
 角色变化后刷新页面即可重新确认；新提升的管理员会为同一个账号补充 OAuth 管理授权。
 路径和前端保存的标志不赋予管理员 API 权限。

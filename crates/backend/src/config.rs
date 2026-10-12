@@ -15,6 +15,9 @@ pub struct HostConfig {
     pub database_url: String,
     #[serde(default)]
     pub public_dir: Option<PathBuf>,
+    /// Public GET / content: a local HTML file or an HTTP(S) URL.
+    #[serde(default)]
+    pub home_page: Option<String>,
     #[serde(default = "default_data_dir")]
     pub data_dir: PathBuf,
     #[serde(default)]
@@ -85,6 +88,15 @@ impl Config {
         let path = path.as_ref().canonicalize()?;
         let mut host = read_host(&path)?;
         let base = path.parent().unwrap();
+        if let Some(home_page) = &mut host.home_page {
+            validate_home_page(home_page)?;
+            if !remote_home_page(home_page) {
+                *home_page = resolve(base, Path::new(home_page))
+                    .to_str()
+                    .context("home_page path must be UTF-8")?
+                    .to_owned();
+            }
+        }
         for p in [&mut host.public_dir, &mut host.pasion_config]
             .into_iter()
             .flatten()
@@ -175,6 +187,9 @@ impl Config {
     }
     pub fn validate(&self) -> anyhow::Result<()> {
         origin(&self.public_origin, true)?;
+        if let Some(home_page) = &self.home_page {
+            validate_home_page(home_page)?;
+        }
         anyhow::ensure!(
             self.queue.max_pending > 0
                 && self.queue.max_records > 0
@@ -225,6 +240,25 @@ impl Config {
         };
         Url::parse(&format!("http://{ip}:{}/", self.listen.port())).unwrap()
     }
+}
+pub(crate) fn remote_home_page(value: &str) -> bool {
+    value.starts_with("http://") || value.starts_with("https://")
+}
+fn validate_home_page(value: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!value.trim().is_empty(), "home_page must not be empty");
+    if remote_home_page(value) {
+        let url = Url::parse(value).context("invalid home_page URL")?;
+        anyhow::ensure!(
+            url.host_str().is_some() && url.username().is_empty() && url.password().is_none(),
+            "home_page requires a credential-free HTTP(S) URL"
+        );
+    } else {
+        anyhow::ensure!(
+            !value.contains("://"),
+            "home_page requires a local file or HTTP(S) URL"
+        );
+    }
+    Ok(())
 }
 fn read_host(path: &Path) -> anyhow::Result<HostConfig> {
     toml::from_str(&std::fs::read_to_string(path)?)

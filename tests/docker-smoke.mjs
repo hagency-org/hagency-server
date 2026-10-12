@@ -136,7 +136,8 @@ try{
  assert.ok(tableNames('hagency','hagency_agent_v1').includes('owner_events'));assert.ok(tableNames('hagency','hagency_agent_v1').includes('reply_outbox'));assert.ok(!tableNames('hagency','public').includes('hagency_admin_state'));assert.ok(tableNames('palpo','public').includes('users'));assert.ok(tableNames('pasion','public').length>1);
  assert.equal(sql('palpo',"SELECT count(*) FROM appservice_registrations WHERE id='hagency_agents_v1'"),'1');
  assert.ok(Number(sql('hagency',"SELECT count(*) FROM hagency_agent_v1.readiness_receipts"))>0,'startup readiness requires a persisted real AS receipt');
- const frontend=await(await fetch(base)).text();assert.match(frontend,/<title>Hagency Server<\/title>/);assert.equal(await(await fetch(base+'/hagency/agents')).text(),frontend);
+ const homepage=await(await fetch(base)).text();assert.match(homepage,/<title>Hagency<\/title>/);assert.ok(homepage.includes('href="/hagency/home"'));
+ const frontend=await(await fetch(base+'/hagency/home')).text();assert.match(frontend,/<title>Hagency Server<\/title>/);assert.notEqual(homepage,frontend);assert.equal(await(await fetch(base+'/hagency/agents')).text(),frontend);
  const frontScript=frontend.match(/src="([^"]+\.js)"/)[1],module=await(await fetch(new URL(frontScript,base))).text(),frontWasm=module.match(/module_or_path:\s*"([^"]+\.wasm)"/)[1];
  const wasmResponse=await fetch(new URL(frontWasm,base));assert.equal(wasmResponse.status,200);assert.match(wasmResponse.headers.get('content-type'),/application\/wasm/);assert.equal(Buffer.from(await wasmResponse.arrayBuffer()).subarray(0,4).toString('hex'),'0061736d');
  const runtime=await(await fetch(base+'/config.json')).json();assert.equal(runtime.pasion_enabled,true);assert.equal(runtime.oauth_enabled,true);

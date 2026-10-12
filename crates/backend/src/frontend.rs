@@ -38,7 +38,7 @@ impl Frontend {
     }
 
     pub fn router(&self) -> Router {
-        let mut router = Router::new().get(self.clone());
+        let mut router = Router::new();
         // API, Matrix and Pasion paths never use the SPA fallback.
         for path in [
             "config.json",

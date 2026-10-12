@@ -20,7 +20,7 @@ pub enum Route {
     },
 
     #[layout(AuthenticatedLayout)]
-        #[route("/")]
+        #[route("/hagency/home")]
         Home {},
 
         #[route("/admin")]
@@ -198,6 +198,7 @@ mod return_route_tests {
             "/login",
             "/oauth/callback",
             "/does-not-exist",
+            "/",
         ] {
             assert!(restorable_route(path, true).is_none());
         }
@@ -214,7 +215,7 @@ mod return_route_tests {
 
     #[test]
     fn member_routes_stay_in_place_and_admin_routes_require_verified_role() {
-        for path in ["/", "/hagency/projects", "/hagency/agents"] {
+        for path in ["/hagency/home", "/hagency/projects", "/hagency/agents"] {
             let route = restorable_route(path, false).unwrap();
             assert!(!route.requires_admin());
             assert_eq!(route.to_string(), path);
