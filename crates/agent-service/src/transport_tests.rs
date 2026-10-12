@@ -19,7 +19,7 @@ struct Fixture {
 async fn fixture() -> Fixture {
     let url =
         std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").expect("dedicated test database required");
-    let auth = Store::open(&url, "example.test", "https://example.test/_pasion/")
+    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let domain = DomainStore::open(&url, "example.test", "_hagency_test_")
@@ -31,7 +31,7 @@ async fn fixture() -> Fixture {
     let grant = auth
         .sign_in(
             Identity {
-                issuer: "https://example.test/_pasion/".into(),
+                issuer: "https://example.test/auth/".into(),
                 subject: format!("transport-{suffix}"),
                 mxid: format!("@transport_{suffix}:example.test"),
                 client_id: "transport-client".into(),
@@ -1989,10 +1989,10 @@ async fn postgres_processing_offline_cutover_is_standalone_exact_and_preserves_a
     url.set_path(&format!("/{name}"));
     let result=tokio::spawn(async move {
         let url=url.as_str();let now=crate::api::now_ms();
-        let auth=Store::open(url,"example.test","https://example.test/_pasion/").await.unwrap();
+        let auth=Store::open(url,"example.test","https://example.test/auth/").await.unwrap();
         let domain=DomainStore::open(url,"example.test","_hagency_test_").await.unwrap();
         let transport=TransportStore::open(url,Limits::default()).await.unwrap();
-        let grant=auth.sign_in(Identity{issuer:"https://example.test/_pasion/".into(),subject:"maintenance-owner".into(),mxid:"@maintenance:example.test".into(),client_id:"maintenance-fixture".into(),valid_until_ms:now+1_000_000},now).await.unwrap();
+        let grant=auth.sign_in(Identity{issuer:"https://example.test/auth/".into(),subject:"maintenance-owner".into(),mxid:"@maintenance:example.test".into(),client_id:"maintenance-fixture".into(),valid_until_ms:now+1_000_000},now).await.unwrap();
         let device=auth.register_device(&grant.token,RegisterDevice{installation_id:"maintenance-device".into(),name:"Maintenance".into()},now).await.unwrap();
         let p=auth.authenticate(&device.token,now,true).await.unwrap();
         let agent=domain.create_agent(&p,crate::domain::CreateAgent{display_name:"Permanent".into(),idempotency_key:"permanent-agent".into()},now).await.unwrap();

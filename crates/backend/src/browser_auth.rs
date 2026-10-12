@@ -77,7 +77,7 @@ impl BrowserAuth {
             session_ttl: ttl as i64,
             read_timeout: Duration::from_millis(conf.read_timeout_ms.unwrap_or(8_000)),
             oauth_revocation: Some((
-                conf.internal_origin().join("_pasion/oauth2/revoke")?,
+                conf.internal_origin().join("auth/oauth2/revoke")?,
                 conf.matrix
                     .admin
                     .mas_secret

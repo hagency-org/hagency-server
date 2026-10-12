@@ -69,6 +69,8 @@ on a random loopback port and bootstraps a disposable owner. It uses the prepare
 | `HAGENCY_TEST_SERVER_BINARY` | Absolute path to the binary built from the checkout being tested |
 | `HAGENCY_TEST_POSTGRES_CONTAINER` | Default `hagency-server-postgres-1` |
 | `HAGENCY_TEST_POSTGRES_PORT` | Default `55438`, host loopback port |
+| `HAGENCY_TEST_PASION_RESOURCES` / `HAGENCY_TEST_FRONTEND_RESOURCES` | Optional absolute asset directories from the current build, to keep a running deployment untouched |
+| `HAGENCY_TEST_HOLD_BROWSER=1` | Wait for real UI checks using the private browser fixture; finish with private `browser-done.json` containing `{"passed":true}` |
 | `HAGENCY_TEST_NATIVE_PKCE=1` | Real native Pasion DCR/PKCE, Agent and Matrix roundtrip |
 | `HAGENCY_TEST_BACKUP_RESTORE=1` | Also enables PKCE and the stopped three-database/file restoration rehearsal |
 | `HAGENCY_TEST_HOLD_CLIENT=1` / `HAGENCY_TEST_HOLD_PKCE=1` | Interactive fixtures; intentionally wait for an operator, not unattended CI |

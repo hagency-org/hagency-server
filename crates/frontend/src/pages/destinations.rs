@@ -181,7 +181,7 @@ pub fn DestinationShow(destination_id: String) -> Element {
         div { class: "space-y-6",
             Breadcrumbs {
                 items: vec![
-                    BreadcrumbItem { label: t("destinations.title"), href: Some("/destinations".to_string()) },
+                    BreadcrumbItem { label: t("destinations.title"), href: Some("/admin/destinations".to_string()) },
                     BreadcrumbItem { label: decoded_id.clone(), href: None },
                 ],
             }

@@ -35,7 +35,7 @@ async function api(path,{method='GET',token,body,cookie,origin,csrf,status=[200]
 const sql=(db,statement)=>run('exec','-T','postgres','psql','-U','hagency','-d',db,'-Atc',statement).trim();
 const scalar=s=>"'"+s.replaceAll("'","''")+"'";
 async function browserLogin(username,secret){
- const {value,response}=await api('/_pasion/api/v1/auth/login',{method:'POST',origin:base,body:{username,password:secret}});assert.equal(value.status,'success');
+ const {value,response}=await api('/auth/api/v1/auth/login',{method:'POST',origin:base,body:{username,password:secret}});assert.equal(value.status,'success');
  return response.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
 }
 async function adminLogin(){
@@ -48,23 +48,23 @@ async function adminLogin(){
  return {cookie,csrf:value.csrf};
 }
 async function nativeOAuth(cookie){
- const {value:client}=await api('/_pasion/oauth2/registration',{method:'POST',body:{client_name:'Isolated Docker owner Agent PKCE smoke',client_uri:'https://github.com/chrislearn/hagency-client',application_type:'native',token_endpoint_auth_method:'none',grant_types:['authorization_code','refresh_token'],response_types:['code'],redirect_uris:['http://127.0.0.1/console/server-login/callback']},status:[200,201]});
+ const {value:client}=await api('/auth/oauth2/registration',{method:'POST',body:{client_name:'Isolated Docker owner Agent PKCE smoke',client_uri:'https://github.com/chrislearn/hagency-client',application_type:'native',token_endpoint_auth_method:'none',grant_types:['authorization_code','refresh_token'],response_types:['code'],redirect_uris:['http://127.0.0.1/console/server-login/callback']},status:[200,201]});
  const verifier=randomBytes(48).toString('base64url'),state=randomBytes(24).toString('hex'),redirect=`http://127.0.0.1:${port}/console/server-login/callback`;
  const query=new URLSearchParams({client_id:client.client_id,response_type:'code',redirect_uri:redirect,state,scope:'urn:matrix:client:api:* urn:matrix:client:device:DockerOwnerSmoke',code_challenge:createHash('sha256').update(verifier).digest('base64url'),code_challenge_method:'S256'});
- const auth=await fetch(base+'/_pasion/authorize?'+query,{headers:{Cookie:cookie},redirect:'manual',signal:AbortSignal.timeout(15_000)});assert.ok([302,303].includes(auth.status));let next=new URL(auth.headers.get('location'),base);
+ const auth=await fetch(base+'/auth/authorize?'+query,{headers:{Cookie:cookie},redirect:'manual',signal:AbortSignal.timeout(15_000)});assert.ok([302,303].includes(auth.status));let next=new URL(auth.headers.get('location'),base);
  if(!next.pathname.endsWith('/console/server-login/callback')){
-  const grant=next.pathname.split('/').pop();const consent=await api('/_pasion/api/v1/oauth2/consent/'+grant,{method:'POST',cookie,origin:base,body:{action:'consent'}});assert.equal(consent.value.status,'success');next=new URL(consent.value.redirect_url);
+  const grant=next.pathname.split('/').pop();const consent=await api('/auth/api/v1/oauth2/consent/'+grant,{method:'POST',cookie,origin:base,body:{action:'consent'}});assert.equal(consent.value.status,'success');next=new URL(consent.value.redirect_url);
  }
  assert.equal(next.searchParams.get('state'),state);assert.ok(next.searchParams.get('code'));
- const token=await fetch(base+'/_pasion/oauth2/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'authorization_code',client_id:client.client_id,redirect_uri:redirect,code:next.searchParams.get('code'),code_verifier:verifier}),signal:AbortSignal.timeout(15_000)});assert.equal(token.status,200);const result=await token.json();assert.ok(result.access_token);return result.access_token;
+ const token=await fetch(base+'/auth/oauth2/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'authorization_code',client_id:client.client_id,redirect_uri:redirect,code:next.searchParams.get('code'),code_verifier:verifier}),signal:AbortSignal.timeout(15_000)});assert.equal(token.status,200);const result=await token.json();assert.ok(result.access_token);return result.access_token;
 }
 let memberPassword=randomBytes(24).toString('base64url');
 async function memberLogin(register){
- if(register){const {value,response}=await api('/_pasion/api/v1/auth/register',{method:'POST',origin:base,body:{username:'member',password:memberPassword,password_confirm:memberPassword}});assert.equal(value.status,'success');assert.ok(value.id);
+ if(register){const {value,response}=await api('/auth/api/v1/auth/register',{method:'POST',origin:base,body:{username:'member',password:memberPassword,password_confirm:memberPassword}});assert.equal(value.status,'success');assert.ok(value.id);
   let registrationCookie=response.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
-  const display=await api('/_pasion/api/v1/auth/register/'+value.id+'/display-name',{method:'POST',origin:base,cookie:registrationCookie,body:{display_name:'Ordinary owner'}});
+  const display=await api('/auth/api/v1/auth/register/'+value.id+'/display-name',{method:'POST',origin:base,cookie:registrationCookie,body:{display_name:'Ordinary owner'}});
   registrationCookie=display.response.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ')||registrationCookie;
-  const finish=await api('/_pasion/api/v1/auth/register/'+value.id+'/finish',{method:'POST',origin:base,cookie:registrationCookie,body:{}});assert.equal(finish.value.status,'success');
+  const finish=await api('/auth/api/v1/auth/register/'+value.id+'/finish',{method:'POST',origin:base,cookie:registrationCookie,body:{}});assert.equal(finish.value.status,'success');
  }
  await until(()=>sql('palpo',`SELECT is_admin FROM users WHERE id=${scalar('@member:'+name)}`)==='f','Ordinary member Matrix provisioning');
  const cookie=await browserLogin('member',memberPassword),upstream=await nativeOAuth(cookie);
@@ -140,8 +140,8 @@ try{
  const frontScript=frontend.match(/src="([^"]+\.js)"/)[1],module=await(await fetch(new URL(frontScript,base))).text(),frontWasm=module.match(/module_or_path:\s*"([^"]+\.wasm)"/)[1];
  const wasmResponse=await fetch(new URL(frontWasm,base));assert.equal(wasmResponse.status,200);assert.match(wasmResponse.headers.get('content-type'),/application\/wasm/);assert.equal(Buffer.from(await wasmResponse.arrayBuffer()).subarray(0,4).toString('hex'),'0061736d');
  const runtime=await(await fetch(base+'/config.json')).json();assert.equal(runtime.pasion_enabled,true);assert.equal(runtime.oauth_enabled,true);
- assert.equal((await fetch(base+'/_matrix/client/versions')).status,200);assert.equal((await(await fetch(base+'/_pasion/.well-known/openid-configuration')).json()).issuer,base+'/_pasion/');assert.equal((await fetch(base+'/_pasion/login')).status,200);
- const keys=await(await fetch(base+'/_pasion/oauth2/keys.json')).json();assert.ok(keys.keys.length);
+ assert.equal((await fetch(base+'/_matrix/client/versions')).status,200);assert.equal((await(await fetch(base+'/auth/.well-known/openid-configuration')).json()).issuer,base+'/auth/');assert.equal((await fetch(base+'/auth/login')).status,200);
+ const keys=await(await fetch(base+'/auth/oauth2/keys.json')).json();assert.ok(keys.keys.length);
  for(const path of ['/api/fleets','/api/approvals','/api/accounts','/api/registrations'])assert.equal((await fetch(base+path,{headers:{Cookie:admin.cookie}})).status,404);
  const facts=run('exec','-T','server','sh','-c',"awk '/^Uid:/ {print $2}' /proc/1/status; stat -c %a /run/hagency/config/*.toml /run/hagency/config /app/data /app/data/agent-appservice.json /app/data/pasion-secrets.json").trim().split('\n');assert.deepEqual(facts,['10001','600','600','600','700','700','600','600']);
  console.log('PASS three databases, administrator auth, frontend, removed Fleet APIs and private non-root runtime');
@@ -149,7 +149,7 @@ try{
  const firstDevice=await exerciseOwner(member,true),identity=persistedIdentity();console.log('PASS ordinary owner Space/Room/Agent and actual puppet Matrix reply');
  run('stop','server');await writeFile(compose,definition(false));run('up','-d','server');await ready();assert.equal((await fetch(base+'/api/session',{headers:{Cookie:admin.cookie,Origin:base}})).status,401,'In-memory browser session is not revived after restart');await adminLogin();
  console.log('PASS restarted mandatory appservice ready and stale browser session rejection');
- assert.equal(persistedIdentity(),identity);assert.deepEqual(await(await fetch(base+'/_pasion/oauth2/keys.json')).json(),keys);assert.equal(sql('palpo',"SELECT count(*) FROM appservice_registrations WHERE id='hagency_agents_v1'"),'1');
+ assert.equal(persistedIdentity(),identity);assert.deepEqual(await(await fetch(base+'/auth/oauth2/keys.json')).json(),keys);assert.equal(sql('palpo',"SELECT count(*) FROM appservice_registrations WHERE id='hagency_agents_v1'"),'1');
  const secondMember=await memberLogin(false);assert.equal(secondMember.session.userId,member.session.userId);const secondDevice=await exerciseOwner(secondMember,false);assert.equal(secondDevice.deviceId,firstDevice.deviceId);assert.ok(secondDevice.generation>firstDevice.generation);
  console.log('PASS new owner-agent image',imageInfo.Id.slice(0,19),': isolated Compose/3DB, mandatory AS roundtrip, native Pasion PKCE, ordinary member Space+Room+Agent, durable puppet replies, non-root/private configs, removed Fleet APIs and immutable identity across restart; no model invoked');
 }catch(error){console.error(run('logs','--no-color','--tail','35','server'));throw error;}finally{try{run('down','--volumes','--remove-orphans');}finally{await rm(dir,{recursive:true,force:true});}}

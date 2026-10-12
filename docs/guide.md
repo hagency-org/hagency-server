@@ -22,7 +22,7 @@ permanent Agent ownership, Project/Room bindings and creation policy.
 It is served at `/` by the Rust backend. Matrix endpoints remain at `/_matrix`,
 Palpo administration at `/_palpo`, discovery at `/.well-known/matrix`, and
 native Hagency APIs at `/api/hagency/v1` and browser management at
-`/api/browser/hagency/v1`. Pasion remains mounted at `/_pasion/`.
+`/api/browser/hagency/v1`. Pasion remains mounted at `/auth/`.
 `/healthz` reports process HTTP availability.
 
 ## Contents
@@ -47,7 +47,7 @@ hagency-server (one process, one port)
 ├─ MatrixServer: Palpo initialization, Matrix/admin/discovery routes and workers
 ├─ BrowserAuth/BFF: personal sessions and Project/Agent management
 ├─ required Agent Appservice: durable inbox, fenced leases and reply outbox
-├─ PasionServer: OAuth/OIDC, account UI/API and workers at /_pasion/
+├─ PasionServer: OAuth/OIDC, account UI/API and workers at /auth/
 └─ integrated Padmin + Hagency Dioxus/WASM assets
            │
            └─ PostgreSQL service
@@ -134,7 +134,7 @@ administrative scopes.
 
 Pasion owns passwords, registration, account status and administrator roles.
 Its provisioning worker synchronizes the corresponding Matrix identities and
-administrator flags to Palpo. Manage people at `/pasion/accounts`; `/users`
+administrator flags to Palpo. Manage people at `/admin/pasion/accounts`; `/admin/users`
 shows their Matrix records and service identities. Password changes and human
 account creation use Pasion. Hagency stores permanent Agent owners, Project/Room creation rights and durable
 transport, without another password/account database.
@@ -285,7 +285,7 @@ compiler job and a lower optimization level for the large Palpo crate to reduce
 peak memory; its crypto/HTTP/database dependencies retain full optimization.
 Put the loopback-exposed
 HTTP listener behind your HTTPS proxy. Preserve the public Host header and
-forward `/`, `/api`, `/_matrix`, `/_palpo`, `/_pasion/`, `/.well-known/matrix` and `/healthz`
+forward `/`, `/api`, `/_matrix`, `/_palpo`, `/auth/`, `/.well-known/matrix` and `/healthz`
 to port 8088. Browser/admin/native clients use the configured public origin;
 The integrated Agent Appservice uses the derived internal origin. No separate
 web-admin origin, port or relay URL needs configuration.
@@ -363,10 +363,10 @@ The embedding API and subpath support are proposed upstream in
 | --- | --- |
 | Existing web-admin | `/` |
 | Matrix client/federation/admin APIs | Existing Matrix/Palpo paths |
-| Pasion account UI | `/_pasion/` and `/_pasion/login` |
-| OIDC discovery | `/_pasion/.well-known/openid-configuration` |
-| OIDC issuer | `<public_origin>/_pasion/` |
-| OAuth token / JWKS | `/_pasion/oauth2/token`, `/_pasion/oauth2/keys.json` |
+| Pasion account UI | `/auth/` and `/auth/login` |
+| OIDC discovery | `/auth/.well-known/openid-configuration` |
+| OIDC issuer | `<public_origin>/auth/` |
+| OAuth token / JWKS | `/auth/oauth2/token`, `/auth/oauth2/keys.json` |
 
 No separate Pasion daemon, public IP, Node server or reverse-proxy rewrite is
 needed. Pasion background tasks call Palpo's protected MAS APIs through the
@@ -425,8 +425,8 @@ reloads this file. Leave the fixed-code option unset outside local tests.
 
 Pasion delegation is enabled by default in generated configurations. The host
 wires Palpo discovery, token introspection and compatible Matrix password login
-to the mounted Pasion service. `/_pasion/` provides the account center;
-`/_pasion/register` is registration, and `/login` is the integrated console entry.
+to the mounted Pasion service. `/auth/` provides the account center;
+`/auth/register` is registration, and `/login` is the integrated console entry.
 Registration uses Pasion's own access/registration policy. The old
 `/account-request`, custom account-approval worker and menu are removed;
 there is no native-auth compatibility mode.
@@ -470,3 +470,35 @@ identity, key/media paths and authentication settings unchanged while splitting:
 The previous private `config.dev.toml`/`config.docker.toml` files are not rewritten
 or imported automatically. Preserve them during the move. If their databases
 are still combined, review component separation independently before using the new files.
+
+
+## Member pages and administrator pages
+
+The signed-in home `/`, Projects `/hagency/projects` and My agents
+`/hagency/agents` are available to ordinary members and administrators.
+Server-wide user/room moderation, identity-provider administration, server
+operations and the administrative dashboard live under `/admin`. Navigation and
+direct access verify the signed-in account when the page loads, without periodic
+polling. Refresh after a role change; a newly promoted administrator is asked
+for the missing OAuth management authorization for the same account. A pathname
+or client-side stored flag never grants administrative API access.
+The account center and OAuth/OIDC endpoints are mounted at `/auth/`.
+
+### Upgrade from the old auth mount
+
+For an existing database, stop the old server and back up its databases and
+state files. With the new binary and the same deployment configuration, run:
+
+```sh
+hagency-server --config config/dev/hagency.toml --migrate-auth-path
+```
+
+This one-way transaction accepts only the same server and public origin,
+changes the Agent deployment/user issuer from `/_pasion/` to `/auth/`, retains
+user IDs and Agent ownership, restores identity immutability, and revokes old
+Agent sessions/devices. Run it once before starting the upgraded server;
+repeating it is harmless. Fresh installations need no migration.
+Upgrade Client/Desktop together and sign in again. Native account IDs and
+local Agent ledger paths keep their existing storage namespace; a matching
+legacy profile marker is updated only after its original scoped ledger is verified.
+Old OAuth issuers are not accepted by the upgraded clients.

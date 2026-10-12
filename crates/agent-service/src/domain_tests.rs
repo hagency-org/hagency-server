@@ -73,7 +73,7 @@ async fn user(store: &Store, suffix: &str, name: &str) -> (String, Principal) {
     let grant = store
         .sign_in(
             Identity {
-                issuer: "https://example.test/_pasion/".into(),
+                issuer: "https://example.test/auth/".into(),
                 subject: format!("{name}-{suffix}"),
                 mxid: format!("@{name}_{suffix}:example.test"),
                 client_id: "client-test".into(),
@@ -106,7 +106,7 @@ async fn user(store: &Store, suffix: &str, name: &str) -> (String, Principal) {
 async fn postgres_domain_ownership_policy_isolation_and_lifecycle() {
     let url =
         std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").expect("dedicated test database required");
-    let auth = Store::open(&url, "example.test", "https://example.test/_pasion/")
+    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let store = DomainStore::open(&url, "example.test", "_hagency_test_")
@@ -570,7 +570,7 @@ async fn postgres_device_principal_snapshot_is_rechecked_after_rotate_and_revoke
     use crate::store::RegisterDevice;
     let url =
         std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").expect("dedicated test database required");
-    let auth = Store::open(&url, "example.test", "https://example.test/_pasion/")
+    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let store = DomainStore::open(&url, "example.test", "_hagency_test_")
@@ -679,7 +679,7 @@ fn caller_time_cannot_make_expired_matrix_observation_fresh() {
 async fn postgres_stale_caller_clock_and_lock_wait_cannot_extend_session() {
     let url =
         std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").expect("dedicated test database required");
-    let auth = Store::open(&url, "example.test", "https://example.test/_pasion/")
+    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let store = DomainStore::open(&url, "example.test", "_hagency_test_")
@@ -706,7 +706,7 @@ async fn postgres_stale_caller_clock_and_lock_wait_cannot_extend_session() {
 async fn postgres_trusted_cleanup_converges_after_owner_logout_and_disable_without_reassigning() {
     let url =
         std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").expect("dedicated test database required");
-    let auth = Store::open(&url, "example.test", "https://example.test/_pasion/")
+    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let store = DomainStore::open(&url, "example.test", "_hagency_test_")
@@ -882,7 +882,7 @@ async fn postgres_trusted_cleanup_converges_after_owner_logout_and_disable_witho
 async fn postgres_committed_provisioning_survives_logout_and_terminal_sweep_retains_late_join_scope()
  {
     let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-    let auth = Store::open(&url, "example.test", "https://example.test/_pasion/")
+    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let domain = DomainStore::open(&url, "example.test", "_hagency_test_")
@@ -1032,7 +1032,7 @@ async fn postgres_committed_provisioning_survives_logout_and_terminal_sweep_reta
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_scope_pause_blocks_empty_scope_and_preserves_creation_runtime_boundary() {
     let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-    let auth = Store::open(&url, "example.test", "https://example.test/_pasion/")
+    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let store = DomainStore::open(&url, "example.test", "_hagency_test_")
@@ -1280,7 +1280,7 @@ async fn postgres_membership_loss_is_durable_and_old_dispatch_cannot_revive() {
         transport::{DeliveryFacts, LeaseRef, Limits, RouteResult, RoutedEvent, TransportStore},
     };
     let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-    let auth = Store::open(&url, "example.test", "https://example.test/_pasion/")
+    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let domain = DomainStore::open(&url, "example.test", "_hagency_test_")
@@ -1622,7 +1622,7 @@ async fn postgres_retirement_cursor_passes_twenty_unavailable_departures() {
     let mut isolated = url::Url::parse(&source).unwrap();
     isolated.set_path(&format!("/{name}"));
     let result=tokio::spawn(async move {
-        let auth=Store::open(isolated.as_str(),"example.test","https://example.test/_pasion/").await.unwrap();
+        let auth=Store::open(isolated.as_str(),"example.test","https://example.test/auth/").await.unwrap();
         let domain=DomainStore::open(isolated.as_str(),"example.test","_hagency_test_").await.unwrap();
         let (_,p)=user(&auth,&secret_token(),"retire").await;
         let project=domain.register_project(&p,"!space:example.test",&admin(&p,"!space:example.test",true,None),*NOW).await.unwrap();
@@ -1658,7 +1658,7 @@ async fn postgres_retirement_cursor_passes_twenty_unavailable_departures() {
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_global_identity_create_needs_no_project_or_room_and_binding_is_separate() {
     let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-    let auth = Store::open(&url, "example.test", "https://example.test/_pasion/")
+    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let domain = DomainStore::open(&url, "example.test", "_hagency_test_")
@@ -1708,7 +1708,7 @@ async fn postgres_global_identity_create_needs_no_project_or_room_and_binding_is
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_owner_loss_retires_joining_and_paused_bindings_before_provisioning() {
     let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-    let auth = Store::open(&url, "example.test", "https://example.test/_pasion/")
+    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let domain = DomainStore::open(&url, "example.test", "_hagency_test_")
@@ -1884,7 +1884,7 @@ async fn exercise_membership_controller(url: &str) {
         },
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let auth = Store::open(url, "example.test", "https://example.test/_pasion/")
+    let auth = Store::open(url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let domain = DomainStore::open(url, "example.test", "_hagency_test_")

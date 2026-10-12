@@ -35,7 +35,7 @@ async fn postgres_unavailable_room_does_not_starve_routing_or_unknown_replies() 
     result.unwrap();
 }
 async fn exercise(url: &str) {
-    let auth = Store::open(url, "example.test", "https://example.test/_pasion/")
+    let auth = Store::open(url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let domain = DomainStore::open(url, "example.test", "_hagency_test_")
@@ -49,7 +49,7 @@ async fn exercise(url: &str) {
     let grant = auth
         .sign_in(
             Identity {
-                issuer: "https://example.test/_pasion/".into(),
+                issuer: "https://example.test/auth/".into(),
                 subject: "fair-owner".into(),
                 mxid: "@fair:example.test".into(),
                 client_id: "fair-client".into(),

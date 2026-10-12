@@ -209,7 +209,7 @@ pub fn ReportShow(report_id: String) -> Element {
         div { class: "space-y-6",
             Breadcrumbs {
                 items: vec![
-                    BreadcrumbItem { label: t("reports.title"), href: Some("/reports".to_string()) },
+                    BreadcrumbItem { label: t("reports.title"), href: Some("/admin/reports".to_string()) },
                     BreadcrumbItem { label: format!("Report #{report_id}"), href: None },
                 ],
             }

@@ -33,7 +33,7 @@ async fn user(store: &Store, name: &str) -> (String, Principal) {
     let grant = store
         .sign_in(
             Identity {
-                issuer: "https://example.test/_pasion/".into(),
+                issuer: "https://example.test/auth/".into(),
                 subject: name.into(),
                 mxid: format!("@{name}:example.test"),
                 client_id: "discovery-test".into(),
@@ -80,7 +80,7 @@ async fn get(service: &Service, path: &str, credential: &str, status: StatusCode
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_room_discovery_and_roster_require_live_independent_memberships() {
     let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-    let store = Store::open(&url, "example.test", "https://example.test/_pasion/")
+    let store = Store::open(&url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let domain = DomainStore::open(&url, "example.test", "_hagency_test_")
@@ -184,7 +184,7 @@ async fn postgres_room_discovery_and_roster_require_live_independent_memberships
         }),
         "@_hagency_service:example.test".into(),
     );
-    let issuer = Url::parse("https://example.test/_pasion/").unwrap();
+    let issuer = Url::parse("https://example.test/auth/").unwrap();
     let origin = Url::parse("https://example.test/").unwrap();
     let verifier = Verifier::new(
         issuer.clone(),
@@ -542,7 +542,7 @@ async fn readiness_guard_exercise(url: &str) {
     use diesel::{sql_query, sql_types::BigInt};
     use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let store = Store::open(url, "example.test", "https://example.test/_pasion/")
+    let store = Store::open(url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
     let domain = DomainStore::open(url, "example.test", "_hagency_test_")
@@ -653,7 +653,7 @@ async fn readiness_guard_exercise(url: &str) {
     let probe_event = "$readiness_guard_probe";
     let (matrix_origin, sent, _matrix_task) =
         readiness_matrix_fixture(probe_room.into(), probe_event.into(), matrix_calls.clone()).await;
-    let issuer = Url::parse("https://example.test/_pasion/").unwrap();
+    let issuer = Url::parse("https://example.test/auth/").unwrap();
     let public = Url::parse("https://example.test/").unwrap();
     let verifier = Verifier::new(
         issuer.clone(),
@@ -957,10 +957,10 @@ async fn readiness_guard_exercise(url: &str) {
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_public_discovery_identifies_hagency_without_granting_authority() {
     let db = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-    let store = Store::open(&db, "example.test", "https://example.test/_pasion/")
+    let store = Store::open(&db, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
-    let issuer = Url::parse("https://example.test/_pasion/").unwrap();
+    let issuer = Url::parse("https://example.test/auth/").unwrap();
     let public = Url::parse("https://example.test/").unwrap();
     let verifier = Verifier::new(
         issuer.clone(),
@@ -984,7 +984,7 @@ async fn postgres_public_discovery_identifies_hagency_without_granting_authority
     assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(value["protocolVersion"], 3);
     assert_eq!(value["homeserver"], "https://example.test/");
-    assert_eq!(value["issuer"], "https://example.test/_pasion/");
+    assert_eq!(value["issuer"], "https://example.test/auth/");
     assert_eq!(
         value["capabilities"],
         json!([

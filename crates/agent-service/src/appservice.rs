@@ -314,7 +314,7 @@ mod tests {
     #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
     async fn durable_transactions_are_idempotent_and_not_acked_on_conflict() {
         let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-        crate::store::Store::open(&url, "example.test", "https://example.test/_pasion/")
+        crate::store::Store::open(&url, "example.test", "https://example.test/auth/")
             .await
             .unwrap();
         let inbox = Inbox::open(&url, "h".repeat(64)).await.unwrap();
@@ -363,7 +363,7 @@ mod tests {
     #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
     async fn routed_plaintext_is_compacted_without_forgetting_transaction_digest_or_probe_proof() {
         let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-        crate::store::Store::open(&url, "example.test", "https://example.test/_pasion/")
+        crate::store::Store::open(&url, "example.test", "https://example.test/auth/")
             .await
             .unwrap();
         let inbox = Inbox::open(&url, "h".repeat(64)).await.unwrap();

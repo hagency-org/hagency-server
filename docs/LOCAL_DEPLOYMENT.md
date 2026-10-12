@@ -28,7 +28,7 @@ curl --fail --silent --show-error http://127.0.0.1:8088/readyz
 curl --fail --silent --show-error http://127.0.0.1:8088/api/hagency/v1/discovery
 curl --fail --silent --show-error http://127.0.0.1:8088/_matrix/client/versions
 curl --fail --silent --show-error http://127.0.0.1:8088/_matrix/client/v1/auth_metadata
-curl --fail --silent --show-error http://127.0.0.1:8088/_pasion/.well-known/openid-configuration
+curl --fail --silent --show-error http://127.0.0.1:8088/auth/.well-known/openid-configuration
 ```
 
 `--check-config` reads referenced configuration and requires delegated Pasion;
@@ -39,7 +39,7 @@ This is a startup latch, not a continuous transport-health probe.
 prove a human's Matrix identity has completed asynchronous provisioning.
 
 Open `/login` for the web console. Desktop/client sign-in uses the **server origin**,
-for example `http://127.0.0.1:8088`, not `/login` or `/_pasion/`. HTTP development
+for example `http://127.0.0.1:8088`, not `/login` or `/auth/`. HTTP development
 OAuth is limited to loopback IPs; a local hostname needs trusted HTTPS. No Fleet
 registration, `[fleet_access]`, per-user Appservice secret or credential import is needed.
 
@@ -48,7 +48,7 @@ registration, `[fleet_access]`, per-user Appservice secret or credential import 
 For a new HTTPS deployment, generate Docker config with the final public origin
 and stable Matrix server name as in the README. Proxy every path to port 8088,
 preserving the public Host and avoiding subpath rewrites. The issuer must be
-`<public_origin>/_pasion/`; discovery, token, callback and Matrix metadata must agree.
+`<public_origin>/auth/`; discovery, token, callback and Matrix metadata must agree.
 Keep an existing `server_name` and signing keys when reusing a database.
 
 A private hostname such as `hagency.local` must resolve and pass certificate
@@ -60,10 +60,10 @@ The proxy must listen on the interface selected by that route. A host-only IPv6
 success does not establish container IPv4 access.
 
 ```sh
-curl -4 --fail --silent --show-error https://hagency.local/_pasion/.well-known/openid-configuration
-curl -6 --fail --silent --show-error https://hagency.local/_pasion/.well-known/openid-configuration
+curl -4 --fail --silent --show-error https://hagency.local/auth/.well-known/openid-configuration
+curl -6 --fail --silent --show-error https://hagency.local/auth/.well-known/openid-configuration
 docker compose exec server curl --fail --silent --show-error \
-  https://hagency.local/_pasion/.well-known/openid-configuration
+  https://hagency.local/auth/.well-known/openid-configuration
 docker compose exec server curl --fail --silent --show-error \
   https://hagency.local/_matrix/client/v1/auth_metadata
 ```

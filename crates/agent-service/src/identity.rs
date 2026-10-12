@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn requires_live_scope_and_joint_identity() {
         let good = checked(
-            "https://example.test/_pasion/",
+            "https://example.test/auth/",
             "example.test",
             input(),
             who(),

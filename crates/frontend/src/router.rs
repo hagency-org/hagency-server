@@ -21,6 +21,9 @@ pub enum Route {
 
     #[layout(AuthenticatedLayout)]
         #[route("/")]
+        Home {},
+
+        #[route("/admin")]
         Dashboard {},
 
         #[route("/hagency/projects")]
@@ -28,78 +31,78 @@ pub enum Route {
         #[route("/hagency/agents")]
         HagencyAgents {},
 
-        #[route("/users")]
+        #[route("/admin/users")]
         UserList {},
-        #[route("/users/create")]
+        #[route("/admin/users/create")]
         UserCreate {},
-        #[route("/users/known")]
+        #[route("/admin/users/known")]
         KnownUserList {},
-        #[route("/users/known/:user_id")]
+        #[route("/admin/users/known/:user_id")]
         KnownUserShow { user_id: String },
-        #[route("/users/:user_id")]
+        #[route("/admin/users/:user_id")]
         UserShow { user_id: String },
 
-        #[route("/rooms")]
+        #[route("/admin/rooms")]
         RoomList {},
-        #[route("/rooms/:room_id")]
+        #[route("/admin/rooms/:room_id")]
         RoomShow { room_id: String },
 
-        #[route("/media")]
+        #[route("/admin/media")]
         MediaList {},
 
-        #[route("/reports")]
+        #[route("/admin/reports")]
         ReportList {},
-        #[route("/reports/:report_id")]
+        #[route("/admin/reports/:report_id")]
         ReportShow { report_id: String },
 
-        #[route("/destinations")]
+        #[route("/admin/destinations")]
         DestinationList {},
-        #[route("/destinations/:destination_id")]
+        #[route("/admin/destinations/:destination_id")]
         DestinationShow { destination_id: String },
 
-        #[route("/registration-tokens")]
+        #[route("/admin/registration-tokens")]
         RegistrationTokenList {},
 
-        #[route("/appservices")]
+        #[route("/admin/appservices")]
         AppserviceList {},
 
-        #[route("/auth-status")]
+        #[route("/admin/auth-status")]
         AuthStatus {},
 
-        #[route("/server-status")]
+        #[route("/admin/server-status")]
         ServerStatus {},
 
-        #[route("/server-actions")]
+        #[route("/admin/server-actions")]
         ServerActions {},
 
-        #[route("/server-notices")]
+        #[route("/admin/server-notices")]
         ServerNotices {},
 
-        #[route("/server-notifications")]
+        #[route("/admin/server-notifications")]
         ServerNotifications {},
 
-        #[route("/settings/notifications")]
+        #[route("/admin/settings/notifications")]
         NotificationPreferences {},
 
-        #[route("/pasion/accounts")]
+        #[route("/admin/pasion/accounts")]
         PasionAccounts {},
-        #[route("/pasion/accounts/:user_id")]
+        #[route("/admin/pasion/accounts/:user_id")]
         PasionAccountShow { user_id: String },
-        #[route("/pasion/audit-log")]
+        #[route("/admin/pasion/audit-log")]
         PasionAuditLog {},
-        #[route("/pasion/oauth2-sessions")]
+        #[route("/admin/pasion/oauth2-sessions")]
         PasionOAuth2Sessions {},
-        #[route("/pasion/personal-sessions")]
+        #[route("/admin/pasion/personal-sessions")]
         PasionPersonalSessions {},
-        #[route("/pasion/connector-health")]
+        #[route("/admin/pasion/connector-health")]
         PasionConnectorHealth {},
-        #[route("/pasion/upstream-providers")]
+        #[route("/admin/pasion/upstream-providers")]
         PasionUpstreamProviders {},
-        #[route("/pasion/upstream-links")]
+        #[route("/admin/pasion/upstream-links")]
         PasionUpstreamLinks {},
-        #[route("/pasion/notification-channels")]
+        #[route("/admin/pasion/notification-channels")]
         PasionNotificationChannels {},
-        #[route("/pasion/notification-templates")]
+        #[route("/admin/pasion/notification-templates")]
         PasionNotificationTemplates {},
     #[end_layout]
 
@@ -111,6 +114,21 @@ pub enum Route {
 pub fn AppRouter() -> Element {
     rsx! {
         Router::<Route> {}
+    }
+}
+
+impl Route {
+    /// Shared by direct navigation, OAuth return paths and permission tests.
+    pub fn requires_admin(&self) -> bool {
+        !matches!(
+            self,
+            Self::Home {}
+                | Self::HagencyProjects {}
+                | Self::HagencyAgents {}
+                | Self::LoginPage {}
+                | Self::OAuthCallback { .. }
+                | Self::NotFound { .. }
+        )
     }
 }
 
@@ -145,6 +163,11 @@ pub fn set_admin_verdict(is_admin: bool) {
     *ADMIN_PROBE_ERROR.write() = None;
 }
 
+pub fn set_access_error(message: String) {
+    *ADMIN_VERDICT.write() = None;
+    *ADMIN_PROBE_ERROR.write() = Some(message);
+}
+
 pub fn is_server_admin() -> bool {
     *ADMIN_VERDICT.read() == Some(true)
 }
@@ -158,7 +181,7 @@ pub fn restorable_route(path: &str, admin: bool) -> Option<Route> {
     ) {
         return None;
     }
-    if !admin && !matches!(route, Route::HagencyProjects {} | Route::HagencyAgents {}) {
+    if !admin && route.requires_admin() {
         return None;
     }
     Some(route)
@@ -179,14 +202,34 @@ mod return_route_tests {
             assert!(restorable_route(path, true).is_none());
         }
         assert!(matches!(
-            restorable_route("/users", true),
+            restorable_route("/admin/users", true),
             Some(Route::UserList {})
         ));
-        assert!(restorable_route("/users", false).is_none());
+        assert!(restorable_route("/admin/users", false).is_none());
         assert!(matches!(
             restorable_route("/hagency/agents", false),
             Some(Route::HagencyAgents {})
         ));
+    }
+
+    #[test]
+    fn member_routes_stay_in_place_and_admin_routes_require_verified_role() {
+        for path in ["/", "/hagency/projects", "/hagency/agents"] {
+            let route = restorable_route(path, false).unwrap();
+            assert!(!route.requires_admin());
+            assert_eq!(route.to_string(), path);
+        }
+        for path in [
+            "/admin",
+            "/admin/users",
+            "/admin/rooms",
+            "/admin/pasion/accounts",
+            "/admin/settings/notifications",
+        ] {
+            assert!(restorable_route(path, false).is_none());
+            assert!(restorable_route(path, true).unwrap().requires_admin());
+        }
+        assert!(restorable_route("/users", true).is_none());
     }
 }
 
@@ -195,53 +238,51 @@ fn AuthenticatedLayout() -> Element {
     let nav = use_navigator();
     let route = use_route::<Route>();
 
-    // Re-check periodically too: a revoked admin who only uses pages that
-    // keep answering (or sits idle) must not keep the dashboard open.
-    use_future(|| async {
-        loop {
-            gloo_timers::future::sleep(std::time::Duration::from_secs(60)).await;
-            if *ADMIN_VERDICT.peek() == Some(true) {
-                auth::handle_forbidden();
-            }
-        }
-    });
-
     let router = dioxus::prelude::router();
     let mut probe = use_resource(move || {
-        let route = router.current::<Route>();
         async move {
             // A reload retains only the HttpOnly session, never an OAuth bearer.
             // Revalidate that session before rendering owner management pages.
             *ADMIN_PROBE_ERROR.write() = None;
-            match auth::verify_admin().await {
-                Ok(flag) => {
+            match auth::verify_access_on_load().await {
+                Ok(Some(flag)) => {
                     set_admin_verdict(flag);
-                    if flag
-                        && !auth::has_oauth_token()
-                        && !matches!(route, Route::HagencyProjects {} | Route::HagencyAgents {})
-                        && let Err(err) = auth::start_login().await
-                    {
-                        *ADMIN_PROBE_ERROR.write() = Some(err.message);
-                    }
                 }
+                Ok(None) => {} // Redirecting for the newly granted administrator role.
                 Err(err) if err.status == 401 => {
                     crate::api::browser_auth::clear_session();
                     nav.replace(Route::LoginPage {});
                 }
                 // Never fall back to "admin": without a positive answer from the
                 // servers the dashboard stays closed.
-                Err(err) => *ADMIN_PROBE_ERROR.write() = Some(err.message),
+                Err(err) => set_access_error(err.message),
+            }
+        }
+    });
+
+    // Restore the bearer grant when navigating to an administrator page
+    // after reloading with only the HttpOnly browser session.
+    let mut authorization = use_resource(move || {
+        let route = router.current::<Route>();
+        let admin = *ADMIN_VERDICT.read() == Some(true);
+        async move {
+            if admin
+                && route.requires_admin()
+                && !auth::has_oauth_token()
+                && let Err(error) = auth::start_login().await
+            {
+                *ADMIN_PROBE_ERROR.write() = Some(error.message);
             }
         }
     });
 
     let verdict = *ADMIN_VERDICT.read();
     let probe_error = ADMIN_PROBE_ERROR.read().clone();
-    let member_page = matches!(route, Route::HagencyProjects {} | Route::HagencyAgents {});
+    let member_page = !route.requires_admin();
     if verdict == Some(true) && !member_page && !auth::has_oauth_token() {
         return rsx! { div { class: "p-6", "Restoring Pasion authorization..."
             if let Some(message) = probe_error { p { role: "alert", "{message}" }
-                button { onclick: move |_| probe.restart(), "Retry" }
+                button { onclick: move |_| { probe.restart(); authorization.restart(); }, "Retry" }
             }
         } };
     }
@@ -252,10 +293,7 @@ fn AuthenticatedLayout() -> Element {
             }
         },
         (Some(false), _) => {
-            let member_page = matches!(route, Route::HagencyProjects {} | Route::HagencyAgents {});
-            if matches!(route, Route::Dashboard {}) {
-                nav.replace(Route::HagencyProjects {});
-            }
+            let member_page = !route.requires_admin();
             rsx! { AppLayout {
                 if member_page { Outlet::<Route> {} } else { pages::not_authorized::NotAuthorizedPage {} }
             } }
@@ -267,7 +305,7 @@ fn AuthenticatedLayout() -> Element {
                     p { class: "text-muted-foreground text-sm break-all", "{message}" }
                     crate::components::ui::button::Button {
                         class: "w-full".to_string(),
-                        onclick: move |_| probe.restart(),
+                        onclick: move |_| { probe.restart(); authorization.restart(); },
                         "Retry"
                     }
                     crate::components::ui::button::Button {
@@ -321,6 +359,24 @@ fn OAuthCallback(
             state: state,
             error: error,
             error_description: error_description,
+        }
+    }
+}
+
+#[component]
+fn Home() -> Element {
+    rsx! {
+        div { class: "space-y-6",
+            h1 { class: "text-2xl font-bold tracking-tight", "Hagency" }
+            p { class: "text-muted-foreground", {t("home.description")} }
+            div { class: "flex flex-wrap gap-4",
+                Link { to: Route::HagencyProjects {}, class: "hg-link", {t("home.projects")} }
+                Link { to: Route::HagencyAgents {}, class: "hg-link", {t("home.agents")} }
+                a { href: "/auth/", class: "hg-link", {t("home.account")} }
+                if is_server_admin() {
+                    Link { to: Route::Dashboard {}, class: "hg-link", {t("home.admin")} }
+                }
+            }
         }
     }
 }
@@ -538,7 +594,7 @@ fn NotFound(route: Vec<String>) -> Element {
                 p { class: "text-muted-foreground mb-4",
                     {format!("{}: /{}", t("not_found.message"), route.join("/"))}
                 }
-                Link { to: Route::Dashboard {}, class: "text-primary hover:underline",
+                Link { to: Route::Home {}, class: "text-primary hover:underline",
                     {t("not_found.go_dashboard")}
                 }
             }

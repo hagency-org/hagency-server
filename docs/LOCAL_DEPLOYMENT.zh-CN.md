@@ -26,7 +26,7 @@ curl --fail --silent --show-error http://127.0.0.1:8088/readyz
 curl --fail --silent --show-error http://127.0.0.1:8088/api/hagency/v1/discovery
 curl --fail --silent --show-error http://127.0.0.1:8088/_matrix/client/versions
 curl --fail --silent --show-error http://127.0.0.1:8088/_matrix/client/v1/auth_metadata
-curl --fail --silent --show-error http://127.0.0.1:8088/_pasion/.well-known/openid-configuration
+curl --fail --silent --show-error http://127.0.0.1:8088/auth/.well-known/openid-configuration
 ```
 
 `--check-config` 读取引用配置并检查 Pasion 委托认证要求，不连接数据库或验证 TLS。
@@ -35,7 +35,7 @@ curl --fail --silent --show-error http://127.0.0.1:8088/_pasion/.well-known/open
 仅 health 200 不足以证明 Agent 创建就绪。就绪也不代表用户的异步 Matrix 身份配置完成。
 
 Web 控制台访问 `/login`。Desktop/client 登录填写服务器 **origin**，如
-`http://127.0.0.1:8088`，不追加 `/login` 或 `/_pasion/`。开发 OAuth 的 HTTP 仅限
+`http://127.0.0.1:8088`，不追加 `/login` 或 `/auth/`。开发 OAuth 的 HTTP 仅限
 loopback IP，本地域名需要可信 HTTPS。无需 Fleet 注册、`[fleet_access]`、
 用户 Appservice 密钥或凭据导入。
 
@@ -43,7 +43,7 @@ loopback IP，本地域名需要可信 HTTPS。无需 Fleet 注册、`[fleet_acc
 
 新 HTTPS 部署按 README 使用最终公开 origin 与稳定 Matrix server name 生成配置。
 反向代理将所有路径转发至 8088，保留公开 Host，不改写子路径。
-issuer 必须是 `<public_origin>/_pasion/`，发现、token、callback、Matrix metadata
+issuer 必须是 `<public_origin>/auth/`，发现、token、callback、Matrix metadata
 需一致。复用数据库时保留原 `server_name` 与签名密钥。
 
 `hagency.local` 等私人域名必须在浏览器、原生客户端和 **server 容器内**均可解析且
@@ -52,10 +52,10 @@ issuer 必须是 `<public_origin>/_pasion/`，发现、token、callback、Matrix
 不要禁用 TLS 验证。代理需监听路由实际指向的接口；宿主 IPv6 成功不证明容器 IPv4 可用。
 
 ```sh
-curl -4 --fail --silent --show-error https://hagency.local/_pasion/.well-known/openid-configuration
-curl -6 --fail --silent --show-error https://hagency.local/_pasion/.well-known/openid-configuration
+curl -4 --fail --silent --show-error https://hagency.local/auth/.well-known/openid-configuration
+curl -6 --fail --silent --show-error https://hagency.local/auth/.well-known/openid-configuration
 docker compose exec server curl --fail --silent --show-error \
-  https://hagency.local/_pasion/.well-known/openid-configuration
+  https://hagency.local/auth/.well-known/openid-configuration
 docker compose exec server curl --fail --silent --show-error \
   https://hagency.local/_matrix/client/v1/auth_metadata
 ```

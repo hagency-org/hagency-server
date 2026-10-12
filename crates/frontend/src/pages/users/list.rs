@@ -563,7 +563,7 @@ pub fn UserList() -> Element {
                                                 title: t("users.no_users"),
                                                 description: "Try adjusting your search query or create a new user.".to_string(),
                                                 action_label: t("users.create"),
-                                                action_href: "/users/create".to_string(),
+                                                action_href: "/admin/users/create".to_string(),
                                             }
                                         }
                                     }

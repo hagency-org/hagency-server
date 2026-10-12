@@ -312,7 +312,7 @@ async fn postgres_execution_history_real_routes_require_device_and_atomic_witnes
     use serde_json::{Value, json};
     use url::Url;
     let mut f = fixture().await;
-    let issuer = Url::parse("https://example.test/_pasion/").unwrap();
+    let issuer = Url::parse("https://example.test/auth/").unwrap();
     let origin = Url::parse("https://example.test/").unwrap();
     let verifier = Verifier::new(
         issuer.clone(),

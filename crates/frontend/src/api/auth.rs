@@ -134,7 +134,7 @@ async fn send_bearer_get(url: &str, access_token: &str) -> Result<TextResponse, 
 }
 
 async fn send_oauth_form_request(path: &str, body: &str) -> Result<TextResponse, HttpError> {
-    let url = oauth_public_url(path).unwrap_or_else(|| format!("/_pasion{path}"));
+    let url = oauth_public_url(path).unwrap_or_else(|| format!("/auth{path}"));
     send_form_post(&url, body).await
 }
 
@@ -237,17 +237,21 @@ fn base64url_encode(data: &[u8]) -> Result<String, HttpError> {
 /// One entry point: ask Pasion for the current browser account's role. A new
 /// browser first logs in as a member; the callback upgrades a verified admin.
 pub async fn start_login() -> Result<(), HttpError> {
+    remember_return_route();
+    let viewer = pasion_viewer().await?;
+    start_oauth_login(viewer["viewer"]["can_request_admin"] == true).await
+}
+
+fn remember_return_route() {
     if let Some(path) = web_sys::window().and_then(|w| w.location().pathname().ok())
         && crate::router::restorable_route(&path, true).is_some()
     {
         storage::set_session_item("oauth_return_route", &path);
     }
-    let viewer = pasion_viewer().await?;
-    start_oauth_login(viewer["viewer"]["can_request_admin"] == true).await
 }
 
 async fn pasion_viewer() -> Result<serde_json::Value, HttpError> {
-    let response = Request::get("/_pasion/api/v1/viewer")
+    let response = Request::get("/auth/api/v1/viewer")
         .credentials(web_sys::RequestCredentials::SameOrigin)
         .send()
         .await
@@ -261,10 +265,13 @@ async fn pasion_viewer() -> Result<serde_json::Value, HttpError> {
 }
 
 fn account_needs_admin_scope(viewer: &serde_json::Value, mxid: &str, scope: &str) -> bool {
-    let user = &viewer["viewer"];
-    user["can_request_admin"] == true
-        && user["matrix"]["mxid"] == mxid
+    account_can_request_admin(viewer, mxid)
         && !scope.split_whitespace().any(|s| s == PASION_ADMIN_SCOPE)
+}
+
+fn account_can_request_admin(viewer: &serde_json::Value, mxid: &str) -> bool {
+    let user = &viewer["viewer"];
+    user["can_request_admin"] == true && user["matrix"]["mxid"] == mxid
 }
 
 /// Start the OAuth2 login flow: redirect the browser to Pasion's /authorize.
@@ -557,17 +564,37 @@ pub async fn refresh_oauth_token() -> bool {
 
 /// Verify the Matrix identity and live administrator role through the host.
 /// Pasion administrative scopes are checked separately by its own API.
-pub async fn verify_admin() -> Result<bool, HttpError> {
+async fn verify_session() -> Result<crate::api::browser_auth::Session, HttpError> {
     match crate::api::browser_auth::ensure_session().await {
+        Err(e) if e.status == 401 && handle_unauthorized().await => {
+            crate::api::browser_auth::ensure_session().await
+        }
+        result => result,
+    }
+}
+
+pub async fn verify_admin() -> Result<bool, HttpError> {
+    match verify_session().await {
         Ok(session) => Ok(session.is_admin),
         Err(e) if e.status == 403 => Ok(false),
-        Err(e) if e.status == 401 && handle_unauthorized().await => {
-            crate::api::browser_auth::ensure_session()
-                .await
-                .map(|s| s.is_admin)
-        }
         Err(e) => Err(e),
     }
+}
+
+/// Refreshing the page rechecks the signed-in account. A member grant cannot
+/// prove a newly assigned admin role, so request the missing authorization for
+/// that exact account before rendering management pages. None means redirecting.
+pub async fn verify_access_on_load() -> Result<Option<bool>, HttpError> {
+    let session = verify_session().await?;
+    if !session.is_admin {
+        let viewer = pasion_viewer().await?;
+        if account_can_request_admin(&viewer, &session.user_id) {
+            remember_return_route();
+            start_oauth_login(true).await?;
+            return Ok(None);
+        }
+    }
+    Ok(Some(session.is_admin))
 }
 
 thread_local! {
@@ -577,8 +604,7 @@ thread_local! {
     static REVERIFY_AGAIN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Called by the API clients whenever a backend answers 403, and
-/// periodically by the authenticated layout.
+/// Called by the API clients whenever a backend answers 403.
 ///
 /// The user's admin flag may have been revoked mid-session. Re-probe in the
 /// background (at most one probe in flight, re-run if more requests arrived
@@ -595,9 +621,12 @@ pub fn handle_forbidden() {
     dioxus::dioxus_core::spawn_forever(async {
         loop {
             REVERIFY_AGAIN.with(|flag| flag.set(false));
-            if let Ok(false) = verify_admin().await {
-                crate::router::set_admin_verdict(false);
-                break;
+            match verify_admin().await {
+                Ok(flag) => crate::router::set_admin_verdict(flag),
+                Err(error) => {
+                    crate::router::set_access_error(error.message);
+                    break;
+                }
             }
             if !REVERIFY_AGAIN.with(|flag| flag.replace(false)) {
                 break;
@@ -627,7 +656,7 @@ pub async fn logout() -> Result<(), HttpError> {
 
     // End the Pasion browser session only when it supplied this login.
     if storage::get_item("auth_kind").as_deref() == Some("oauth2") {
-        let _ = Request::post("/_pasion/api/v1/auth/logout")
+        let _ = Request::post("/auth/api/v1/auth/logout")
             .header("Accept", "application/json")
             .send()
             .await;

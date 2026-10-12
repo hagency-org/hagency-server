@@ -337,7 +337,7 @@ pub fn PasionAccountShowPage(user_id: String) -> Element {
                 div { class: "space-y-6",
                     Breadcrumbs {
                         items: vec![
-                            BreadcrumbItem { label: t("pasion.accounts.title"), href: Some("/pasion/accounts".to_string()) },
+                            BreadcrumbItem { label: t("pasion.accounts.title"), href: Some("/admin/pasion/accounts".to_string()) },
                             BreadcrumbItem { label: id(), href: None },
                         ],
                     }
@@ -367,7 +367,7 @@ pub fn PasionAccountShowPage(user_id: String) -> Element {
         div { class: "space-y-6",
             Breadcrumbs {
                 items: vec![
-                    BreadcrumbItem { label: t("pasion.accounts.title"), href: Some("/pasion/accounts".to_string()) },
+                    BreadcrumbItem { label: t("pasion.accounts.title"), href: Some("/admin/pasion/accounts".to_string()) },
                     BreadcrumbItem { label: username.clone(), href: None },
                 ],
             }

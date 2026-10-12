@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-pub const MOUNT: &str = "/_pasion/";
+pub const MOUNT: &str = "/auth/";
 pub const ADMIN_CLIENT_ID: &str = "01KMQPADM1N000000000000000";
 
 #[derive(Clone)]
@@ -167,7 +167,7 @@ pub async fn prepare(host: &mut Config) -> anyhow::Result<Option<Figment>> {
     if settings.get("account").is_none() {
         settings["account"] = json!({});
     }
-    settings["account"]["admin_portal_url"] = json!(host.public_origin);
+    settings["account"]["admin_portal_url"] = json!(host.public_origin.join("admin")?);
     // The bundled SPA is a public PKCE client. Keep its callback aligned with
     // the host origin, without requiring a second deployment/configuration.
     let client = json!({
@@ -304,7 +304,7 @@ pub struct DelegatedAdminGuard {
 impl DelegatedAdminGuard {
     pub fn new(host: &Config) -> anyhow::Result<Self> {
         Ok(Self {
-            endpoint: host.internal_origin().join("_pasion/oauth2/introspect")?,
+            endpoint: host.internal_origin().join("auth/oauth2/introspect")?,
             secret: host
                 .matrix
                 .admin

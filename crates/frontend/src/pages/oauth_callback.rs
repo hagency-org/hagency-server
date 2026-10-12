@@ -64,13 +64,7 @@ pub fn OAuthCallback(
                         crate::utils::storage::get_session_item("oauth_return_route")
                             .and_then(|path| crate::router::restorable_route(&path, admin));
                     crate::utils::storage::remove_session_item("oauth_return_route");
-                    nav.replace(return_route.unwrap_or_else(|| {
-                        if admin {
-                            Route::Dashboard {}
-                        } else {
-                            Route::HagencyProjects {}
-                        }
-                    }));
+                    nav.replace(return_route.unwrap_or(Route::Home {}));
                 }
                 Err(e) => {
                     processing.set(false);

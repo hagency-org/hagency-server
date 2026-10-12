@@ -96,19 +96,19 @@ def native_oauth(origin, password):
             if error.code in [302,303,307]:
                 return {"redirect_url":error.headers["Location"]}
             raise RuntimeError("native PKCE protocol step failed at "+path.split("?")[0]) from None
-    call("/_pasion/api/v1/auth/login",{"username":"agent_smoke_owner","password":password})
+    call("/auth/api/v1/auth/login",{"username":"agent_smoke_owner","password":password})
     redirect="http://127.0.0.1:13377/console/server-login/callback"
-    registered=call("/_pasion/oauth2/registration",{"client_name":"Isolated native PKCE smoke","client_uri":"https://github.com/chrislearn/hagency-client","application_type":"native","token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"],"redirect_uris":["http://127.0.0.1/console/server-login/callback"]})
+    registered=call("/auth/oauth2/registration",{"client_name":"Isolated native PKCE smoke","client_uri":"https://github.com/chrislearn/hagency-client","application_type":"native","token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"],"redirect_uris":["http://127.0.0.1/console/server-login/callback"]})
     verifier=secrets.token_urlsafe(48);state=secrets.token_urlsafe(32)
     challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-    authorization=call("/_pasion/authorize?"+urlencode({"client_id":registered["client_id"],"response_type":"code","redirect_uri":redirect,"state":state,"code_challenge":challenge,"code_challenge_method":"S256","scope":"urn:matrix:client:api:* urn:matrix:client:device:HagencySmoke"}))
+    authorization=call("/auth/authorize?"+urlencode({"client_id":registered["client_id"],"response_type":"code","redirect_uri":redirect,"state":state,"code_challenge":challenge,"code_challenge_method":"S256","scope":"urn:matrix:client:api:* urn:matrix:client:device:HagencySmoke"}))
     destination=authorization["redirect_url"]
     if urlparse(destination).path!="/console/server-login/callback":
         consent=destination.rstrip("/").rsplit("/",1)[-1]
-        destination=call("/_pasion/api/v1/oauth2/consent/"+consent,{"action":"consent"},extra={"Origin":origin})["redirect_url"]
+        destination=call("/auth/api/v1/oauth2/consent/"+consent,{"action":"consent"},extra={"Origin":origin})["redirect_url"]
     parsed=urlparse(destination);query=parse_qs(parsed.query)
     assert parsed.scheme=="http" and parsed.netloc=="127.0.0.1:13377" and query["state"]==[state]
-    return call("/_pasion/oauth2/token",{"grant_type":"authorization_code","client_id":registered["client_id"],"redirect_uri":redirect,"code":query["code"][0],"code_verifier":verifier},form=True)["access_token"]
+    return call("/auth/oauth2/token",{"grant_type":"authorization_code","client_id":registered["client_id"],"redirect_uri":redirect,"code":query["code"][0],"code_verifier":verifier},form=True)["access_token"]
 
 try:
     with contextlib.nullcontext(tempfile.mkdtemp(prefix="hagency-agent-integration-")) as temporary:
@@ -131,7 +131,7 @@ try:
         palpo = re.sub(r'^root\s*=.*$', 'root = ' + json.dumps(str(folder / "media")), palpo, flags=re.M)
         pasion = (ROOT / "config/dev/pasion.toml").read_text()
         pasion = re.sub(r'^uri\s*=.*$', 'uri = ' + json.dumps(dburl(DBS[2])), pasion, flags=re.M)
-        pasion = re.sub(r'^resources_dir\s*=.*$', 'resources_dir = ' + json.dumps(str(ROOT / "resources/pasion")), pasion, flags=re.M)
+        pasion = re.sub(r'^resources_dir\s*=.*$', 'resources_dir = ' + json.dumps(os.environ.get("HAGENCY_TEST_PASION_RESOURCES", str(ROOT / "resources/pasion"))), pasion, flags=re.M)
         if BACKUP_RESTORE:
             private(folder / "password-pepper", secrets.token_urlsafe(32))
             pasion += '\n[[passwords.schemes]]\nversion = 1\nalgorithm = "argon2id"\nsecret_file = "password-pepper"\n'
@@ -141,7 +141,7 @@ try:
             'database_url = ' + json.dumps(dburl(DBS[0])),
             'data_dir = ' + json.dumps(str(folder / "data")),
             'palpo_config = "palpo.toml"', 'pasion_config = "pasion.toml"',
-            'public_dir = ' + json.dumps(str(ROOT / "resources/frontend/public")), ""])
+            'public_dir = ' + json.dumps(os.environ.get("HAGENCY_TEST_FRONTEND_RESOURCES", str(ROOT / "resources/frontend/public"))), ""])
         private(folder / "palpo.toml", palpo)
         private(folder / "pasion.toml", pasion)
         private(folder / "hagency.toml", host)
@@ -158,6 +158,9 @@ try:
                     discovery = request(origin, "GET", "/api/hagency/v1/discovery")
                     assert discovery["protocolVersion"] == 3
                     assert discovery["serverName"] == server_name
+                    assert discovery["issuer"] == origin + "/auth/"
+                    assert discovery["authorizationEndpoint"] == origin + "/auth/authorize"
+                    assert discovery["tokenEndpoint"] == origin + "/auth/oauth2/token"
                     break
                 except (URLError, TimeoutError):
                     time.sleep(1)
@@ -198,6 +201,19 @@ try:
             else:
                 raise RuntimeError("real Matrix event did not reach durable Appservice inbox")
             print("PASS: embedded Pasion/Palpo startup, mandatory AS identity, private room, stable Matrix send and durable AS roundtrip")
+            if os.environ.get("HAGENCY_TEST_HOLD_BROWSER") == "1":
+                private(folder / "browser-fixture.json", json.dumps({"base": origin, "username": "agent_smoke_owner", "password": (folder / "bootstrap-password").read_text()}))
+                print("BROWSER fixture ready: " + origin + " ; private directory: " + str(folder), flush=True)
+                for _ in range(600):
+                    done = folder / "browser-done.json"
+                    if done.exists():
+                        assert done.stat().st_mode & 0o077 == 0
+                        assert json.loads(done.read_text()).get("passed") is True
+                        print("PASS: real browser member/admin navigation and OAuth authorization", flush=True)
+                        break
+                    time.sleep(1)
+                else:
+                    raise RuntimeError("browser verification deadline exceeded")
             if os.environ.get("HAGENCY_TEST_HOLD_CLIENT") == "1":
                 private(folder / "client-fixture.json", json.dumps({"base":origin,"username":"agent_smoke_owner","password":(folder/"bootstrap-password").read_text()}))
                 print("CLIENT fixture ready: " + origin + " ; private directory: " + str(folder), flush=True)
@@ -639,21 +655,35 @@ try:
             request(origin,"POST","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/kick",{"user_id":agent["puppetMxid"],"reason":"isolated membership fencing fixture"},matrix_token)
             request(origin,"POST","/api/hagency/v1/execution/events/authorize-tool",membership_start,device_token,expected_status=401)
             paused=request(origin,"GET",binding_path,token=user_token)["binding"]
-            assert paused["state"]=="suspended" and paused["generation"]>before_kick["generation"]
+            assert paused["state"] in ("leaving", "left") and paused["generation"]>before_kick["generation"]
             # Fixture-only AS invitation/join restores Matrix membership, not
             # Hagency authorization or an old dispatch generation.
             request(origin,"POST","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/invite"+query,{"user_id":agent["puppetMxid"]},registration["as_token"])
             request(origin,"POST","/_matrix/client/v3/join/"+quote(discussion,safe="")+"?user_id="+quote(agent["puppetMxid"],safe=""),{},registration["as_token"])
-            assert request(origin,"GET",binding_path,token=user_token)["binding"]["state"]=="suspended"
+            assert request(origin,"GET",binding_path,token=user_token)["binding"]["state"] in ("leaving", "left")
             request(origin,"POST","/api/hagency/v1/execution/events/authorize-tool",membership_start,device_token,expected_status=401)
-            resumed=request(origin,"POST",binding_path+"/resume",token=user_token)["binding"]
-            assert resumed["state"]=="active" and resumed["generation"]>paused["generation"]
+            request(origin,"POST",binding_path+"/resume",token=user_token,expected_status=409)
+            for _ in range(30):
+                departed = request(origin,"GET",binding_path,token=user_token)["binding"]
+                member = request(origin,"GET","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/state/m.room.member/"+quote(agent["puppetMxid"],safe=""),token=matrix_token)
+                if departed["state"] == "left" and member["membership"] == "leave": break
+                time.sleep(0.5)
+            else: raise RuntimeError("retired membership did not converge to physical departure")
+            rebound_body = {"projectId": project["id"], "roomId": discussion, "idempotencyKey": "membership_rebind"}
+            rebound = request(origin,"POST","/api/hagency/v1/agents/"+agent["id"]+"/bindings",rebound_body,user_token)
+            for _ in range(30):
+                if rebound["commandState"] == "active": break
+                time.sleep(0.5)
+                rebound = request(origin,"GET","/api/hagency/v1/commands/agent.bind/membership_rebind",token=user_token)
+            assert rebound["commandState"] == "active"
+            resumed = rebound["creation"]["binding"]
+            assert resumed["id"] == binding["id"] and resumed["generation"]>paused["generation"]
             request(origin,"POST","/api/hagency/v1/execution/events/start",membership_start,device_token,expected_status=401)
             request(origin,"POST","/api/hagency/v1/execution/events/authorize-tool",membership_start,device_token,expected_status=401)
             # The restricted second Room remains authorized throughout this loss.
             second_binding=bound["creation"]["binding"]
             assert request(origin,"GET","/api/hagency/v1/bindings/"+second_binding["id"],token=user_token)["binding"]["state"]=="active"
-            after_resume_message=request(origin,"PUT","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/send/m.room.message/after_membership_resume",{"msgtype":"m.text","body":"fresh request after explicit resume","m.mentions":{"user_ids":[agent["puppetMxid"]]}},matrix_token)["event_id"]
+            after_resume_message=request(origin,"PUT","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/send/m.room.message/after_membership_resume",{"msgtype":"m.text","body":"fresh request after explicit rebind","m.mentions":{"user_ids":[agent["puppetMxid"]]}},matrix_token)["event_id"]
             resumed_dispatch=None
             for _ in range(30):
                 events=request(origin,"POST","/api/hagency/v1/execution/events/poll",{"lease":reference,"bindingId":binding["id"],"limit":10},device_token)["events"]
@@ -664,13 +694,13 @@ try:
             assert resumed_dispatch is not None and resumed_dispatch["bindingGeneration"]==resumed["generation"]
             request(origin,"POST","/api/hagency/v1/execution/events/ack",{"lease":reference,"dispatchId":resumed_dispatch["id"]},device_token)
             request(origin,"POST","/api/hagency/v1/execution/events/start",{"lease":reference,"dispatchId":resumed_dispatch["id"],"executionId":"membership_resumed_execution"},device_token)
-            resumed_reply=request(origin,"POST","/api/hagency/v1/execution/replies",{"lease":reference,"reply":{"dispatchId":resumed_dispatch["id"],"executionId":"membership_resumed_execution","body":"explicit resume fixture reply without model"}},device_token)["reply"]
+            resumed_reply=request(origin,"POST","/api/hagency/v1/execution/replies",{"lease":reference,"reply":{"dispatchId":resumed_dispatch["id"],"executionId":"membership_resumed_execution","body":"explicit rebind fixture reply without model"}},device_token)["reply"]
             for _ in range(30):
                 if sql(DBS[0],"SELECT state FROM hagency_agent_v1.reply_outbox WHERE id='"+resumed_reply["id"]+"'",True)=="sent":break
                 time.sleep(0.5)
             else:raise RuntimeError("fresh resumed-generation reply did not reach Matrix")
             assert sql(DBS[0],"SELECT state FROM hagency_agent_v1.owner_events WHERE id='"+membership_dispatch["id"]+"'",True)=="unknown"
-            print("PASS: actual puppet kick persisted generation suspension through denied tool authorization; rejoin did not resume, explicit owner resume fenced old dispatch, independent binding remained active and fresh request replied")
+            print("PASS: actual puppet kick persisted departure through denied tool authorization; rejoin and resume did not restore authority, explicit owner rebind fenced old dispatch, independent binding remained active and fresh request replied")
             request(origin,"POST","/api/hagency/v1/sessions/current/renew",{"accessToken":matrix_token},user_token)
             request(origin,"POST","/api/hagency/v1/execution/leases/renew",{"lease":reference,"ttlMs":60000},device_token)
             power_message=request(origin,"PUT","/_matrix/client/v3/rooms/"+quote(discussion,safe="")+"/send/m.room.message/power_fence_probe",{"msgtype":"m.text","body":"power fixture execution","m.mentions":{"user_ids":[agent["puppetMxid"]]}},matrix_token)["event_id"]

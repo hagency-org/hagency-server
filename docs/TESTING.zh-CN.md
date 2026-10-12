@@ -90,3 +90,11 @@ HAGENCY_TEST_BACKUP_RESTORE=1 python3 scripts/test-agent-integration.py
 配置的资源。协议 fixture 的 Matrix 回复不证明实际模型执行。
 
 [VALIDATION.zh-CN.md](VALIDATION.zh-CN.md) 是历史执行记录，不是当前测试清单。
+
+
+账号路径和页面权限变更可通过真实浏览器验证：
+`HAGENCY_TEST_HOLD_BROWSER=1` 会在隔离服务启动后保留私有 `browser-fixture.json`，
+供成员/管理员 UI 检查。检查完成后写入同目录的 `browser-done.json`，
+内容为 `{"passed":true}`，文件权限为 0600，再继续原集成流程。
+`HAGENCY_TEST_PASION_RESOURCES` 与 `HAGENCY_TEST_FRONTEND_RESOURCES` 可指定
+本次构建的绝对资源目录，避免替换正在运行的其他部署的资源。

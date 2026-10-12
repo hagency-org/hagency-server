@@ -16,6 +16,9 @@ struct Args {
     check_config: bool,
     #[arg(long)]
     list_config_files: bool,
+    /// Rename a stopped existing deployment's /_pasion/ identity to /auth/ and exit.
+    #[arg(long, conflicts_with_all = ["bootstrap_admin", "check_config", "list_config_files"])]
+    migrate_auth_path: bool,
     #[arg(long, requires = "bootstrap_password_file")]
     bootstrap_admin: Option<String>,
     #[arg(long, requires = "bootstrap_admin")]
@@ -47,6 +50,24 @@ async fn run() -> anyhow::Result<()> {
     );
     if args.check_config {
         println!("Configuration is valid.");
+        return Ok(());
+    }
+    if args.migrate_auth_path {
+        let issuer = conf.public_origin.join(hagency_server::pasion::MOUNT)?;
+        let changed = hagency_agent_service::store::Store::migrate_auth_path(
+            &conf.database_url,
+            conf.matrix.server_name.as_str(),
+            issuer.as_str(),
+        )
+        .await?;
+        println!(
+            "Auth path migration {}.",
+            if changed {
+                "completed; sign in again"
+            } else {
+                "already completed"
+            }
+        );
         return Ok(());
     }
     let filter =
@@ -110,7 +131,7 @@ async fn run() -> anyhow::Result<()> {
     }
     // The new user/device domain uses its own schema and never imports Fleet state.
     let mut agent_service = if conf.pasion.as_ref().is_some_and(|p| p.delegate_matrix_auth) {
-        let issuer = conf.public_origin.join("_pasion/")?;
+        let issuer = conf.public_origin.join("auth/")?;
         let agent_store = hagency_agent_service::store::Store::open(
             &conf.database_url,
             conf.matrix.server_name.as_str(),
@@ -119,7 +140,7 @@ async fn run() -> anyhow::Result<()> {
         .await?;
         let verifier = hagency_agent_service::identity::Verifier::new(
             issuer.clone(),
-            conf.internal_origin().join("_pasion/oauth2/introspect")?,
+            conf.internal_origin().join("auth/oauth2/introspect")?,
             conf.internal_origin(),
             conf.matrix
                 .admin

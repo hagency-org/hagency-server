@@ -69,7 +69,7 @@ pub fn RoomShow(room_id: String) -> Element {
         div { class: "space-y-6",
             Breadcrumbs {
                 items: vec![
-                    BreadcrumbItem { label: t("rooms.title"), href: Some("/rooms".to_string()) },
+                    BreadcrumbItem { label: t("rooms.title"), href: Some("/admin/rooms".to_string()) },
                     BreadcrumbItem { label: decoded_room_id.clone(), href: None },
                 ],
             }

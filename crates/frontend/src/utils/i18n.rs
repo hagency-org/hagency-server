@@ -109,7 +109,7 @@ impl I18n {
         );
         m.insert(
             "auth.oauth_hint".into(),
-            "Sign in with your account to access the admin dashboard.".into(),
+            "Sign in with your account to access your projects and agents.".into(),
         );
         m.insert("auth.processing".into(), "Signing in...".into());
         m.insert("auth.try_again".into(), "Try again".into());
@@ -120,6 +120,16 @@ impl I18n {
         m.insert("auth.url_error".into(), "Not a valid homeserver URL".into());
 
         // Navigation
+
+        m.insert("home.title".into(), "Home".into());
+        m.insert(
+            "home.description".into(),
+            "Manage your projects, agents and account.".into(),
+        );
+        m.insert("home.projects".into(), "Projects".into());
+        m.insert("home.agents".into(), "My agents".into());
+        m.insert("home.account".into(), "Account center".into());
+        m.insert("home.admin".into(), "Server administration".into());
         m.insert("nav.dashboard".into(), "Dashboard".into());
         m.insert("nav.users".into(), "Users".into());
         m.insert("nav.rooms".into(), "Rooms".into());
@@ -1159,6 +1169,15 @@ impl I18n {
 
     fn load_zh_cn() -> HashMap<String, String> {
         let mut m = HashMap::new();
+        m.insert("home.title".into(), "首页".into());
+        m.insert(
+            "home.description".into(),
+            "管理你的项目、Agent 和个人账号。".into(),
+        );
+        m.insert("home.projects".into(), "项目".into());
+        m.insert("home.agents".into(), "我的 Agent".into());
+        m.insert("home.account".into(), "账号中心".into());
+        m.insert("home.admin".into(), "服务器管理".into());
 
         // Auth
         m.insert(

@@ -107,7 +107,7 @@ pub fn AppHeader(collapsed: Signal<bool>, mobile_sidebar_open: Signal<bool>) -> 
             // Language selector + Theme toggle + Notification bell + User info
             div { class: "app-header-controls",
                 span {class:"hg-role", if crate::router::is_server_admin() {"Administrator"}else {"Personal account"}}
-                a {href:"/_pasion/",class:"text-xs text-muted-foreground hover:underline","Account center"}
+                a {href:"/auth/",class:"text-xs text-muted-foreground hover:underline","Account center"}
                 // Language selector
                 select {
                     class: "app-header-language h-9 rounded-lg border bg-background px-3 text-xs text-foreground touch-target",
@@ -140,7 +140,8 @@ pub fn AppHeader(collapsed: Signal<bool>, mobile_sidebar_open: Signal<bool>) -> 
                     }
                 }
 
-                // Notification bell
+                // Server notifications belong to administrators.
+                if crate::router::is_server_admin() {
                 div { class: "relative",
                     button {
                         class: "relative inline-flex h-9 w-9 items-center justify-center rounded-lg hover:bg-accent hover:text-accent-foreground touch-target",
@@ -177,6 +178,7 @@ pub fn AppHeader(collapsed: Signal<bool>, mobile_sidebar_open: Signal<bool>) -> 
                     }
                 }
 
+                }
                 {
                     let id = identity.read();
                     let full = id.full.clone();

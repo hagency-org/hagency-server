@@ -17,7 +17,7 @@ resources/   # 生成的前端与 Pasion 资源，不提交到 Git
 ```
 
 前端将 Padmin 的通用 Matrix/Pasion 管理页面与新的永久 Agent 归属、Project/Room 绑定和创建政策界面结合。
-Rust 后端在 `/` 托管前端；Matrix 路径为 `/_matrix`，Palpo 管理 API 为 `/_palpo`，Matrix 发现路径为 `/.well-known/matrix`，原生 Hagency API 为 `/api/hagency/v1`，网页管理 BFF 为 `/api/browser/hagency/v1`，Pasion 挂载在 `/_pasion/`。
+Rust 后端在 `/` 托管前端；Matrix 路径为 `/_matrix`，Palpo 管理 API 为 `/_palpo`，Matrix 发现路径为 `/.well-known/matrix`，原生 Hagency API 为 `/api/hagency/v1`，网页管理 BFF 为 `/api/browser/hagency/v1`，Pasion 挂载在 `/auth/`。
 `/healthz` 表示进程 HTTP 服务可访问，不代表异步账号同步已经完成。
 
 ## 目录
@@ -42,7 +42,7 @@ hagency-server（一个进程、一个端口）
 ├─ MatrixServer：Palpo 初始化、Matrix/管理/发现路由及后台任务
 ├─ BrowserAuth/BFF：个人会话与 Project/Agent 管理
 ├─ 必装 Agent Appservice：持久化 inbox、设备租约 fencing 与回复 outbox
-├─ PasionServer：/_pasion/ 下的 OAuth/OIDC、账号界面/API 和后台任务
+├─ PasionServer：/auth/ 下的 OAuth/OIDC、账号界面/API 和后台任务
 └─ 集成 Padmin + Hagency 的 Dioxus/WASM 静态资源
            │
            └─ PostgreSQL 服务
@@ -105,7 +105,7 @@ Pasion 是默认身份提供方。宿主通过 `/config.json` 发布非敏感运
 全新浏览器中的管理员登录会先确认身份，再为同一个账号继续申请管理权限；普通成员不会获得管理 scope。
 
 Pasion 管理密码、注册、账号状态和管理员角色，后台 provisioning 任务将对应 Matrix 身份和管理员标记同步到 Palpo。
-在 `/pasion/accounts` 管理人员账号，`/users` 查看 Matrix 记录和服务身份。修改密码和创建人员账号走 Pasion。
+在 `/admin/pasion/accounts` 管理人员账号，`/admin/users` 查看 Matrix 记录和服务身份。修改密码和创建人员账号走 Pasion。
 Hagency 保存永久 Agent owner、Project/Room 创建权和持久化投递，不建立另一套密码账号库。
 
 宿主创建预留的公开 OAuth 客户端，并自动推导 `/oauth/callback`，无需客户端密钥或单独部署前端。
@@ -222,7 +222,7 @@ just docker-build
 Compose 部署 PostgreSQL 与单个 hagency-server 进程。Docker 构建使用一个编译任务，并降低大型 Palpo crate 的优化等级以减少峰值内存；其加密、HTTP 和数据库依赖仍保持完整优化。
 
 把仅暴露在 loopback 上的 HTTP 端口放在 HTTPS 代理后，保留公开 Host 头。
-将 `/`、`/api`、`/_matrix`、`/_palpo`、`/_pasion/`、`/.well-known/matrix` 和 `/healthz` 转发到 8088。
+将 `/`、`/api`、`/_matrix`、`/_palpo`、`/auth/`、`/.well-known/matrix` 和 `/healthz` 转发到 8088。
 浏览器、管理和 outbound 客户端使用公开 origin；Palpo App Service relay 使用自动推导的内部 origin。
 无需为 web-admin 单独配置 origin、端口或 relay URL。
 
@@ -287,10 +287,10 @@ Pasion 与 Palpo、web-admin 共用 Rust 进程和端口。
 | --- | --- |
 | 整合的管理前端 | `/` |
 | Matrix 客户端/联邦/管理 API | 原 Matrix/Palpo 路径 |
-| Pasion 账号界面 | `/_pasion/`、`/_pasion/login` |
-| OIDC 发现 | `/_pasion/.well-known/openid-configuration` |
-| OIDC issuer | `<public_origin>/_pasion/` |
-| OAuth token / JWKS | `/_pasion/oauth2/token`、`/_pasion/oauth2/keys.json` |
+| Pasion 账号界面 | `/auth/`、`/auth/login` |
+| OIDC 发现 | `/auth/.well-known/openid-configuration` |
+| OIDC issuer | `<public_origin>/auth/` |
+| OAuth token / JWKS | `/auth/oauth2/token`、`/auth/oauth2/keys.json` |
 
 无需单独的 Pasion daemon、公开 IP、Node 服务器或代理路径重写。
 Pasion 后台任务通过同一监听端口的 loopback 地址调用受保护的 Palpo MAS API。
@@ -336,7 +336,7 @@ type = "blackhole"
 可用 `[account].password_registration_contact_required = false` 取消注册时必填联系方式。
 
 生成的配置默认启用 Pasion 委托。宿主自动连接 Palpo 发现、token introspection 和兼容的 Matrix 密码登录。
-`/_pasion/` 是账号中心，`/_pasion/register` 是注册页，`/login` 是整合管理界面的登录入口。
+`/auth/` 是账号中心，`/auth/register` 是注册页，`/login` 是整合管理界面的登录入口。
 注册使用 Pasion 自有注册/访问政策。旧 `/account-request`、账号审批 worker 与菜单已删除，无原生认证兼容模式。
 
 Pasion 不实现旧 Matrix SSO 重定向。OAuth 客户端使用挂载的 issuer，旧 Matrix 密码客户端走委托密码登录。
@@ -366,3 +366,28 @@ Padmin 源码和 Pasion 依赖仍保留其上游 AGPL 许可；修改项目清�
 
 旧的私有 `config.dev.toml`、`config.docker.toml` 不会自动改写或导入，迁移期间应保留。
 如果数据库仍合并，先独立审查组件分离方案，再启用新配置。
+
+
+## 成员页面与管理员页面
+
+登录后的首页 `/`、项目 `/hagency/projects` 和我的 Agent `/hagency/agents`
+保留原位置，普通成员和管理员均可访问。全站用户/房间管理、审核、身份服务管理、
+服务器操作和管理仪表盘放在 `/admin` 下。页面加载时验证当前登录账号，不定时轮询。
+角色变化后刷新页面即可重新确认；新提升的管理员会为同一个账号补充 OAuth 管理授权。
+路径和前端保存的标志不赋予管理员 API 权限。
+账号中心及 OAuth/OIDC 接口统一挂载于 `/auth/`。
+
+### 从旧账号路径升级
+
+已有数据库应先停止旧服务并备份数据库与状态文件，再用新二进制及原部署配置执行：
+
+```sh
+hagency-server --config config/dev/hagency.toml --migrate-auth-path
+```
+
+该单向事务只接受同一 server name 和 public origin，把 Agent 部署/用户的 issuer
+从 `/_pasion/` 改成 `/auth/`，保留用户 ID 与 Agent 所有权，恢复身份不可修改约束，
+并撤销旧 Agent 会话/设备凭证。升级启动前执行一次，重复执行不会再次修改。
+全新安装无需迁移。Client/Desktop 应配套升级并重新登录。Native 账号 ID 和本地
+Agent 账本路径保持原存储命名空间；旧身份标记只有在同身份的原账本校验成功后才更新。
+新客户端不接受旧 OAuth issuer。

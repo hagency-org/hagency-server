@@ -46,20 +46,8 @@ impl Frontend {
             "favicon.ico",
             "login",
             "oauth/callback",
-            "users/{**path}",
-            "rooms/{**path}",
-            "media",
-            "reports/{**path}",
-            "destinations/{**path}",
-            "registration-tokens",
-            "appservices",
-            "auth-status",
-            "server-status",
-            "server-actions",
-            "server-notices",
-            "server-notifications",
-            "settings/{**path}",
-            "pasion/{**path}",
+            "admin",
+            "admin/{**path}",
             "hagency/{**path}",
         ] {
             router = router.push(Router::with_path(path).get(self.clone()));
@@ -124,7 +112,7 @@ impl Handler for Frontend {
         }
         if req.uri().path() == "/account-request" && self.runtime["oauth_enabled"] == true {
             res.status_code(StatusCode::FOUND);
-            let _ = res.add_header(header::LOCATION, "/_pasion/register", true);
+            let _ = res.add_header(header::LOCATION, "/auth/register", true);
             return;
         }
         let asset = req.uri().path().starts_with("/assets/") || req.uri().path() == "/favicon.ico";

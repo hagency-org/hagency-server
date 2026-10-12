@@ -38,8 +38,8 @@ pub fn KnownUserShow(user_id: String) -> Element {
         div { class: "space-y-6",
             Breadcrumbs {
                 items: vec![
-                    BreadcrumbItem { label: t("users.title"), href: Some("/users".to_string()) },
-                    BreadcrumbItem { label: t("users.tab_known"), href: Some("/users/known".to_string()) },
+                    BreadcrumbItem { label: t("users.title"), href: Some("/admin/users".to_string()) },
+                    BreadcrumbItem { label: t("users.tab_known"), href: Some("/admin/users/known".to_string()) },
                     BreadcrumbItem { label: decoded_user_id.clone(), href: None },
                 ],
             }

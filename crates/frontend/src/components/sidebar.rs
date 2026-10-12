@@ -127,6 +127,11 @@ fn build_sections(
         label: "Hagency".into(),
         items: vec![
             NavItem {
+                title: t("home.title"),
+                route: Route::Home {},
+                icon: "layout-dashboard",
+            },
+            NavItem {
                 title: "Projects".into(),
                 route: Route::HagencyProjects {},
                 icon: "layers",

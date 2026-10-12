@@ -75,6 +75,52 @@ struct Device {
     generation: i64,
 }
 impl Store {
+    /// Explicit, one-way rename of this deployment's embedded auth mount.
+    /// Stable user IDs retain Agent ownership; old sessions require a new login.
+    pub async fn migrate_auth_path(url: &str, server: &str, issuer: &str) -> Result<bool> {
+        let parsed = url::Url::parse(issuer).map_err(|_| Error::Invalid("invalid_issuer"))?;
+        if parsed.path() != "/auth/"
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return Err(Error::Invalid("invalid_issuer"));
+        }
+        let legacy = parsed
+            .join("/_pasion/")
+            .map_err(|_| Error::Invalid("invalid_issuer"))?
+            .to_string();
+        let mut db = AsyncPgConnection::establish(url)
+            .await
+            .map_err(|_| Error::Unavailable("database_unavailable"))?;
+        db.transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
+            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328902); SELECT pg_advisory_xact_lock(5210750088328903)").await?;
+            db.batch_execute("LOCK TABLE hagency_agent_v1.deployment, hagency_agent_v1.users, hagency_agent_v1.sessions, hagency_agent_v1.devices IN ACCESS EXCLUSIVE MODE").await?;
+            #[derive(diesel::QueryableByName)]
+            struct Deployment {
+                #[diesel(sql_type=Text)] issuer: String,
+                #[diesel(sql_type=Bool)] same_server: bool,
+            }
+            let deployment=sql_query("SELECT issuer,(version=1 AND server_name=$1) AS same_server FROM hagency_agent_v1.deployment WHERE singleton")
+                .bind::<Text,_>(server).get_result::<Deployment>(db).await?;
+            if !deployment.same_server || (deployment.issuer != issuer && deployment.issuer != legacy) {
+                return Err(Error::Conflict("deployment_identity_mismatch"));
+            }
+            if deployment.issuer == issuer { return Ok(false); }
+            #[derive(diesel::QueryableByName)]
+            struct Consistent { #[diesel(sql_type=Bool)] consistent: bool }
+            let users=sql_query("SELECT NOT EXISTS(SELECT 1 FROM hagency_agent_v1.users WHERE issuer<>$1) AS consistent")
+                .bind::<Text,_>(&legacy).get_result::<Consistent>(db).await?;
+            if !users.consistent { return Err(Error::Conflict("identity_mapping_mismatch")); }
+            db.batch_execute("UPDATE hagency_agent_v1.sessions SET revoked=true; UPDATE hagency_agent_v1.devices SET revoked=true; DROP TRIGGER retain_identity ON hagency_agent_v1.users").await?;
+            sql_query("UPDATE hagency_agent_v1.users SET issuer=$1").bind::<Text,_>(issuer).execute(db).await?;
+            sql_query("UPDATE hagency_agent_v1.deployment SET issuer=$1 WHERE singleton").bind::<Text,_>(issuer).execute(db).await?;
+            db.batch_execute("CREATE TRIGGER retain_identity BEFORE UPDATE OR DELETE ON hagency_agent_v1.users FOR EACH ROW EXECUTE FUNCTION hagency_agent_v1.retain_identity()").await?;
+            Ok(true)
+        }).await
+    }
+
     pub async fn open(url: &str, server: &str, issuer: &str) -> Result<Self> {
         let mut db = AsyncPgConnection::establish(url)
             .await
@@ -249,9 +295,114 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+    async fn postgres_auth_path_migration_retains_identity_and_revokes_old_devices() {
+        let source = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+        let name = format!(
+            "hagency_auth_migrate_{}",
+            &crate::hash(&secret_token())[..16]
+        );
+        let mut control = AsyncPgConnection::establish(&source).await.unwrap();
+        control
+            .batch_execute(&format!("CREATE DATABASE {name}"))
+            .await
+            .unwrap();
+        let mut isolated = url::Url::parse(&source).unwrap();
+        isolated.set_path(&format!("/{name}"));
+        let outcome = tokio::spawn(async move {
+            let url = isolated.as_str();
+            let old = "https://example.test/_pasion/";
+            let new = "https://example.test/auth/";
+            let now = crate::api::now_ms();
+            let store = Store::open(url, "example.test", old).await.unwrap();
+            let proof = Identity {
+                issuer: old.into(),
+                subject: "migration-owner".into(),
+                mxid: "@migration:example.test".into(),
+                client_id: "migration-client".into(),
+                valid_until_ms: now + 60000,
+            };
+            let session = store.sign_in(proof.clone(), now).await.unwrap();
+            let device = store
+                .register_device(
+                    &session.token,
+                    RegisterDevice {
+                        installation_id: "migration-device".into(),
+                        name: "Migration".into(),
+                    },
+                    now,
+                )
+                .await
+                .unwrap();
+            assert!(Store::open(url, "example.test", new).await.is_err());
+            assert!(
+                Store::migrate_auth_path(url, "foreign.test", new)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                Store::migrate_auth_path(url, "example.test", "https://foreign.test/auth/")
+                    .await
+                    .is_err()
+            );
+            assert!(store.authenticate(&device.token, now, true).await.is_ok());
+            assert!(
+                Store::migrate_auth_path(url, "example.test", new)
+                    .await
+                    .unwrap()
+            );
+            assert!(
+                !Store::migrate_auth_path(url, "example.test", new)
+                    .await
+                    .unwrap()
+            );
+            let upgraded = Store::open(url, "example.test", new).await.unwrap();
+            assert!(
+                upgraded
+                    .authenticate(&device.token, now, true)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                upgraded
+                    .authenticate(&session.token, now, false)
+                    .await
+                    .is_err()
+            );
+            assert!(Store::open(url, "example.test", old).await.is_err());
+            let fresh = upgraded
+                .sign_in(
+                    Identity {
+                        issuer: new.into(),
+                        ..proof
+                    },
+                    now,
+                )
+                .await
+                .unwrap();
+            assert_eq!(fresh.user_id, session.user_id);
+            let mut db = AsyncPgConnection::establish(url).await.unwrap();
+            assert!(
+                sql_query("UPDATE hagency_agent_v1.users SET issuer=$1 WHERE id=$2")
+                    .bind::<Text, _>(old)
+                    .bind::<Text, _>(&fresh.user_id)
+                    .execute(&mut db)
+                    .await
+                    .is_err()
+            );
+        })
+        .await;
+        control
+            .batch_execute(&format!("DROP DATABASE {name} WITH (FORCE)"))
+            .await
+            .unwrap();
+        outcome.unwrap();
+    }
+
     fn identity(subject: &str, mxid: &str, expires: i64) -> Identity {
         Identity {
-            issuer: "https://example.test/_pasion/".into(),
+            issuer: "https://example.test/auth/".into(),
             subject: subject.into(),
             mxid: mxid.into(),
             client_id: "native-a".into(),
@@ -263,7 +414,7 @@ mod tests {
     async fn postgres_identity_device_expiry_rotation_and_revocation() {
         let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL")
             .expect("dedicated test database required");
-        let store = Store::open(&url, "example.test", "https://example.test/_pasion/")
+        let store = Store::open(&url, "example.test", "https://example.test/auth/")
             .await
             .unwrap();
         let base = crate::api::now_ms();
@@ -379,7 +530,7 @@ mod tests {
                 .await
                 .is_ok()
         );
-        let reopened = Store::open(&url, "example.test", "https://example.test/_pasion/")
+        let reopened = Store::open(&url, "example.test", "https://example.test/auth/")
             .await
             .unwrap();
         assert!(
@@ -389,7 +540,7 @@ mod tests {
                 .is_ok()
         );
         assert!(
-            Store::open(&url, "foreign.test", "https://example.test/_pasion/")
+            Store::open(&url, "foreign.test", "https://example.test/auth/")
                 .await
                 .is_err()
         );

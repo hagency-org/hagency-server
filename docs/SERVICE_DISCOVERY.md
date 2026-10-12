@@ -25,7 +25,7 @@
 }
 ```
 
-Existing fields remain: `serverName`, `homeserver`, `serviceMxid`, `issuer`, `authorizationEndpoint`, `tokenEndpoint`, `registrationEndpoint`, and `authorizationWindowMs`. Verify `homeserver` against the selected canonical origin and `issuer` against that origin's `/_pasion/`; the Matrix OAuth metadata must agree. Unknown capabilities may be ignored; missing required capabilities or unsupported protocols must stop login. No Agent E2EE capability is advertised.
+Existing fields remain: `serverName`, `homeserver`, `serviceMxid`, `issuer`, `authorizationEndpoint`, `tokenEndpoint`, `registrationEndpoint`, and `authorizationWindowMs`. Verify `homeserver` against the selected canonical origin and `issuer` against that origin's `/auth/`; the Matrix OAuth metadata must agree. Unknown capabilities may be ignored; missing required capabilities or unsupported protocols must stop login. No Agent E2EE capability is advertised.
 
 本机开发 HTTPS 使用 `https://hagency.local`，对应 Matrix server name `hagency.local`。不能把旧 `localhost:8089` 部署的永久用户标识、Agent owner 和 AS namespace 原地改写为此身份：新开发域使用独立数据库及数据卷，旧部署完整保留。
 

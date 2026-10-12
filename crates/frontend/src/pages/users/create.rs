@@ -159,7 +159,7 @@ pub fn UserCreate() -> Element {
         div { class: "space-y-6",
             Breadcrumbs {
                 items: vec![
-                    BreadcrumbItem { label: t("users.title"), href: Some("/users".to_string()) },
+                    BreadcrumbItem { label: t("users.title"), href: Some("/admin/users".to_string()) },
                     BreadcrumbItem { label: t("users.create"), href: None },
                 ],
             }

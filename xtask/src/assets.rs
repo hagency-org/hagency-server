@@ -52,7 +52,7 @@ pub fn prepare(root: &Path, options: &Options, stopping: &AtomicBool) -> Result<
                     "--package",
                     "pasion-frontend",
                     "--base-path",
-                    "/_pasion/",
+                    "/auth/",
                     "--debug-symbols",
                     "false",
                     "--locked",
@@ -63,9 +63,38 @@ pub fn prepare(root: &Path, options: &Options, stopping: &AtomicBool) -> Result<
             &source.join("target/dx/pasion-frontend/release/web/public"),
             &output.join("public"),
         )?;
+        retain_current_frontend_entrypoint(&output.join("public"))?;
     }
     fs::write(output.join("SOURCE"), format!("{}\n", source.display()))?;
     println!("Prepared Pasion resources: {}", output.display());
+    Ok(())
+}
+
+/// Embedded Pasion discovers its entry point by scanning assets rather than
+/// reading index.html. Dioxus retains old hashed bundles between builds.
+fn retain_current_frontend_entrypoint(public: &Path) -> Result<()> {
+    let index = fs::read_to_string(public.join("index.html"))?;
+    let script = index
+        .split("<script")
+        .skip(1)
+        .find_map(|tag| {
+            let src = tag.split("src=\"").nth(1)?.split('"').next()?;
+            let name = src.rsplit('/').next()?;
+            (name.starts_with("pasion-frontend-") && name.ends_with(".js")).then_some(name)
+        })
+        .context("Pasion index.html has no hashed frontend entry point")?;
+    ensure!(
+        public.join("assets").join(script).is_file(),
+        "Pasion entry point is missing"
+    );
+    for entry in fs::read_dir(public.join("assets"))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("pasion-frontend-") && name.ends_with(".js") && name != script {
+            fs::remove_file(entry.path())?;
+        }
+    }
     Ok(())
 }
 
@@ -223,6 +252,27 @@ pub(crate) fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn current_pasion_bundle_replaces_stale_mount_entrypoints() {
+        let root = tempfile::tempdir().unwrap();
+        let assets = root.path().join("assets");
+        std::fs::create_dir(&assets).unwrap();
+        std::fs::write(
+            root.path().join("index.html"),
+            r#"<script type="module" src="/auth/assets/pasion-frontend-new.js"></script>"#,
+        )
+        .unwrap();
+        std::fs::write(assets.join("pasion-frontend-old.js"), "old mount").unwrap();
+        std::fs::write(assets.join("pasion-frontend-new.js"), "new mount").unwrap();
+        std::fs::write(assets.join("pasion-frontend_bg-old.wasm"), "existing wasm").unwrap();
+        super::retain_current_frontend_entrypoint(root.path()).unwrap();
+        assert!(!assets.join("pasion-frontend-old.js").exists());
+        assert!(assets.join("pasion-frontend-new.js").exists());
+        assert!(assets.join("pasion-frontend_bg-old.wasm").exists());
+        std::fs::remove_file(assets.join("pasion-frontend-new.js")).unwrap();
+        assert!(super::retain_current_frontend_entrypoint(root.path()).is_err());
+    }
+
     use super::*;
 
     #[test]

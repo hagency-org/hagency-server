@@ -34,7 +34,7 @@ pub fn LoginPage() -> Element {
         button{class:"hg-button",disabled:busy()||!cfg().is_some_and(|c|c.oauth_enabled),onclick:move|_|{
             busy.set(true);spawn(async move{if let Err(e)=auth::start_login().await{error.set(e.message);}busy.set(false);});
         },"Sign in with Pasion"}
-        a{href:"/_pasion/",class:"hg-link","Account center"}
-        a{href:"/_pasion/register",class:"hg-link","Create account"}
+        a{href:"/auth/",class:"hg-link","Account center"}
+        a{href:"/auth/register",class:"hg-link","Create account"}
     }}
 }

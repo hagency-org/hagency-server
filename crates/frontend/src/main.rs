@@ -14,8 +14,8 @@ fn main() {
 
     // Both component APIs are mounted on this origin by the Rust host.
     if let Some(origin) = web_sys::window().and_then(|w| w.location().origin().ok()) {
-        utils::storage::set_item("pasion_url", &format!("{origin}/_pasion"));
-        utils::storage::set_item("pasion_public_url", &format!("{origin}/_pasion"));
+        utils::storage::set_item("pasion_url", &format!("{origin}/auth"));
+        utils::storage::set_item("pasion_public_url", &format!("{origin}/auth"));
         utils::storage::set_item("home_server", &origin);
 
         utils::storage::remove_item("palpo_admin_url");
