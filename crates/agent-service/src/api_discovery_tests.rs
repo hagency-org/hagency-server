@@ -1000,6 +1000,29 @@ async fn postgres_public_discovery_identifies_hagency_without_granting_authority
         ])
     );
     assert!(value.get("token").is_none());
+    // Reverse proxies add this metadata. It must neither reject a valid native
+    // request nor replace the actual Host used for admission.
+    for forwarded_host in ["example.test", "foreign.test"] {
+        let mut reply = TestClient::get("https://example.test/hagency/api/v1/discovery")
+            .add_header("host", "example.test", true)
+            .add_header("x-forwarded-host", forwarded_host, true)
+            .send(&service)
+            .await;
+        assert_eq!(reply.status_code, Some(StatusCode::OK));
+        assert_eq!(
+            reply.take_json::<Value>().await.unwrap()["product"],
+            "hagency-server"
+        );
+    }
+    for header in ["origin", "cookie"] {
+        let reply = TestClient::get("https://example.test/hagency/api/v1/discovery")
+            .add_header("host", "example.test", true)
+            .add_header(header, "https://example.test", true)
+            .add_header("x-forwarded-host", "example.test", true)
+            .send(&service)
+            .await;
+        assert_eq!(reply.status_code, Some(StatusCode::UNAUTHORIZED));
+    }
     let reply = TestClient::get("https://example.test/hagency/api/v1/projects")
         .add_header("host", "example.test", true)
         .send(&service)
@@ -1007,6 +1030,7 @@ async fn postgres_public_discovery_identifies_hagency_without_granting_authority
     assert_eq!(reply.status_code, Some(StatusCode::UNAUTHORIZED));
     let reply = TestClient::get("https://other.test/hagency/api/v1/discovery")
         .add_header("host", "other.test", true)
+        .add_header("x-forwarded-host", "example.test", true)
         .send(&service)
         .await;
     assert_eq!(reply.status_code, Some(StatusCode::UNAUTHORIZED));

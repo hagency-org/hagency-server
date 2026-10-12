@@ -489,7 +489,6 @@ impl BrowserAuth {
         if req.headers().get_all(header::HOST).iter().count() != 1
             || req.headers().get_all(header::AUTHORIZATION).iter().count() > 1
             || req.headers().get_all(header::ORIGIN).iter().count() > 1
-            || req.headers().contains_key("x-forwarded-host")
         {
             return Err(err(
                 403,
@@ -881,6 +880,38 @@ mod tests {
             oauth_revocation: None,
         };
         (auth, admin, worker)
+    }
+    #[tokio::test]
+    async fn forwarded_headers_do_not_replace_browser_host_or_origin() {
+        use salvo::test::TestClient;
+        let (auth, _, worker) = fixture().await;
+        let service = Service::new(auth.router());
+        for forwarded_host in ["example.test", "foreign.test"] {
+            let reply = TestClient::post("http://example.test/hagency/api/login/token")
+                .add_header("host", "example.test", true)
+                .add_header("origin", "http://example.test", true)
+                .add_header("x-forwarded-host", forwarded_host, true)
+                .bearer_auth("personal-token")
+                .json(&json!({}))
+                .send(&service)
+                .await;
+            assert_eq!(reply.status_code, Some(StatusCode::OK));
+        }
+        for (host, origin) in [
+            ("foreign.test", "http://example.test"),
+            ("example.test", "http://foreign.test"),
+        ] {
+            let reply = TestClient::post("http://example.test/hagency/api/login/token")
+                .add_header("host", host, true)
+                .add_header("origin", origin, true)
+                .add_header("x-forwarded-host", "example.test", true)
+                .bearer_auth("personal-token")
+                .json(&json!({}))
+                .send(&service)
+                .await;
+            assert_eq!(reply.status_code, Some(StatusCode::FORBIDDEN));
+        }
+        worker.abort();
     }
     #[tokio::test]
     async fn cookie_identity_live_role_and_closed_routes() {

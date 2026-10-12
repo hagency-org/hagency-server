@@ -164,11 +164,12 @@ impl App {
             || hosts[0].to_str().ok() != Some(expected.as_str())
             || req.headers().contains_key("origin")
             || req.headers().contains_key("cookie")
-            || req.headers().contains_key("x-forwarded-host")
             || req.headers().get_all("authorization").iter().count() > 1
         {
             return Err(Error::Unauthorized("native_origin_required"));
         }
+        // Proxies may add X-Forwarded-Host. Ignore it: only the actual Host
+        // above can establish the configured public authority.
         let path = req.uri().path().to_owned();
         let method = req.method().clone();
         if path == "/hagency/api/v1/readiness" && method == salvo::http::Method::GET {

@@ -46,6 +46,10 @@ loopback IP，本地域名需要可信 HTTPS。无需 Fleet 注册、`[fleet_acc
 issuer 必须是 `<public_origin>/auth/`，发现、token、callback、Matrix metadata
 需一致。复用数据库时保留原 `server_name` 与签名密钥。
 
+`X-Forwarded-Host` 等代理元数据被忽略，不能代替实际 Host 验证。原生客户端不带
+凭据请求 `/hagency/api/v1/discovery` 时应得到 200 与 `product: "hagency-server"`。
+401 `native_origin_required` 表示请求头校验被拒绝，不能据此认定它不是 Hagency 服务器。
+
 `hagency.local` 等私人域名必须在浏览器、原生客户端和 **server 容器内**均可解析且
 通过证书验证。宿主 `127.0.0.1` 不是容器 loopback；容器访问宿主代理可能需要
 `host.docker.internal` 或 Compose `extra_hosts`。本地 CA 需加入相应信任库，

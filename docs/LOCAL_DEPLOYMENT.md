@@ -51,6 +51,11 @@ preserving the public Host and avoiding subpath rewrites. The issuer must be
 `<public_origin>/auth/`; discovery, token, callback and Matrix metadata must agree.
 Keep an existing `server_name` and signing keys when reusing a database.
 
+Proxy metadata such as `X-Forwarded-Host` is ignored; it cannot replace the actual
+Host check. A credential-free native GET to `/hagency/api/v1/discovery` must
+return 200 with `product: "hagency-server"`. A 401 `native_origin_required`
+means the request headers were rejected, not that the server is a different product.
+
 A private hostname such as `hagency.local` must resolve and pass certificate
 validation for the browser, native client **and the server container**. Host
 `127.0.0.1` is not container loopback. `host.docker.internal` or a Compose

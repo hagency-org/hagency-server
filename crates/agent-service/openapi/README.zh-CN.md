@@ -10,7 +10,7 @@ OpenAPI 中的 `x-source` 指向每个操作的真实路由条件。`x-rust-dto`
 
 ## 身份、权限和状态边界
 
-`/hagency/api/v1` 面向 native HTTP 调用：必须恰好一个与配置公开 authority 相同的 Host；禁止 Origin、Cookie、X-Forwarded-Host 和重复 Authorization。需要 Bearer 的操作区分有限期 **用户会话 token** 与 **设备 token**，不能互换。前者用于管理自己的 Agent/Binding 及获 Matrix 管理权的作用域，后者用于租约与执行。上游 Pasion token 只作为 `sessions/pasion` 或 renew 的证明提交，不是此 API 的设备 token。首次证明的授权窗口上限为 30 秒；设备依附其用户会话，续期不能复活已撤销会话或旧设备 generation。模型不能得到上述管理凭据。
+`/hagency/api/v1` 面向 native HTTP 调用：必须恰好一个与配置公开 authority 相同的 Host；禁止 Origin、Cookie 和重复 Authorization。反向代理添加的 X-Forwarded-Host 被忽略，不能代替实际 Host 验证。需要 Bearer 的操作区分有限期 **用户会话 token** 与 **设备 token**，不能互换。前者用于管理自己的 Agent/Binding 及获 Matrix 管理权的作用域，后者用于租约与执行。上游 Pasion token 只作为 `sessions/pasion` 或 renew 的证明提交，不是此 API 的设备 token。首次证明的授权窗口上限为 30 秒；设备依附其用户会话，续期不能复活已撤销会话或旧设备 generation。模型不能得到上述管理凭据。
 
 Agent 的 `ownerUserId` 只来自经过验证的会话，终身不变。没有转让、owner 修改或旧 Fleet/Engagement 导入 API。Project 是登记过的现有 Matrix Space；Room 是登记过且仍有真实父子关联的 Matrix Room，成员集合独立。创建权限同时受 Project 与 Room 策略约束，deny 优先，客户端不能上传可信成员/管理员事实。管理员的创建权限和服务暂停接口不批准用户的模型凭据、资源、token 配额或工具放行。
 
