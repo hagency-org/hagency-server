@@ -12,7 +12,7 @@ repository = "https://github.com/chrislearn/hagency-server"
 publish = false
 
 [workspace.dependencies]
-# Embedded component revisions are pinned until their upstream APIs are stable.
+# Git branches select upstream sources; Cargo.lock pins exact embedded revisions.
 aes-gcm = "0.10"
 anyhow = "1"
 base64 = "0.23"

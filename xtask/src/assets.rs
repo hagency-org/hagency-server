@@ -113,15 +113,19 @@ fn pinned_source(root: &Path, stopping: &AtomicBool) -> Result<PathBuf> {
         .get("git")
         .and_then(toml::Value::as_str)
         .context("Pasion dependency needs a git repository")?;
-    let revision = dependency
-        .get("rev")
-        .and_then(toml::Value::as_str)
-        .context("Pasion dependency needs a pinned revision")?;
+    let revision = locked_pasion_revision(root, repository)?;
     let source = root.join(".run/pasion-source");
-    fs::create_dir_all(source.parent().unwrap())?;
-    if !source.exists() {
+    fs::create_dir_all(&source)?;
+    if !source.join(".git").exists() {
         command::checked(
-            Command::new("git").args(["clone", repository]).arg(&source),
+            Command::new("git").arg("-C").arg(&source).arg("init"),
+            stopping,
+        )?;
+        command::checked(
+            Command::new("git")
+                .arg("-C")
+                .arg(&source)
+                .args(["remote", "add", "origin", repository]),
             stopping,
         )?;
     }
@@ -129,17 +133,50 @@ fn pinned_source(root: &Path, stopping: &AtomicBool) -> Result<PathBuf> {
         Command::new("git")
             .arg("-C")
             .arg(&source)
-            .args(["fetch", "origin", revision]),
+            .args(["fetch", "--depth", "1", "origin", &revision]),
         stopping,
     )?;
     command::checked(
         Command::new("git")
             .arg("-C")
             .arg(&source)
-            .args(["checkout", "--detach", revision]),
+            .args(["checkout", "--detach", &revision]),
         stopping,
     )?;
     Ok(source)
+}
+
+fn locked_pasion_revision(root: &Path, repository: &str) -> Result<String> {
+    let lock: toml::Value = toml::from_str(&fs::read_to_string(root.join("Cargo.lock"))?)?;
+    let packages = lock
+        .get("package")
+        .and_then(toml::Value::as_array)
+        .context("Cargo.lock has no packages")?;
+    let mut matches = packages.iter().filter(|package| {
+        package.get("name").and_then(toml::Value::as_str) == Some("pasion-backend")
+    });
+    let package = matches.next().context("Cargo.lock has no Pasion backend")?;
+    ensure!(
+        matches.next().is_none(),
+        "Cargo.lock has multiple Pasion backends"
+    );
+    let source = package
+        .get("source")
+        .and_then(toml::Value::as_str)
+        .context("Locked Pasion backend needs a git source")?;
+    let (git_source, revision) = source
+        .rsplit_once('#')
+        .context("Locked Pasion source needs a commit")?;
+    let expected = format!("git+{repository}");
+    ensure!(
+        git_source == expected || git_source.starts_with(&format!("{expected}?")),
+        "Locked Pasion repository differs from Cargo.toml"
+    );
+    ensure!(
+        revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "Locked Pasion source needs a full commit hash"
+    );
+    Ok(revision.into())
 }
 
 pub(crate) fn dioxus_cli(root: &Path, stopping: &AtomicBool) -> Result<PathBuf> {
@@ -252,6 +289,101 @@ pub(crate) fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pasion_resources_use_exact_locked_commit_for_branch_or_revision_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = "https://github.com/meldry-com/pasion.git";
+        let revision = "03cd9f94c0c0593c3979de68a0b11ee443f23933";
+        for selector in [
+            "branch=main",
+            "rev=03cd9f94c0c0593c3979de68a0b11ee443f23933",
+        ] {
+            fs::write(root.path().join("Cargo.lock"), format!(
+                "[[package]]\nname = 'pasion-backend'\nsource = 'git+{repository}?{selector}#{revision}'\n"
+            )).unwrap();
+            assert_eq!(
+                locked_pasion_revision(root.path(), repository).unwrap(),
+                revision
+            );
+        }
+        for source in [
+            format!("git+{repository}?branch=main"),
+            format!("git+{repository}?branch=main#main"),
+            format!("git+https://example.test/pasion.git?branch=main#{revision}"),
+        ] {
+            fs::write(
+                root.path().join("Cargo.lock"),
+                format!("[[package]]\nname = 'pasion-backend'\nsource = '{source}'\n"),
+            )
+            .unwrap();
+            assert!(locked_pasion_revision(root.path(), repository).is_err());
+        }
+    }
+
+    #[test]
+    fn pasion_resources_refuse_missing_or_ambiguous_locked_backends() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = "https://github.com/meldry-com/pasion.git";
+        let package = "[[package]]\nname = 'pasion-backend'\nsource = 'git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933'\n";
+        for lock in ["version = 4\n".to_owned(), package.repeat(2)] {
+            fs::write(root.path().join("Cargo.lock"), lock).unwrap();
+            assert!(locked_pasion_revision(root.path(), repository).is_err());
+        }
+    }
+
+    #[test]
+    fn moving_pasion_branch_does_not_change_locked_resource_checkout() {
+        let upstream = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let run_git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(upstream.path())
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.test",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        run_git(&["init", "--initial-branch=main"]);
+        fs::write(upstream.path().join("resource"), "locked resources").unwrap();
+        run_git(&["add", "resource"]);
+        run_git(&["commit", "-m", "locked"]);
+        let locked = run_git(&["rev-parse", "HEAD"]);
+        fs::write(upstream.path().join("resource"), "new branch resources").unwrap();
+        run_git(&["commit", "-am", "branch moved"]);
+        assert_ne!(run_git(&["rev-parse", "HEAD"]), locked);
+        let repository = upstream.path().to_str().unwrap();
+        fs::write(root.path().join("Cargo.toml"), format!(
+            "[workspace.dependencies]\npasion-backend = {{ git = '{repository}', branch = 'main' }}\n"
+        )).unwrap();
+        fs::write(root.path().join("Cargo.lock"), format!(
+            "[[package]]\nname = 'pasion-backend'\nsource = 'git+{repository}?branch=main#{locked}'\n"
+        )).unwrap();
+        // BuildKit mounts the target cache before Git initializes the checkout.
+        let cache = root.path().join(".run/pasion-source/target");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("cached"), "keep").unwrap();
+        let source = pinned_source(root.path(), &AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            fs::read_to_string(source.join("resource")).unwrap(),
+            "locked resources"
+        );
+        assert!(cache.join("cached").exists());
+    }
+
     #[test]
     fn current_pasion_bundle_replaces_stale_mount_entrypoints() {
         let root = tempfile::tempdir().unwrap();
