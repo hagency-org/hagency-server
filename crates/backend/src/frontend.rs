@@ -98,7 +98,8 @@ impl Frontend {
 fn hashed_asset(name: &str) -> bool {
     name.rsplit_once("-dxh").is_some_and(|(_, suffix)| {
         let hash = suffix.split('.').next().unwrap_or("");
-        hash.len() == 16
+        !hash.is_empty()
+            && hash.len() <= 16
             && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
             && suffix.contains('.')
             && !suffix.ends_with(".html")
@@ -352,6 +353,7 @@ mod tests {
         assert_eq!(encoding_quality("br;q=NaN", "br"), 0.0);
         assert_eq!(encoding_quality("*;q=0.5, identity;q=0", "gzip"), 0.5);
         assert!(hashed_asset("app-dxh0123456789abcdef.wasm.br"));
+        assert!(hashed_asset("hagency-frontend_bg-dxh5aed424890ce126.wasm"));
         assert!(!hashed_asset("app-dxhlatest.wasm"));
         assert!(!hashed_asset("index.html"));
     }
