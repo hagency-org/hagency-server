@@ -276,13 +276,15 @@ async fn run() -> anyhow::Result<()> {
     if let Some(app) = &agent_service {
         router = router.push(app.readiness_router());
     }
+    let frontend = Frontend::new(&conf);
+    frontend.preserve_assets().await?;
     let mut router = router
         .push(browser_auth.router())
         .push(Router::with_path("hagency/api/{**path}").goal(unknown_hagency_api))
         .push(Router::with_path("api/{**path}").goal(unknown_hagency_api))
         .push(matrix_router)
         .push(Router::with_path("healthz").get(health))
-        .push(Frontend::new(&conf).router());
+        .push(frontend.router());
     if let Some(pasion) = &pasion {
         router = Router::new()
             .push(pasion.router(
@@ -291,7 +293,9 @@ async fn run() -> anyhow::Result<()> {
             ))
             .push(router);
     }
-    let service = matrix.service(router);
+    let service = matrix
+        .service(router)
+        .hoop(hagency_server::frontend::frontend_vary);
     let identity_worker = agent_service
         .as_ref()
         .zip(agent_inbox.as_ref())

@@ -126,6 +126,8 @@ jobs:
             hagency-server --help
             test -d /app/resources/pasion
             test -f /app/resources/frontend/public/index.html
+            test -n "$(find /app/resources/frontend/public/assets -name '*.wasm.br' -print -quit)"
+            test -n "$(find /app/resources/frontend/public/assets -name '*.wasm.gz' -print -quit)"
           '
       - name: Export digest
         env:
