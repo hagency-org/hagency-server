@@ -263,6 +263,9 @@ try:
             if os.environ.get("HAGENCY_TEST_HOLD_CLIENT") == "1":
                 private(folder / "client-fixture.json", json.dumps({"base":origin,"username":"agent_smoke_owner","password":(folder/"bootstrap-password").read_text()}))
                 print("CLIENT fixture ready: " + origin + " ; private directory: " + str(folder), flush=True)
+                if os.environ.get("HAGENCY_TEST_CROSS_DEVICE") == "1":
+                    subprocess.run([sys.executable, str(ROOT / "scripts/test-cross-device-config.py"),
+                                    str(folder / "client-fixture.json")], check=True)
                 for _ in range(600):
                     done = folder / "client-done.json"
                     if done.exists():

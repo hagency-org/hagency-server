@@ -169,6 +169,8 @@ def validate(doc):
                 require(set(security) <= set(doc['components']['securitySchemes']), 'security scheme missing')
             if path.startswith('/hagency/api/v1/execution/'):
                 require(operation['security'] == [{'deviceBearer': []}] and method == 'post', 'execution bearer/method drift')
+            elif '/configuration' in path or path.startswith('/hagency/api/v1/device-configuration/'):
+                require(operation['security'] == [{'deviceBearer': []}], 'configuration device security drift')
             elif (path == '/hagency/api/v1/agents' and method == 'post') or (path == '/hagency/api/v1/agents/{agentId}/execution-device' and method == 'put'):
                 require(operation['security'] == [{'deviceBearer': []}], 'device management security drift')
             elif path.startswith('/hagency/api/v1/') and path not in ['/hagency/api/v1/discovery', '/hagency/api/v1/readiness', '/hagency/api/v1/sessions/pasion']:
@@ -179,13 +181,14 @@ def validate(doc):
     if 'userBearer' in doc['components']['securitySchemes']:
         api = (ROOT / 'crates/agent-service/src/api.rs').read_text()
         transport = (ROOT / 'crates/agent-service/src/api_transport.rs').read_text()
+        api += (ROOT / 'crates/agent-service/src/api_configuration.rs').read_text()
         literal = set((p, m.lower()) for p, m in re.findall(r'path\s*==\s*"(/hagency/api/v1/[^"]+)"\s*&&\s*method\s*==\s*salvo::http::Method::(\w+)', api))
         literal |= {(p, 'post') for p in re.findall(r'"(/hagency/api/v1/execution/[^"]+)" =>', transport)}
         require(literal <= operations, 'source literal route omitted: ' + str(literal - operations))
         require({p for p, _ in operations if p.startswith('/hagency/api/v1/execution/')} == {p for p, _ in literal if p.startswith('/hagency/api/v1/execution/')}, 'invented transport route')
         require(('/hagency/api/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
         require(('/hagency/api/v1/projects/{projectId}/rooms', 'post') not in operations, 'unimplemented Room creation advertised')
-        require(len(operations) == 52, 'reviewed owner route count drift')
+        require(len(operations) == 57, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -208,6 +211,8 @@ class GuardTests(unittest.TestCase):
         self.rejection(lambda d: d['paths']['/hagency/api/v1/agents']['post'].update(security=[{'userBearer': []}]))
     def test_assign_requires_current_device(self):
         self.rejection(lambda d: d['paths']['/hagency/api/v1/agents/{agentId}/execution-device']['put'].update(security=[{'userBearer': []}]))
+    def test_configuration_requires_current_device(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/agents/{agentId}/configuration']['get'].update(security=[{'userBearer': []}]))
     def test_private_or_missing_field(self):
         self.rejection(lambda d: d['components']['schemas']['ReplyIntent']['properties'].update(workerToken={'type': 'string'}))
     def test_rust_type_drift(self):

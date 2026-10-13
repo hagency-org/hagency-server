@@ -1,9 +1,13 @@
 //! New Agent-domain identity. No Fleet credentials or legacy storage imports.
 pub mod api;
+mod api_configuration;
 #[cfg(test)]
 mod api_discovery_tests;
 mod api_transport;
 pub mod appservice;
+#[cfg(test)]
+mod configuration_tests;
+pub mod configuration_types;
 mod database;
 pub mod domain;
 pub mod gateway;
