@@ -293,9 +293,12 @@ async fn run() -> anyhow::Result<()> {
             ))
             .push(router);
     }
-    let service = matrix
-        .service(router)
-        .hoop(hagency_server::frontend::frontend_vary);
+    let mut service = matrix.service(router);
+    // Append would run inside embedded CORS; merge Vary after CORS completes.
+    service.hoops.insert(
+        0,
+        std::sync::Arc::new(hagency_server::frontend::frontend_vary),
+    );
     let identity_worker = agent_service
         .as_ref()
         .zip(agent_inbox.as_ref())

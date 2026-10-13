@@ -302,7 +302,8 @@ impl Handler for Frontend {
                     "no-cache"
                 };
                 let _ = res.add_header(header::CACHE_CONTROL, policy, true);
-                let etag = format!("\"{}\"", hex::encode(Sha256::digest(&body)));
+                // Weak validation survives optional outer compression of archived files.
+                let etag = format!("W/\"{}\"", hex::encode(Sha256::digest(&body)));
                 let _ = res.add_header(header::ETAG, &etag, true);
                 if let Some(encoding) = selected.1 {
                     let _ = res.add_header(header::CONTENT_ENCODING, encoding, true);
@@ -318,7 +319,10 @@ impl Handler for Frontend {
                     .iter()
                     .filter_map(|v| v.to_str().ok())
                     .flat_map(|v| v.split(','))
-                    .any(|tag| tag.trim() == "*" || tag.trim().trim_start_matches("W/") == etag);
+                    .any(|tag| {
+                        tag.trim() == "*"
+                            || tag.trim().trim_start_matches("W/") == etag.trim_start_matches("W/")
+                    });
                 if not_modified {
                     res.status_code(StatusCode::NOT_MODIFIED);
                 } else {
@@ -386,7 +390,12 @@ mod tests {
         frontend.preserve_assets().await.unwrap();
         assert!(!archive.join("index.html").exists());
         assert!(!archive.join("assets/private.json").exists());
-        let service = Service::new(frontend.clone().router()).hoop(frontend_vary);
+        let mut service = Service::new(frontend.clone().router()).hoop(
+            salvo::cors::Cors::new()
+                .allow_origin("http://example.test")
+                .into_handler(),
+        );
+        service.hoops.insert(0, std::sync::Arc::new(frontend_vary));
         let url = format!("http://example.test/assets/{file}");
         let mut etags = Vec::new();
         for (accept, encoding, body) in [
@@ -431,7 +440,7 @@ mod tests {
             let mut cached = TestClient::get(&url)
                 .add_header("host", "example.test", true)
                 .add_header("accept-encoding", accept, true)
-                .add_header("if-none-match", format!("W/{etag}"), true)
+                .add_header("if-none-match", etag.clone(), true)
                 .send(&service)
                 .await;
             assert_eq!(cached.status_code, Some(StatusCode::NOT_MODIFIED));
