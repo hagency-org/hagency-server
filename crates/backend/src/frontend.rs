@@ -3,7 +3,10 @@ use crate::{
     config::Config,
     pasion::{ADMIN_CLIENT_ID, MOUNT},
 };
-use salvo::{http::header, prelude::*};
+use salvo::{
+    http::{Method, header},
+    prelude::*,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::{Component, PathBuf};
@@ -414,14 +417,17 @@ mod tests {
                 .unwrap()
                 .to_owned();
             etags.push(etag.clone());
-            assert_eq!(response.take_string().await.unwrap(), body);
+            assert_eq!(
+                response.take_bytes(None).await.unwrap().as_ref(),
+                body.as_bytes()
+            );
             let mut head = TestClient::head(&url)
                 .add_header("host", "example.test", true)
                 .add_header("accept-encoding", accept, true)
                 .send(&service)
                 .await;
             assert_eq!(head.headers()[header::ETAG], etag);
-            assert_eq!(head.take_string().await.unwrap(), "");
+            assert!(head.take_bytes(None).await.unwrap().is_empty());
             let mut cached = TestClient::get(&url)
                 .add_header("host", "example.test", true)
                 .add_header("accept-encoding", accept, true)
@@ -436,7 +442,7 @@ mod tests {
                     .iter()
                     .any(|v| v.to_str().unwrap().contains("Accept-Encoding"))
             );
-            assert_eq!(cached.take_string().await.unwrap(), "");
+            assert!(cached.take_bytes(None).await.unwrap().is_empty());
         }
         assert_ne!(etags[0], etags[1]);
         let rejected = TestClient::get(&url)
