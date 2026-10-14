@@ -95,6 +95,11 @@ pub struct ConfigurationModelProfile {
     pub credential_ref: String,
     pub workspace_root: String,
     pub reasoning_effort: String,
+    #[serde(default = "default_web_search")]
+    pub web_search: bool,
+}
+fn default_web_search() -> bool {
+    true
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -471,4 +476,22 @@ pub fn failure_code(code: &str) -> bool {
             | "configuration_local_state_unavailable"
             | "configuration_authority_changed"
     )
+}
+
+#[cfg(test)]
+mod web_search_tests {
+    #[test]
+    fn configuration_web_search_defaults_on_and_keeps_explicit_off() {
+        let mut value = serde_json::json!({"model":"m","credential_ref":"ref","workspace_root":"/work","reasoning_effort":"low"});
+        let profile: super::ConfigurationModelProfile =
+            serde_json::from_value(value.clone()).unwrap();
+        assert!(profile.web_search);
+        value["web_search"] = false.into();
+        let profile: super::ConfigurationModelProfile =
+            serde_json::from_value(value.clone()).unwrap();
+        assert!(!profile.web_search);
+        assert_eq!(serde_json::to_value(profile).unwrap(), value);
+        value["web_search"] = "false".into();
+        assert!(serde_json::from_value::<super::ConfigurationModelProfile>(value).is_err());
+    }
 }
