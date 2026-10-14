@@ -2,5 +2,8 @@
 name = "hagency-frontend"
 default_platform = "web"
 
+[web]
+pre_compress = true
+
 [web.app]
 title = "Hagency Server"
