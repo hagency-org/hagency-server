@@ -159,6 +159,9 @@ impl Store {
             "Owner session connection acquired"
         );
         (*db).transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
+            // All identity/device mutations enter the domain authority lock before rows.
+            // Configuration publication holds owner rows while locking both device sessions.
+            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             // Unique identity lock also serializes conflicting subject/MXID registrations.
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328903)").await?;
             if identity.valid_until_ms<=crate::api::now_ms() {return Err(Error::Unauthorized("authorization_expired"));}
@@ -187,14 +190,23 @@ impl Store {
         credential: &str,
         now: i64,
         device: bool,
+        lock_rows: bool,
     ) -> Result<Principal> {
         if credential.len() != 64 {
             return Err(Error::Unauthorized("authentication_required"));
         }
         let query = if device {
-            "SELECT u.id AS user_id,u.mxid,u.subject,s.id AS session_id,s.client_id,s.valid_until_ms,d.id AS device_id,d.generation AS device_generation FROM hagency_agent_v1.devices d JOIN hagency_agent_v1.sessions s ON s.id=d.session_id JOIN hagency_agent_v1.users u ON u.id=d.user_id AND u.id=s.user_id WHERE d.token_hash=$1 AND NOT d.revoked AND NOT s.revoked AND u.active AND s.valid_until_ms>greatest($2,(extract(epoch from clock_timestamp())*1000)::bigint) FOR UPDATE OF s,d,u"
+            "SELECT u.id AS user_id,u.mxid,u.subject,s.id AS session_id,s.client_id,s.valid_until_ms,d.id AS device_id,d.generation AS device_generation FROM hagency_agent_v1.devices d JOIN hagency_agent_v1.sessions s ON s.id=d.session_id JOIN hagency_agent_v1.users u ON u.id=d.user_id AND u.id=s.user_id WHERE d.token_hash=$1 AND NOT d.revoked AND NOT s.revoked AND u.active AND s.valid_until_ms>greatest($2,(extract(epoch from clock_timestamp())*1000)::bigint)"
         } else {
-            "SELECT u.id AS user_id,u.mxid,u.subject,s.id AS session_id,s.client_id,s.valid_until_ms,NULL::text AS device_id,NULL::bigint AS device_generation FROM hagency_agent_v1.sessions s JOIN hagency_agent_v1.users u ON u.id=s.user_id WHERE s.token_hash=$1 AND NOT s.revoked AND u.active AND s.valid_until_ms>greatest($2,(extract(epoch from clock_timestamp())*1000)::bigint) FOR UPDATE OF s,u"
+            "SELECT u.id AS user_id,u.mxid,u.subject,s.id AS session_id,s.client_id,s.valid_until_ms,NULL::text AS device_id,NULL::bigint AS device_generation FROM hagency_agent_v1.sessions s JOIN hagency_agent_v1.users u ON u.id=s.user_id WHERE s.token_hash=$1 AND NOT s.revoked AND u.active AND s.valid_until_ms>greatest($2,(extract(epoch from clock_timestamp())*1000)::bigint)"
+        };
+        let query = if lock_rows {
+            format!(
+                "{query} FOR UPDATE OF {}",
+                if device { "s,d,u" } else { "s,u" }
+            )
+        } else {
+            query.to_owned()
         };
         let principal = sql_query(query)
             .bind::<Text, _>(hash(credential))
@@ -219,7 +231,10 @@ impl Store {
         now: i64,
         device: bool,
     ) -> Result<Principal> {
-        Self::principal(&mut *self.db.lock().await?, credential, now, device).await
+        // Read-only identity snapshot: every operational Domain/Transport call
+        // revalidates it under its own transaction lock. Autocommit row locks here
+        // can invert owner/session ordering against configuration publication.
+        Self::principal(&mut *self.db.lock().await?, credential, now, device, false).await
     }
     pub async fn renew(&self, credential: &str, identity: Identity, now: i64) -> Result<i64> {
         if identity.issuer != self.issuer || identity.valid_until_ms <= now {
@@ -238,6 +253,7 @@ impl Store {
         );
         (*db)
             .transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
+                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
                 // An expired session may renew only with fresh matching upstream proof.
                 if identity.valid_until_ms<=crate::api::now_ms() {return Err(Error::Unauthorized("authorization_expired"));}
                 let p=sql_query("SELECT u.id AS user_id,u.mxid,u.subject,s.id AS session_id,s.client_id,s.valid_until_ms,NULL::text AS device_id,NULL::bigint AS device_generation FROM hagency_agent_v1.sessions s JOIN hagency_agent_v1.users u ON u.id=s.user_id WHERE s.token_hash=$1 AND NOT s.revoked AND u.active FOR UPDATE OF s,u")
@@ -283,7 +299,8 @@ impl Store {
         }
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
-            let p=Self::principal(db,credential,now,false).await?;
+            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
+            let p=Self::principal(db,credential,now,false,true).await?;
             let device_token=secret_token();
             // Same owner/install keeps stable id, rotates credential and fences prior generations.
             let device=sql_query("INSERT INTO hagency_agent_v1.devices(id,user_id,installation_id,name,session_id,token_hash,generation) VALUES($1,$2,$3,$4,$5,$6,1) ON CONFLICT(user_id,installation_id) DO UPDATE SET name=EXCLUDED.name,session_id=EXCLUDED.session_id,token_hash=EXCLUDED.token_hash,generation=hagency_agent_v1.devices.generation+1,revoked=false RETURNING id,generation")
@@ -295,7 +312,8 @@ impl Store {
         key(id)?;
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
-            let p=Self::principal(db,credential,now,false).await?;
+            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
+            let p=Self::principal(db,credential,now,false,true).await?;
             let changed=sql_query("UPDATE hagency_agent_v1.devices SET revoked=true,generation=generation+1 WHERE id=$1 AND user_id=$2")
                 .bind::<Text,_>(id).bind::<Text,_>(&p.user_id).execute(db).await?;
             if changed!=1 { return Err(Error::Unauthorized("device_not_owned")); } Ok(())
@@ -303,11 +321,18 @@ impl Store {
     }
     pub async fn sign_out(&self, credential: &str) -> Result<()> {
         // Idempotent even after expiry; revocation closes every device attached to this session.
-        sql_query("UPDATE hagency_agent_v1.sessions SET revoked=true WHERE token_hash=$1")
-            .bind::<Text, _>(hash(credential))
-            .execute(&mut *self.db.lock().await?)
-            .await?;
-        Ok(())
+        let mut db = self.db.lock().await?;
+        (*db)
+            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
+                    .await?;
+                sql_query("UPDATE hagency_agent_v1.sessions SET revoked=true WHERE token_hash=$1")
+                    .bind::<Text, _>(hash(credential))
+                    .execute(db)
+                    .await?;
+                Ok(())
+            })
+            .await
     }
 }
 

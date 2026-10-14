@@ -16,6 +16,8 @@ use std::{collections::BTreeSet, sync::Arc};
 #[path = "domain_discovery.rs"]
 mod discovery;
 pub use discovery::RoomAgent;
+#[path = "execution_configuration.rs"]
+mod execution_configuration;
 #[path = "execution_devices.rs"]
 mod execution_devices;
 #[path = "owner_direct.rs"]
@@ -433,6 +435,7 @@ impl DomainStore {
                 db.batch_execute(include_str!("domain_schema.sql")).await?;
                 db.batch_execute(include_str!("owner_direct_schema.sql")).await?;
             }
+            db.batch_execute(include_str!("configuration_schema.sql")).await?;
             let pause_initialized=sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='bindings' AND column_name='owner_service_paused') AS matched").get_result::<Flag>(db).await?;
             if !pause_initialized.matched {
                 db.batch_execute("ALTER TABLE hagency_agent_v1.bindings ADD COLUMN owner_service_paused boolean NOT NULL DEFAULT false").await?;
