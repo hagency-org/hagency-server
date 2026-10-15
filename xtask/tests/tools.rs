@@ -188,6 +188,8 @@ fn copies_local_pasion_resources_without_building_or_starting_servers() {
         fs::create_dir_all(source.join(relative)).unwrap();
         fs::write(source.join(relative).join("example.txt"), relative).unwrap();
     }
+    let shell = "<html><head><script>window.APP_CONFIG={}</script></head><body><div id=\"main\"></div><script src=\"{{ app_config.script_src }}\"></script></body></html>";
+    fs::write(source.join("templates/app.html"), shell).unwrap();
     let output = dir.path().join("prepared assets");
     success(
         task(dir.path())
@@ -209,6 +211,18 @@ fn copies_local_pasion_resources_without_building_or_starting_servers() {
         );
     }
     assert!(!output.join("public").exists());
+    assert_eq!(
+        fs::read_to_string(source.join("templates/app.html")).unwrap(),
+        shell,
+        "The upstream template must remain unchanged"
+    );
+    let branded = fs::read_to_string(output.join("templates/app.html")).unwrap();
+    assert!(branded.contains("/assets/hagency-theme.css"));
+    assert!(branded.contains("data-hagency-storage=\"pasion_theme\""));
+    assert!(branded.contains("class=\"hagency-auth-brand\""));
+    assert!(branded.contains("window.APP_CONFIG={}"));
+    assert!(branded.contains("<div id=\"main\"></div>"));
+    assert!(branded.contains("src=\"{{ app_config.script_src }}\""));
 }
 
 fn executable(path: &Path, text: &str) {
