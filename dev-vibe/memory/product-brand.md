@@ -10,4 +10,6 @@
 - 镜像 CI 校验最终镜像内 SVG、ICO、共享 CSS/JS，以及两个页面模板的品牌和主题引用。
 - 已验证与 Cloud 源 SVG 逐字节一致、XML/ICO 解码、真实 index.html 的 Chromium favicon 加载、资源路由/MIME/复制路径、模板注入保持原内容、cargo fmt 与 git diff --check。
 - 主题追加验证：12 个代表性 CSS 浏览器样例、8 个初始主题回退样例通过；使用固定 Pasion 版本的实际样式与模板，非完整 WASM 端到端。CSS/JS 检查及原控制台非颜色声明一致性通过。细节见 `../server-brand-theme-unification-2026-10-15.zh.md`。
-- 未本地编译 Server/前端，未提交、发布镜像或部署；完整构建和运行验证仍需 GitHub CI，不把这些静态检查当作镜像发布成功。
+- 线上补充验收：控制台 `gloo_storage` 实际使用 JSON 字符串保存 `theme`，Pasion 为原始字符串。共享启动脚本同时兼容两种格式且不写入偏好；`dev-vibe/verify-brand-bootstrap.cjs` 用严格 CSP 和相反系统主题验证两格式的初始配色。完整应用验收也必须使用各自的真实存储格式。
+- `feb58f8d3daefe8f078097be7e7d63a75c318b61` 已通过 GitHub CI 38686252331 的质量、两架构镜像与 manifest 发布，并按 digest `6c2876c9183012f157768897cfdb08e3f1c63ed5053b24f137c4032468b3b8f5` 部署现有 chris 实例，ARM64/源码/readyz200/三项身份不变通过。没有本地或生产应用编译。
+- 后续仅补齐启动脚本对现有 JSON 主题值的兼容，16 个严格 CSP 静态回归通过；此补丁仍须等待新 GitHub 镜像并部署后验收。用户选择暂不提供 Server 登录会话，不声称认证后的管理/成员界面已做会话内验证。

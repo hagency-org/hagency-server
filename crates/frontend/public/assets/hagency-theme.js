@@ -4,6 +4,10 @@
   try {
     var key = document.currentScript.getAttribute("data-hagency-storage");
     var stored = localStorage.getItem(key);
+    // The console uses gloo_storage JSON strings; Pasion stores plain strings.
+    if (stored !== "light" && stored !== "dark" && stored !== "system") {
+      try { stored = JSON.parse(stored); } catch (_) {}
+    }
     var resolved = stored === "dark" ||
       (stored !== "light" && matchMedia("(prefers-color-scheme: dark)").matches)
       ? "dark" : "light";
