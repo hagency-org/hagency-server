@@ -1,0 +1,261 @@
+/* Hagency business colors, aligned with hagency-cloud/assets/theme.css.
+ * Shared by the integrated console and the embedded Pasion identity pages.
+ * HSL channels preserve the console's existing alpha utilities.
+ * Spacing, typography, radii and interactions remain in each app's stylesheet.
+ */
+html:root {
+  color-scheme: light;
+  background-color: hsl(var(--hg-page));
+  color: hsl(var(--hg-text));
+  --hg-page: 216.000000 29.411765% 96.666667%; /* #f4f6f9 */
+  --hg-surface: 0.000000 0.000000% 100.000000%; /* #ffffff */
+  --hg-surface-hover: 210.000000 30.769231% 94.901961%; /* #eef2f6 */
+  --hg-inset: 215.000000 35.294118% 93.333333%; /* #e8edf4 */
+  --hg-text: 215.625000 41.025641% 15.294118%; /* #172437 */
+  --hg-text-secondary: 213.333333 15.929204% 44.313725%; /* #5f6f83 */
+  --hg-border: 214.285714 28.000000% 90.196078%; /* #dfe5ed */
+  --hg-border-secondary: 213.333333 29.032258% 93.921569%; /* #ebeff4 */
+  --hg-primary: 221.212121 83.193277% 53.333333%; /* #2563eb */
+  --hg-primary-hover: 224.278075 76.326531% 48.039216%; /* #1d4ed8 */
+  --hg-link: 221.212121 83.193277% 53.333333%; /* #2563eb */
+  --hg-link-hover: 224.278075 76.326531% 48.039216%; /* #1d4ed8 */
+  --hg-danger: 0.000000 72.222222% 50.588235%; /* #dc2626 */
+  --hg-danger-hover: 0.000000 73.708920% 41.764706%; /* #b91c1c */
+  --hg-danger-fill: 0.000000 72.222222% 50.588235%; /* #dc2626 */
+  --hg-danger-fill-hover: 0.000000 73.708920% 41.764706%; /* #b91c1c */
+  --hg-warning: 25.964912 90.476190% 37.058824%; /* #b45309 */
+  --hg-warning-fill: 25.964912 90.476190% 37.058824%; /* #b45309 */
+  --hg-success: 142.429907 71.812081% 29.215686%; /* #15803d */
+  --hg-success-fill: 142.429907 71.812081% 29.215686%; /* #15803d */
+  --hg-sidebar: 215.384615 49.367089% 15.490196%; /* #14243b */
+  --hg-sidebar-hover: 214.285714 46.666667% 23.529412%; /* #203858 */
+  --hg-sidebar-active: 216.818182 60.273973% 28.627451%; /* #1d3f75 */
+  --hg-sidebar-text: 220.000000 60.000000% 97.058824%; /* #f3f6fc */
+  --hg-sidebar-secondary: 214.545455 31.428571% 79.411765%; /* #bac8db */
+  --hg-sidebar-link: 221.666667 100.000000% 78.823529%; /* #93b4ff */
+  --hg-sidebar-border: 215.714286 30.882353% 26.666667%; /* #2f4059 */
+  --hg-shadow: 215.384615 49.367089% 15.490196%;
+}
+
+html:root.dark,
+html:root[data-theme="dark"] {
+  color-scheme: dark;
+  --hg-shadow: 0 0% 0%;
+  --hg-page: 222.222222 47.368421% 11.176471%; /* #0f172a */
+  --hg-surface: 218.823529 41.463415% 16.078431%; /* #18243a */
+  --hg-surface-hover: 216.734694 41.880342% 22.941176%; /* #223553 */
+  --hg-inset: 218.181818 49.253731% 13.137255%; /* #111d32 */
+  --hg-text: 213.750000 44.444444% 92.941176%; /* #e5ecf5 */
+  --hg-text-secondary: 215.625000 22.222222% 71.764706%; /* #a7b4c7 */
+  --hg-border: 218.709677 25.619835% 23.725490%; /* #2d384c */
+  --hg-border-secondary: 218.181818 30.275229% 21.372549%; /* #263247 */
+  --hg-link: 221.666667 100.000000% 78.823529%; /* #93b4ff */
+  --hg-link-hover: 222.500000 100.000000% 85.882353%; /* #b7ccff */
+  --hg-danger: 0.000000 93.548387% 81.764706%; /* #fca5a5 */
+  --hg-danger-hover: 0.000000 96.296296% 89.411765%; /* #fecaca */
+  --hg-warning: 43.255814 96.412556% 56.274510%; /* #fbbf24 */
+  --hg-success: 141.714286 76.642336% 73.137255%; /* #86efac */
+}
+
+@media (prefers-color-scheme: dark) {
+  html:root:not(.light):not([data-theme="light"]) {
+    color-scheme: dark;
+    --hg-shadow: 0 0% 0%;
+    --hg-page: 222.222222 47.368421% 11.176471%; /* #0f172a */
+    --hg-surface: 218.823529 41.463415% 16.078431%; /* #18243a */
+    --hg-surface-hover: 216.734694 41.880342% 22.941176%; /* #223553 */
+    --hg-inset: 218.181818 49.253731% 13.137255%; /* #111d32 */
+    --hg-text: 213.750000 44.444444% 92.941176%; /* #e5ecf5 */
+    --hg-text-secondary: 215.625000 22.222222% 71.764706%; /* #a7b4c7 */
+    --hg-border: 218.709677 25.619835% 23.725490%; /* #2d384c */
+    --hg-border-secondary: 218.181818 30.275229% 21.372549%; /* #263247 */
+    --hg-link: 221.666667 100.000000% 78.823529%; /* #93b4ff */
+    --hg-link-hover: 222.500000 100.000000% 85.882353%; /* #b7ccff */
+    --hg-danger: 0.000000 93.548387% 81.764706%; /* #fca5a5 */
+    --hg-danger-hover: 0.000000 96.296296% 89.411765%; /* #fecaca */
+    --hg-warning: 43.255814 96.412556% 56.274510%; /* #fbbf24 */
+    --hg-success: 141.714286 76.642336% 73.137255%; /* #86efac */
+  }
+}
+/* Console adapters. Keep existing component classes and opacity utilities. */
+html:root {
+  --background: var(--hg-page);
+  --foreground: var(--hg-text);
+  --card: var(--hg-surface);
+  --card-foreground: var(--hg-text);
+  --popover: var(--hg-surface);
+  --popover-foreground: var(--hg-text);
+  --primary: var(--hg-primary);
+  --primary-foreground: 0 0% 100%;
+  --secondary: var(--hg-surface-hover);
+  --secondary-foreground: var(--hg-text);
+  --muted: var(--hg-inset);
+  --muted-foreground: var(--hg-text-secondary);
+  --accent: var(--hg-surface-hover);
+  --accent-foreground: var(--hg-text);
+  --destructive: var(--hg-danger);
+  --destructive-foreground: 0 0% 100%;
+  --border: var(--hg-border);
+  --input: var(--hg-border);
+  --ring: var(--hg-primary);
+  --coral: var(--hg-primary);
+  --violet: var(--hg-link);
+  --lime: var(--hg-warning);
+  --mint: var(--hg-success);
+  --sidebar-background: var(--hg-sidebar);
+  --sidebar-foreground: var(--hg-sidebar-text);
+  --sidebar-primary: var(--hg-sidebar-link);
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: var(--hg-sidebar-hover);
+  --sidebar-accent-foreground: var(--hg-sidebar-text);
+  --sidebar-border: var(--hg-sidebar-border);
+  --sidebar-ring: var(--hg-sidebar-link);
+}
+
+/* Higher specificity than Pasion's theme roots, even when its CSS loads later. */
+html:root:root {
+  --shadow-sm: 0 1px 2px hsl(var(--hg-shadow) / 0.06);
+  --shadow-md: 0 6px 18px hsl(var(--hg-shadow) / 0.08);
+  --shadow-lg: 0 18px 42px hsl(var(--hg-shadow) / 0.12);
+  --shadow-xl: 0 28px 60px hsl(var(--hg-shadow) / 0.16);
+  --color-primary: hsl(var(--hg-link));
+  --color-primary-hover: hsl(var(--hg-link-hover));
+  --color-primary-light: hsl(var(--hg-primary) / 0.12);
+  --color-primary-soft: hsl(var(--hg-primary) / 0.08);
+  --color-primary-border: hsl(var(--hg-primary) / 0.28);
+  --color-primary-glow: transparent;
+  --color-secondary: hsl(var(--hg-link));
+  --color-secondary-hover: hsl(var(--hg-link-hover));
+  --color-secondary-soft: hsl(var(--hg-primary) / 0.08);
+  --color-secondary-border: hsl(var(--hg-primary) / 0.28);
+  --color-secondary-glow: transparent;
+  --color-mint: hsl(var(--hg-success));
+  --color-mint-soft: hsl(var(--hg-success) / 0.08);
+  --color-mint-border: hsl(var(--hg-success) / 0.28);
+  --color-mint-glow: transparent;
+  --color-warning: hsl(var(--hg-warning));
+  --color-warning-soft: hsl(var(--hg-warning) / 0.08);
+  --color-warning-border: hsl(var(--hg-warning) / 0.28);
+  --color-destructive: hsl(var(--hg-danger));
+  --color-destructive-hover: hsl(var(--hg-danger-hover));
+  --color-destructive-soft: hsl(var(--hg-danger) / 0.08);
+  --color-destructive-border: hsl(var(--hg-danger) / 0.28);
+  --color-success: hsl(var(--hg-success));
+  --color-success-soft: hsl(var(--hg-success) / 0.08);
+  --color-success-border: hsl(var(--hg-success) / 0.28);
+  --color-info: hsl(var(--hg-link));
+  --color-info-soft: hsl(var(--hg-primary) / 0.08);
+  --color-info-border: hsl(var(--hg-primary) / 0.28);
+  --color-bg-page: hsl(var(--hg-page));
+  --color-bg-page-2: hsl(var(--hg-page));
+  --color-bg-primary: hsl(var(--hg-surface));
+  --color-bg-secondary: hsl(var(--hg-surface-hover));
+  --color-bg-subtle: hsl(var(--hg-inset));
+  --color-bg-elevated: hsl(var(--hg-surface));
+  --color-bg-tint: hsl(var(--hg-primary) / 0.08);
+  --color-bg-action-primary-rest: hsl(var(--hg-primary));
+  --color-bg-action-primary-hovered: hsl(var(--hg-primary-hover));
+  --color-bg-critical-primary: hsl(var(--hg-danger-fill));
+  --color-text-primary: hsl(var(--hg-text));
+  --color-text-secondary: hsl(var(--hg-text-secondary));
+  --color-text-tertiary: hsl(var(--hg-text-secondary));
+  --color-text-on-solid-primary: #ffffff;
+  --color-border: hsl(var(--hg-border));
+  --color-border-hover: hsl(var(--hg-text-secondary) / 0.5);
+  --color-border-interactive-hovered: hsl(var(--hg-primary));
+  --color-glow-primary: transparent;
+  --color-glow-secondary: transparent;
+  --color-glow-tertiary: transparent;
+}
+
+html body.hagency-auth {
+  background: hsl(var(--hg-page));
+}
+html:root body.hagency-auth::before {
+  background: none;
+}
+html body.hagency-auth .login-container,
+html body.hagency-auth .overview-stat-card {
+  background: hsl(var(--hg-surface));
+}
+html body.hagency-auth .overview-stat-card.tone-success {
+  background: hsl(var(--hg-success) / 0.08);
+}
+html body.hagency-auth .overview-stat-card.tone-warning {
+  background: hsl(var(--hg-warning) / 0.08);
+}
+html body.hagency-auth .overview-workflow-banner {
+  background: hsl(var(--hg-primary) / 0.08);
+}
+html body.hagency-auth .btn-secondary {
+  background: hsl(var(--hg-surface));
+}
+html body.hagency-auth .btn-secondary:hover:not(:disabled) {
+  background: hsl(var(--hg-surface-hover));
+}
+html body.hagency-auth .btn-destructive-solid:hover:not(:disabled) {
+  background: hsl(var(--hg-danger-fill-hover));
+}
+html body.hagency-auth .theme-toggle-mark {
+  background: hsl(var(--hg-primary));
+}
+html body.hagency-auth .dialog-overlay {
+  background: hsl(var(--hg-sidebar) / 0.58);
+}
+html body.hagency-auth .user-email .email-badge.primary {
+  background: hsl(var(--hg-success) / 0.08);
+}
+html body.hagency-auth .account-sidebar {
+  --color-text-primary: hsl(var(--hg-sidebar-text));
+  --color-text-secondary: hsl(var(--hg-sidebar-secondary));
+  --color-text-tertiary: hsl(var(--hg-sidebar-secondary));
+  --color-border: hsl(var(--hg-sidebar-border));
+  --color-bg-secondary: hsl(var(--hg-sidebar-hover));
+  background: hsl(var(--hg-sidebar));
+  color: hsl(var(--hg-sidebar-text));
+}
+html body.hagency-auth .account-sidebar .sidebar-item {
+  background: transparent;
+  color: hsl(var(--hg-sidebar-secondary));
+}
+html body.hagency-auth .account-sidebar .sidebar-item:hover {
+  background: hsl(var(--hg-sidebar-hover));
+  color: hsl(var(--hg-sidebar-text));
+}
+html body.hagency-auth .account-sidebar .sidebar-item.active {
+  background: hsl(var(--hg-sidebar-active));
+  color: hsl(var(--hg-sidebar-text));
+  border-color: hsl(var(--hg-sidebar-border));
+}
+
+/* Brand header is outside the identity SPA, including error and consent pages. */
+html body.hagency-auth .hagency-auth-header {
+  height: 4rem;
+  display: flex;
+  align-items: center;
+  padding: 0 1.5rem;
+  background: hsl(var(--hg-surface));
+  border-bottom: 1px solid hsl(var(--hg-border));
+}
+html body.hagency-auth .hagency-auth-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  color: hsl(var(--hg-text));
+  font-family: var(--font-family, system-ui, sans-serif);
+  font-size: 1rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+html body.hagency-auth .hagency-auth-brand img {
+  display: block;
+}
+html body.hagency-auth .hagency-auth-brand:focus-visible {
+  outline: 2px solid hsl(var(--hg-primary));
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+html body.hagency-auth .layout-container {
+  min-height: calc(100vh - 4rem);
+  min-height: calc(100svh - 4rem);
+}

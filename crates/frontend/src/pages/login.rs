@@ -52,7 +52,7 @@ pub fn LoginPage() -> Element {
         div { class: "hg-welcome",
             header { class: "hg-welcome-header",
                 a { href: "/", class: "hg-welcome-brand", aria_label: "Hagency",
-                    span { aria_hidden: "true", Icon { name: "shield", class: "h-6 w-6 text-primary" } }
+                    img { src: "/assets/hagency-mark.svg", alt: "", width: "28", height: "28" }
                     "Hagency"
                 }
                 div { class: "hg-welcome-controls",
@@ -76,7 +76,9 @@ pub fn LoginPage() -> Element {
             }
             main { class: "hg-welcome-main",
                 section { class: "hg-welcome-card hg-card", aria_labelledby: "welcome-title",
-                    div { class: "hg-welcome-mark", aria_hidden: "true", Icon { name: "layers", class: "h-6 w-6" } }
+                    div { class: "hg-welcome-mark", aria_hidden: "true",
+                        img { src: "/assets/hagency-mark.svg", alt: "", width: "40", height: "40" }
+                    }
                     h1 { id: "welcome-title", {t("welcome.title")} }
                     p { class: "hg-welcome-description", {t("welcome.description")} }
                     if let Some(config) = cfg() {

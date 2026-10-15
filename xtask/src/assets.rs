@@ -40,6 +40,24 @@ pub fn prepare(root: &Path, options: &Options, stopping: &AtomicBool) -> Result<
     ] {
         copy_tree(&source.join(relative), &output.join(name))?;
     }
+    // Keep embedding-specific branding here; never mutate the pinned upstream.
+    let shell = output.join("templates/app.html");
+    let html = fs::read_to_string(&shell)?;
+    ensure!(
+        html.contains("</head>") && html.contains("<body>"),
+        "Pasion app template is missing the expected head or body"
+    );
+    let head = include_str!("../../crates/frontend/branding/pasion-head.html");
+    let header = include_str!("../../crates/frontend/branding/pasion-header.html");
+    fs::write(
+        shell,
+        html.replacen("</head>", &format!("{head}\n  </head>"), 1)
+            .replacen(
+                "<body>",
+                &format!("<body class=\"hagency-auth\">\n{header}"),
+                1,
+            ),
+    )?;
     if !options.skip_frontend {
         let dx = dioxus_cli(root, stopping)?;
         command::checked(

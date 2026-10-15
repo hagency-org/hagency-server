@@ -126,6 +126,15 @@ jobs:
             hagency-server --help
             test -d /app/resources/pasion
             test -f /app/resources/frontend/public/index.html
+            test -f /app/resources/frontend/public/assets/hagency-mark.svg
+            test -f /app/resources/frontend/public/favicon.ico
+            test -f /app/resources/frontend/public/assets/hagency-theme.css
+            test -f /app/resources/frontend/public/assets/hagency-theme.js
+            grep -q /assets/hagency-mark.svg /app/resources/frontend/public/index.html
+            grep -q /assets/hagency-mark.svg /app/resources/pasion/templates/app.html
+            grep -q /assets/hagency-theme.css /app/resources/frontend/public/index.html
+            grep -q /assets/hagency-theme.css /app/resources/pasion/templates/app.html
+            grep -q hagency-auth-brand /app/resources/pasion/templates/app.html
             test -n "$(find /app/resources/frontend/public/assets -name '*.wasm.br' -print -quit)"
             test -n "$(find /app/resources/frontend/public/assets -name '*.wasm.gz' -print -quit)"
           '

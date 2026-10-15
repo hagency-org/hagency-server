@@ -168,12 +168,18 @@ pub async fn prepare(host: &mut Config) -> anyhow::Result<Option<Figment>> {
         settings["account"] = json!({});
     }
     settings["account"]["admin_portal_url"] = json!(host.public_origin.join("admin")?);
+    if settings.get("branding").is_none() {
+        settings["branding"] = json!({});
+    }
+    let logo_url = host.public_origin.join("assets/hagency-mark.svg")?;
+    settings["branding"]["logo_uri"] = json!(logo_url);
     // The bundled SPA is a public PKCE client. Keep its callback aligned with
     // the host origin, without requiring a second deployment/configuration.
     let client = json!({
         "client_id": ADMIN_CLIENT_ID,
         "client_auth_method": "none",
         "client_name": "Hagency Server",
+        "logo_uri": logo_url,
         "redirect_uris": [host.public_origin.join("oauth/callback")?]
     });
     let clients = settings

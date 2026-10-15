@@ -55,12 +55,12 @@ pub fn AppSidebar(collapsed: Signal<bool>, mobile_open: Signal<bool>) -> Element
             div { class: "flex h-14 items-center gap-2 border-b border-sidebar-border px-4",
                 if !is_collapsed {
                     div { class: "flex items-center gap-2",
-                        Icon { name: "shield".to_string(), class: "h-6 w-6 text-sidebar-primary".to_string() }
+                        img { src: "/assets/hagency-mark.svg", alt: "", width: "28", height: "28", class: "shrink-0" }
                         span { class: "truncate font-semibold text-sidebar-foreground", "Hagency Server" }
                     }
                 } else {
                     div { class: "flex justify-center w-full",
-                        Icon { name: "shield".to_string(), class: "h-6 w-6 text-sidebar-primary".to_string() }
+                        img { src: "/assets/hagency-mark.svg", alt: "Hagency Server", width: "28", height: "28", class: "shrink-0" }
                     }
                 }
                 button {
