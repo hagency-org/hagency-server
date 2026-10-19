@@ -2,20 +2,44 @@
 //! or require the executing device to be online. Fresh Matrix authority still applies.
 use super::*;
 
-const SELECT: &str = "SELECT n.id,n.owner_event_id,n.kind,n.matrix_txn_id,n.state,n.worker_token,e.binding_id,e.requester_mxid,e.event_id,e.thread_root,e.binding_generation FROM hagency_agent_v1.request_notice_outbox n JOIN hagency_agent_v1.owner_events e ON e.id=n.owner_event_id";
+const SELECT: &str = "SELECT n.id,n.owner_event_id,n.kind,n.matrix_txn_id,n.state,n.worker_token,e.binding_id,e.requester_mxid,e.event_id,e.thread_root,e.binding_generation,coalesce(d.name,'') AS device_name,CASE WHEN a.execution_device_id IS NULL THEN 'unassigned' WHEN d.id IS NULL OR d.revoked OR s.revoked OR s.valid_until_ms<=(extract(epoch from clock_timestamp())*1000)::bigint THEN 'offline' WHEN l.expires_at_ms>(extract(epoch from clock_timestamp())*1000)::bigint AND l.device_generation=d.generation THEN 'ready' WHEN p.device_generation=d.generation AND p.last_seen_at_ms BETWEEN (extract(epoch from clock_timestamp())*1000)::bigint-15000 AND (extract(epoch from clock_timestamp())*1000)::bigint THEN 'not_running' WHEN p.device_generation=d.generation AND p.last_seen_at_ms IS NOT NULL THEN 'offline' ELSE 'unobserved' END AS device_state FROM hagency_agent_v1.request_notice_outbox n JOIN hagency_agent_v1.owner_events e ON e.id=n.owner_event_id JOIN hagency_agent_v1.agents a ON a.id=e.agent_id LEFT JOIN hagency_agent_v1.devices d ON d.id=a.execution_device_id AND d.user_id=e.owner_user_id LEFT JOIN hagency_agent_v1.sessions s ON s.id=d.session_id AND s.user_id=e.owner_user_id LEFT JOIN hagency_agent_v1.configuration_presence p ON p.device_id=d.id LEFT JOIN hagency_agent_v1.execution_leases l ON l.agent_id=a.id AND l.device_id=d.id";
 
+#[cfg(test)]
 pub(crate) fn body(kind: &str) -> &'static str {
+    body_for(kind, "unobserved")
+}
+pub(crate) fn body_for(kind: &str, device: &str) -> &'static str {
     match kind {
-        "waiting" => {
-            "⏳ 请求已收到，Agent 当前尚未开始处理（可能离线或正在处理其他请求）。请求仍在等待，无需重复发送；恢复后会继续处理。"
+        "waiting" => match device {
+            "offline" => {
+                "⏳ Request queued. No recent heartbeat from the execution device. Processing has not started. Check the device and Agent service; this request may expire while waiting."
+            }
+            "not_running" => {
+                "⏳ Request queued. The execution device is connected, but no active Agent runtime was observed. Check Service and its logs. This request may expire while waiting."
+            }
+            "unassigned" => {
+                "⏳ Request queued. No execution device is assigned to this Agent. Assign a device and configure its service. This request may expire while waiting."
+            }
+            "ready" => {
+                "⏳ Request queued. The Agent runtime is connected, but has not started this request. This request may expire while waiting."
+            }
+            _ => {
+                "⏳ Request queued. Processing has not started. Check the execution device and Service logs. This request may expire while waiting."
+            }
+        },
+        "processing" => "⏳ The Agent is still processing this request. No need to send it again.",
+        "delivery" => {
+            "⏳ Processing finished, but the reply has not been delivered. Delivery is being retried."
         }
-        "processing" => "⏳ Agent 仍在处理本次请求，耗时较长，请稍候。无需重复发送。",
-        "delivery" => "⏳ 本次处理已结束，但回复暂未送达，系统正在重试发送。无需重复发送请求。",
-        "failed" => "⚠️ 本次请求处理失败，未生成可发送的回复。后续请求仍可正常处理。",
-        "rejected" => "⏸️ 本次请求未获处理授权。其他符合授权条件的请求仍可正常处理。",
-        "expired" => "⚠️ 本次请求等待超时，尚未开始处理，已结束等待。你可以重新发送请求。",
+        "failed" => {
+            "⚠️ This request failed without a reply. Check the Agent's Service logs for the cause."
+        }
+        "rejected" => "⏸️ This request was not authorized for processing.",
+        "expired" => {
+            "⚠️ This request expired before processing started. You can send a new request."
+        }
         _ => {
-            "⚠️ 本次请求处理已中断，暂时无法确认执行结果。为避免重复执行，系统不会自动重跑这条请求；你可以继续发送新请求。"
+            "⚠️ Processing was interrupted and its result is unconfirmed. This request will not be run again automatically."
         }
     }
 }
@@ -44,6 +68,10 @@ pub(crate) struct RequestNotice {
     pub thread_root: String,
     #[diesel(sql_type=BigInt)]
     pub binding_generation: i64,
+    #[diesel(sql_type=Text)]
+    pub device_name: String,
+    #[diesel(sql_type=Text)]
+    pub device_state: String,
 }
 impl TransportStore {
     pub(crate) async fn request_notice_candidates(

@@ -41,10 +41,14 @@ fn request_notice_content(
     body: &str,
 ) -> Value {
     let mut content = reply_content(owner_direct, room, root, body);
-    if content.get("m.relates_to").is_none() {
-        content["m.relates_to"] = json!({});
+    if let Some(relation) = content
+        .get_mut("m.relates_to")
+        .and_then(Value::as_object_mut)
+    {
+        relation.remove("m.in_reply_to");
+        relation.insert("is_falling_back".into(), json!(false));
     }
-    content["m.relates_to"]["m.in_reply_to"] = json!({"event_id":event});
+    content["org.hagency.request_event_id"] = json!(event);
     content["msgtype"] = json!("m.notice");
     content
 }
@@ -366,13 +370,16 @@ async fn send_request_notices(
             .worker_token
             .as_deref()
             .ok_or(Error::Unavailable("missing_sender_claim"))?;
-        let content = request_notice_content(
+        let mut content = request_notice_content(
             scope.space_id.is_empty(),
             &scope.room_id,
             &notice.thread_root,
             &notice.event_id,
-            crate::transport::request_notices::body(&notice.kind),
+            crate::transport::request_notices::body_for(&notice.kind, &notice.device_state),
         );
+        content["org.hagency.request_notice"] = json!({"version":1,"kind":notice.kind,
+            "requestEventId":notice.event_id,"deviceState":notice.device_state,"deviceName":notice.device_name,
+            "observedAtMs":now_ms()});
         let outcome = m
             .send(
                 &scope.puppet_mxid,
@@ -738,10 +745,8 @@ mod tests {
                 crate::transport::request_notices::body("failed"),
             );
             assert_eq!(content["msgtype"], "m.notice");
-            assert_eq!(
-                content["m.relates_to"]["m.in_reply_to"]["event_id"],
-                "$request"
-            );
+            assert_eq!(content["org.hagency.request_event_id"], "$request");
+            assert!(content["m.relates_to"].get("m.in_reply_to").is_none());
             if !owner_direct {
                 assert_eq!(content["m.relates_to"]["event_id"], "$thread");
             }

@@ -2760,6 +2760,50 @@ async fn postgres_offline_feedback_keeps_request_queued_and_stale_notice_is_supp
         .unwrap();
     let n = candidates.iter().find(|n| n.owner_event_id == id).unwrap();
     assert_eq!(n.kind, "waiting");
+    assert_eq!(n.device_name, "First client");
+    assert_eq!(n.device_state, "unobserved");
+    for (last_seen, expected) in [
+        (now - 60_000, "offline"),
+        (crate::api::now_ms(), "not_running"),
+    ] {
+        {
+            let mut db = f.transport.db.lock().await.unwrap();
+            sql_query("INSERT INTO hagency_agent_v1.configuration_presence(device_id,device_generation,last_seen_at_ms) VALUES($1,$2,$3) ON CONFLICT(device_id) DO UPDATE SET device_generation=EXCLUDED.device_generation,last_seen_at_ms=EXCLUDED.last_seen_at_ms")
+                .bind::<Text,_>(f.p.device_id.as_deref().unwrap()).bind::<BigInt,_>(f.p.device_generation.unwrap()).bind::<BigInt,_>(last_seen).execute(&mut *db).await.unwrap();
+        }
+        let observed = f
+            .transport
+            .request_notice_candidates("", now)
+            .await
+            .unwrap();
+        assert_eq!(
+            observed
+                .iter()
+                .find(|item| item.owner_event_id == id)
+                .unwrap()
+                .device_state,
+            expected
+        );
+    }
+    // A live runtime lease is evidence even before configuration heartbeat arrives.
+    f.transport
+        .acquire_for_test(&f.p, &f.agent, 30_000, false, now)
+        .await
+        .unwrap();
+    let observed = f
+        .transport
+        .request_notice_candidates("", now)
+        .await
+        .unwrap();
+    assert_eq!(
+        observed
+            .iter()
+            .find(|item| item.owner_event_id == id)
+            .unwrap()
+            .device_state,
+        "ready"
+    );
+
     let mut denied = f.facts.clone();
     denied.puppet_can_send_message = false;
     assert!(

@@ -575,10 +575,9 @@ async fn exercise(url: &str) {
             "unavailable Rooms cannot starve the healthy failure notice"
         );
         assert_eq!(messages[0]["msgtype"], "m.notice");
-        assert_eq!(
-            messages[0]["m.relates_to"]["m.in_reply_to"]["event_id"],
-            "$failure21"
-        );
+        assert_eq!(messages[0]["org.hagency.request_event_id"], "$failure21");
+        assert!(messages[0]["m.relates_to"].get("m.in_reply_to").is_none());
+        assert_eq!(messages[0]["org.hagency.request_notice"]["kind"], "failed");
         assert_eq!(
             messages[0]["body"],
             crate::transport::request_notices::body("failed")
@@ -692,9 +691,12 @@ async fn exercise(url: &str) {
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(4), async {
         loop {
-            if contents.lock().unwrap().iter().any(|m| {
-                m["m.relates_to"]["m.in_reply_to"]["event_id"] == "$failure-after-slow-tick"
-            }) {
+            if contents
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m["org.hagency.request_event_id"] == "$failure-after-slow-tick")
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
