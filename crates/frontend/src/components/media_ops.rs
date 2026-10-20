@@ -13,8 +13,8 @@ pub fn DeleteMediaDialog(
     on_close: EventHandler<()>,
     #[props(default)] on_success: Option<EventHandler<()>>,
 ) -> Element {
-    let mut before_ts = use_signal(|| String::new());
-    let mut size_gt = use_signal(|| String::new());
+    let mut before_ts = use_signal(String::new);
+    let mut size_gt = use_signal(String::new);
     let mut keep_profiles = use_signal(|| true);
     let mut loading = use_signal(|| false);
 
@@ -106,7 +106,7 @@ pub fn PurgeRemoteMediaDialog(
     on_close: EventHandler<()>,
     #[props(default)] on_success: Option<EventHandler<()>>,
 ) -> Element {
-    let mut before_ts = use_signal(|| String::new());
+    let mut before_ts = use_signal(String::new);
     let mut loading = use_signal(|| false);
 
     let handle_purge = move |_: MouseEvent| {

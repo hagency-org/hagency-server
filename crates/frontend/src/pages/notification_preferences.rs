@@ -29,7 +29,7 @@ impl Default for NotificationPreferences {
 const STORAGE_KEY: &str = "notification_preferences";
 
 pub static NOTIFICATION_PREFS: GlobalSignal<NotificationPreferences> =
-    GlobalSignal::new(|| load_preferences());
+    GlobalSignal::new(load_preferences);
 
 fn load_preferences() -> NotificationPreferences {
     storage::get_item(STORAGE_KEY)
@@ -75,10 +75,6 @@ pub fn is_notification_type_enabled(
         crate::components::ui::notifications::NotificationType::UserRegistered => {
             prefs.user_registered
         }
-        crate::components::ui::notifications::NotificationType::FederationAlert => {
-            prefs.federation_alert
-        }
-        crate::components::ui::notifications::NotificationType::JobFailure => prefs.job_failure,
         crate::components::ui::notifications::NotificationType::SystemInfo => prefs.system_info,
     }
 }
@@ -93,7 +89,7 @@ struct ToggleItem {
 pub fn NotificationPreferencesPage() -> Element {
     let mut prefs = use_signal(|| (*NOTIFICATION_PREFS.read()).clone());
 
-    let items = vec![
+    let items = [
         ToggleItem {
             label: "Report Filed",
             description: "Notifications when users file event reports",

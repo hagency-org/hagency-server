@@ -137,25 +137,6 @@ pub struct PasionPersonalSession {
     pub token: Option<String>, // only returned on create/regenerate
 }
 
-// Registration Token
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PasionRegistrationToken {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub token: String,
-    #[serde(default)]
-    pub uses_allowed: Option<u64>,
-    #[serde(default)]
-    pub times_used: u64,
-    #[serde(default)]
-    pub created_at: String,
-    #[serde(default)]
-    pub expires_at: Option<String>,
-    #[serde(default)]
-    pub revoked_at: Option<String>,
-}
-
 // Upstream OAuth Provider
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PasionUpstreamProvider {
@@ -290,13 +271,4 @@ pub struct PasionConnectorHealth {
     pub status: String,
     #[serde(default)]
     pub error: Option<String>,
-}
-
-// Version
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PasionVersion {
-    #[serde(default)]
-    pub version: String,
-    #[serde(default)]
-    pub build: Option<String>,
 }

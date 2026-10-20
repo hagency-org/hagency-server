@@ -14,13 +14,13 @@ use crate::utils::i18n::t;
 
 #[component]
 pub fn UpstreamLinksPage() -> Element {
-    let mut user_filter = use_signal(|| String::new());
-    let mut provider_filter = use_signal(|| String::new());
+    let mut user_filter = use_signal(String::new);
+    let mut provider_filter = use_signal(String::new);
     let mut create_open = use_signal(|| false);
-    let mut create_user_id = use_signal(|| String::new());
-    let mut create_provider_id = use_signal(|| String::new());
-    let mut create_subject = use_signal(|| String::new());
-    let mut create_account_name = use_signal(|| String::new());
+    let mut create_user_id = use_signal(String::new);
+    let mut create_provider_id = use_signal(String::new);
+    let mut create_subject = use_signal(String::new);
+    let mut create_account_name = use_signal(String::new);
     let mut creating = use_signal(|| false);
 
     let mut links_data = use_resource(move || {

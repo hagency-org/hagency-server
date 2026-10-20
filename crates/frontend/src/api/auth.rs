@@ -709,6 +709,45 @@ fn make_err(msg: String) -> HttpError {
     HttpError::message(msg)
 }
 
+pub async fn get_login_flows(_base_url: &str) -> Result<Vec<LoginFlow>, HttpError> {
+    let response = Request::get("/_matrix/client/v3/login")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| make_err(e.to_string()))?;
+    let flows_resp: LoginFlowsResponse =
+        response.json().await.map_err(|e| make_err(e.to_string()))?;
+    Ok(flows_resp.flows)
+}
+
+pub async fn get_auth_issuer(_base_url: &str) -> Result<serde_json::Value, HttpError> {
+    let response = Request::get("/_matrix/client/unstable/org.matrix.msc2965/auth_issuer")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| make_err(e.to_string()))?;
+    if response.status() >= 400 {
+        return Err(make_err(format!("HTTP {}", response.status())));
+    }
+    response.json().await.map_err(|e| make_err(e.to_string()))
+}
+
+pub async fn get_oidc_discovery(issuer_url: &str) -> Result<serde_json::Value, HttpError> {
+    let url = format!(
+        "{}/.well-known/openid-configuration",
+        issuer_url.trim_end_matches('/')
+    );
+    let response = Request::get(&url)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| make_err(e.to_string()))?;
+    if response.status() >= 400 {
+        return Err(make_err(format!("HTTP {}", response.status())));
+    }
+    response.json().await.map_err(|e| make_err(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{account_needs_admin_scope, build_oauth_scope};
@@ -754,43 +793,4 @@ mod tests {
         assert!(scope.contains("urn:pasion:admin"));
         assert!(!scope.contains("openid"));
     }
-}
-
-pub async fn get_login_flows(_base_url: &str) -> Result<Vec<LoginFlow>, HttpError> {
-    let response = Request::get("/_matrix/client/v3/login")
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| make_err(e.to_string()))?;
-    let flows_resp: LoginFlowsResponse =
-        response.json().await.map_err(|e| make_err(e.to_string()))?;
-    Ok(flows_resp.flows)
-}
-
-pub async fn get_auth_issuer(_base_url: &str) -> Result<serde_json::Value, HttpError> {
-    let response = Request::get("/_matrix/client/unstable/org.matrix.msc2965/auth_issuer")
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| make_err(e.to_string()))?;
-    if response.status() >= 400 {
-        return Err(make_err(format!("HTTP {}", response.status())));
-    }
-    response.json().await.map_err(|e| make_err(e.to_string()))
-}
-
-pub async fn get_oidc_discovery(issuer_url: &str) -> Result<serde_json::Value, HttpError> {
-    let url = format!(
-        "{}/.well-known/openid-configuration",
-        issuer_url.trim_end_matches('/')
-    );
-    let response = Request::get(&url)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| make_err(e.to_string()))?;
-    if response.status() >= 400 {
-        return Err(make_err(format!("HTTP {}", response.status())));
-    }
-    response.json().await.map_err(|e| make_err(e.to_string()))
 }

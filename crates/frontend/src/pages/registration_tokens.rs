@@ -38,14 +38,14 @@ pub fn RegistrationTokenList() -> Element {
         use_resource(|| async { registration_tokens::get_registration_tokens_cached().await });
     let mut delete_dialog_open = use_signal(|| false);
     let mut token_to_delete = use_signal(|| Option::<String>::None);
-    let mut search = use_signal(|| String::new());
+    let mut search = use_signal(String::new);
     let mut filter = use_signal(|| TokenFilter::All);
 
     // Create dialog state
     let mut show_create_dialog = use_signal(|| false);
-    let mut create_token_value = use_signal(|| String::new());
-    let mut create_uses_allowed = use_signal(|| String::new());
-    let mut create_expiry_date = use_signal(|| String::new());
+    let mut create_token_value = use_signal(String::new);
+    let mut create_uses_allowed = use_signal(String::new);
+    let mut create_expiry_date = use_signal(String::new);
     let mut creating = use_signal(|| false);
 
     let handle_create = move |_: MouseEvent| {
@@ -218,7 +218,7 @@ pub fn RegistrationTokenList() -> Element {
                                             let pending = token.token.pending;
                                             let completed = token.token.completed;
                                             let expiry = token.token.expiry_time
-                                                .map(|ts| format_timestamp(ts))
+                                                .map(format_timestamp)
                                                 .unwrap_or_else(|| t("registration_tokens.never"));
                                             let is_expired = token.token.expiry_time
                                                 .map(|ts| ts > 0 && ts < now)

@@ -28,9 +28,9 @@ struct ImportStats {
 
 #[component]
 pub fn UserImport(on_import_complete: EventHandler<()>) -> Element {
-    let mut csv_content = use_signal(|| String::new());
-    let mut parsed_lines = use_signal(|| Vec::<ImportLine>::new());
-    let mut stats = use_signal(|| ImportStats::default());
+    let mut csv_content = use_signal(String::new);
+    let mut parsed_lines = use_signal(Vec::<ImportLine>::new);
+    let mut stats = use_signal(ImportStats::default);
     let mut importing = use_signal(|| false);
     let mut import_done = use_signal(|| false);
 
@@ -38,10 +38,12 @@ pub fn UserImport(on_import_complete: EventHandler<()>) -> Element {
         let value = evt.value();
         csv_content.set(value.clone());
         let lines = parse_csv(&value);
-        let mut s = ImportStats::default();
-        s.total = lines.len();
-        s.admin_count = lines.iter().filter(|l| l.admin).count();
-        s.with_password = lines.iter().filter(|l| !l.password.is_empty()).count();
+        let s = ImportStats {
+            total: lines.len(),
+            admin_count: lines.iter().filter(|l| l.admin).count(),
+            with_password: lines.iter().filter(|l| !l.password.is_empty()).count(),
+            ..ImportStats::default()
+        };
         stats.set(s);
         parsed_lines.set(lines);
     };
@@ -54,7 +56,6 @@ pub fn UserImport(on_import_complete: EventHandler<()>) -> Element {
         }
 
         importing.set(true);
-        let on_import_complete = on_import_complete.clone();
         // With Pasion the admin flag is owned by the Pasion account (palpo
         // refuses local changes), so the `admin` column is ignored.
         let has_pasion = crate::utils::storage::get_item("pasion_url").is_some();

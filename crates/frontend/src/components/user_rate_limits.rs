@@ -29,20 +29,20 @@ pub fn UserRateLimits(user_id: String) -> Element {
         }
     });
 
-    let mut mps = use_signal(|| String::new());
-    let mut burst = use_signal(|| String::new());
+    let mut mps = use_signal(String::new);
+    let mut burst = use_signal(String::new);
 
     // Initialize from data
     if let Some(Some(data)) = &*rate_limits_data.read() {
-        if mps.read().is_empty() {
-            if let Some(v) = data.messages_per_second {
-                mps.set(v.to_string());
-            }
+        if mps.read().is_empty()
+            && let Some(v) = data.messages_per_second
+        {
+            mps.set(v.to_string());
         }
-        if burst.read().is_empty() {
-            if let Some(v) = data.burst_count {
-                burst.set(v.to_string());
-            }
+        if burst.read().is_empty()
+            && let Some(v) = data.burst_count
+        {
+            burst.set(v.to_string());
         }
     }
 

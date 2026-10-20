@@ -54,10 +54,10 @@ where
     T: Serialize + DeserializeOwned,
     Fut: Future<Output = Result<T, E>>,
 {
-    if let Some(hit) = get_cached(key, ttl_ms) {
-        if let Ok(value) = serde_json::from_str::<T>(&hit) {
-            return Ok(value);
-        }
+    if let Some(hit) = get_cached(key, ttl_ms)
+        && let Ok(value) = serde_json::from_str::<T>(&hit)
+    {
+        return Ok(value);
     }
 
     let value = fetch.await?;

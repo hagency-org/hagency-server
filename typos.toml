@@ -1,0 +1,19 @@
+[default.extend-words]
+# Rust's standard-library constants module.
+consts = "consts"
+
+[type.rust]
+# Hex digits inside Rust Unicode escapes are not natural-language words.
+extend-ignore-re = ['\\u\{[0-9a-fA-F_]+\}']
+
+[type.markdown]
+extend-glob = ["*.md"]
+
+[type.markdown.extend-words]
+# Name of the CI service used in deployment records.
+Gitar = "Gitar"
+
+[files]
+# Include workflow/config files and authored web assets, but not Git internals.
+ignore-hidden = false
+extend-exclude = [".git"]

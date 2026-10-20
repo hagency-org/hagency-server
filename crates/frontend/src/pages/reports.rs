@@ -75,17 +75,17 @@ pub fn ReportList() -> Element {
     });
 
     // Notify when new reports are loaded
-    if !*notified.read() {
-        if let Some(Ok(data)) = &*reports_data.read() {
-            if !data.data.is_empty() && page_val == 1 {
-                add_typed_notification(
-                    &format!("{} event report(s) pending review", data.total),
-                    NotificationSeverity::Warning,
-                    Some(NotificationType::ReportFiled),
-                );
-                notified.set(true);
-            }
-        }
+    if !*notified.read()
+        && let Some(Ok(data)) = &*reports_data.read()
+        && !data.data.is_empty()
+        && page_val == 1
+    {
+        add_typed_notification(
+            &format!("{} event report(s) pending review", data.total),
+            NotificationSeverity::Warning,
+            Some(NotificationType::ReportFiled),
+        );
+        notified.set(true);
     }
 
     rsx! {

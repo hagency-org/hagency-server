@@ -8,7 +8,7 @@ use crate::components::ui::toast::{ToastVariant, show_toast};
 
 #[component]
 pub fn ServerNoticeDialog(open: bool, user_id: String, on_close: EventHandler<()>) -> Element {
-    let mut message = use_signal(|| String::new());
+    let mut message = use_signal(String::new);
     let mut sending = use_signal(|| false);
 
     let uid = user_id.clone();

@@ -18,9 +18,9 @@ pub fn PersonalSessionsPage() -> Element {
 
     // Create dialog state
     let mut show_create = use_signal(|| false);
-    let mut create_name = use_signal(|| String::new());
-    let mut create_scope = use_signal(|| String::new());
-    let mut create_user_id = use_signal(|| String::new());
+    let mut create_name = use_signal(String::new);
+    let mut create_scope = use_signal(String::new);
+    let mut create_user_id = use_signal(String::new);
     let mut creating = use_signal(|| false);
     let mut new_token = use_signal(|| Option::<String>::None);
 

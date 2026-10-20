@@ -34,18 +34,6 @@ pub async fn get_registration_tokens_cached() -> Result<Vec<RegistrationTokenRec
     .await
 }
 
-pub async fn get_registration_token(token: &str) -> Result<RegistrationTokenRecord, HttpError> {
-    let url = build_url(
-        &format!("/_palpo/admin/v1/registration_tokens/{token}"),
-        &[],
-    )?;
-    let t: RegistrationToken = api_client(&url, "GET", None).await?;
-    Ok(RegistrationTokenRecord {
-        id: t.token.clone(),
-        token: t,
-    })
-}
-
 pub async fn create_registration_token(
     token: Option<&str>,
     uses_allowed: Option<u64>,

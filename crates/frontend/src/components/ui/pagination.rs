@@ -12,7 +12,7 @@ pub fn Pagination(
     let total_pages = if total == 0 {
         1
     } else {
-        (total + per_page - 1) / per_page
+        total.div_ceil(per_page)
     };
 
     let from = if total == 0 {

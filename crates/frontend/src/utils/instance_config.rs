@@ -1,7 +1,6 @@
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
-use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 
 use crate::utils::storage;
@@ -46,30 +45,6 @@ fn config_mutex() -> &'static Mutex<InstanceConfig> {
 
 pub fn get_instance_config() -> InstanceConfig {
     config_mutex().lock().unwrap().clone()
-}
-
-pub fn set_instance_config(config: InstanceConfig) {
-    *config_mutex().lock().unwrap() = config;
-}
-
-pub fn clear_instance_config() {
-    *config_mutex().lock().unwrap() = InstanceConfig::default();
-}
-
-pub async fn fetch_instance_config() {
-    let palpo_admin_url = storage::get_item("palpo_admin_url");
-    if let Some(url) = palpo_admin_url {
-        let config_url = format!("{url}/config");
-        if let Ok(response) = Request::get(&config_url)
-            .header("Accept", "application/json")
-            .send()
-            .await
-        {
-            if let Ok(config) = response.json::<InstanceConfig>().await {
-                set_instance_config(config);
-            }
-        }
-    }
 }
 
 pub fn is_palpo_admin_enabled() -> bool {

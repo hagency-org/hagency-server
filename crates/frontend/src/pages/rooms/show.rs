@@ -49,21 +49,21 @@ pub fn RoomShow(room_id: String) -> Element {
     let mut active_tab = use_signal(|| Tab::Overview);
     let mut show_delete_dialog = use_signal(|| false);
     let mut show_purge_dialog = use_signal(|| false);
-    let mut purge_date = use_signal(|| String::new());
+    let mut purge_date = use_signal(String::new);
     let mut purge_loading = use_signal(|| false);
     let mut blocked_override = use_signal(|| Option::<bool>::None);
     let mut block_loading = use_signal(|| false);
 
     // Room edit state
     let mut editing_room = use_signal(|| false);
-    let mut edit_name = use_signal(|| String::new());
-    let mut edit_topic = use_signal(|| String::new());
-    let mut edit_join_rules = use_signal(|| String::new());
-    let mut edit_history_vis = use_signal(|| String::new());
+    let mut edit_name = use_signal(String::new);
+    let mut edit_topic = use_signal(String::new);
+    let mut edit_join_rules = use_signal(String::new);
+    let mut edit_history_vis = use_signal(String::new);
     let mut saving_room = use_signal(|| false);
 
     // Alias management
-    let mut new_alias = use_signal(|| String::new());
+    let mut new_alias = use_signal(String::new);
 
     rsx! {
         div { class: "space-y-6",
@@ -204,26 +204,25 @@ pub fn RoomShow(room_id: String) -> Element {
                                     for event in events.iter() {
                                         if event.event_type == "m.room.canonical_alias" {
                                             // Extract alt_aliases from canonical alias event
-                                            if let Some(alts) = event.content.get("alt_aliases") {
-                                                if let Some(arr) = alts.as_array() {
-                                                    for v in arr {
-                                                        if let Some(s) = v.as_str() {
-                                                            alias_list.push(s.to_string());
-                                                        }
+                                            if let Some(alts) = event.content.get("alt_aliases")
+                                                && let Some(arr) = alts.as_array()
+                                            {
+                                                for v in arr {
+                                                    if let Some(s) = v.as_str() {
+                                                        alias_list.push(s.to_string());
                                                     }
                                                 }
                                             }
                                         }
-                                        if event.event_type == "m.room.aliases" {
-                                            if let Some(aliases) = event.content.get("aliases") {
-                                                if let Some(arr) = aliases.as_array() {
-                                                    for v in arr {
-                                                        if let Some(s) = v.as_str() {
-                                                            if !alias_list.contains(&s.to_string()) {
-                                                                alias_list.push(s.to_string());
-                                                            }
-                                                        }
-                                                    }
+                                        if event.event_type == "m.room.aliases"
+                                            && let Some(aliases) = event.content.get("aliases")
+                                            && let Some(arr) = aliases.as_array()
+                                        {
+                                            for v in arr {
+                                                if let Some(s) = v.as_str()
+                                                    && !alias_list.contains(&s.to_string())
+                                                {
+                                                    alias_list.push(s.to_string());
                                                 }
                                             }
                                         }
@@ -639,7 +638,7 @@ pub fn RoomShow(room_id: String) -> Element {
 fn RoomMembers(room_id: String) -> Element {
     let rid = room_id.clone();
     let rid_for_invite = room_id.clone();
-    let mut invite_user_id = use_signal(|| String::new());
+    let mut invite_user_id = use_signal(String::new);
 
     let mut members_data = use_resource(move || {
         let id = rid.clone();
@@ -1123,7 +1122,7 @@ fn RoomDirectoryToggle(room_id: String) -> Element {
 /// Event lookup by ID
 #[component]
 fn EventLookup() -> Element {
-    let mut event_id_input = use_signal(|| String::new());
+    let mut event_id_input = use_signal(String::new);
     let mut event_result = use_signal(|| None::<Result<serde_json::Value, String>>);
     let mut loading = use_signal(|| false);
 

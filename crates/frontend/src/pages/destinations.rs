@@ -21,7 +21,7 @@ const PAGE_SIZE: u64 = 25;
 #[component]
 pub fn DestinationList() -> Element {
     let mut page = use_signal(|| 1u64);
-    let mut search = use_signal(|| String::new());
+    let mut search = use_signal(String::new);
     let page_val = *page.read();
     let search_val = search.read().clone();
 

@@ -45,7 +45,7 @@ pub fn Projects() -> Element {
                 details {summary {"Identifiers"} dl {class:"hg-facts", dt {"Project"} dd {{text(&item,"id")}} dt {"Space"} dd {{text(&item,"spaceId")}}}}
             }
             super::room_discovery::RoomDiscovery {project_id, room}
-            super::project_controls::ProjectControls {key:"{project_id()}:project", project_id, room_id:String::new()}
+            {rsx! {super::project_controls::ProjectControls {key:"{project_id()}:project", project_id, room_id:String::new()}}}
             if !room().is_empty() {
                 super::project_controls::ProjectControls {key:"{project_id()}:{room()}", project_id, room_id:room()}
             }

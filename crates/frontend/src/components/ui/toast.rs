@@ -22,16 +22,12 @@ pub struct Toast {
 }
 
 static TOAST_COUNTER: GlobalSignal<u64> = GlobalSignal::new(|| 0);
-pub static TOASTS: GlobalSignal<Vec<Toast>> = GlobalSignal::new(|| Vec::new());
+pub static TOASTS: GlobalSignal<Vec<Toast>> = GlobalSignal::new(Vec::new);
 
 const MAX_TOASTS: usize = 5;
 
 pub fn show_toast(message: &str, variant: ToastVariant) {
     show_toast_inner(message, variant, None);
-}
-
-pub fn show_toast_with_action(message: &str, variant: ToastVariant, action: ToastAction) {
-    show_toast_inner(message, variant, Some(action));
 }
 
 fn show_toast_inner(message: &str, variant: ToastVariant, action: Option<ToastAction>) {

@@ -19,7 +19,7 @@ const PAGE_SIZE: u64 = 25;
 #[component]
 pub fn MediaList() -> Element {
     let nav = use_navigator();
-    let mut search = use_signal(|| String::new());
+    let mut search = use_signal(String::new);
     let mut page = use_signal(|| 1u64);
     let mut show_delete_dialog = use_signal(|| false);
     let mut show_purge_dialog = use_signal(|| false);

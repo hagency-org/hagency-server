@@ -397,7 +397,7 @@ pub fn AuthStatusPage() -> Element {
 fn PasionDiagnosticsPanel(base_url: String) -> Element {
     let mut expanded = use_signal(|| false);
     let mut running = use_signal(|| false);
-    let mut results = use_signal(|| Vec::<DiagnosticCheck>::new());
+    let mut results = use_signal(Vec::<DiagnosticCheck>::new);
 
     let handle_run = move |_: MouseEvent| {
         let url = base_url.clone();

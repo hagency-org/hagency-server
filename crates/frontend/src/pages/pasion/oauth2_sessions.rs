@@ -13,7 +13,7 @@ use crate::utils::i18n::t;
 
 #[component]
 pub fn OAuth2SessionsPage() -> Element {
-    let mut user_filter = use_signal(|| String::new());
+    let mut user_filter = use_signal(String::new);
     let mut sessions_data = use_resource(move || {
         let uid = user_filter.read().clone();
         async move {

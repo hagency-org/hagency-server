@@ -102,32 +102,3 @@ pub async fn purge_remote_media(before_ts: u64) -> Result<DeleteMediaResult, Htt
     invalidate_media_related_caches();
     Ok(result)
 }
-
-pub async fn delete_media(media_id: &str) -> Result<(), HttpError> {
-    let home_server = get_home_server()?;
-    let url = build_url(
-        &format!("/_palpo/admin/v1/media/{home_server}/{media_id}"),
-        &[],
-    )?;
-    let _: serde_json::Value = api_client(&url, "DELETE", None).await?;
-    invalidate_media_related_caches();
-    Ok(())
-}
-
-pub async fn quarantine_media(media_id: &str) -> Result<(), HttpError> {
-    let home_server = get_home_server()?;
-    let url = build_url(
-        &format!("/_palpo/admin/v1/media/quarantine/{home_server}/{media_id}"),
-        &[],
-    )?;
-    let _: serde_json::Value = api_client(&url, "POST", None).await?;
-    invalidate_media_related_caches();
-    Ok(())
-}
-
-pub async fn protect_media(media_id: &str) -> Result<(), HttpError> {
-    let url = build_url(&format!("/_palpo/admin/v1/media/protect/{media_id}"), &[])?;
-    let _: serde_json::Value = api_client(&url, "POST", None).await?;
-    invalidate_media_related_caches();
-    Ok(())
-}

@@ -60,14 +60,6 @@ impl I18n {
             .unwrap_or_else(|| key.to_string())
     }
 
-    pub fn t_with(&self, key: &str, lang: Language, params: &[(&str, &str)]) -> String {
-        let mut result = self.t(key, lang);
-        for (k, v) in params {
-            result = result.replace(&format!("{{{k}}}"), v);
-        }
-        result
-    }
-
     fn load_en() -> HashMap<String, String> {
         let mut m = HashMap::new();
         m.insert("welcome.title".into(), "Welcome to Hagency".into());
@@ -2888,11 +2880,6 @@ static CURRENT_LANG: GlobalSignal<Language> = GlobalSignal::new(|| {
 pub fn t(key: &str) -> String {
     let lang = *CURRENT_LANG.read();
     I18N.with(|i18n| i18n.t(key, lang))
-}
-
-pub fn t_with(key: &str, params: &[(&str, &str)]) -> String {
-    let lang = *CURRENT_LANG.read();
-    I18N.with(|i18n| i18n.t_with(key, lang, params))
 }
 
 pub fn set_language(lang: Language) {

@@ -4,15 +4,12 @@ use dioxus::prelude::*;
 pub enum NotificationSeverity {
     Info,
     Warning,
-    Error,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum NotificationType {
     ReportFiled,
     UserRegistered,
-    FederationAlert,
-    JobFailure,
     SystemInfo,
 }
 
@@ -21,13 +18,12 @@ pub struct Notification {
     pub id: u64,
     pub message: String,
     pub severity: NotificationSeverity,
-    pub notification_type: Option<NotificationType>,
     pub timestamp: String,
     pub read: bool,
 }
 
 static NOTIFICATION_COUNTER: GlobalSignal<u64> = GlobalSignal::new(|| 0);
-pub static NOTIFICATIONS: GlobalSignal<Vec<Notification>> = GlobalSignal::new(|| Vec::new());
+pub static NOTIFICATIONS: GlobalSignal<Vec<Notification>> = GlobalSignal::new(Vec::new);
 
 pub fn add_typed_notification(
     message: &str,
@@ -35,10 +31,10 @@ pub fn add_typed_notification(
     ntype: Option<NotificationType>,
 ) {
     // Check if this notification type is enabled in preferences
-    if let Some(ref nt) = ntype {
-        if !crate::pages::notification_preferences::is_notification_type_enabled(nt) {
-            return;
-        }
+    if let Some(ref nt) = ntype
+        && !crate::pages::notification_preferences::is_notification_type_enabled(nt)
+    {
+        return;
     }
 
     let id = {
@@ -56,7 +52,6 @@ pub fn add_typed_notification(
             id,
             message: message.to_string(),
             severity,
-            notification_type: ntype,
             timestamp,
             read: false,
         },

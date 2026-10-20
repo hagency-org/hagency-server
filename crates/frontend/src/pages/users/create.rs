@@ -34,16 +34,16 @@ enum UsernameStatus {
 pub fn UserCreate() -> Element {
     let nav = use_navigator();
 
-    let mut username = use_signal(|| String::new());
-    let mut display_name = use_signal(|| String::new());
-    let mut password = use_signal(|| String::new());
+    let mut username = use_signal(String::new);
+    let mut display_name = use_signal(String::new);
+    let mut password = use_signal(String::new);
     let mut is_admin = use_signal(|| false);
     // With Pasion the admin flag is owned by the Pasion account (palpo
     // refuses local changes), so it can't be set when creating here.
     let has_pasion = crate::utils::storage::get_item("pasion_url").is_some();
     let mut is_locked = use_signal(|| false);
-    let mut email = use_signal(|| String::new());
-    let mut phone = use_signal(|| String::new());
+    let mut email = use_signal(String::new);
+    let mut phone = use_signal(String::new);
     let mut user_type = use_signal(|| String::from("regular"));
     let mut loading = use_signal(|| false);
     let mut username_status = use_signal(|| UsernameStatus::Idle);

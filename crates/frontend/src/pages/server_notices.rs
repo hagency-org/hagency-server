@@ -65,8 +65,8 @@ fn clear_notice_history() {
 
 #[component]
 pub fn ServerNotices() -> Element {
-    let mut user_id = use_signal(|| String::new());
-    let mut message = use_signal(|| String::new());
+    let mut user_id = use_signal(String::new);
+    let mut message = use_signal(String::new);
     let mut sending = use_signal(|| false);
     let mut broadcast_mode = use_signal(|| false);
     let mut broadcast_progress = use_signal(|| Option::<(usize, usize)>::None);

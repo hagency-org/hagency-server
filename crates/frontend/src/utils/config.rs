@@ -10,10 +10,6 @@ pub fn clear_config() {
     }
 }
 
-pub fn get_home_server() -> Option<String> {
-    storage::get_item("home_server")
-}
-
 /// Default OAuth client ID baked into the bundle. Used only as a last-resort
 /// fallback when neither `config.json` nor `localStorage["oauth_client_id"]`
 /// supplies one — this keeps the build self-contained for the canonical

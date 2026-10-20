@@ -17,11 +17,11 @@ pub fn NotificationTemplatesPage() -> Element {
 
     // Publish dialog state
     let mut show_publish = use_signal(|| false);
-    let mut publish_template_key = use_signal(|| String::new());
+    let mut publish_template_key = use_signal(String::new);
     let mut publish_locale = use_signal(|| "en".to_string());
     let mut publish_channel = use_signal(|| "email".to_string());
-    let mut publish_subject_template = use_signal(|| String::new());
-    let mut publish_body_template = use_signal(|| String::new());
+    let mut publish_subject_template = use_signal(String::new);
+    let mut publish_body_template = use_signal(String::new);
     let mut publishing = use_signal(|| false);
 
     let handle_publish = move |_: MouseEvent| {

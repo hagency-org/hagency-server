@@ -204,7 +204,6 @@ pub fn AppHeader(collapsed: Signal<bool>, mobile_sidebar_open: Signal<bool>) -> 
                             button {
                                 class: "app-header-logout inline-flex h-9 items-center justify-center rounded-lg border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent hover:text-accent-foreground touch-target",
                                 onclick: move |_| {
-                                    let nav = nav.clone();
                                     spawn(async move {
                                         let _ = crate::api::auth::logout().await;
                                         nav.push(Route::LoginPage {});
@@ -248,7 +247,6 @@ fn NotificationDropdown(on_close: EventHandler<()>) -> Element {
                             let severity_color = match notif.severity {
                                 NotificationSeverity::Info => "text-blue-500",
                                 NotificationSeverity::Warning => "text-yellow-500",
-                                NotificationSeverity::Error => "text-destructive",
                             };
                             let bg_class = if notif.read { "" } else { "bg-accent/50" };
                             let notif_id = notif.id;

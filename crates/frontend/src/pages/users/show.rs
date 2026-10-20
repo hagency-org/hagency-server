@@ -46,9 +46,9 @@ pub fn UserShow(user_id: String) -> Element {
     let mut show_deactivate_dialog = use_signal(|| false);
     let mut show_reset_password_dialog = use_signal(|| false);
     let mut editing = use_signal(|| false);
-    let mut edit_display_name = use_signal(|| String::new());
+    let mut edit_display_name = use_signal(String::new);
     let mut edit_admin = use_signal(|| false);
-    let mut reset_password_value = use_signal(|| String::new());
+    let mut reset_password_value = use_signal(String::new);
     let nav = use_navigator();
     let service_identity = decoded_user_id.starts_with("@_hagency_");
     let has_pasion = crate::utils::storage::get_item("oauth_enabled").as_deref() == Some("true");
@@ -182,15 +182,13 @@ pub fn UserShow(user_id: String) -> Element {
                         // Tab navigation
                         div { class: "flex border-b",
                             {
-                                let tabs = vec![
-                                    (Tab::Overview, t("users.overview")),
+                                let tabs = [(Tab::Overview, t("users.overview")),
                                     (Tab::Rooms, t("users.rooms")),
                                     (Tab::Devices, t("users.devices")),
                                     (Tab::Sessions, t("users.sessions")),
                                     (Tab::AccountData, t("users.account_data")),
                                     (Tab::RateLimits, t("users.rate_limits")),
-                                    (Tab::Features, t("users.features")),
-                                ];
+                                    (Tab::Features, t("users.features"))];
                                 rsx! {
                                     for (tab, label) in tabs.iter() {
                                         {

@@ -293,61 +293,7 @@ pub struct Whois {
     pub devices: HashMap<String, WhoisDevice>,
 }
 
-// ── Pusher types ──
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Pusher {
-    #[serde(default)]
-    pub app_display_name: Option<String>,
-    #[serde(default)]
-    pub app_id: String,
-    #[serde(default)]
-    pub data: serde_json::Value,
-    #[serde(default)]
-    pub device_display_name: Option<String>,
-    #[serde(default)]
-    pub profile_tag: Option<String>,
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub lang: Option<String>,
-    #[serde(default)]
-    pub pushkey: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PusherRecord {
-    pub id: String,
-    #[serde(flatten)]
-    pub pusher: Pusher,
-}
-
 // ── Media types ──
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UserMedia {
-    #[serde(default)]
-    pub created_ts: u64,
-    #[serde(default)]
-    pub media_id: String,
-    #[serde(default)]
-    pub media_length: u64,
-    #[serde(default)]
-    pub media_type: String,
-    #[serde(default)]
-    pub quarantined_by: Option<String>,
-    #[serde(default)]
-    pub safe_from_quarantine: bool,
-    #[serde(default)]
-    pub upload_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UserMediaRecord {
-    pub id: String,
-    #[serde(flatten)]
-    pub media: UserMedia,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UserMediaStatistic {
@@ -412,39 +358,7 @@ pub struct DestinationRecord {
     pub destination: Destination,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DestinationRoom {
-    pub room_id: String,
-    #[serde(default)]
-    pub stream_ordering: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DestinationRoomRecord {
-    pub id: String,
-    #[serde(flatten)]
-    pub room: DestinationRoom,
-}
-
-// ── Membership ──
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Membership {
-    pub id: String,
-    pub membership: String,
-}
-
 // ── Media operations ──
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DeleteMediaParams {
-    #[serde(default)]
-    pub before_ts: Option<u64>,
-    #[serde(default)]
-    pub size_gt: Option<u64>,
-    #[serde(default)]
-    pub keep_profiles: Option<bool>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeleteMediaResult {
@@ -475,37 +389,7 @@ pub struct AccountDataModel {
     pub account_data: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UsernameAvailabilityResult {
-    #[serde(default)]
-    pub available: bool,
-    #[serde(default)]
-    pub error: Option<String>,
-    #[serde(default)]
-    pub errcode: Option<String>,
-}
-
 // ── Pagination types ──
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PaginationParams {
-    pub page: u64,
-    pub per_page: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SortParams {
-    pub field: String,
-    pub order: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ListParams {
-    pub pagination: PaginationParams,
-    pub sort: SortParams,
-    #[serde(default)]
-    pub filter: HashMap<String, serde_json::Value>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ListResponse<T> {
@@ -633,42 +517,6 @@ pub struct RecurringCommand {
 }
 
 // ── Auth types ──
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct LoginRequest {
-    #[serde(rename = "type")]
-    pub login_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub identifier: Option<LoginIdentifier>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initial_device_display_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct LoginIdentifier {
-    #[serde(rename = "type")]
-    pub id_type: String,
-    #[serde(default)]
-    pub user: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct LoginResponse {
-    #[serde(default)]
-    pub user_id: Option<String>,
-    #[serde(default)]
-    pub access_token: Option<String>,
-    #[serde(default)]
-    pub device_id: Option<String>,
-    #[serde(default)]
-    pub home_server: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WhoamiResponse {

@@ -31,30 +31,27 @@ const DEFAULT_PAGE_SIZE: u64 = 25;
 const BULK_CONCURRENCY: usize = 8;
 
 fn download_csv(filename: &str, content: &str) {
-    if let Some(window) = web_sys::window() {
-        if let Some(document) = window.document() {
-            let blob_parts = js_sys::Array::new();
-            blob_parts.push(&wasm_bindgen::JsValue::from_str(content));
-            let options = web_sys::BlobPropertyBag::new();
-            options.set_type("text/csv;charset=utf-8;");
-            if let Ok(blob) =
-                web_sys::Blob::new_with_str_sequence_and_options(&blob_parts, &options)
-            {
-                if let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) {
-                    if let Ok(a) = document.create_element("a") {
-                        let _ = a.set_attribute("href", &url);
-                        let _ = a.set_attribute("download", filename);
-                        if let Some(body) = document.body() {
-                            let _ = body.append_child(&a);
-                            if let Some(html_a) = a.dyn_ref::<web_sys::HtmlElement>() {
-                                html_a.click();
-                            }
-                            let _ = body.remove_child(&a);
-                        }
-                        let _ = web_sys::Url::revoke_object_url(&url);
-                    }
+    if let Some(window) = web_sys::window()
+        && let Some(document) = window.document()
+    {
+        let blob_parts = js_sys::Array::new();
+        blob_parts.push(&wasm_bindgen::JsValue::from_str(content));
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type("text/csv;charset=utf-8;");
+        if let Ok(blob) = web_sys::Blob::new_with_str_sequence_and_options(&blob_parts, &options)
+            && let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob)
+            && let Ok(a) = document.create_element("a")
+        {
+            let _ = a.set_attribute("href", &url);
+            let _ = a.set_attribute("download", filename);
+            if let Some(body) = document.body() {
+                let _ = body.append_child(&a);
+                if let Some(html_a) = a.dyn_ref::<web_sys::HtmlElement>() {
+                    html_a.click();
                 }
+                let _ = body.remove_child(&a);
             }
+            let _ = web_sys::Url::revoke_object_url(&url);
         }
     }
 }
@@ -129,7 +126,7 @@ pub fn UserList() -> Element {
     let mut per_page = use_signal(|| DEFAULT_PAGE_SIZE);
     let mut exporting = use_signal(|| false);
     let mut show_import_dialog = use_signal(|| false);
-    let mut selected_users = use_signal(|| HashSet::<String>::new());
+    let mut selected_users = use_signal(HashSet::<String>::new);
     let mut bulk_running = use_signal(|| false);
     let mut sort_by = use_signal(|| "name".to_string());
     let mut sort_dir = use_signal(|| "asc".to_string());

@@ -78,7 +78,7 @@ where
 
     let status = response.status();
     let duration_ms = js_sys::Date::now() - start_time;
-    perf::record_api_call(url, method, duration_ms, status);
+    perf::record_api_call(duration_ms);
 
     if status == 204 {
         // Return default for 204 No Content

@@ -242,16 +242,6 @@ pub async fn ban_user(room_id: &str, user_id: &str, reason: &str) -> Result<(), 
     Ok(())
 }
 
-pub async fn unban_user(room_id: &str, user_id: &str) -> Result<(), HttpError> {
-    let encoded_room = urlencoding::encode(room_id);
-    let base_url = get_base_url()?;
-    let url = format!("{base_url}/_matrix/client/v3/rooms/{encoded_room}/unban");
-    let body = serde_json::json!({ "user_id": user_id }).to_string();
-    let _: serde_json::Value = api_client(&url, "POST", Some(body)).await?;
-    invalidate_room_related_caches();
-    Ok(())
-}
-
 pub async fn kick_user(room_id: &str, user_id: &str, reason: &str) -> Result<(), HttpError> {
     let encoded_room = urlencoding::encode(room_id);
     let base_url = get_base_url()?;

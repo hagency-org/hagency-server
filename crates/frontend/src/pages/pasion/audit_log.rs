@@ -15,11 +15,11 @@ const PAGE_LIMIT: u64 = 25;
 
 #[component]
 pub fn AuditLogPage() -> Element {
-    let mut entries = use_signal(|| Vec::<PasionAuditEntry>::new());
+    let mut entries = use_signal(Vec::<PasionAuditEntry>::new);
     let mut loading = use_signal(|| false);
     let mut load_error = use_signal(|| Option::<String>::None);
     let mut expanded_id = use_signal(|| Option::<String>::None);
-    let mut op_filter = use_signal(|| String::new());
+    let mut op_filter = use_signal(String::new);
 
     // Initial load
     use_effect(move || {

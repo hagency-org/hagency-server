@@ -29,21 +29,20 @@ pub fn KeyboardShortcuts() -> Element {
 
     let handle_keydown = move |evt: KeyboardEvent| {
         // Ignore if the user is typing in an input, textarea or contenteditable.
-        if let Some(window) = web_sys::window() {
-            if let Some(doc) = window.document() {
-                if let Some(active) = doc.active_element() {
-                    let tag = active.tag_name().to_uppercase();
-                    if tag == "INPUT" || tag == "TEXTAREA" || tag == "SELECT" {
-                        return;
-                    }
-                    if active
-                        .get_attribute("contenteditable")
-                        .map(|v| v == "true")
-                        .unwrap_or(false)
-                    {
-                        return;
-                    }
-                }
+        if let Some(window) = web_sys::window()
+            && let Some(doc) = window.document()
+            && let Some(active) = doc.active_element()
+        {
+            let tag = active.tag_name().to_uppercase();
+            if tag == "INPUT" || tag == "TEXTAREA" || tag == "SELECT" {
+                return;
+            }
+            if active
+                .get_attribute("contenteditable")
+                .map(|v| v == "true")
+                .unwrap_or(false)
+            {
+                return;
             }
         }
 

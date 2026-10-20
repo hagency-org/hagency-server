@@ -28,14 +28,6 @@ enum SortOption {
 }
 
 impl SortOption {
-    fn label(&self) -> String {
-        match self {
-            SortOption::Name => t("rooms.name"),
-            SortOption::Members => t("rooms.members"),
-            SortOption::StateEvents => t("rooms.created"),
-        }
-    }
-
     fn order_by(&self) -> &'static str {
         match self {
             SortOption::Name => "name",
@@ -109,13 +101,13 @@ pub fn RoomList() -> Element {
     let mut type_filter = use_signal(|| TypeFilter::All);
 
     // Bulk selection state
-    let mut selected_rooms = use_signal(|| HashSet::<String>::new());
+    let mut selected_rooms = use_signal(HashSet::<String>::new);
     let mut bulk_running = use_signal(|| false);
 
     // Create room dialog state
     let mut show_create_dialog = use_signal(|| false);
-    let mut create_room_name = use_signal(|| String::new());
-    let mut create_room_topic = use_signal(|| String::new());
+    let mut create_room_name = use_signal(String::new);
+    let mut create_room_topic = use_signal(String::new);
     let mut create_room_public = use_signal(|| true);
     let mut creating_room = use_signal(|| false);
 

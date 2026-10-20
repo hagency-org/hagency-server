@@ -366,10 +366,10 @@ fn update_provider_body(
         body.insert("ui_order".into(), ui_order.into());
     }
 
-    if let Some(parsed) = parse_claims_imports(&form.claims_imports)? {
-        if original.claims_imports.as_ref() != Some(&parsed) {
-            body.insert("claims_imports".into(), parsed);
-        }
+    if let Some(parsed) = parse_claims_imports(&form.claims_imports)?
+        && original.claims_imports.as_ref() != Some(&parsed)
+    {
+        body.insert("claims_imports".into(), parsed);
     }
 
     if body.is_empty() {

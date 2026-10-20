@@ -43,6 +43,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Check spelling
+        uses: crate-ci/typos@v1.48.0
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.0
@@ -63,11 +65,12 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: python3 scripts/validate-agent-openapi.py --self-test
       - run: cargo clippy --locked -p hagency-server -p hagency-agent-service -p hagency-xtask --all-targets -- -D warnings
-      - run: cargo test --locked -p hagency-server -p hagency-xtask
+      - run: cargo test --locked -p hagency-server -p hagency-xtask -p hagency-frontend
       - name: Agent service tests including PostgreSQL
         # Dedicated disposable DB; serialize fixtures that share schema state.
         run: cargo test --locked -p hagency-agent-service -- --include-ignored --test-threads=1
-      - run: cargo check --locked -p hagency-frontend --target wasm32-unknown-unknown
+      - name: Clippy (WASM frontend)
+        run: cargo clippy --locked -p hagency-frontend --all-targets --target wasm32-unknown-unknown -- -D warnings
 
   image:
     name: Container (${{ matrix.arch }})
