@@ -5886,6 +5886,207 @@
           }
         }
       }
+    },
+    "/hagency/api/v1/agents/discover": {
+      "get": {
+        "operationId": "discoverPublicAgents",
+        "summary": "Discover public Agent services",
+        "description": "Authenticated public catalog. Device, owner-direct Room and internal owner identifiers are never exposed. At most 256 rows ordered by Agent ID.",
+        "security": [
+          {
+            "userBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agents": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DiscoverableAgent"
+                      }
+                    }
+                  },
+                  "required": [
+                    "agents"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api.rs",
+          "anchors": [
+            "path == \"/hagency/api/v1/agents/discover\"",
+            "method == salvo::http::Method::GET"
+          ]
+        }
+      }
+    },
+    "/hagency/api/v1/agents/{agentId}/visibility": {
+      "put": {
+        "operationId": "setAgentAudience",
+        "summary": "Set owner Agent service audience",
+        "description": "Owner only. Private Agents cannot bind shared Rooms. Switching to private requires every project binding to have completed departure. Existing owner-direct chats remain available.",
+        "security": [
+          {
+            "userBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api.rs",
+          "anchors": [
+            "parts[6] == \"visibility\"",
+            "method == salvo::http::Method::PUT"
+          ]
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentAudience"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -6117,6 +6318,9 @@
       "Agent": {
         "type": "object",
         "properties": {
+          "visibility": {
+            "$ref": "#/components/schemas/AgentVisibility"
+          },
           "id": {
             "type": "string"
           },
@@ -6165,6 +6369,7 @@
           }
         },
         "required": [
+          "visibility",
           "id",
           "ownerUserId",
           "puppetMxid",
@@ -6179,6 +6384,7 @@
           "file": "crates/agent-service/src/domain.rs",
           "name": "Agent",
           "serializedFields": [
+            "visibility",
             "id",
             "owner_user_id",
             "puppet_mxid",
@@ -6200,7 +6406,8 @@
             "state": "creating",
             "generation": 1,
             "ownerDirectRoomId": null,
-            "executionDeviceId": null
+            "executionDeviceId": null,
+            "visibility": "private"
           }
         ]
       },
@@ -6334,7 +6541,8 @@
               "state": "creating",
               "generation": 1,
               "ownerDirectRoomId": null,
-              "executionDeviceId": null
+              "executionDeviceId": null,
+              "visibility": "public"
             },
             "binding": {
               "id": "example",
@@ -6353,6 +6561,9 @@
       "CreateAgent": {
         "type": "object",
         "properties": {
+          "visibility": {
+            "$ref": "#/components/schemas/AgentVisibility"
+          },
           "displayName": {
             "type": "string"
           },
@@ -6369,6 +6580,7 @@
           "file": "crates/agent-service/src/domain.rs",
           "name": "CreateAgent",
           "serializedFields": [
+            "visibility",
             "display_name",
             "idempotency_key"
           ],
@@ -6377,7 +6589,8 @@
         "examples": [
           {
             "displayName": "Codex Agent",
-            "idempotencyKey": "command_001"
+            "idempotencyKey": "command_001",
+            "visibility": "private"
           }
         ]
       },
@@ -6469,6 +6682,16 @@
       "RoomAgent": {
         "type": "object",
         "properties": {
+          "isMine": {
+            "type": "boolean"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "public",
+              "private"
+            ]
+          },
           "agentId": {
             "type": "string"
           },
@@ -6486,6 +6709,8 @@
           }
         },
         "required": [
+          "isMine",
+          "visibility",
           "agentId",
           "puppetMxid",
           "displayName",
@@ -6497,6 +6722,8 @@
           "file": "crates/agent-service/src/domain_discovery.rs",
           "name": "RoomAgent",
           "serializedFields": [
+            "is_mine",
+            "visibility",
             "agent_id",
             "puppet_mxid",
             "display_name",
@@ -6511,7 +6738,9 @@
             "puppetMxid": "example",
             "displayName": "example",
             "ownerMxid": "example",
-            "bindingState": "example"
+            "bindingState": "example",
+            "isMine": false,
+            "visibility": "public"
           }
         ]
       },
@@ -7741,7 +7970,8 @@
                 "state": "creating",
                 "generation": 1,
                 "ownerDirectRoomId": null,
-                "executionDeviceId": null
+                "executionDeviceId": null,
+                "visibility": "public"
               },
               "binding": {
                 "id": "example",
@@ -7808,7 +8038,8 @@
                 "state": "creating",
                 "generation": 1,
                 "ownerDirectRoomId": null,
-                "executionDeviceId": null
+                "executionDeviceId": null,
+                "visibility": "public"
               },
               "binding": {
                 "id": "example",
@@ -9496,6 +9727,79 @@
             "additionalProperties": false
           }
         ]
+      },
+      "AgentVisibility": {
+        "type": "string",
+        "enum": [
+          "public",
+          "private"
+        ],
+        "description": "Private is owner direct chat only. Public is discoverable and may bind shared Rooms."
+      },
+      "DiscoverableAgent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "puppetMxid": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "ownerMxid": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "public"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "isMine": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "puppetMxid",
+          "displayName",
+          "ownerMxid",
+          "visibility",
+          "state",
+          "isMine"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/domain_discovery.rs",
+          "name": "DiscoverableAgent",
+          "serializedFields": [
+            "id",
+            "puppet_mxid",
+            "display_name",
+            "owner_mxid",
+            "visibility",
+            "state",
+            "is_mine"
+          ],
+          "strictInput": false
+        }
+      },
+      "AgentAudience": {
+        "type": "object",
+        "properties": {
+          "visibility": {
+            "$ref": "#/components/schemas/AgentVisibility"
+          }
+        },
+        "required": [
+          "visibility"
+        ],
+        "additionalProperties": false
       }
     },
     "securitySchemes": {
@@ -9514,7 +9818,7 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "92951200ed52b60dc06d7a57ee4d0959a6df219ad03aca70a083a27917bbc04f",
+    "crates/agent-service/src/api.rs": "aa24a05d8194f75158e4f0baf03aef72a9a13f0469a052ccd97084f71aa82a47",
     "crates/agent-service/src/api_transport.rs": "572e64784679c2c40ff2da96b4ff558c38c157b67ff2544e576540b7922087f7",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f"

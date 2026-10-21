@@ -30,7 +30,7 @@ impl DomainStore {
                 };
                 return Ok(AgentBinding{agent:a,binding});
             }
-            let a=sql_query("UPDATE hagency_agent_v1.agents SET owner_direct_room_id=$2 WHERE id=$1 RETURNING id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id").bind::<Text,_>(agent).bind::<Text,_>(room).get_result::<Agent>(db).await?;
+            let a=sql_query("UPDATE hagency_agent_v1.agents SET owner_direct_room_id=$2 WHERE id=$1 RETURNING id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id,visibility").bind::<Text,_>(agent).bind::<Text,_>(room).get_result::<Agent>(db).await?;
             let binding=sql_query("INSERT INTO hagency_agent_v1.bindings(id,agent_id,project_id,room_id,state,scope_kind) VALUES($1,$2,NULL,$3,'joining','owner_direct') RETURNING id,agent_id,project_id,room_id,state,generation,scope_kind,owner_service_paused,thread_auto_reply").bind::<Text,_>(format!("bnd_{}",entity_id()?)).bind::<Text,_>(agent).bind::<Text,_>(room).get_result(db).await?;
             Self::audit(db,p,"agent.owner_direct",agent,now).await?;
             Ok(AgentBinding{agent:a,binding})

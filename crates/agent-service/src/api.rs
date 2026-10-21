@@ -347,7 +347,28 @@ impl App {
                     json!({"commandState":if agent.state=="active" {"active"} else {"pending"},"creation":{"agent":agent},"pendingReason":null}),
                 );
             }
+            if path == "/hagency/api/v1/agents/discover" && method == salvo::http::Method::GET {
+                return Ok(json!({"agents":domain.discover_agents(&principal,now_ms()).await?}));
+            }
             let parts = path.split('/').collect::<Vec<_>>();
+            if parts.len() == 7
+                && parts[4] == "agents"
+                && parts[6] == "visibility"
+                && method == salvo::http::Method::PUT
+            {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Audience {
+                    visibility: crate::domain::AgentVisibility,
+                }
+                let body: Audience = req
+                    .parse_json()
+                    .await
+                    .map_err(|_| Error::Invalid("invalid_arguments"))?;
+                return Ok(
+                    json!({"agent":domain.set_visibility(&principal,parts[5],body.visibility,now_ms()).await?}),
+                );
+            }
             if parts.len() == 7
                 && parts[4] == "agents"
                 && parts[6] == "owner-direct"

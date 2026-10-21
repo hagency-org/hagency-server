@@ -104,13 +104,16 @@ def check_rust_schema(schema, metadata):
     require(len(matches) > metadata.get('occurrence', 0), 'missing Rust DTO ' + name)
     match = matches[metadata.get('occurrence', 0)]
     fields = []
+    defaulted = set()
     for item in re.finditer(r'((?:\s*#\[[^\n]+\]\s*)*)(?:pub )?(\w+): ([^,\n]+),', match[1]):
         attrs, field, typ = item.groups()
-        if 'skip_serializing' not in attrs:
+        if not re.search(r'\bskip_serializing\b', attrs):
             fields.append((field, typ.strip()))
+            if re.search(r'\bdefault\b|\bskip_serializing_if\b', attrs):
+                defaulted.add(camel(field))
     require([f for f, _ in fields] == metadata['serializedFields'], 'Rust field drift ' + name)
     require(set(schema['properties']) == {camel(f) for f, _ in fields}, 'spec property drift ' + name)
-    require(set(schema['required']) == set(schema['properties']), 'all Rust DTO fields are serialized/required: ' + name)
+    require(set(schema['required']) == set(schema['properties']) - defaulted, 'Rust required/defaulted field drift: ' + name)
     if metadata.get('strictInput'):
         preceding = source[max(0, match.start() - 300):match.start()]
         require('deny_unknown_fields' in preceding.rsplit('#[derive', 1)[-1], 'Rust strictness drift ' + name)
@@ -188,7 +191,7 @@ def validate(doc):
         require({p for p, _ in operations if p.startswith('/hagency/api/v1/execution/')} == {p for p, _ in literal if p.startswith('/hagency/api/v1/execution/')}, 'invented transport route')
         require(('/hagency/api/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
         require(('/hagency/api/v1/projects/{projectId}/rooms', 'post') not in operations, 'unimplemented Room creation advertised')
-        require(len(operations) == 57, 'reviewed owner route count drift')
+        require(len(operations) == 59, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)

@@ -1036,3 +1036,155 @@ async fn postgres_public_discovery_identifies_hagency_without_granting_authority
         .await;
     assert_eq!(reply.status_code, Some(StatusCode::UNAUTHORIZED));
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_public_agent_catalog_and_visibility_routes_enforce_owner_and_strict_input() {
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let store = Store::open(&url, "example.test", "https://example.test/auth/")
+        .await
+        .unwrap();
+    let domain = DomainStore::open(&url, "example.test", "_hagency_test_")
+        .await
+        .unwrap();
+    let suffix = secret_token();
+    let (owner_token, owner) = user(&store, &format!("audience_owner_{suffix}")).await;
+    let (other_token, _) = user(&store, &format!("audience_other_{suffix}")).await;
+    let device = store
+        .register_device(
+            &owner_token,
+            crate::store::RegisterDevice {
+                installation_id: "audience-http".into(),
+                name: "Audience HTTP device".into(),
+            },
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    let issuer = Url::parse("https://example.test/auth/").unwrap();
+    let origin = Url::parse("https://example.test/").unwrap();
+    let verifier = Verifier::new(
+        issuer.clone(),
+        issuer.join("introspect").unwrap(),
+        origin.clone(),
+        "unused-test-secret".into(),
+        "example.test".into(),
+    )
+    .unwrap();
+    let gateway = Gateway::new(
+        Arc::new(|_| Box::pin(async { Ok(Vec::new()) })),
+        "@_hagency_service:example.test".into(),
+    );
+    let app = App::new(
+        store.clone(),
+        verifier,
+        origin,
+        issuer,
+        "example.test".into(),
+    )
+    .with_domain(domain.clone(), gateway);
+    let service = Service::new(app.router());
+    let endpoint = "https://example.test/hagency/api/v1/agents";
+    let mut created = TestClient::post(endpoint)
+        .add_header("host", "example.test", true)
+        .bearer_auth(&device.token)
+        .json(&json!({"displayName":"Private by default","idempotencyKey":"audience-http-create"}))
+        .send(&service)
+        .await;
+    assert_eq!(created.status_code, Some(StatusCode::ACCEPTED));
+    let agent = created.take_json::<Value>().await.unwrap()["creation"]["agent"].clone();
+    assert_eq!(agent["visibility"], "private");
+    let id = agent["id"].as_str().unwrap();
+    domain
+        .confirm_identity_provisioned(id, agent["generation"].as_i64().unwrap())
+        .await
+        .unwrap();
+    let catalog = "/hagency/api/v1/agents/discover";
+    let unauthenticated = TestClient::get(format!("https://example.test{catalog}"))
+        .add_header("host", "example.test", true)
+        .send(&service)
+        .await;
+    assert_eq!(unauthenticated.status_code, Some(StatusCode::UNAUTHORIZED));
+    let before = get(&service, catalog, &other_token, StatusCode::OK).await;
+    assert!(
+        !before["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == id)
+    );
+    let audience = format!("{endpoint}/{id}/visibility");
+    for invalid in [
+        json!({}),
+        json!({"visibility":"team"}),
+        json!({"visibility":null}),
+        json!({"visibility":"public","ownerUserId":owner.user_id}),
+    ] {
+        let response = TestClient::put(&audience)
+            .add_header("host", "example.test", true)
+            .bearer_auth(&owner_token)
+            .json(&invalid)
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::BAD_REQUEST));
+    }
+    let denied = TestClient::put(&audience)
+        .add_header("host", "example.test", true)
+        .bearer_auth(&other_token)
+        .json(&json!({"visibility":"public"}))
+        .send(&service)
+        .await;
+    assert_eq!(denied.status_code, Some(StatusCode::UNAUTHORIZED));
+    for visibility in ["public", "private"] {
+        let mut response = TestClient::put(&audience)
+            .add_header("host", "example.test", true)
+            .bearer_auth(&owner_token)
+            .json(&json!({"visibility":visibility}))
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+        assert_eq!(
+            response.take_json::<Value>().await.unwrap()["agent"]["visibility"],
+            visibility
+        );
+        let public = get(&service, catalog, &other_token, StatusCode::OK).await;
+        let row = public["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == id);
+        if visibility == "private" {
+            assert!(row.is_none());
+        } else {
+            let row = row.unwrap();
+            assert_eq!(row["isMine"], false);
+            assert_eq!(row["ownerMxid"], owner.mxid);
+            for field in [
+                "ownerUserId",
+                "executionDeviceId",
+                "ownerDirectRoomId",
+                "token",
+            ] {
+                assert!(row.get(field).is_none());
+            }
+            let own = get(&service, catalog, &owner_token, StatusCode::OK).await;
+            assert_eq!(
+                own["agents"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|a| a["id"] == id)
+                    .unwrap()["isMine"],
+                true
+            );
+        }
+    }
+    store.sign_out(&owner_token).await.unwrap();
+    let denied = TestClient::put(&audience)
+        .add_header("host", "example.test", true)
+        .bearer_auth(&owner_token)
+        .json(&json!({"visibility":"public"}))
+        .send(&service)
+        .await;
+    assert_eq!(denied.status_code, Some(StatusCode::UNAUTHORIZED));
+}

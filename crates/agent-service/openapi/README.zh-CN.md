@@ -56,3 +56,14 @@ Appservice 的 **hs_token** 与 owner/device token 是不同凭据。推荐 Auth
 新分配的 Hagency 实体 ID 为类型前缀加26字符小写 ULID：`usr_`、`ses_`、`dev_`、`prj_`、`agt_`、`bnd_`、`ins_`、`evt_`、`rep_`。生成器在同一服务器进程内单调递增；跨进程/重启不承诺全局严格生成顺序。Agent 傀儡账号使用 `@_hagency_agt_<ulid>:<server>`（配置 namespace 可带额外后缀）。客户端仍将 ID 作为不透明字符串，不能解析时间戳来推断权限、租约、业务时间或完成状态。
 
 `entity_id()` 与 `secret_token()` 分开：会话/设备 bearer 和 reply worker claim 保留独立32字节随机值，不用 ULID。数据库字段和 API DTO 不变；已持久化身份及幂等请求仍引用原 ID，Matrix Room/Event ID、消息事务 ID、摘要、客户端安装标识与已开始的 execution ID 保留原生成规则。
+
+
+## Agent 所有权与服务范围
+
+Agent 的创建者保持永久归属；服务范围通过 `visibility: public | private` 独立控制。新建默认 private，仅允许创建者与 Agent 私聊；所有共享 Room 绑定（包括邀请制群聊）都要求 public。执行、投递和绑定恢复同样检查该限制。
+
+`GET /hagency/api/v1/agents` 仍只返回本人创建的 Agent。`GET /hagency/api/v1/agents/discover` 返回最多 256 个公开服务及 `isMine`，不暴露执行设备、内部 owner ID 或创建者私聊房间。Room roster 同样返回 `isMine` 和 `visibility`，并过滤他人的 private Agent。客户端与网页端据此显示“我的”和服务范围标签。
+
+创建者通过 `PUT /hagency/api/v1/agents/{agentId}/visibility` 修改范围。切换 private 前必须完成所有共享 Room 的退出；失败返回 `leave_shared_rooms_before_private`。private 绑定请求返回 `private_agent_owner_direct_only`。此操作不启动或停止设备模型。
+
+升级只迁移尚无范围的旧记录：存在未完成退出的 project 绑定则 public，否则 private。已有范围不被重复迁移覆盖。旧创建命令保留原幂等摘要；更改服务范围使用独立接口。先升级 Server，再使用新 Client 的范围管理功能。

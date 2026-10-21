@@ -5,6 +5,11 @@ use serde_json::{Value, json};
 
 #[component]
 pub fn Agents() -> Element {
+    let mut public_agents = use_resource(|| async {
+        browser_auth::call("/agents/discover", "GET", None)
+            .await
+            .map_err(|e| e.message)
+    });
     let mut agents = use_resource(|| async {
         browser_auth::call("/agents", "GET", None)
             .await
@@ -67,7 +72,7 @@ pub fn Agents() -> Element {
         .find(|a| text(a, "id") == selected());
     rsx! {div {class:"hg-page hg-stack",
         div {class:"hg-heading", h1 {"My Agents"}
-            button {class:"hg-button hg-secondary", disabled:busy(), onclick:move |_| {agents.restart();devices.restart();bindings.restart();},"Refresh"}
+            button {class:"hg-button hg-secondary", disabled:busy(), onclick:move |_| {agents.restart();public_agents.restart();devices.restart();bindings.restart();},"Refresh"}
         }
         p {class:"hg-note", "Agents belong to your account across the server. Use Hagency Desktop to create an Agent, assign its execution device, configure its model and resources, and start responding."}
         Notice {message}
@@ -79,15 +84,39 @@ pub fn Agents() -> Element {
             for agent in rows(&data,"agents") {
                 {let id=text(&agent,"id");let device_id=text(&agent,"executionDeviceId");let device=rows(&device_data,"devices").into_iter().find(|d|text(d,"id")==device_id);
                 rsx! {section {class:"hg-card hg-stack",key:"{id}",
-                    div {class:"hg-heading",h2 {{text(&agent,"displayName")}}span {class:"hg-badge",{text(&agent,"state")}}}
+                    div {class:"hg-heading",h2 {{text(&agent,"displayName")}}span {class:"hg-badge", "Mine"}span {class:"hg-badge", {audience(&agent)}}span {class:"hg-badge",{text(&agent,"state")}}}
                     p {class:"hg-note",{match device {Some(d)=>format!("Execution device: {}{}",text(&d,"name"),if d["revoked"]==true {" (authorization revoked)"}else{""}),None if device_id.is_empty()=>"No execution device assigned".into(),None=>format!("Execution device: {device_id}")}}}
                     details {summary {"Matrix identity"}code {{text(&agent,"puppetMxid")}}}
                     div {class:"hg-actions",button {class:"hg-button hg-secondary",disabled:busy(),onclick:move |_| {selected.set(id.clone());project.set(String::new());room.set(String::new());message.set(String::new());command.set(browser_auth::operation_id());},"Manage Agent"}}
                 }}}
             }
         }
+        section {class:"hg-card hg-stack", h2 {"Public Agent services"}
+            p {class:"hg-note", "Discover services shared by other users. Private Agents are visible only to their owner."}
+            if public_agents().is_none() {p {role:"status","Loading public services…"}}
+            if let Some(Err(error))=public_agents() {p {role:"alert","{error}"}}
+            if let Some(Ok(catalog))=public_agents() {
+                if rows(&catalog,"agents").is_empty() {p {class:"hg-note","No public Agent services are available."}}
+                for agent in rows(&catalog,"agents") {div {class:"hg-stack",key:"{agent}",
+                    div {class:"hg-heading",strong {{text(&agent,"displayName")}}span {class:"hg-badge","Public service"}if agent["isMine"]==true {span {class:"hg-badge","Mine"}}}
+                    p {class:"hg-note",{format!("Creator: {}",text(&agent,"ownerMxid"))}}
+                    details {summary {"Matrix identity"}code {{text(&agent,"puppetMxid")}}}
+                }}
+            }
+        }
         if let Some(agent)=active_agent {
             section {class:"hg-card hg-stack",h2 {{text(&agent,"displayName")}}
+                div {class:"hg-actions",span {class:"hg-badge","Mine"}span {class:"hg-badge",{audience(&agent)}}}
+                p {class:"hg-note","Private Agents can only chat with you. Public Agents may serve members in shared Rooms. Leave every shared Room before switching to private."}
+                div {class:"hg-actions",
+                    for visibility in ["private","public"] {
+                        button {class:"hg-button hg-secondary",disabled:busy()||!audience_editable(&agent)||agent["visibility"]==visibility,onclick:move |_| {
+                            let id=selected();busy.set(true);spawn(async move {match mutate(&format!("/agents/{id}/visibility"),"PUT",json!({"visibility":visibility})).await {
+                                Ok(_)=>{message.set("Service audience saved.".into());agents.restart();public_agents.restart();bindings.restart();},Err(e)=>message.set(audience_error(&e).into())
+                            }busy.set(false);});
+                        },if visibility=="public" {"Publish service"} else {"Make private"}}
+                    }
+                }
                 p {class:"hg-note", "Server availability controls all of this Agent’s bindings. It does not start or stop the model on its device. Binding state does not prove the device is online."}
                 if let Some(action)=availability_action(&text(&agent,"state")) {
                     div {class:"hg-actions",button {class:"hg-button",disabled:busy(),onclick:move |_| {
@@ -121,7 +150,7 @@ pub fn Agents() -> Element {
                         }
                     }}}
                 }
-                details {summary {"Add to a Project Room"}
+                if agent["visibility"]=="public" {details {summary {"Add to a Project Room"}
                     form {class:"hg-stack",onsubmit:move |e| {
                         e.prevent_default();if busy()||room().is_empty()||project().is_empty(){return;}
                         let id=selected();let body=binding_body(&project(),&room(),&command());busy.set(true);
@@ -143,10 +172,36 @@ pub fn Agents() -> Element {
                         div {class:"hg-actions",button {class:"hg-button",disabled:busy()||room().is_empty(),r#type:"submit","Add Agent"}}
                     }
                 }
+                }
                 div {class:"hg-actions",button {class:"hg-button hg-secondary",disabled:busy(),onclick:move |_| selected.set(String::new()),"Done"}}
             }
         }
     }}
+}
+fn audience(agent: &Value) -> &'static str {
+    match agent["visibility"].as_str() {
+        Some("public") => "Public service",
+        Some("private") => "Private · owner chat only",
+        _ => "Service audience unavailable. Update the server and refresh.",
+    }
+}
+fn audience_editable(agent: &Value) -> bool {
+    matches!(agent["visibility"].as_str(), Some("private" | "public"))
+        && matches!(
+            agent["state"].as_str(),
+            Some("creating" | "active" | "suspended")
+        )
+}
+fn audience_error(error: &str) -> &str {
+    match error {
+        "leave_shared_rooms_before_private" => {
+            "Leave every shared Room and wait for departure to complete before switching to private."
+        }
+        "private_agent_owner_direct_only" => {
+            "Private Agents can only chat with their creator. Publish this service before adding it to a shared Room."
+        }
+        _ => error,
+    }
 }
 fn availability_action(state: &str) -> Option<&'static str> {
     match state {
@@ -164,6 +219,22 @@ fn binding_body(project: &str, room: &str, key: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unknown_or_retired_audience_cannot_be_published_from_web() {
+        for agent in [
+            json!({}),
+            json!({"visibility":"public","state":"retired"}),
+            json!({"visibility":"private","state":"retiring"}),
+            json!({"state":"active"}),
+        ] {
+            assert!(!audience_editable(&agent));
+        }
+        assert!(audience_editable(
+            &json!({"visibility":"private","state":"active"})
+        ));
+        assert!(audience(&json!({})).contains("unavailable"));
+        assert!(audience_error("leave_shared_rooms_before_private").contains("departure"));
+    }
     #[test]
     fn browser_binding_request_contains_only_room_scope_and_original_key() {
         assert_eq!(

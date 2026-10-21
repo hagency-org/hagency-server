@@ -1995,7 +1995,8 @@ async fn postgres_processing_offline_cutover_is_standalone_exact_and_preserves_a
         let grant=auth.sign_in(Identity{issuer:"https://example.test/auth/".into(),subject:"maintenance-owner".into(),mxid:"@maintenance:example.test".into(),client_id:"maintenance-fixture".into(),valid_until_ms:now+1_000_000},now).await.unwrap();
         let device=auth.register_device(&grant.token,RegisterDevice{installation_id:"maintenance-device".into(),name:"Maintenance".into()},now).await.unwrap();
         let p=auth.authenticate(&device.token,now,true).await.unwrap();
-        let agent=domain.create_agent(&p,crate::domain::CreateAgent{display_name:"Permanent".into(),idempotency_key:"permanent-agent".into()},now).await.unwrap();
+        let agent=domain.create_agent(&p,crate::domain::CreateAgent{
+                visibility: crate::domain::AgentVisibility::Public,display_name:"Permanent".into(),idempotency_key:"permanent-agent".into()},now).await.unwrap();
         domain.confirm_identity_provisioned(&agent.id,agent.generation).await.unwrap();
         transport.acquire_for_test(&p,&agent.id,60_000,false,now).await.unwrap();
         let mut db=AsyncPgConnection::establish(url).await.unwrap();
@@ -2966,4 +2967,94 @@ async fn postgres_lost_start_can_retire_unstarted_offer_without_poisoning_next_r
         .finish_without_reply(&f.p, &lease, &next, "actual-next-execution", "failed", now)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_private_audience_refuses_stale_shared_routing_execution_and_reply() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    let lease = f
+        .transport
+        .acquire_for_test(&f.p, &f.agent, 30_000, false, now)
+        .await
+        .unwrap();
+    let lease = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: lease.epoch,
+    };
+    let first = enqueue(&f, "audience-before-private").await;
+    running(&f, &lease, &first, "audience-execution").await;
+    let reply = f
+        .transport
+        .submit_reply(
+            &f.p,
+            &lease,
+            SubmitReply {
+                dispatch_id: first,
+                execution_id: "audience-execution".into(),
+                body: "Retained result".into(),
+            },
+            &f.facts,
+            now,
+        )
+        .await
+        .unwrap();
+    let pending = enqueue(&f, "audience-queued-before-private").await;
+    // Simulate a stale/corrupt legacy binding, bypassing the owner's demotion guard.
+    sql_query("UPDATE hagency_agent_v1.agents SET visibility='private' WHERE id=$1")
+        .bind::<Text, _>(&f.agent)
+        .execute(&mut *f.transport.db.lock().await.unwrap())
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.transport.binding_scope(&f.binding).await,
+        Err(Error::Unauthorized("binding_not_running"))
+    ));
+    assert!(
+        f.transport
+            .routing_scopes(&f.facts.room_id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|s| !s.active && !s.service_paused)
+    );
+    assert!(matches!(
+        f.transport
+            .ingest_routed(
+                &f.binding,
+                event(&f, "audience-after-private", true, None),
+                &f.facts,
+                now
+            )
+            .await,
+        Ok(RouteResult::Ignored) | Err(_)
+    ));
+    assert!(
+        f.transport
+            .claim_event(&f.p, &lease, &pending, &f.facts, now)
+            .await
+            .is_err()
+    );
+    assert!(
+        f.transport
+            .reply_candidates(100, now)
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.id != reply.id)
+    );
+    assert!(
+        f.transport
+            .claim_reply(&reply.id, &f.facts, now)
+            .await
+            .is_err()
+    );
+    assert!(f.transport.invalidate_stale_dispatches(now).await.unwrap() > 0);
+    let row = sql_query("SELECT state AS id,digest FROM hagency_agent_v1.owner_events WHERE id=$1")
+        .bind::<Text, _>(&pending)
+        .get_result::<Existing>(&mut *f.transport.db.lock().await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(row.id, "cancelled");
 }

@@ -21,6 +21,7 @@ impl DomainStore {
             .create_agent(
                 p,
                 CreateAgent {
+                    visibility: crate::domain::AgentVisibility::Public,
                     display_name: input.display_name,
                     idempotency_key: input.idempotency_key.clone(),
                 },
@@ -1666,6 +1667,7 @@ async fn postgres_global_identity_create_needs_no_project_or_room_and_binding_is
         .unwrap();
     let (_, p) = user(&auth, &secret_token(), "global_owner").await;
     let make = || CreateAgent {
+        visibility: crate::domain::AgentVisibility::Public,
         display_name: "Global Codex".into(),
         idempotency_key: "global-identity".into(),
     };
@@ -1737,6 +1739,7 @@ async fn postgres_owner_loss_retires_joining_and_paused_bindings_before_provisio
             .create_agent(
                 &p,
                 CreateAgent {
+                    visibility: crate::domain::AgentVisibility::Public,
                     display_name: mode.into(),
                     idempotency_key: format!("create-{mode}"),
                 },
@@ -1991,6 +1994,7 @@ async fn exercise_membership_controller(url: &str) {
             .create_agent(
                 &p,
                 CreateAgent {
+                    visibility: crate::domain::AgentVisibility::Public,
                     display_name: mode.into(),
                     idempotency_key: format!("controller-create-{mode}"),
                 },
@@ -2167,4 +2171,223 @@ async fn exercise_membership_controller(url: &str) {
         calls.values().all(|n| *n >= 2),
         "failed departure must retry"
     );
+}
+
+#[test]
+fn agent_audience_defaults_private_and_rejects_unknown_values() {
+    let request: CreateAgent =
+        serde_json::from_value(serde_json::json!({"displayName":"Mine","idempotencyKey":"legacy"}))
+            .unwrap();
+    assert_eq!(request.visibility, AgentVisibility::Private);
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({"displayName":"Mine","idempotencyKey":"legacy"}),
+        "legacy request digests stay stable"
+    );
+    for value in ["PUBLIC", "team", "", "owner", "Private"] {
+        assert!(
+            serde_json::from_value::<CreateAgent>(
+                serde_json::json!({"displayName":"Mine","idempotencyKey":"key","visibility":value})
+            )
+            .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_agent_audience_enforces_discovery_room_binding_and_owner_dm() {
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
+        .await
+        .unwrap();
+    let domain = DomainStore::open(&url, "example.test", "_hagency_test_")
+        .await
+        .unwrap();
+    let suffix = secret_token();
+    let (_, owner) = user(&auth, &suffix, "audience_owner").await;
+    let (_, other) = user(&auth, &suffix, "audience_other").await;
+    let private = domain
+        .create_agent(
+            &owner,
+            serde_json::from_value(
+                serde_json::json!({"displayName":"Private","idempotencyKey":"private"}),
+            )
+            .unwrap(),
+            *NOW,
+        )
+        .await
+        .unwrap();
+    assert_eq!(private.visibility, AgentVisibility::Private);
+    domain
+        .confirm_identity_provisioned(&private.id, private.generation)
+        .await
+        .unwrap();
+    assert!(
+        domain
+            .agents(&owner, *NOW)
+            .await
+            .unwrap()
+            .iter()
+            .any(|a| a.id == private.id)
+    );
+    assert!(
+        !domain
+            .discover_agents(&other, *NOW)
+            .await
+            .unwrap()
+            .iter()
+            .any(|a| a.id == private.id)
+    );
+    assert!(domain.agent(&other, &private.id, *NOW).await.is_err());
+    assert!(
+        domain
+            .set_visibility(&other, &private.id, AgentVisibility::Public, *NOW)
+            .await
+            .is_err()
+    );
+    let space = format!("!audience_space_{suffix}:example.test");
+    let room = format!("!audience_room_{suffix}:example.test");
+    let project = domain
+        .register_project(&owner, &space, &admin(&owner, &space, true, None), *NOW)
+        .await
+        .unwrap();
+    domain
+        .register_room(
+            &owner,
+            &project.id,
+            &room,
+            &admin(&owner, &space, true, None),
+            &admin(&owner, &room, false, Some(&space)),
+            *NOW,
+        )
+        .await
+        .unwrap();
+    let request = || BindRoom {
+        project_id: project.id.clone(),
+        room_id: room.clone(),
+        idempotency_key: "shared".into(),
+    };
+    let good = facts(&owner, &space, &room, Some(&private.puppet_mxid));
+    assert!(matches!(
+        domain
+            .bind_room(&owner, &private.id, request(), &good, *NOW)
+            .await,
+        Err(Error::Unauthorized("private_agent_owner_direct_only"))
+    ));
+    let direct = format!("!audience_direct_{suffix}:example.test");
+    let mut direct_facts = facts(&owner, "", &direct, Some(&private.puppet_mxid));
+    direct_facts.owner_direct_valid = true;
+    let dm = domain
+        .adopt_owner_direct(&owner, &private.id, &direct, &direct_facts, *NOW)
+        .await
+        .unwrap();
+    assert_eq!(dm.binding.scope_kind, "owner_direct");
+    domain
+        .set_visibility(&owner, &private.id, AgentVisibility::Public, *NOW)
+        .await
+        .unwrap();
+    let catalog = domain.discover_agents(&other, *NOW).await.unwrap();
+    let row = catalog.iter().find(|a| a.id == private.id).unwrap();
+    assert!(!row.is_mine);
+    let safe = serde_json::to_value(row).unwrap();
+    for field in ["ownerUserId", "ownerDirectRoomId", "executionDeviceId"] {
+        assert!(safe.get(field).is_none());
+    }
+    assert!(
+        domain
+            .discover_agents(&owner, *NOW)
+            .await
+            .unwrap()
+            .iter()
+            .find(|a| a.id == private.id)
+            .unwrap()
+            .is_mine
+    );
+    let bound = domain
+        .bind_room(&owner, &private.id, request(), &good, *NOW)
+        .await
+        .unwrap();
+    domain
+        .activate_binding(
+            &owner,
+            &bound.binding.id,
+            bound.binding.generation,
+            &good,
+            *NOW,
+        )
+        .await
+        .unwrap();
+    assert!(
+        domain
+            .room_roster(&other, &project.id, &room, *NOW)
+            .await
+            .unwrap()
+            .iter()
+            .any(|a| a.agent_id == private.id && !a.is_mine)
+    );
+    assert!(matches!(
+        domain
+            .set_visibility(&owner, &private.id, AgentVisibility::Private, *NOW)
+            .await,
+        Err(Error::Conflict("leave_shared_rooms_before_private"))
+    ));
+    let leaving = domain
+        .leave_binding(&owner, &bound.binding.id, *NOW)
+        .await
+        .unwrap();
+    let mut departed = good.clone();
+    departed.puppet_in_room = false;
+    domain
+        .confirm_left_trusted(&leaving.id, leaving.generation, &departed, *NOW)
+        .await
+        .unwrap();
+    domain
+        .set_visibility(&owner, &private.id, AgentVisibility::Private, *NOW)
+        .await
+        .unwrap();
+    assert!(
+        !domain
+            .discover_agents(&other, *NOW)
+            .await
+            .unwrap()
+            .iter()
+            .any(|a| a.id == private.id)
+    );
+    assert!(domain.binding(&owner, &dm.binding.id, *NOW).await.is_ok());
+    assert!(
+        domain
+            .bind_room(&owner, &private.id, request(), &good, *NOW)
+            .await
+            .is_err(),
+        "replayed shared command cannot reauthorize private service"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_agent_audience_migration_preserves_private_defaults_and_saved_choices() {
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let mut db = AsyncPgConnection::establish(&url).await.unwrap();
+    let schema = format!("audience_migration_{}", &secret_token()[..16]);
+    db.batch_execute(&format!("CREATE SCHEMA {schema}; CREATE TABLE {schema}.agents(id text PRIMARY KEY); CREATE TABLE {schema}.bindings(agent_id text,scope_kind text,state text); INSERT INTO {schema}.agents VALUES ('shared'),('direct'),('left'); INSERT INTO {schema}.bindings VALUES ('shared','project','suspended'),('direct','owner_direct','active'),('left','project','left');")).await.unwrap();
+    let migration = include_str!("visibility_schema.sql").replace("hagency_agent_v1", &schema);
+    db.batch_execute(&migration).await.unwrap();
+    db.batch_execute(&format!("INSERT INTO {schema}.agents(id) VALUES ('new'); UPDATE {schema}.agents SET visibility='public' WHERE id='direct';")).await.unwrap();
+    db.batch_execute(&migration).await.unwrap();
+    let valid=sql_query(format!("SELECT (SELECT visibility FROM {schema}.agents WHERE id='shared')='public' AND (SELECT visibility FROM {schema}.agents WHERE id='left')='private' AND (SELECT visibility FROM {schema}.agents WHERE id='new')='private' AND (SELECT visibility FROM {schema}.agents WHERE id='direct')='public' AS matched")).get_result::<Flag>(&mut db).await.unwrap();
+    assert!(
+        valid.matched,
+        "migration changed a saved choice or published an unshared Agent"
+    );
+    assert!(
+        db.batch_execute(&format!(
+            "UPDATE {schema}.agents SET visibility='invalid' WHERE id='new'"
+        ))
+        .await
+        .is_err()
+    );
+    db.batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await
+        .unwrap();
 }
