@@ -578,7 +578,7 @@ async fn v9_matrix_migration_rolls_back_and_preserves_original_agent_owner_and_r
         .domain
         .create_agent(
             &f.owner.p,
-            CreateAgent {
+            CreateAgent {visibility:Default::default(),
                 display_name: "Personal survives Matrix migration".into(),
                 idempotency_key: "matrix_upgrade_personal".into(),
             },

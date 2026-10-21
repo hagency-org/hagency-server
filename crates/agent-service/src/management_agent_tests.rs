@@ -566,7 +566,7 @@ async fn v7_managed_agent_migration_rolls_back_and_preserves_personal_identity()
     url.set_path(&format!("/{name}"));
     let result=tokio::spawn(async move {
         let auth=Store::open(url.as_str(),"example.test","https://example.test/auth/").await.unwrap();let domain=DomainStore::open(url.as_str(),"example.test","_hagency_test_").await.unwrap();let owner=actor(&auth,"old_personal").await;
-        let agent=domain.create_agent(&owner.p,CreateAgent{idempotency_key:"personal_before_upgrade".into(),display_name:"Original personal".into()},now_ms()).await.unwrap();
+        let agent=domain.create_agent(&owner.p,CreateAgent {visibility:Default::default(),idempotency_key:"personal_before_upgrade".into(),display_name:"Original personal".into()},now_ms()).await.unwrap();
         let mut db=AsyncPgConnection::establish(url.as_str()).await.unwrap();remove_migration(&mut db).await;
         db.batch_execute("CREATE TABLE hagency_agent_v1.management_agent_requests (id text)").await.unwrap();assert!(DomainStore::open(url.as_str(),"example.test","_hagency_test_").await.is_err());
         assert!(sql_query("SELECT version=7 AND NOT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='agents' AND column_name='execution_kind') AS matched FROM hagency_agent_v1.management_deployment").get_result::<Check>(&mut db).await.unwrap().matched);

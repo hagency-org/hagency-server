@@ -6870,6 +6870,9 @@
       "Agent": {
         "type": "object",
         "properties": {
+          "visibility": {
+            "$ref": "#/components/schemas/AgentVisibility"
+          },
           "id": {
             "type": "string"
           },
@@ -6918,6 +6921,7 @@
           }
         },
         "required": [
+          "visibility",
           "id",
           "ownerUserId",
           "puppetMxid",
@@ -6932,6 +6936,7 @@
           "file": "crates/agent-service/src/domain.rs",
           "name": "Agent",
           "serializedFields": [
+            "visibility",
             "id",
             "owner_user_id",
             "puppet_mxid",
@@ -6953,7 +6958,8 @@
             "state": "creating",
             "generation": 1,
             "ownerDirectRoomId": null,
-            "executionDeviceId": null
+            "executionDeviceId": null,
+            "visibility": "private"
           }
         ]
       },
@@ -7087,7 +7093,8 @@
               "state": "creating",
               "generation": 1,
               "ownerDirectRoomId": null,
-              "executionDeviceId": null
+              "executionDeviceId": null,
+              "visibility": "public"
             },
             "binding": {
               "id": "example",
@@ -7106,6 +7113,9 @@
       "CreateAgent": {
         "type": "object",
         "properties": {
+          "visibility": {
+            "$ref": "#/components/schemas/AgentVisibility"
+          },
           "displayName": {
             "type": "string"
           },
@@ -7122,6 +7132,7 @@
           "file": "crates/agent-service/src/domain.rs",
           "name": "CreateAgent",
           "serializedFields": [
+            "visibility",
             "display_name",
             "idempotency_key"
           ],
@@ -7130,7 +7141,8 @@
         "examples": [
           {
             "displayName": "Codex Agent",
-            "idempotencyKey": "command_001"
+            "idempotencyKey": "command_001",
+            "visibility": "private"
           }
         ]
       },
@@ -7222,6 +7234,16 @@
       "RoomAgent": {
         "type": "object",
         "properties": {
+          "isMine": {
+            "type": "boolean"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "public",
+              "private"
+            ]
+          },
           "agentId": {
             "type": "string"
           },
@@ -7239,6 +7261,8 @@
           }
         },
         "required": [
+          "isMine",
+          "visibility",
           "agentId",
           "puppetMxid",
           "displayName",
@@ -7250,6 +7274,8 @@
           "file": "crates/agent-service/src/domain_discovery.rs",
           "name": "RoomAgent",
           "serializedFields": [
+            "is_mine",
+            "visibility",
             "agent_id",
             "puppet_mxid",
             "display_name",
@@ -7264,7 +7290,9 @@
             "puppetMxid": "example",
             "displayName": "example",
             "ownerMxid": "example",
-            "bindingState": "example"
+            "bindingState": "example",
+            "isMine": false,
+            "visibility": "public"
           }
         ]
       },
@@ -8532,7 +8560,8 @@
                 "state": "creating",
                 "generation": 1,
                 "ownerDirectRoomId": null,
-                "executionDeviceId": null
+                "executionDeviceId": null,
+                "visibility": "public"
               },
               "binding": {
                 "id": "example",
@@ -8599,7 +8628,8 @@
                 "state": "creating",
                 "generation": 1,
                 "ownerDirectRoomId": null,
-                "executionDeviceId": null
+                "executionDeviceId": null,
+                "visibility": "public"
               },
               "binding": {
                 "id": "example",

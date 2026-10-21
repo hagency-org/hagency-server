@@ -88,6 +88,7 @@ async fn fixture() -> Fixture {
         .create_agent(
             &pa,
             CreateAgent {
+                visibility: crate::domain::AgentVisibility::Public,
                 display_name: "Cross-device".into(),
                 idempotency_key: "agent".into(),
             },

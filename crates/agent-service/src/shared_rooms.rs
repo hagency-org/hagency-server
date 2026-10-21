@@ -67,13 +67,13 @@ impl DomainStore {
     }
 
     async fn room_agent_db(db: &mut AsyncPgConnection, p: &Principal, id: &str) -> Result<Agent> {
-        sql_query("SELECT id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id FROM hagency_agent_v1.agents WHERE id=$1 AND owner_user_id=$2")
+        sql_query("SELECT id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id,visibility FROM hagency_agent_v1.agents WHERE id=$1 AND owner_user_id=$2")
             .bind::<Text,_>(id).bind::<Text,_>(&p.user_id).get_result(db).await.map_err(hidden)
     }
     pub(crate) async fn room_agents(&self, p: &Principal, now: i64) -> Result<Vec<Agent>> {
         let mut db = self.db.lock().await?;
         Self::authorize(&mut db, p, now).await?;
-        let agents:Vec<Agent>=sql_query("SELECT a.id,a.owner_user_id,a.puppet_mxid,a.display_name,CASE WHEN a.execution_kind='shared_project' THEN 'active' ELSE a.state END AS state,a.generation,a.owner_direct_room_id,a.execution_device_id FROM hagency_agent_v1.agents a WHERE a.owner_user_id=$1 AND (a.execution_kind='personal' OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments s JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=s.id JOIN hagency_agent_v1.management_agent_requests r ON r.id=s.request_id WHERE s.agent_id=a.id AND s.state='pending_native' AND m.state='matrix_verified' AND r.pool_contribution_id IS NOT NULL)) ORDER BY a.id")
+        let agents:Vec<Agent>=sql_query("SELECT a.id,a.owner_user_id,a.puppet_mxid,a.display_name,CASE WHEN a.execution_kind='shared_project' THEN 'active' ELSE a.state END AS state,a.generation,a.owner_direct_room_id,a.execution_device_id,a.visibility FROM hagency_agent_v1.agents a WHERE a.owner_user_id=$1 AND (a.execution_kind='personal' OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments s JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=s.id JOIN hagency_agent_v1.management_agent_requests r ON r.id=s.request_id WHERE s.agent_id=a.id AND s.state='pending_native' AND m.state='matrix_verified' AND r.pool_contribution_id IS NOT NULL)) ORDER BY a.id")
             .bind::<Text,_>(&p.user_id).load(&mut *db).await?;
         // Shared agents intentionally keep their identity suspended for the
         // personal execution protocol; this picker projects room availability.
@@ -200,7 +200,7 @@ impl DomainStore {
         let (b, a, scope) = {
             let mut db = self.db.lock().await?;
             let b = row(&mut db, id).await?;
-            let a:Agent=sql_query("SELECT id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id FROM hagency_agent_v1.agents WHERE id=$1 AND execution_kind='shared_project'").bind::<Text,_>(&b.agent_id).get_result(&mut *db).await?;
+            let a:Agent=sql_query("SELECT id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id,visibility FROM hagency_agent_v1.agents WHERE id=$1 AND execution_kind='shared_project'").bind::<Text,_>(&b.agent_id).get_result(&mut *db).await?;
             let scope = meta(&mut db, &b).await?;
             (b, a, scope)
         };

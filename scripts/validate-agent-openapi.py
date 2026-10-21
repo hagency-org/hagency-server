@@ -104,6 +104,7 @@ def check_rust_schema(schema, metadata):
     require(len(matches) > metadata.get('occurrence', 0), 'missing Rust DTO ' + name)
     match = matches[metadata.get('occurrence', 0)]
     fields = []
+    defaulted = set()
     for item in re.finditer(r'((?:\s*#\[[^\n]+\]\s*)*)(?:pub )?(\w+): ([^,\n]+),', match[1]):
         attrs, field, typ = item.groups()
         # skip_serializing_if fields are omitted when empty: documented, not required.

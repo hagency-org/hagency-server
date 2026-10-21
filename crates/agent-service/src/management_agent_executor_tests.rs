@@ -548,7 +548,7 @@ async fn v8_agent_executor_migration_rolls_back_preserves_personal_and_backfills
     let result=tokio::spawn(async move {
   let auth=Store::open(url.as_str(),"example.test","https://example.test/auth/").await.unwrap();
   let domain=DomainStore::open(url.as_str(),"example.test","_hagency_test_").await.unwrap();let owner=actor(&auth,"before_executor").await;
-  let original=domain.create_agent(&owner.p,CreateAgent {display_name:"Original".into(),idempotency_key:"before_executor".into()},now_ms()).await.unwrap();
+  let original=domain.create_agent(&owner.p,CreateAgent {visibility:Default::default(),display_name:"Original".into(),idempotency_key:"before_executor".into()},now_ms()).await.unwrap();
   let mut f=fixture_at(url.to_string()).await;f.policy=f.policy.with_project_reservations(true).with_project_setup(true).with_agent_admission(true).with_agent_executor(true);
   let admitted=admitted(&f).await;let plan=approved_plan(&f,&admitted,&f.outsider.p).await;
   f.domain.publish_management_grant(&f.owner.p,&f.policy,&admitted.contribution.id,grant_input(&f,&admitted,&f.outsider.p).await).await.unwrap();

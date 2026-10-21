@@ -457,7 +457,7 @@ async fn personal_agent(f: &Fixture) -> crate::domain::Agent {
         .domain
         .create_agent(
             &f.outsider.p,
-            CreateAgent {
+            CreateAgent {visibility:Default::default(),
                 display_name: "Personal agent".into(),
                 idempotency_key: "personal_setup_test".into(),
             },
@@ -505,7 +505,7 @@ async fn bind(
         .bind_room(
             &f.outsider.p,
             &agent.id,
-            BindRoom {
+            BindRoom {room_human_mxid:None,
                 project_id: project.into(),
                 room_id: room.into(),
                 idempotency_key: key.into(),

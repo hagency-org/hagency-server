@@ -340,7 +340,7 @@ impl DomainStore {
             if effect && (!issuing(policy)||m.native_until_ms<=now||m.state!="authorized"||m.challenge_id.as_deref()!=challenge) {return Err(Error::Conflict("agent_matrix_native_check_required"));}
             let r=row(db,&m.request_id).await?;let cx=if r.pool_contribution_id.is_some() {None} else {Some(context(db,&r.plan_id,now).await?)};
             let manager_mxid=sql_query("SELECT mxid AS payload FROM hagency_agent_v1.users WHERE id=$1").bind::<Text,_>(&r.manager_user_id).get_result::<Json>(db).await?.payload;
-            let agent:Agent=sql_query("SELECT id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id FROM hagency_agent_v1.agents WHERE id=$1 AND execution_kind='shared_project'").bind::<Text,_>(&m.agent_id).get_result(db).await?;
+            let agent:Agent=sql_query("SELECT id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id,visibility FROM hagency_agent_v1.agents WHERE id=$1 AND execution_kind='shared_project'").bind::<Text,_>(&m.agent_id).get_result(db).await?;
             if agent.owner_user_id!=r.manager_user_id||agent.puppet_mxid!=m.puppet_mxid||agent.state!="suspended"||agent.execution_device_id.is_some()||agent.owner_direct_room_id.is_some()||cx.as_ref().is_some_and(|c|c.setup.space_id.as_deref()!=Some(&m.space_id)||c.setup.room_id.as_deref()!=Some(&m.room_id))||cx.is_none()&&(!m.space_id.is_empty()||m.room_id!=r.room_id) {fence(db,&w.intent_id).await?;return Ok(None);}
             if effect {sql_query("UPDATE hagency_agent_v1.management_agent_matrix SET effect_started=true WHERE assignment_id=$1").bind::<Text,_>(id).execute(db).await?;}
             Ok(Some(Phase {membership:m,context:cx,manager_mxid,agent}))

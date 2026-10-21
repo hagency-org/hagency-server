@@ -70,7 +70,7 @@ pub fn RoomDiscovery(project_id: Signal<String>, room: Signal<String>) -> Elemen
             if let Some((project,selected,Err(error)))=agents() {if project==project_id()&&selected==room() {p {role:"alert","{error}"}}}
             if !roster.is_null()&&rows(&roster,"agents").is_empty() {p {class:"hg-note","No visible Agents in this Room."}}
             for agent in rows(&roster,"agents") {div {class:"hg-stack",key:"{agent}",
-                strong {{text(&agent,"displayName")}}
+                div {class:"hg-heading",strong {{text(&agent,"displayName")}}span {class:"hg-badge","Public service"}if agent["isMine"]==true {span {class:"hg-badge","Mine"}}}
                 p {class:"hg-note",{format!("Owner: {} · Binding: {}",text(&agent,"ownerMxid"),text(&agent,"bindingState"))}}
                 details {summary {"Matrix identity"}code {{text(&agent,"puppetMxid")}}}
             }}
