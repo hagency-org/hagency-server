@@ -1,4 +1,5 @@
 //! Shared human work items. A separate pool never queues behind Agent storage.
+mod collaboration;
 mod columns;
 mod types;
 use crate::{Error, Result, domain::DomainStore, store::Principal};
@@ -45,17 +46,42 @@ struct Flag {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub(crate) enum Mutation {
+    UploadAttachment {
+        task: String,
+        input: AttachmentUpload,
+    },
+    RemoveAttachment {
+        task: String,
+        input: AttachmentRemove,
+    },
     ConfigureColumns(ConfigureColumns),
     Create(Create),
-    Update { task: String, input: Update },
-    Move { task: String, input: Move },
-    Archive { task: String, input: Versioned },
-    Restore { task: String, input: Versioned },
-    Comment { task: String, input: Comment },
+    Update {
+        task: String,
+        input: Update,
+    },
+    Move {
+        task: String,
+        input: Move,
+    },
+    Archive {
+        task: String,
+        input: Versioned,
+    },
+    Restore {
+        task: String,
+        input: Versioned,
+    },
+    Comment {
+        task: String,
+        input: Comment,
+    },
 }
 impl Mutation {
     fn intent(&self) -> &str {
         match self {
+            Self::UploadAttachment { input, .. } => &input.idempotency_key,
+            Self::RemoveAttachment { input, .. } => &input.idempotency_key,
             Self::ConfigureColumns(i) => &i.idempotency_key,
             Self::Create(i) => &i.idempotency_key,
             Self::Update { input, .. } => &input.idempotency_key,
@@ -67,7 +93,9 @@ impl Mutation {
     fn task(&self) -> Option<&str> {
         match self {
             Self::Create(_) | Self::ConfigureColumns(_) => None,
-            Self::Update { task, .. }
+            Self::UploadAttachment { task, .. }
+            | Self::RemoveAttachment { task, .. }
+            | Self::Update { task, .. }
             | Self::Move { task, .. }
             | Self::Archive { task, .. }
             | Self::Restore { task, .. }
@@ -86,6 +114,8 @@ impl Mutation {
     }
     fn kind(&self) -> &str {
         match self {
+            Self::UploadAttachment { .. } => "attachment_added",
+            Self::RemoveAttachment { .. } => "attachment_removed",
             Self::ConfigureColumns(_) => "columns_updated",
             Self::Create(_) => "created",
             Self::Update { .. } => "edited",
@@ -104,6 +134,10 @@ impl Mutation {
             return Err(Error::Invalid("invalid_board_version"));
         }
         match self {
+            Self::UploadAttachment { input, .. } => {
+                collaboration::attachment_bytes(input)?;
+            }
+            Self::RemoveAttachment { input, .. } => crate::key(&input.attachment)?,
             Self::ConfigureColumns(i) => i.validate()?,
             Self::Create(i) => {
                 i.fields.validate()?;
@@ -147,7 +181,7 @@ fn state(value: &str) -> Result<()> {
         Err(Error::Invalid("invalid_board_state"))
     }
 }
-const TASK_JSON: &str = "jsonb_build_object('id',t.id,'projectId',t.project_id,'number',t.number,'title',t.title,'description',t.description,'state',t.state_key,'rank',t.rank,'priority',t.priority,'assigneeMxid',t.assignee_mxid,'labels',t.labels,'dueDate',t.due_date::text,'version',t.version,'createdBy',t.created_by,'createdAt',t.created_at,'updatedAt',t.updated_at,'archivedAt',t.archived_at,'parentId',t.parent_id,'parentNumber',(SELECT p.number FROM hagency_project_v1.tasks p WHERE p.id=t.parent_id AND p.project_id=t.project_id),'checklist',t.checklist,'checklistTotal',jsonb_array_length(t.checklist),'checklistDone',(SELECT count(*) FROM jsonb_array_elements(t.checklist) i WHERE (i->>'checked')::boolean),'subtaskTotal',(SELECT count(*) FROM hagency_project_v1.tasks c WHERE c.project_id=t.project_id AND c.parent_id=t.id AND c.archived_at IS NULL),'subtaskDone',(SELECT count(*) FROM hagency_project_v1.tasks c JOIN hagency_project_v1.columns col ON col.project_id=c.project_id AND col.column_key=c.state_key WHERE c.project_id=t.project_id AND c.parent_id=t.id AND c.archived_at IS NULL AND col.is_done))";
+const TASK_JSON: &str = "jsonb_build_object('id',t.id,'projectId',t.project_id,'number',t.number,'title',t.title,'description',t.description,'state',t.state_key,'rank',t.rank,'priority',t.priority,'assigneeMxid',t.assignee_mxid,'labels',t.labels,'dueDate',t.due_date::text,'version',t.version,'createdBy',t.created_by,'createdAt',t.created_at,'updatedAt',t.updated_at,'archivedAt',t.archived_at,'parentId',t.parent_id,'parentNumber',(SELECT p.number FROM hagency_project_v1.tasks p WHERE p.id=t.parent_id AND p.project_id=t.project_id),'attachmentCount',(SELECT count(*) FROM hagency_project_v1.attachments f WHERE f.project_id=t.project_id AND f.task_id=t.id AND f.removed_at IS NULL),'commentCount',(SELECT count(*) FROM hagency_project_v1.comments c WHERE c.project_id=t.project_id AND c.task_id=t.id),'checklist',t.checklist,'checklistTotal',jsonb_array_length(t.checklist),'checklistDone',(SELECT count(*) FROM jsonb_array_elements(t.checklist) i WHERE (i->>'checked')::boolean),'subtaskTotal',(SELECT count(*) FROM hagency_project_v1.tasks c WHERE c.project_id=t.project_id AND c.parent_id=t.id AND c.archived_at IS NULL),'subtaskDone',(SELECT count(*) FROM hagency_project_v1.tasks c JOIN hagency_project_v1.columns col ON col.project_id=c.project_id AND col.column_key=c.state_key WHERE c.project_id=t.project_id AND c.parent_id=t.id AND c.archived_at IS NULL AND col.is_done))";
 const FILTER: &str = "t.project_id=$1 AND ($2::text IS NULL OR t.state_key=$2) AND ($3::text IS NULL OR t.assignee_mxid=$3) AND ($4::text IS NULL OR t.labels ? $4) AND ($5::text IS NULL OR position(lower($5) in lower(t.title))>0) AND (NOT $6 OR (t.due_date<(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date AND NOT EXISTS(SELECT 1 FROM hagency_project_v1.columns col WHERE col.project_id=t.project_id AND col.column_key=t.state_key AND col.is_done))) AND ((t.archived_at IS NOT NULL)=$7)";
 
 impl BoardStore {
@@ -164,15 +198,18 @@ impl BoardStore {
             let exists=sql_query("SELECT to_regclass('hagency_project_v1.migrations') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
             if exists {
                 let version=sql_query("SELECT coalesce(max(version),0)::bigint AS value FROM hagency_project_v1.migrations").get_result::<Number>(db).await?.value;
-                if !(1..=2).contains(&version){return Err(Error::Conflict("board_schema_incompatible"));}
+                if !(1..=3).contains(&version){return Err(Error::Conflict("board_schema_incompatible"));}
                 let complete=sql_query("SELECT to_regclass('hagency_project_v1.boards') IS NOT NULL AND to_regclass('hagency_project_v1.tasks') IS NOT NULL AND to_regclass('hagency_project_v1.comments') IS NOT NULL AND to_regclass('hagency_project_v1.changes') IS NOT NULL AND to_regclass('hagency_project_v1.receipts') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
-                if version==2 && !sql_query("SELECT to_regclass('hagency_project_v1.columns') IS NOT NULL AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
+                if version>=2 && !sql_query("SELECT to_regclass('hagency_project_v1.columns') IS NOT NULL AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
+                if version>=3 && !sql_query("SELECT to_regclass('hagency_project_v1.notifications') IS NOT NULL AND to_regclass('hagency_project_v1.attachments') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='changes' AND column_name='details') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if !complete{return Err(Error::Conflict("board_schema_incompatible"));}
                 if version == 1 { db.batch_execute(include_str!("schema_v2.sql")).await?; }
+                if version < 3 { db.batch_execute(include_str!("schema_v3.sql")).await?; }
                 return Ok(());
             }
             db.batch_execute(include_str!("schema.sql")).await?;
             db.batch_execute(include_str!("schema_v2.sql")).await?;
+            db.batch_execute(include_str!("schema_v3.sql")).await?;
             Ok(())
         }).await?;
         drop(db);
@@ -329,7 +366,8 @@ impl BoardStore {
                 .bind::<Text,_>(&a.project).bind::<Text,_>(id).load::<Row>(db).await?.into_iter().map(|r|r.value).collect::<Vec<_>>();
             let parent = if let Some(parent)=task["parentId"].as_str() {Self::task(db,&a.project,parent).await?} else {Value::Null};
             Self::fresh(a)?;
-            Ok(json!({"task":task,"subtasks":children,"parent":parent}))
+            let attachments=Self::attachment_list(db,&a.project,id).await?;
+            Ok(json!({"task":task,"subtasks":children,"parent":parent,"attachments":attachments}))
         })
         .await
     }
@@ -357,7 +395,7 @@ impl BoardStore {
             let query=if comments {
                 "SELECT jsonb_build_object('id',id,'author',author,'body',body,'createdAt',created_at,'cursor',seq) AS value FROM hagency_project_v1.comments WHERE project_id=$1 AND task_id=$2 AND seq>$3 ORDER BY seq LIMIT $4"
             }else{
-                "SELECT jsonb_build_object('sequence',seq,'taskId',task_id,'actor',actor,'kind',kind,'occurredAt',occurred_at) AS value FROM hagency_project_v1.changes WHERE project_id=$1 AND ($2::text IS NULL OR task_id=$2) AND seq>$3 ORDER BY seq LIMIT $4"
+                "SELECT jsonb_build_object('sequence',seq,'taskId',task_id,'actor',actor,'kind',kind,'occurredAt',occurred_at,'details',details) AS value FROM hagency_project_v1.changes WHERE project_id=$1 AND ($2::text IS NULL OR task_id=$2) AND seq>$3 ORDER BY seq LIMIT $4"
             };
             let rows=sql_query(query).bind::<Text,_>(&a.project).bind::<Nullable<Text>,_>(id).bind::<BigInt,_>(after).bind::<BigInt,_>(limit+1).load::<Row>(db).await?;
             let more=rows.len()>limit as usize;
@@ -455,6 +493,15 @@ impl BoardStore {
             let now=crate::api::now_ms();
             let mut comment=Value::Null;
             let id=match &mutation {
+                Mutation::UploadAttachment {task,input} => {
+                    Self::add_attachment(db,p,a,task,input,now).await?; Some(task.clone())
+                }
+                Mutation::RemoveAttachment {task,input} => {
+                    let changed=sql_query("UPDATE hagency_project_v1.attachments SET removed_at=$4 WHERE project_id=$1 AND task_id=$2 AND id=$3 AND removed_at IS NULL")
+                        .bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<Text,_>(&input.attachment).bind::<BigInt,_>(now).execute(db).await?;
+                    if changed==0 {return Err(Error::NotFound("board_attachment_not_found"));}
+                    Some(task.clone())
+                }
                 Mutation::ConfigureColumns(input)=>{ Self::configure(db,&a.project,seq,input).await?; None }
                 Mutation::Create(input)=>{
                     Self::assignee(db,a,&input.fields).await?;
@@ -502,7 +549,9 @@ impl BoardStore {
             };
             let seq=sql_query("UPDATE hagency_project_v1.boards SET change_seq=change_seq+1 WHERE project_id=$1 RETURNING change_seq AS value").bind::<Text,_>(&a.project).get_result::<Number>(db).await?.value;
             sql_query("INSERT INTO hagency_project_v1.changes(project_id,seq,task_id,actor,kind,occurred_at) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&a.project).bind::<BigInt,_>(seq).bind::<Nullable<Text>,_>(&id).bind::<Text,_>(&p.mxid).bind::<Text,_>(mutation.kind()).bind::<BigInt,_>(now).execute(db).await?;
+            let previous=task.unwrap_or(Value::Null);
             let task=if let Some(id)=&id { Self::task(db,&a.project,id).await? } else { Value::Null };
+            Self::record_collaboration(db,p,a,seq,&mutation,(&previous,&task),now).await?;
             let result=json!({"task":task,"sequence":seq,"comment":comment,"replayed":false});
             sql_query("INSERT INTO hagency_project_v1.receipts(project_id,actor,intent_key,digest,result) VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(&a.project).bind::<Text,_>(&p.mxid).bind::<Text,_>(mutation.intent()).bind::<Text,_>(&digest).bind::<Jsonb,_>(&result).execute(db).await?;
             DomainStore::authorize_identity(db,p,crate::api::now_ms()).await?;Self::fresh(a)?;

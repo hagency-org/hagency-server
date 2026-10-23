@@ -64,3 +64,7 @@
 - Extended only project_board_fixture with explicit OAuth metadata, device-bearing whoami, guarded empty Matrix sync and key/profile test endpoints, plus readable test Project metadata. Real production API/router unchanged; loopback/disposable database guards retained.
 - Client's complete hagency binary restored an isolated Alice SDK session, passed normal issuer/whoami/device checks and NativeOwner authorization, then navigated Projects → Project details → Board and read/wrote Markdown description/comments to actual PostgreSQL. Server and Client restart preserved task#20 v2 and comments. Fixture identity endpoints do not qualify real Pasion/Matrix chat.
 - Fixture build and strict no-deps example Clippy pass; unauthenticated Matrix sync returns401. No deployment or push. Client report dev-vibe/project-kanban-markdown-and-full-client-validation-2026-10-23.zh.md records native steps.
+
+## 2026-10-23 看板 v3 协作数据
+
+`codex/project-kanban` 增加 schema v3：结构化字段变更、按用户隔离的通知/已读状态、经项目成员权限读取的附件。通知与附件变更复用任务事务、board sequence、幂等 receipt；Cloud 无变更。独立临时 PostgreSQL 全套 90 passed / 0 ignored，包含 150 KB 附件专用 HTTP 路由及普通评论 body cap、成员撤销、跨任务与原请求重放；all-target strict Clippy、OpenAPI 77 owner / 4 AS + 13 self-tests 通过。完整原生 Alice/Bob 客户端已验证改派通知和图片上传/预览/下载，字节摘要一致。规范见 `docs/project-board.md`。未部署/推送。

@@ -88,9 +88,11 @@ impl App {
         ))
     }
     pub fn router(&self) -> Router {
-        Router::with_path("hagency/api/v1/{**path}")
-            .hoop(salvo::size_limiter::max_size(131072))
-            .goal(self.clone())
+        Router::new()
+            .push(Router::with_path("hagency/api/v1/projects/{project}/tasks/{task}/attachments")
+                .hoop(salvo::size_limiter::max_size(3*1024*1024)).goal(self.clone()))
+            .push(Router::with_path("hagency/api/v1/{**path}")
+                .hoop(salvo::size_limiter::max_size(131072)).goal(self.clone()))
     }
     pub fn readiness_router(&self) -> Router {
         Router::with_path("readyz").get(StartupReadiness(self.startup_ready.clone()))
@@ -185,7 +187,7 @@ impl App {
         if path == "/hagency/api/v1/discovery" && method == salvo::http::Method::GET {
             return Ok(
                 json!({"product":"hagency-server","version":env!("CARGO_PKG_VERSION"),
-                "capabilities":(["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","processing-reaction-v1","execution-configuration-v1"].into_iter().chain(if self.board_enabled && self.domain.is_some() {Some("project-board-v2")}else{None}).collect::<Vec<_>>()),
+                "capabilities":(["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","processing-reaction-v1","execution-configuration-v1"].into_iter().chain(if self.board_enabled && self.domain.is_some() {Some(crate::project_board::CAPABILITY)}else{None}).collect::<Vec<_>>()),
                 "protocolVersion":3,"serverName":self.server_name,"homeserver":self.public,
                 "serviceMxid":format!("@_hagency_service:{}",self.server_name),"issuer":self.issuer,"authorizationEndpoint":self.issuer.join("authorize").unwrap(),
                 "tokenEndpoint":self.issuer.join("oauth2/token").unwrap(),

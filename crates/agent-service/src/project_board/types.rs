@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub const STATES: [&str; 5] = ["todo", "in_progress", "blocked", "in_review", "done"];
 pub const PRIORITIES: [&str; 4] = ["low", "normal", "high", "urgent"];
-pub const CAPABILITY: &str = "project-board-v2";
+pub const CAPABILITY: &str = "project-board-v3";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -274,4 +274,26 @@ impl ConfigureColumns {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttachmentUpload {
+    pub idempotency_key: String,
+    pub filename: String,
+    pub content_type: String,
+    pub data: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttachmentRemove {
+    pub idempotency_key: String,
+    pub attachment: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NotificationRead {
+    pub sequence: i64,
+    #[serde(default)]
+    pub all_before: bool,
 }

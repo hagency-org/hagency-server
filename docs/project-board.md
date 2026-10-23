@@ -8,7 +8,7 @@ Cloud product code is unchanged; self-hosted servers work independently.
 
 ## Availability and identity
 
-`project-board-v2` appears in native discovery only after the domain (including
+`project-board-v3` appears in native discovery only after the domain (including
 board storage) is initialized. The optional host TOML `project_board_enabled =
 false` removes that capability and closes board endpoints while retaining data.
 It defaults to true, so existing hosting configurations need no new input. This
@@ -31,7 +31,7 @@ Agent ownership/creation permissions and knowing a task ID confer no access.
 ## Storage and concurrency
 
 Additive schema `hagency_project_v1` uses the same Hagency database, an independent
-four-connection pool and its own transaction-protected version-1 and version-2 migrations. It
+four-connection pool and its own transaction-protected version-1, version-2 and version-3 migrations. It
 never changes the existing Agent domain version or Palpo/Pasion migrations.
 Opening an already migrated board store verifies the migration and avoids DDL.
 Pool checkout is bounded by eight seconds, SQL lock waits by five seconds and
@@ -58,7 +58,7 @@ fully loaded unfiltered lane supports precise insertion.
 ## HTTP contract
 
 See the reviewed `crates/agent-service/openapi/hagency-v1.openapi.json` for the
-13 board operations and strict input schemas. All use the existing prefix
+18 board operations and strict input schemas. All use the existing prefix
 `/hagency/api/v1/projects/{projectId}`:
 
 | Method and suffix | Result |
@@ -138,7 +138,7 @@ Cloud self-service recovery implementation is required by this feature.
 
 ## Custom columns, WIP, subtasks and checklists (v2)
 
-Upgrade Server and Client together. Discovery advertises only `project-board-v2`:
+Upgrade Server and Client together. Discovery advertises only `project-board-v3`:
 a fixed-five-column v1 Client must explicitly refuse the incompatible board.
 The additive `schema_v2.sql` seeds every existing board's five columns, replaces
 the fixed-state constraint with a project/column foreign key, and retains task
@@ -178,3 +178,27 @@ review. Task inspector offers editable/ordered checklist rows, parent navigation
 and unlinking, child navigation and creation. Checklist edits become shared only
 when **Save task** succeeds; conflicts preserve the complete draft. Input bodies
 are bounded at 128 KiB; native board responses at 4 MiB.
+
+## Collaboration (v3)
+
+Notifications and structured field changes commit in the same transaction as the
+mutation and original receipt. Recipients are current Project members among the
+creator, previous/current assignee and up to 100 recent discussion participants;
+exact full Matrix IDs mentioned in comments also receive a notification. The
+actor is excluded. No-op field saves do not notify. Historical events are not
+backfilled. Notification reads are scoped to the authenticated user and Project.
+GET `board/notifications?after=0` returns the newest 50, with `next` as an
+exclusive older-than cursor. POST `board/notifications/read` accepts `sequence`
+and optional `allBefore`. The Client provides an in-project inbox and unread
+count, refreshed while the board is active; this does not send OS/email push.
+
+Task detail includes attachment metadata and card summaries include comment and
+attachment counts. POST `tasks/{taskId}/attachments` accepts filename, MIME,
+base64 data and idempotency key. Only this upload route permits a 3 MiB JSON body;
+files must be 1 byte–2 MiB, with at most 20 active files and 40 MiB retained bytes
+per task. PNG/JPEG/PDF signatures are checked; other files use octet-stream.
+GET `tasks/{taskId}/attachments/{attachmentId}` reauthorizes current membership
+and returns the original bytes as base64. POST `.../attachments/remove` soft
+removes the specified attachment. Removed bytes remain counted in retained quota.
+No public URLs are issued. Client preview has dimension/allocation limits;
+external Markdown image URLs are not fetched automatically.

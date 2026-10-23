@@ -3897,6 +3897,7 @@ dependencies = [
 name = "hagency-agent-service"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "diesel",
  "diesel-async",
  "hex",

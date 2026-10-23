@@ -12,12 +12,17 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 async fn body<T: DeserializeOwned>(req: &mut Request) -> Result<T> {
-    req.set_secure_max_size(131072);
+    let limit = if req.uri().path().ends_with("/attachments") {
+        3 * 1024 * 1024
+    } else {
+        131072
+    };
+    req.set_secure_max_size(limit);
     let bytes = req
         .payload()
         .await
         .map_err(|_| Error::Invalid("invalid_board_payload"))?;
-    if bytes.len() > 131072 {
+    if bytes.len() > limit {
         return Err(Error::Invalid("invalid_board_payload"));
     }
     serde_json::from_slice(bytes).map_err(|_| Error::Invalid("invalid_board_payload"))
@@ -106,6 +111,24 @@ pub(crate) async fn call(
     let tail = &parts[6..];
     let board = &domain.board;
     let result = match (req.method().clone(), tail) {
+        (salvo::http::Method::GET, ["board", "notifications"]) => {
+            let (before, _) = history_query(req)?;
+            board.notifications(&principal, &access, before).await?
+        }
+        (salvo::http::Method::POST, ["board", "notifications", "read"]) => {
+            if req.uri().query().is_some() {
+                return Err(Error::Invalid("invalid_board_query"));
+            }
+            board
+                .read_notification(&principal, &access, body(req).await?)
+                .await?
+        }
+        (salvo::http::Method::GET, ["tasks", task, "attachments", id]) => {
+            if req.uri().query().is_some() {
+                return Err(Error::Invalid("invalid_board_query"));
+            }
+            board.attachment(&principal, &access, task, id).await?
+        }
         (salvo::http::Method::GET, ["board"]) => {
             board.board(&principal, &access, query(req)?).await?
         }
@@ -144,6 +167,18 @@ pub(crate) async fn call(
             let mutation = match (method, tail) {
                 (salvo::http::Method::PATCH, ["board", "columns"]) => {
                     Mutation::ConfigureColumns(body(req).await?)
+                }
+                (salvo::http::Method::POST, ["tasks", id, "attachments"]) => {
+                    Mutation::UploadAttachment {
+                        task: (*id).into(),
+                        input: body(req).await?,
+                    }
+                }
+                (salvo::http::Method::POST, ["tasks", id, "attachments", "remove"]) => {
+                    Mutation::RemoveAttachment {
+                        task: (*id).into(),
+                        input: body(req).await?,
+                    }
                 }
                 (salvo::http::Method::POST, ["tasks"]) => Mutation::Create(body(req).await?),
                 (salvo::http::Method::PATCH, ["tasks", id]) => Mutation::Update {

@@ -23,3 +23,5 @@
 - Salvo Request::payload defaults to64KiB even with a larger outer size_limiter. Explicitly set the board parser secure max to128KiB and exercise an actual maximum multilingual checklist over HTTP; only increasing a post-read length check does not increase accepted input.
 
 - Complete desktop board integration now uses project_board_fixture's explicit Matrix/OAuth test protocol. whoami must include FIXTURE_ALICE/FIXTURE_BOB matching the SDK session device; metadata must include both query and fragment response modes. Empty sliding-sync responses must only return requested list names, since encryption and room-list connections differ. These test routes stay in the example, never app.router().
+
+- 看板协作能力为 project-board-v3，增量 schema v3；旧 v2 Client 需同步升级。通知在变更/receipt 同一事务产生，只投递给当前项目成员，操作者不收自己的通知。附件字节留存于独立表，仅精确上传路由允许 3 MiB body，其余 API 保持 128 KiB；单附件解码后最多 2 MiB。项目内通知不等于系统推送。

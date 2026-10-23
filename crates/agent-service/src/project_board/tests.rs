@@ -477,11 +477,44 @@ async fn postgres_board_http_authentication_live_membership_and_typed_payloads()
     );
     let response=TestClient::post(format!("{root}/tasks")).add_header("host","example.test",true).bearer_auth(&alice_token).json(&json!({"idempotencyKey":"forged","state":"todo","fields":{"title":"forged"},"mxid":alice.mxid})).send(&service).await;
     assert_eq!(response.status_code, Some(StatusCode::BAD_REQUEST));
+    // Larger than the ordinary API body cap, but within the attachment-only cap.
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let data = STANDARD.encode(vec![42u8; 150_000]);
+    let payload = json!({"idempotencyKey":"http-upload","filename":"fixture.bin","contentType":"application/octet-stream","data":data});
+    let response = TestClient::post(format!("{root}/tasks/{id}/attachments"))
+        .add_header("host", "example.test", true)
+        .bearer_auth(&alice_token)
+        .json(&payload)
+        .send(&service)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::OK));
+    let response = TestClient::post(format!("{root}/tasks/{id}/comments"))
+        .add_header("host", "example.test", true)
+        .bearer_auth(&alice_token)
+        .json(&json!({"idempotencyKey":"oversize-comment","body":"x".repeat(150_000)}))
+        .send(&service)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::PAYLOAD_TOO_LARGE));
+    let mut response = TestClient::get(format!("{root}/tasks/{id}"))
+        .add_header("host", "example.test", true)
+        .bearer_auth(&bob_token)
+        .send(&service)
+        .await;
+    let detail = response.take_json::<Value>().await.unwrap();
+    let attachment = detail["attachments"][0]["id"].as_str().unwrap();
+    let response = TestClient::get(format!("{root}/tasks/{id}/attachments/{attachment}"))
+        .add_header("host", "example.test", true)
+        .bearer_auth(&bob_token)
+        .send(&service)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::OK));
     members.write().unwrap().remove(&bob.mxid);
     for path in [
         format!("{root}/board"),
         format!("{root}/tasks/{id}"),
         format!("{root}/board/changes?after=0"),
+        format!("{root}/board/notifications"),
+        format!("{root}/tasks/{id}/attachments/{attachment}"),
     ] {
         let response = TestClient::get(path)
             .add_header("host", "example.test", true)
@@ -833,4 +866,187 @@ async fn postgres_subtasks_checklist_versions_and_independent_completion() {
     assert_eq!(detail["task"]["state"], "todo");
     let restored = board.detail(&alice, &access, id).await.unwrap();
     assert_eq!(restored["task"]["checklist"][0]["checked"], true);
+}
+
+#[test]
+fn attachments_reject_invalid_content_names_and_sizes() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let mut input = AttachmentUpload {
+        idempotency_key: "upload".into(),
+        filename: "picture.png".into(),
+        content_type: "image/png".into(),
+        data: STANDARD.encode(b"\x89PNG\r\n\x1a\nfixture"),
+    };
+    assert!(collaboration::attachment_bytes(&input).is_ok());
+    input.filename = "../picture.png".into();
+    assert!(collaboration::attachment_bytes(&input).is_err());
+    input.filename = "picture.png".into();
+    input.content_type = "image/jpeg".into();
+    assert!(collaboration::attachment_bytes(&input).is_err());
+    input.content_type = "application/octet-stream".into();
+    input.data = STANDARD.encode(vec![0; 2 * 1024 * 1024 + 1]);
+    assert!(collaboration::attachment_bytes(&input).is_err());
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_collaboration_notifications_diffs_attachments_and_authorization() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let (_auth, domain, alice, bob, access) = fixture().await;
+    let board = &domain.board;
+    let bob_access = Access {
+        project: access.project.clone(),
+        space: access.space.clone(),
+        actor: bob.mxid.clone(),
+        members: access.members.clone(),
+        observed: crate::api::now_ms(),
+    };
+    let created = board
+        .mutate(
+            &alice,
+            &access,
+            create("collaboration-create", "Collaboration test"),
+        )
+        .await
+        .unwrap();
+    let task = created["task"]["id"].as_str().unwrap();
+    let fields = Fields {
+        title: "Assigned collaboration test".into(),
+        assignee_mxid: Some(bob.mxid.clone()),
+        ..Default::default()
+    };
+    board
+        .mutate(
+            &alice,
+            &access,
+            Mutation::Update {
+                task: task.into(),
+                input: Update {
+                    idempotency_key: "collaboration-assign".into(),
+                    expected_version: 1,
+                    fields,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let inbox = board.notifications(&bob, &bob_access, 0).await.unwrap();
+    assert_eq!(inbox["unread"], 1);
+    assert_eq!(inbox["items"][0]["taskId"], task);
+    assert!(
+        inbox["items"][0]["details"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["field"] == "assigneeMxid" && f["after"] == bob.mxid)
+    );
+    assert_eq!(
+        board.notifications(&alice, &access, 0).await.unwrap()["unread"],
+        0
+    );
+    let sequence = inbox["items"][0]["sequence"].as_i64().unwrap();
+    board
+        .read_notification(
+            &alice,
+            &access,
+            NotificationRead {
+                sequence,
+                all_before: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        board.notifications(&bob, &bob_access, 0).await.unwrap()["unread"],
+        1
+    );
+    board
+        .read_notification(
+            &bob,
+            &bob_access,
+            NotificationRead {
+                sequence,
+                all_before: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        board.notifications(&bob, &bob_access, 0).await.unwrap()["unread"],
+        0
+    );
+    let bytes = b"\x89PNG\r\n\x1a\nattachment fixture";
+    let upload = || Mutation::UploadAttachment {
+        task: task.into(),
+        input: AttachmentUpload {
+            idempotency_key: "collaboration-file".into(),
+            filename: "design.png".into(),
+            content_type: "image/png".into(),
+            data: STANDARD.encode(bytes),
+        },
+    };
+    board.mutate(&alice, &access, upload()).await.unwrap();
+    assert_eq!(
+        board.mutate(&alice, &access, upload()).await.unwrap()["replayed"],
+        true
+    );
+    let detail = board.detail(&bob, &bob_access, task).await.unwrap();
+    assert_eq!(detail["attachments"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["task"]["attachmentCount"], 1);
+    let attachment = detail["attachments"][0]["id"].as_str().unwrap();
+    assert_eq!(
+        board
+            .attachment(&bob, &bob_access, task, attachment)
+            .await
+            .unwrap()["data"],
+        STANDARD.encode(bytes)
+    );
+    assert!(
+        board
+            .attachment(&bob, &bob_access, "other_task", attachment)
+            .await
+            .is_err()
+    );
+    let mut revoked = Access {
+        project: access.project.clone(),
+        space: access.space.clone(),
+        actor: bob.mxid.clone(),
+        members: access.members.clone(),
+        observed: crate::api::now_ms(),
+    };
+    revoked.members.remove(&bob.mxid);
+    assert!(
+        board
+            .attachment(&bob, &revoked, task, attachment)
+            .await
+            .is_err()
+    );
+    assert!(board.notifications(&bob, &revoked, 0).await.is_err());
+    assert_eq!(
+        board.notifications(&bob, &bob_access, 0).await.unwrap()["unread"],
+        1
+    );
+    board
+        .mutate(
+            &alice,
+            &access,
+            Mutation::RemoveAttachment {
+                task: task.into(),
+                input: AttachmentRemove {
+                    idempotency_key: "collaboration-remove".into(),
+                    attachment: attachment.into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        board
+            .attachment(&bob, &bob_access, task, attachment)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        board.detail(&bob, &bob_access, task).await.unwrap()["task"]["attachmentCount"],
+        0
+    );
 }
