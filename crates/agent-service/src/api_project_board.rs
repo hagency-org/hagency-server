@@ -12,11 +12,12 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 async fn body<T: DeserializeOwned>(req: &mut Request) -> Result<T> {
+    req.set_secure_max_size(131072);
     let bytes = req
         .payload()
         .await
         .map_err(|_| Error::Invalid("invalid_board_payload"))?;
-    if bytes.len() > 65536 {
+    if bytes.len() > 131072 {
         return Err(Error::Invalid("invalid_board_payload"));
     }
     serde_json::from_slice(bytes).map_err(|_| Error::Invalid("invalid_board_payload"))
@@ -141,6 +142,9 @@ pub(crate) async fn call(
                 return Err(Error::Invalid("invalid_board_query"));
             }
             let mutation = match (method, tail) {
+                (salvo::http::Method::PATCH, ["board", "columns"]) => {
+                    Mutation::ConfigureColumns(body(req).await?)
+                }
                 (salvo::http::Method::POST, ["tasks"]) => Mutation::Create(body(req).await?),
                 (salvo::http::Method::PATCH, ["tasks", id]) => Mutation::Update {
                     task: (*id).into(),

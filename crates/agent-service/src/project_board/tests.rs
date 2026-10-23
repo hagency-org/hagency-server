@@ -521,3 +521,316 @@ async fn postgres_board_http_authentication_live_membership_and_typed_payloads()
         .await;
     assert_eq!(response.status_code, Some(StatusCode::NOT_FOUND));
 }
+
+#[test]
+fn columns_and_checklists_have_bounded_stable_contracts() {
+    let mut config = ConfigureColumns {
+        idempotency_key: "columns".into(),
+        expected_sequence: 0,
+        columns: default_columns(),
+    };
+    config.validate().unwrap();
+    config.columns[0].wip_limit = Some(0);
+    assert!(config.validate().is_err());
+    config.columns[0].wip_limit = None;
+    for c in &mut config.columns {
+        c.is_done = false;
+    }
+    assert!(config.validate().is_err());
+    let mut fields = Fields {
+        title: "Checklist".into(),
+        checklist: vec![ChecklistItem {
+            id: "one".into(),
+            title: " First ".into(),
+            checked: false,
+        }],
+        ..Default::default()
+    };
+    fields.validate().unwrap();
+    assert_eq!(fields.checklist[0].title, "First");
+    fields.checklist.push(fields.checklist[0].clone());
+    assert!(fields.validate().is_err());
+    // Empty added fields must preserve the v1 receipt digest for original retries.
+    let wire = serde_json::to_value(Fields::default()).unwrap();
+    assert!(wire.get("parentId").is_none());
+    assert!(wire.get("checklist").is_none());
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_custom_columns_wip_races_and_config_replay() {
+    let (_auth, domain, alice, _bob, access) = fixture().await;
+    let board = &domain.board;
+    let mut columns = default_columns();
+    columns.insert(
+        1,
+        ColumnDefinition {
+            id: "testing".into(),
+            title: "验证".into(),
+            wip_limit: Some(1),
+            is_done: false,
+        },
+    );
+    let config = Mutation::ConfigureColumns(ConfigureColumns {
+        idempotency_key: "columns".into(),
+        expected_sequence: 0,
+        columns: columns.clone(),
+    });
+    let ack = board.mutate(&alice, &access, config.clone()).await.unwrap();
+    assert_eq!(ack["sequence"], 1);
+    assert_eq!(
+        board.mutate(&alice, &access, config).await.unwrap()["replayed"],
+        true
+    );
+    let create_in = |key: &str| {
+        Mutation::Create(Create {
+            idempotency_key: key.into(),
+            state: "testing".into(),
+            fields: Fields {
+                title: key.into(),
+                ..Default::default()
+            },
+        })
+    };
+    let (a, b) = tokio::join!(
+        board.mutate(&alice, &access, create_in("a")),
+        board.mutate(&alice, &access, create_in("b"))
+    );
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    let (task, error) = if let Ok(t) = a {
+        (t, b.unwrap_err())
+    } else {
+        (b.unwrap(), a.unwrap_err())
+    };
+    assert!(matches!(error, Error::Conflict("board_wip_limit_reached")));
+    let id = task["task"]["id"].as_str().unwrap();
+    board
+        .mutate(&alice, &access, movement("same", id, 1, "testing"))
+        .await
+        .unwrap();
+    let todo = board
+        .mutate(&alice, &access, create("todo", "Second"))
+        .await
+        .unwrap();
+    let other = todo["task"]["id"].as_str().unwrap();
+    assert!(matches!(
+        board
+            .mutate(&alice, &access, movement("full", other, 1, "testing"))
+            .await,
+        Err(Error::Conflict("board_wip_limit_reached"))
+    ));
+    let snapshot = board
+        .board(
+            &alice,
+            &access,
+            Query {
+                query: Some("no-match".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(snapshot["lanes"][1]["total"], 0);
+    assert_eq!(snapshot["lanes"][1]["taskCount"], 1);
+    columns.remove(1);
+    assert!(matches!(
+        board
+            .mutate(
+                &alice,
+                &access,
+                Mutation::ConfigureColumns(ConfigureColumns {
+                    idempotency_key: "remove-nonempty".into(),
+                    expected_sequence: snapshot["sequence"].as_i64().unwrap(),
+                    columns
+                })
+            )
+            .await,
+        Err(Error::Conflict("board_column_not_empty"))
+    ));
+    board
+        .mutate(
+            &alice,
+            &access,
+            Mutation::Archive {
+                task: id.into(),
+                input: Versioned {
+                    idempotency_key: "archive".into(),
+                    expected_version: 2,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    board
+        .mutate(&alice, &access, movement("admit", other, 1, "testing"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        board
+            .mutate(
+                &alice,
+                &access,
+                Mutation::Restore {
+                    task: id.into(),
+                    input: Versioned {
+                        idempotency_key: "restore-full".into(),
+                        expected_version: 3
+                    }
+                }
+            )
+            .await,
+        Err(Error::Conflict("board_wip_limit_reached"))
+    ));
+    let reopened = BoardStore::open(&std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    let snapshot = reopened
+        .board(&alice, &access, Query::default())
+        .await
+        .unwrap();
+    assert_eq!(snapshot["lanes"][1]["title"], "验证");
+    assert_eq!(snapshot["lanes"][1]["wipLimit"], 1);
+    let mut ordered = BoardStore::columns(&mut board.connection().await.unwrap(), &access.project)
+        .await
+        .unwrap();
+    ordered.push(ColumnDefinition {
+        id: "temporary_empty".into(),
+        title: "Temporary empty".into(),
+        wip_limit: None,
+        is_done: false,
+    });
+    let added = board
+        .mutate(
+            &alice,
+            &access,
+            Mutation::ConfigureColumns(ConfigureColumns {
+                idempotency_key: "add-empty".into(),
+                expected_sequence: snapshot["sequence"].as_i64().unwrap(),
+                columns: ordered.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+    ordered.pop();
+    board
+        .mutate(
+            &alice,
+            &access,
+            Mutation::ConfigureColumns(ConfigureColumns {
+                idempotency_key: "delete-empty".into(),
+                expected_sequence: added["sequence"].as_i64().unwrap(),
+                columns: ordered,
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        board
+            .board(&alice, &access, Query::default())
+            .await
+            .unwrap()["lanes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        6
+    );
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_subtasks_checklist_versions_and_independent_completion() {
+    let (_auth, domain, alice, _bob, access) = fixture().await;
+    let board = &domain.board;
+    let parent = board
+        .mutate(&alice, &access, create("parent", "Parent"))
+        .await
+        .unwrap();
+    let parent_id = parent["task"]["id"].as_str().unwrap();
+    let fields = Fields {
+        title: "Child".into(),
+        parent_id: Some(parent_id.into()),
+        checklist: vec![ChecklistItem {
+            id: "item".into(),
+            title: "Verify actual UI".into(),
+            checked: false,
+        }],
+        ..Default::default()
+    };
+    let child = board
+        .mutate(
+            &alice,
+            &access,
+            Mutation::Create(Create {
+                idempotency_key: "child".into(),
+                state: "todo".into(),
+                fields: fields.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+    let id = child["task"]["id"].as_str().unwrap();
+    let mut checked = fields.clone();
+    checked.checklist[0].checked = true;
+    let update = Mutation::Update {
+        task: id.into(),
+        input: Update {
+            idempotency_key: "check".into(),
+            expected_version: 1,
+            fields: checked,
+        },
+    };
+    let ack = board.mutate(&alice, &access, update.clone()).await.unwrap();
+    assert_eq!(ack["task"]["checklistDone"], 1);
+    assert_eq!(
+        board.mutate(&alice, &access, update).await.unwrap()["replayed"],
+        true
+    );
+    assert!(matches!(
+        board
+            .mutate(
+                &alice,
+                &access,
+                Mutation::Update {
+                    task: id.into(),
+                    input: Update {
+                        idempotency_key: "stale".into(),
+                        expected_version: 1,
+                        fields: fields.clone()
+                    }
+                }
+            )
+            .await,
+        Err(Error::Conflict("board_version_conflict"))
+    ));
+    for invalid in [id, parent_id] {
+        let mut nested = fields.clone();
+        nested.parent_id = Some(invalid.into());
+        assert!(matches!(
+            board
+                .mutate(
+                    &alice,
+                    &access,
+                    Mutation::Update {
+                        task: parent_id.into(),
+                        input: Update {
+                            idempotency_key: format!("cycle-{invalid}"),
+                            expected_version: 1,
+                            fields: nested
+                        }
+                    }
+                )
+                .await,
+            Err(Error::Invalid("invalid_board_parent"))
+        ));
+    }
+    let detail = board.detail(&alice, &access, parent_id).await.unwrap();
+    assert_eq!(detail["subtasks"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["task"]["subtaskTotal"], 1);
+    board
+        .mutate(&alice, &access, movement("done", id, 2, "done"))
+        .await
+        .unwrap();
+    let detail = board.detail(&alice, &access, parent_id).await.unwrap();
+    assert_eq!(detail["task"]["subtaskDone"], 1);
+    assert_eq!(detail["task"]["state"], "todo");
+    let restored = board.detail(&alice, &access, id).await.unwrap();
+    assert_eq!(restored["task"]["checklist"][0]["checked"], true);
+}

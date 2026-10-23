@@ -6092,7 +6092,7 @@
       "get": {
         "operationId": "getProjectBoard",
         "summary": "getProjectBoard",
-        "description": "Shared human work items; requires project-board-v1 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6114,13 +6114,9 @@
             "required": false,
             "schema": {
               "type": "string",
-              "enum": [
-                "todo",
-                "in_progress",
-                "blocked",
-                "in_review",
-                "done"
-              ]
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9_-]+$"
             }
           },
           {
@@ -6254,7 +6250,7 @@
       "get": {
         "operationId": "listProjectTasks",
         "summary": "listProjectTasks",
-        "description": "Shared human work items; requires project-board-v1 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6276,13 +6272,9 @@
             "required": false,
             "schema": {
               "type": "string",
-              "enum": [
-                "todo",
-                "in_progress",
-                "blocked",
-                "in_review",
-                "done"
-              ]
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9_-]+$"
             }
           },
           {
@@ -6431,7 +6423,7 @@
       "post": {
         "operationId": "createProjectTask",
         "summary": "createProjectTask",
-        "description": "Shared human work items; requires project-board-v1 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6535,7 +6527,7 @@
       "get": {
         "operationId": "getProjectTask",
         "summary": "getProjectTask",
-        "description": "Shared human work items; requires project-board-v1 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6636,7 +6628,7 @@
       "patch": {
         "operationId": "updateProjectTask",
         "summary": "updateProjectTask",
-        "description": "Shared human work items; requires project-board-v1 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6749,7 +6741,7 @@
       "post": {
         "operationId": "moveProjectTask",
         "summary": "moveProjectTask",
-        "description": "Shared human work items; requires project-board-v1 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6862,7 +6854,7 @@
       "post": {
         "operationId": "archiveProjectTask",
         "summary": "archiveProjectTask",
-        "description": "Shared human work items; requires project-board-v1 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6975,7 +6967,7 @@
       "post": {
         "operationId": "restoreProjectTask",
         "summary": "restoreProjectTask",
-        "description": "Shared human work items; requires project-board-v1 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7088,7 +7080,7 @@
       "get": {
         "operationId": "listProjectTaskComments",
         "summary": "listProjectTaskComments",
-        "description": "Shared human work items; requires project-board-v1 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7210,7 +7202,7 @@
       "post": {
         "operationId": "commentOnProjectTask",
         "summary": "commentOnProjectTask",
-        "description": "Shared human work items; requires project-board-v1 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7323,7 +7315,7 @@
       "get": {
         "operationId": "getProjectTaskActivity",
         "summary": "getProjectTaskActivity",
-        "description": "Shared human work items; requires project-board-v1 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7447,7 +7439,7 @@
       "get": {
         "operationId": "getProjectBoardChanges",
         "summary": "getProjectBoardChanges",
-        "description": "Shared human work items; requires project-board-v1 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7555,6 +7547,110 @@
           "anchors": [
             "salvo::http::Method::GET, [\"board\", \"changes\"]"
           ]
+        }
+      }
+    },
+    "/hagency/api/v1/projects/{projectId}/board/columns": {
+      "patch": {
+        "operationId": "configureProjectBoardColumns",
+        "summary": "Configure Project board columns and WIP limits",
+        "description": "Shared human work items; requires project-board-v2 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "security": [
+          {
+            "userBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BoardMutation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_project_board.rs",
+          "anchors": [
+            "salvo::http::Method::PATCH, [\"board\", \"columns\"]"
+          ]
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigureColumns"
+              }
+            }
+          }
         }
       }
     }
@@ -11331,6 +11427,23 @@
                 "type": "null"
               }
             ]
+          },
+          "parentId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checklist": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChecklistItem"
+            },
+            "maxItems": 100
           }
         },
         "required": [
@@ -11346,7 +11459,9 @@
             "priority",
             "assignee_mxid",
             "labels",
-            "due_date"
+            "due_date",
+            "parent_id",
+            "checklist"
           ],
           "strictInput": true
         }
@@ -11364,13 +11479,9 @@
           },
           "state": {
             "type": "string",
-            "enum": [
-              "todo",
-              "in_progress",
-              "blocked",
-              "in_review",
-              "done"
-            ]
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
           }
         },
         "required": [
@@ -11433,13 +11544,9 @@
           },
           "state": {
             "type": "string",
-            "enum": [
-              "todo",
-              "in_progress",
-              "blocked",
-              "in_review",
-              "done"
-            ]
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
           },
           "expectedSequence": {
             "anyOf": [
@@ -11574,13 +11681,9 @@
           },
           "state": {
             "type": "string",
-            "enum": [
-              "todo",
-              "in_progress",
-              "blocked",
-              "in_review",
-              "done"
-            ]
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
           },
           "rank": {
             "type": "integer",
@@ -11644,6 +11747,45 @@
                 "type": "null"
               }
             ]
+          },
+          "parentId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parentNumber": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checklist": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChecklistItem"
+            },
+            "maxItems": 100
+          },
+          "checklistTotal": {
+            "type": "integer"
+          },
+          "checklistDone": {
+            "type": "integer"
+          },
+          "subtaskTotal": {
+            "type": "integer"
+          },
+          "subtaskDone": {
+            "type": "integer"
           }
         },
         "required": [
@@ -11661,7 +11803,13 @@
           "createdBy",
           "createdAt",
           "updatedAt",
-          "archivedAt"
+          "archivedAt",
+          "parentId",
+          "parentNumber",
+          "checklistTotal",
+          "checklistDone",
+          "subtaskTotal",
+          "subtaskDone"
         ],
         "additionalProperties": false
       },
@@ -11670,13 +11818,9 @@
         "properties": {
           "state": {
             "type": "string",
-            "enum": [
-              "todo",
-              "in_progress",
-              "blocked",
-              "in_review",
-              "done"
-            ]
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]+$"
           },
           "total": {
             "type": "integer"
@@ -11700,6 +11844,25 @@
           },
           "sequence": {
             "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "wipLimit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "isDone": {
+            "type": "boolean"
+          },
+          "taskCount": {
+            "type": "integer"
           }
         },
         "required": [
@@ -11707,7 +11870,11 @@
           "total",
           "tasks",
           "nextCursor",
-          "sequence"
+          "sequence",
+          "title",
+          "wipLimit",
+          "isDone",
+          "taskCount"
         ],
         "additionalProperties": false
       },
@@ -11725,8 +11892,8 @@
             "items": {
               "$ref": "#/components/schemas/BoardLane"
             },
-            "minItems": 5,
-            "maxItems": 5
+            "minItems": 2,
+            "maxItems": 12
           },
           "members": {
             "type": "array",
@@ -11737,7 +11904,7 @@
           },
           "capability": {
             "type": "string",
-            "const": "project-board-v1"
+            "const": "project-board-v2"
           }
         },
         "required": [
@@ -11789,10 +11956,29 @@
         "properties": {
           "task": {
             "$ref": "#/components/schemas/BoardTask"
+          },
+          "subtasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BoardTask"
+            },
+            "maxItems": 100
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BoardTask"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
-          "task"
+          "task",
+          "subtasks",
+          "parent"
         ],
         "additionalProperties": false
       },
@@ -11830,7 +12016,14 @@
             "type": "integer"
           },
           "taskId": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "actor": {
             "type": "string"
@@ -11843,7 +12036,8 @@
               "moved",
               "archived",
               "restored",
-              "commented"
+              "commented",
+              "columns_updated"
             ]
           },
           "occurredAt": {
@@ -11863,7 +12057,14 @@
         "type": "object",
         "properties": {
           "task": {
-            "$ref": "#/components/schemas/BoardTask"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BoardTask"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "sequence": {
             "type": "integer"
@@ -11945,6 +12146,122 @@
           "sequence"
         ],
         "additionalProperties": false
+      },
+      "ChecklistItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "checked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "checked"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/project_board/types.rs",
+          "name": "ChecklistItem",
+          "serializedFields": [
+            "id",
+            "title",
+            "checked"
+          ],
+          "strictInput": true
+        }
+      },
+      "ColumnDefinition": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 48
+          },
+          "wipLimit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "isDone": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "wipLimit",
+          "isDone"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/project_board/types.rs",
+          "name": "ColumnDefinition",
+          "serializedFields": [
+            "id",
+            "title",
+            "wip_limit",
+            "is_done"
+          ],
+          "strictInput": true
+        }
+      },
+      "ConfigureColumns": {
+        "type": "object",
+        "properties": {
+          "idempotencyKey": {
+            "type": "string"
+          },
+          "expectedSequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ColumnDefinition"
+            },
+            "minItems": 2,
+            "maxItems": 12
+          }
+        },
+        "required": [
+          "idempotencyKey",
+          "expectedSequence",
+          "columns"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/project_board/types.rs",
+          "name": "ConfigureColumns",
+          "serializedFields": [
+            "idempotency_key",
+            "expected_sequence",
+            "columns"
+          ],
+          "strictInput": true
+        }
       }
     },
     "securitySchemes": {
@@ -11963,11 +12280,11 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "62601ac181934a0036a49f83a10e0d0c4a952e9f84c3df9eaa3eb1cd154a1221",
+    "crates/agent-service/src/api.rs": "aff7821c04ff4fd14c6e9922700c6e90f36bfba056c78e4aa9cce6a3b674b4d7",
     "crates/agent-service/src/api_transport.rs": "572e64784679c2c40ff2da96b4ff558c38c157b67ff2544e576540b7922087f7",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
-    "crates/agent-service/src/api_project_board.rs": "62bfedc00f7b1a48e4339ee0acf007ef80f857ed12b3479918d7bdc3a71decd8"
+    "crates/agent-service/src/api_project_board.rs": "0841cfaa2da1f92977b181b537252d8ecd9a308b7f36147c257cf5c3932c1ff7"
   },
   "x-not-implemented": [
     "POST /hagency/api/v1/projects (create Matrix Space)",

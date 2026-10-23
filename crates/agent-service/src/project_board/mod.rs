@@ -1,4 +1,5 @@
 //! Shared human work items. A separate pool never queues behind Agent storage.
+mod columns;
 mod types;
 use crate::{Error, Result, domain::DomainStore, store::Principal};
 use diesel::{
@@ -44,6 +45,7 @@ struct Flag {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub(crate) enum Mutation {
+    ConfigureColumns(ConfigureColumns),
     Create(Create),
     Update { task: String, input: Update },
     Move { task: String, input: Move },
@@ -54,6 +56,7 @@ pub(crate) enum Mutation {
 impl Mutation {
     fn intent(&self) -> &str {
         match self {
+            Self::ConfigureColumns(i) => &i.idempotency_key,
             Self::Create(i) => &i.idempotency_key,
             Self::Update { input, .. } => &input.idempotency_key,
             Self::Move { input, .. } => &input.idempotency_key,
@@ -63,7 +66,7 @@ impl Mutation {
     }
     fn task(&self) -> Option<&str> {
         match self {
-            Self::Create(_) => None,
+            Self::Create(_) | Self::ConfigureColumns(_) => None,
             Self::Update { task, .. }
             | Self::Move { task, .. }
             | Self::Archive { task, .. }
@@ -83,6 +86,7 @@ impl Mutation {
     }
     fn kind(&self) -> &str {
         match self {
+            Self::ConfigureColumns(_) => "columns_updated",
             Self::Create(_) => "created",
             Self::Update { .. } => "edited",
             Self::Move { .. } => "moved",
@@ -100,6 +104,7 @@ impl Mutation {
             return Err(Error::Invalid("invalid_board_version"));
         }
         match self {
+            Self::ConfigureColumns(i) => i.validate()?,
             Self::Create(i) => {
                 i.fields.validate()?;
                 state(&i.state)?;
@@ -136,14 +141,14 @@ impl Mutation {
     }
 }
 fn state(value: &str) -> Result<()> {
-    if STATES.contains(&value) {
+    if valid_state(value) {
         Ok(())
     } else {
         Err(Error::Invalid("invalid_board_state"))
     }
 }
-const TASK_JSON: &str = "jsonb_build_object('id',t.id,'projectId',t.project_id,'number',t.number,'title',t.title,'description',t.description,'state',t.state_key,'rank',t.rank,'priority',t.priority,'assigneeMxid',t.assignee_mxid,'labels',t.labels,'dueDate',t.due_date::text,'version',t.version,'createdBy',t.created_by,'createdAt',t.created_at,'updatedAt',t.updated_at,'archivedAt',t.archived_at)";
-const FILTER: &str = "t.project_id=$1 AND ($2::text IS NULL OR t.state_key=$2) AND ($3::text IS NULL OR t.assignee_mxid=$3) AND ($4::text IS NULL OR t.labels ? $4) AND ($5::text IS NULL OR position(lower($5) in lower(t.title))>0) AND (NOT $6 OR (t.due_date<(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date AND t.state_key<>'done')) AND ((t.archived_at IS NOT NULL)=$7)";
+const TASK_JSON: &str = "jsonb_build_object('id',t.id,'projectId',t.project_id,'number',t.number,'title',t.title,'description',t.description,'state',t.state_key,'rank',t.rank,'priority',t.priority,'assigneeMxid',t.assignee_mxid,'labels',t.labels,'dueDate',t.due_date::text,'version',t.version,'createdBy',t.created_by,'createdAt',t.created_at,'updatedAt',t.updated_at,'archivedAt',t.archived_at,'parentId',t.parent_id,'parentNumber',(SELECT p.number FROM hagency_project_v1.tasks p WHERE p.id=t.parent_id AND p.project_id=t.project_id),'checklist',t.checklist,'checklistTotal',jsonb_array_length(t.checklist),'checklistDone',(SELECT count(*) FROM jsonb_array_elements(t.checklist) i WHERE (i->>'checked')::boolean),'subtaskTotal',(SELECT count(*) FROM hagency_project_v1.tasks c WHERE c.project_id=t.project_id AND c.parent_id=t.id AND c.archived_at IS NULL),'subtaskDone',(SELECT count(*) FROM hagency_project_v1.tasks c JOIN hagency_project_v1.columns col ON col.project_id=c.project_id AND col.column_key=c.state_key WHERE c.project_id=t.project_id AND c.parent_id=t.id AND c.archived_at IS NULL AND col.is_done))";
+const FILTER: &str = "t.project_id=$1 AND ($2::text IS NULL OR t.state_key=$2) AND ($3::text IS NULL OR t.assignee_mxid=$3) AND ($4::text IS NULL OR t.labels ? $4) AND ($5::text IS NULL OR position(lower($5) in lower(t.title))>0) AND (NOT $6 OR (t.due_date<(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date AND NOT EXISTS(SELECT 1 FROM hagency_project_v1.columns col WHERE col.project_id=t.project_id AND col.column_key=t.state_key AND col.is_done))) AND ((t.archived_at IS NOT NULL)=$7)";
 
 impl BoardStore {
     pub async fn open(url: &str) -> Result<Self> {
@@ -159,12 +164,15 @@ impl BoardStore {
             let exists=sql_query("SELECT to_regclass('hagency_project_v1.migrations') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
             if exists {
                 let version=sql_query("SELECT coalesce(max(version),0)::bigint AS value FROM hagency_project_v1.migrations").get_result::<Number>(db).await?.value;
-                if version!=1{return Err(Error::Conflict("board_schema_incompatible"));}
+                if !(1..=2).contains(&version){return Err(Error::Conflict("board_schema_incompatible"));}
                 let complete=sql_query("SELECT to_regclass('hagency_project_v1.boards') IS NOT NULL AND to_regclass('hagency_project_v1.tasks') IS NOT NULL AND to_regclass('hagency_project_v1.comments') IS NOT NULL AND to_regclass('hagency_project_v1.changes') IS NOT NULL AND to_regclass('hagency_project_v1.receipts') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
+                if version==2 && !sql_query("SELECT to_regclass('hagency_project_v1.columns') IS NOT NULL AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if !complete{return Err(Error::Conflict("board_schema_incompatible"));}
+                if version == 1 { db.batch_execute(include_str!("schema_v2.sql")).await?; }
                 return Ok(());
             }
             db.batch_execute(include_str!("schema.sql")).await?;
+            db.batch_execute(include_str!("schema_v2.sql")).await?;
             Ok(())
         }).await?;
         drop(db);
@@ -256,7 +264,7 @@ impl BoardStore {
         .get_result::<Number>(db)
         .await?
         .value;
-        let rows=sql_query(format!("SELECT {TASK_JSON}-'description' AS value FROM hagency_project_v1.tasks t WHERE {FILTER} AND ($8::text IS NULL OR (t.rank,t.id)>(SELECT c.rank,c.id FROM hagency_project_v1.tasks c WHERE c.project_id=$1 AND c.id=$8)) ORDER BY t.rank,t.id LIMIT $9"))
+        let rows=sql_query(format!("SELECT {TASK_JSON}-'description'-'checklist' AS value FROM hagency_project_v1.tasks t WHERE {FILTER} AND ($8::text IS NULL OR (t.rank,t.id)>(SELECT c.rank,c.id FROM hagency_project_v1.tasks c WHERE c.project_id=$1 AND c.id=$8)) ORDER BY t.rank,t.id LIMIT $9"))
             .bind::<Text,_>(project).bind::<Nullable<Text>,_>(&q.state).bind::<Nullable<Text>,_>(&q.assignee).bind::<Nullable<Text>,_>(&q.label).bind::<Nullable<Text>,_>(&q.query).bind::<Bool,_>(q.overdue).bind::<Bool,_>(q.archived).bind::<Nullable<Text>,_>(cursor).bind::<BigInt,_>(limit+1).load::<Row>(db).await?;
         let more = rows.len() > limit as usize;
         let tasks: Vec<_> = rows
@@ -284,11 +292,12 @@ impl BoardStore {
             Self::authorize(db,p,a).await?;
             let seq=Self::sequence(db,&a.project).await?;
             let mut lanes=Vec::new();
-            for name in STATES {
-                if q.state.as_ref().is_some_and(|state|state!=name){lanes.push(json!({"state":name,"tasks":[],"total":0,"nextCursor":null,"sequence":seq}));continue;}
-                let mut query=q.clone();query.state=Some(name.into());
-                let mut page=Self::page(db,&a.project,&query,seq).await?;
-                page["state"]=json!(name);lanes.push(page);
+            for column in Self::columns(db,&a.project).await? {
+                let name=&column.id;
+                let count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND state_key=$2 AND archived_at IS NULL").bind::<Text,_>(&a.project).bind::<Text,_>(name).get_result::<Number>(db).await?.value;
+                let mut query=q.clone();query.state=Some(name.clone());
+                let mut page=if q.state.as_ref().is_some_and(|s| s!=name) { json!({"tasks":[],"total":0,"nextCursor":null,"sequence":seq}) } else { Self::page(db,&a.project,&query,seq).await? };
+                page["state"]=json!(name);page["title"]=json!(column.title);page["wipLimit"]=json!(column.wip_limit);page["isDone"]=json!(column.is_done);page["taskCount"]=json!(count);lanes.push(page);
             }
             let members:Vec<_>=a.members.iter().filter(|m|!m.starts_with("@_hagency_")).take(1000).collect();
             Self::fresh(a)?;
@@ -312,11 +321,15 @@ impl BoardStore {
     pub(crate) async fn detail(&self, p: &Principal, a: &Access, id: &str) -> Result<Value> {
         crate::key(id)?;
         let mut db = self.connection().await?;
-        db.transaction::<_, Error, _>(async |db| {
+        db.build_transaction().repeatable_read().run::<_, Error, _>(async |db| {
             Self::authorize(db, p, a).await?;
             let task = Self::task(db, &a.project, id).await?;
             Self::fresh(a)?;
-            Ok(json!({"task":task}))
+            let children=sql_query(format!("SELECT {TASK_JSON}-'description'-'checklist' AS value FROM hagency_project_v1.tasks t WHERE t.project_id=$1 AND t.parent_id=$2 ORDER BY t.number LIMIT 100"))
+                .bind::<Text,_>(&a.project).bind::<Text,_>(id).load::<Row>(db).await?.into_iter().map(|r|r.value).collect::<Vec<_>>();
+            let parent = if let Some(parent)=task["parentId"].as_str() {Self::task(db,&a.project,parent).await?} else {Value::Null};
+            Self::fresh(a)?;
+            Ok(json!({"task":task,"subtasks":children,"parent":parent}))
         })
         .await
     }
@@ -431,58 +444,66 @@ impl BoardStore {
                 Ok(row)=>{if row.value["digest"]!=digest{return Err(Error::Conflict("board_idempotency_conflict"));}let mut result=row.value["result"].clone();result["replayed"]=json!(true);return Ok(result);}
                 Err(diesel::result::Error::NotFound)=>(),Err(e)=>return Err(e.into())
             }
+            Self::ensure_columns(db,&a.project).await?;
             let task=if let Some(id)=mutation.task(){Some(Self::task(db,&a.project,id).await?)}else{None};
             if let Some(expected)=mutation.expected() && task.as_ref().and_then(|t|t["version"].as_i64())!=Some(expected){return Err(Error::Conflict("board_version_conflict"));}
             if let Some(task)=&task {
                 let archived=!task["archivedAt"].is_null();
                 if archived&&!matches!(mutation,Mutation::Restore{..}) || !archived&&matches!(mutation,Mutation::Restore{..}){return Err(Error::Conflict("board_archive_conflict"));}
             }
+            let current_state=task.as_ref().and_then(|t|t["state"].as_str()).unwrap_or("").to_owned();
             let now=crate::api::now_ms();
             let mut comment=Value::Null;
             let id=match &mutation {
+                Mutation::ConfigureColumns(input)=>{ Self::configure(db,&a.project,seq,input).await?; None }
                 Mutation::Create(input)=>{
                     Self::assignee(db,a,&input.fields).await?;
                     let count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND archived_at IS NULL").bind::<Text,_>(&a.project).get_result::<Number>(db).await?.value;
                     if count>=10000{return Err(Error::Conflict("board_capacity_exceeded"));}
                     let id=format!("tsk_{}",crate::entity_id()?);
+                    Self::admit(db,&a.project,&input.state,false).await?;
+                    Self::parent(db,&a.project,&id,&input.fields).await?;
                     let rank=Self::rank(db,&a.project,&input.state,&id,None).await?;
                     let number=sql_query("UPDATE hagency_project_v1.boards SET next_number=next_number+1 WHERE project_id=$1 RETURNING next_number-1 AS value").bind::<Text,_>(&a.project).get_result::<Number>(db).await?.value;
                     let f=&input.fields;
-                    sql_query("INSERT INTO hagency_project_v1.tasks(id,project_id,number,title,description,state_key,rank,priority,assignee_mxid,labels,due_date,created_by,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::text::date,$12,$13,$13)")
-                        .bind::<Text,_>(&id).bind::<Text,_>(&a.project).bind::<BigInt,_>(number).bind::<Text,_>(&f.title).bind::<Text,_>(&f.description).bind::<Text,_>(&input.state).bind::<BigInt,_>(rank).bind::<Text,_>(&f.priority).bind::<Nullable<Text>,_>(&f.assignee_mxid).bind::<Jsonb,_>(json!(f.labels)).bind::<Nullable<Text>,_>(&f.due_date).bind::<Text,_>(&p.mxid).bind::<BigInt,_>(now).execute(db).await?;
-                    id
+                    sql_query("INSERT INTO hagency_project_v1.tasks(id,project_id,number,title,description,state_key,rank,priority,assignee_mxid,labels,due_date,created_by,created_at,updated_at,parent_id,checklist) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::text::date,$12,$13,$13,$14,$15)")
+                        .bind::<Text,_>(&id).bind::<Text,_>(&a.project).bind::<BigInt,_>(number).bind::<Text,_>(&f.title).bind::<Text,_>(&f.description).bind::<Text,_>(&input.state).bind::<BigInt,_>(rank).bind::<Text,_>(&f.priority).bind::<Nullable<Text>,_>(&f.assignee_mxid).bind::<Jsonb,_>(json!(f.labels)).bind::<Nullable<Text>,_>(&f.due_date).bind::<Text,_>(&p.mxid).bind::<BigInt,_>(now).bind::<Nullable<Text>,_>(&f.parent_id).bind::<Jsonb,_>(json!(f.checklist)).execute(db).await?;
+                    Some(id)
                 }
                 Mutation::Update{task,input}=>{
-                    Self::assignee(db,a,&input.fields).await?;let f=&input.fields;
-                    sql_query("UPDATE hagency_project_v1.tasks SET title=$3,description=$4,priority=$5,assignee_mxid=$6,labels=$7,due_date=$8::text::date,version=version+1,updated_at=$9 WHERE project_id=$1 AND id=$2")
-                        .bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<Text,_>(&f.title).bind::<Text,_>(&f.description).bind::<Text,_>(&f.priority).bind::<Nullable<Text>,_>(&f.assignee_mxid).bind::<Jsonb,_>(json!(f.labels)).bind::<Nullable<Text>,_>(&f.due_date).bind::<BigInt,_>(now).execute(db).await?;
-                    task.clone()
+                    Self::assignee(db,a,&input.fields).await?;Self::parent(db,&a.project,task,&input.fields).await?;let f=&input.fields;
+                    sql_query("UPDATE hagency_project_v1.tasks SET title=$3,description=$4,priority=$5,assignee_mxid=$6,labels=$7,due_date=$8::text::date,version=version+1,updated_at=$9,parent_id=$10,checklist=$11 WHERE project_id=$1 AND id=$2")
+                        .bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<Text,_>(&f.title).bind::<Text,_>(&f.description).bind::<Text,_>(&f.priority).bind::<Nullable<Text>,_>(&f.assignee_mxid).bind::<Jsonb,_>(json!(f.labels)).bind::<Nullable<Text>,_>(&f.due_date).bind::<BigInt,_>(now).bind::<Nullable<Text>,_>(&f.parent_id).bind::<Jsonb,_>(json!(f.checklist)).execute(db).await?;
+                    Some(task.clone())
                 }
                 Mutation::Move{task,input}=>{
                     if input.position==Position::Between && input.expected_sequence!=Some(seq){return Err(Error::Conflict("board_snapshot_changed"));}
+                    Self::admit(db,&a.project,&input.state,current_state==input.state).await?;
                     let rank=Self::rank(db,&a.project,&input.state,task,Some(input)).await?;
                     sql_query("UPDATE hagency_project_v1.tasks SET state_key=$3,rank=$4,version=version+1,updated_at=$5 WHERE project_id=$1 AND id=$2")
-                        .bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<Text,_>(&input.state).bind::<BigInt,_>(rank).bind::<BigInt,_>(now).execute(db).await?;task.clone()
+                        .bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<Text,_>(&input.state).bind::<BigInt,_>(rank).bind::<BigInt,_>(now).execute(db).await?;Some(task.clone())
                 }
                 Mutation::Archive{task,..}=>{
-                    sql_query("UPDATE hagency_project_v1.tasks SET archived_at=$3,updated_at=$3,version=version+1 WHERE project_id=$1 AND id=$2").bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<BigInt,_>(now).execute(db).await?;task.clone()
+                    sql_query("UPDATE hagency_project_v1.tasks SET archived_at=$3,updated_at=$3,version=version+1 WHERE project_id=$1 AND id=$2").bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<BigInt,_>(now).execute(db).await?;Some(task.clone())
                 }
                 Mutation::Restore{task:id,..}=>{
                     let count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND archived_at IS NULL").bind::<Text,_>(&a.project).get_result::<Number>(db).await?.value;
                     if count>=10000{return Err(Error::Conflict("board_capacity_exceeded"));}
                     let state=task.as_ref().unwrap()["state"].as_str().unwrap();
+                    Self::admit(db,&a.project,state,false).await?;
                     let rank=Self::rank(db,&a.project,state,id,None).await?;
-                    sql_query("UPDATE hagency_project_v1.tasks SET archived_at=NULL,rank=$3,updated_at=$4,version=version+1 WHERE project_id=$1 AND id=$2").bind::<Text,_>(&a.project).bind::<Text,_>(id).bind::<BigInt,_>(rank).bind::<BigInt,_>(now).execute(db).await?;id.clone()
+                    sql_query("UPDATE hagency_project_v1.tasks SET archived_at=NULL,rank=$3,updated_at=$4,version=version+1 WHERE project_id=$1 AND id=$2").bind::<Text,_>(&a.project).bind::<Text,_>(id).bind::<BigInt,_>(rank).bind::<BigInt,_>(now).execute(db).await?;Some(id.clone())
                 }
                 Mutation::Comment{task,input}=>{
                     let id=format!("cmt_{}",crate::entity_id()?);
                     sql_query("INSERT INTO hagency_project_v1.comments(id,project_id,task_id,author,body,created_at) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&id).bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<Text,_>(&p.mxid).bind::<Text,_>(&input.body).bind::<BigInt,_>(now).execute(db).await?;
-                    comment=json!({"id":id,"author":p.mxid,"body":input.body,"createdAt":now});task.clone()
+                    comment=json!({"id":id,"author":p.mxid,"body":input.body,"createdAt":now});Some(task.clone())
                 }
             };
             let seq=sql_query("UPDATE hagency_project_v1.boards SET change_seq=change_seq+1 WHERE project_id=$1 RETURNING change_seq AS value").bind::<Text,_>(&a.project).get_result::<Number>(db).await?.value;
-            sql_query("INSERT INTO hagency_project_v1.changes(project_id,seq,task_id,actor,kind,occurred_at) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&a.project).bind::<BigInt,_>(seq).bind::<Text,_>(&id).bind::<Text,_>(&p.mxid).bind::<Text,_>(mutation.kind()).bind::<BigInt,_>(now).execute(db).await?;
-            let result=json!({"task":Self::task(db,&a.project,&id).await?,"sequence":seq,"comment":comment,"replayed":false});
+            sql_query("INSERT INTO hagency_project_v1.changes(project_id,seq,task_id,actor,kind,occurred_at) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&a.project).bind::<BigInt,_>(seq).bind::<Nullable<Text>,_>(&id).bind::<Text,_>(&p.mxid).bind::<Text,_>(mutation.kind()).bind::<BigInt,_>(now).execute(db).await?;
+            let task=if let Some(id)=&id { Self::task(db,&a.project,id).await? } else { Value::Null };
+            let result=json!({"task":task,"sequence":seq,"comment":comment,"replayed":false});
             sql_query("INSERT INTO hagency_project_v1.receipts(project_id,actor,intent_key,digest,result) VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(&a.project).bind::<Text,_>(&p.mxid).bind::<Text,_>(mutation.intent()).bind::<Text,_>(&digest).bind::<Jsonb,_>(&result).execute(db).await?;
             DomainStore::authorize_identity(db,p,crate::api::now_ms()).await?;Self::fresh(a)?;
             Ok(result)

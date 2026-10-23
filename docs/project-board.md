@@ -1,14 +1,14 @@
 # Shared native Project board
 
 The Server is authoritative for human Project work items. Client's Project
-**Board** tab provides five lanes: To do, In progress, Blocked, In review and
-Done. This is separate from the historical local operator/runner task projection.
+**Board** tab starts with five columns and supports 2–12 custom columns,
+WIP limits, one-level subtasks and versioned checklists. This is separate from the historical local operator/runner task projection.
 It does not execute an Agent, import local tasks or read private Room messages.
 Cloud product code is unchanged; self-hosted servers work independently.
 
 ## Availability and identity
 
-`project-board-v1` appears in native discovery only after the domain (including
+`project-board-v2` appears in native discovery only after the domain (including
 board storage) is initialized. The optional host TOML `project_board_enabled =
 false` removes that capability and closes board endpoints while retaining data.
 It defaults to true, so existing hosting configurations need no new input. This
@@ -31,7 +31,7 @@ Agent ownership/creation permissions and knowing a task ID confer no access.
 ## Storage and concurrency
 
 Additive schema `hagency_project_v1` uses the same Hagency database, an independent
-four-connection pool and its own transaction-protected version-1 migration. It
+four-connection pool and its own transaction-protected version-1 and version-2 migrations. It
 never changes the existing Agent domain version or Palpo/Pasion migrations.
 Opening an already migrated board store verifies the migration and avoids DDL.
 Pool checkout is bounded by eight seconds, SQL lock waits by five seconds and
@@ -39,7 +39,7 @@ each statement by eight seconds. Cancelled transactions are discarded by the
 Diesel pool's broken-transaction recycling check.
 
 There is one logical board per Project; its physical board row is created on the
-first successful task mutation. Every mutation locks that row, checks the task
+first successful board mutation. Every mutation locks that row, checks the task
 version and commits task changes, activity, sequence and original idempotency
 receipt together. Different boards can proceed independently. Receipts are scoped
 by Project, actor and intent key and remain retained. Same canonical input
@@ -58,7 +58,7 @@ fully loaded unfiltered lane supports precise insertion.
 ## HTTP contract
 
 See the reviewed `crates/agent-service/openapi/hagency-v1.openapi.json` for the
-12 board operations and strict input schemas. All use the existing prefix
+13 board operations and strict input schemas. All use the existing prefix
 `/hagency/api/v1/projects/{projectId}`:
 
 | Method and suffix | Result |
@@ -134,3 +134,47 @@ must include the complete Hagency database (including the new schema), Palpo,
 Pasion and existing persistent volume under the current operator procedure.
 A successful backup job alone does not establish restore qualification. No
 Cloud self-service recovery implementation is required by this feature.
+
+
+## Custom columns, WIP, subtasks and checklists (v2)
+
+Upgrade Server and Client together. Discovery advertises only `project-board-v2`:
+a fixed-five-column v1 Client must explicitly refuse the incompatible board.
+The additive `schema_v2.sql` seeds every existing board's five columns, replaces
+the fixed-state constraint with a project/column foreign key, and retains task
+IDs, versions and immutable original receipts. No Cloud migration is needed.
+
+`PATCH /board/columns` accepts `ConfigureColumns` (original idempotency key,
+expected board sequence, ordered column definitions). Each definition has a
+stable `id`, trimmed unique `title` (1–48 characters), nullable `wipLimit`
+(1–10000), and `isDone`. Keep 2–12 columns and at least one completed column.
+Deleting a column containing any active or archived task returns
+`board_column_not_empty`; move those tasks first. Configuration changes generate
+a `columns_updated` board event with nullable `taskId` and a normal receipt.
+The mutation response has `task: null`. A stale board sequence returns 409.
+
+Snapshots return ordered lanes with title, WIP limit, completion flag and
+`taskCount` for **all unarchived tasks**, independently of filters or pagination.
+Create, cross-column move and restore enforce WIP while holding the same board
+row lock; a full column returns `board_wip_limit_reached` (409), without a partial
+mutation. Same-column reorder and field edits remain available. Lowering a WIP
+limit below existing occupancy is allowed and visibly warns; it deletes nothing.
+Overdue filters respect every configured completed column.
+
+Task Fields add nullable `parentId` and a checklist of up to 100 stable items
+(`id`, trimmed 1–160-character `title`, `checked`). They use the normal versioned
+update and retained original intent. Empty added Fields are omitted when
+serializing canonical mutations, preserving pre-upgrade receipt digests.
+New parent links require an active root task in the same Project, no self-link,
+no nesting/cycles, and at most 100 total children. Existing links survive parent
+archive; children keep independent state, assignment and archive lifecycle.
+Details read the task, bounded `subtasks` and optional full `parent` in one
+repeatable-read database snapshot. Card summaries omit
+the checklist body and expose checklist/subtask progress counts instead.
+
+Native Client provides a dedicated columns panel with reorder controls, draft
+validation, original retry and explicit adoption of a newer board revision after
+review. Task inspector offers editable/ordered checklist rows, parent navigation
+and unlinking, child navigation and creation. Checklist edits become shared only
+when **Save task** succeeds; conflicts preserve the complete draft. Input bodies
+are bounded at 128 KiB; native board responses at 4 MiB.
