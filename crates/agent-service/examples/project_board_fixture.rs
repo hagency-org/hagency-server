@@ -1,6 +1,9 @@
 //! Disposable loopback integration fixture. Uses the real Agent API and PostgreSQL
 //! with explicit test doubles for Pasion introspection and Matrix membership.
 //! Never serves the fixture identity endpoints in the production backend.
+#[path = "project_board_fixture/client_identity.rs"]
+mod client_identity;
+
 use hagency_agent_service::{
     api::App, domain::DomainStore, gateway::Gateway, identity::Verifier, store::Store,
 };
@@ -45,7 +48,7 @@ async fn whoami(req: &mut Request, res: &mut Response) {
         .and_then(actor);
     if let Some(name) = name {
         res.render(Json(
-            json!({"user_id":format!("@{name}:example.test"),"is_guest":false}),
+            json!({"user_id":format!("@{name}:example.test"),"is_guest":false,"device_id":format!("FIXTURE_{}",name.to_uppercase())}),
         ));
     } else {
         res.status_code(StatusCode::UNAUTHORIZED);
@@ -89,6 +92,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let mut state = vec![
                     json!({"type":"m.room.create","state_key":"","content":{"type":"m.space"}}),
+                    json!({"type":"m.room.name","state_key":"","content":{"name":"本地项目 · 看板联调"}}),
+                    json!({"type":"m.room.topic","state_key":"","content":{"topic":"本地测试项目 · 真实 Server 与数据库"}}),
                     json!({"type":"m.room.power_levels","state_key":"","content":{"users":{"@alice:example.test":100},"state_default":50}}),
                     json!({"type":"m.room.member","state_key":"@alice:example.test","content":{"membership":"join"}}),
                 ];
@@ -120,7 +125,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .push(app.router())
         .push(Router::with_path("auth/introspect").post(introspection))
         .push(Router::with_path("_matrix/client/v3/account/whoami").get(whoami))
-        .push(Router::with_path("fixture/bob/leave").post(leave));
+        .push(Router::with_path("fixture/bob/leave").post(leave))
+        .push(client_identity::router(&origin));
     let acceptor = TcpListener::new(format!("127.0.0.1:{port}")).bind().await;
     let server = tokio::spawn(async move {
         Server::new(acceptor).serve(router).await;
