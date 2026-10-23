@@ -257,7 +257,11 @@ async fn run() -> anyhow::Result<()> {
             },
         )
         .await?;
-        agent_service = Some(app.with_domain(domain, gateway).with_transport(transport));
+        agent_service = Some(
+            app.with_domain(domain, gateway)
+                .with_transport(transport)
+                .with_project_board_enabled(conf.project_board_enabled),
+        );
     }
     let browser_auth = BrowserAuth::new(&conf).await?;
     let mut matrix_router = Router::new();

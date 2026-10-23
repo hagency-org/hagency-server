@@ -37,3 +37,14 @@
 ## 2026-10-21: Publish Agent audience changes to main
 
 - Operator explicitly authorized committing and pushing all Server/Client changes to origin main. Server publication preflight confirms local main matches origin/main, clean whitespace, successful formatting check and the previously recorded PostgreSQL80/web18/strict-Clippy/OpenAPI qualification. Include the new visibility SQL migration with the service, web UI, tests and contract documentation. This source publication does not perform a deployment or migrate production data.
+
+
+## 2026-10-23: Shared native Project kanban
+
+- Created codex/project-kanban from f48717f7 at operator request, coordinated with Client branch of the same name. Added hagency_project_v1 independent additive migration/pool, strict native board API, live Project/Space/session authorization, task versions, atomic rank/order, committed change sequence, permanent original-intent receipts, comments/activity, archive/restore and bounded filtered pages. No Cloud feature code or Agent execution changes.
+- Capability project-board-v1 is conditional on initialized domain and project_board_enabled. Optional host flag defaults true to avoid requiring new deployment inputs; false disables capability/routes while retaining storage. This differs explicitly from the report's suggested default-closed rollout; operators can opt out before pilot. OpenAPI has71 owner/4 AS operations and13 validator self-tests.
+- Fresh dedicated local PostgreSQL18 database kanban_final: complete agent-service suite with --include-ignored --test-threads=1 is85passed/0failed/0ignored (/tmp/hagency-kanban-server-final-tests.log). Backend check and strict no-deps Server/agent-service/xtask all-target Clippy pass; fmt and OpenAPI self-tests pass. No production migration.
+- Real TCP cross-repo fixture with actual SQL/API and two actual NativeOwner instances passes1/0/0, including share/replay/stale409/reopen/member exit/outsider refusal (/tmp/hagency-kanban-native-e2e-final.log). The dev-only example replaces Pasion introspection/Matrix facts explicitly; it is not real Matrix-account or multi-desktop qualification.
+- Earlier parallel full test run failed on existing DomainStore initialization DDL deadlocks; serial run on reused DB then failed2global outbox fixture cases due old rows. Original failures retained; final repository-prescribed fresh+serial run passes85. No skipped failure was declared passing.
+- Usage, API, rollback, fixture boundaries and release caveats: docs/project-board.md. Client App584/0/2 existing ignored; engine248/0/7 existing ignored plus Core3/0/0. No Windows/Linux/manual native UI, production restore or performance qualification. No deployment or push.
+- Final cleanup stopped only this task's loopback SQL/API fixture and native design-preview processes. Test data and logs remain in ignored target/temp paths for review; user applications and production services were untouched.

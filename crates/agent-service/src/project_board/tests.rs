@@ -1,0 +1,523 @@
+use super::*;
+#[test]
+fn board_fields_and_calendar_dates_are_validated() {
+    for date in ["2024-02-29", "2000-02-29", "2026-10-23"] {
+        assert!(validate_date(date).is_ok());
+    }
+    for date in [
+        "1900-02-29",
+        "2026-02-29",
+        "2026-13-01",
+        "0000-01-01",
+        "2026-1-01",
+        "2026-01-00",
+        "2026-04-31",
+    ] {
+        assert!(validate_date(date).is_err(), "{date}");
+    }
+    let mut fields = Fields {
+        title: "  Shared task  ".into(),
+        labels: vec![" design ".into(), "design".into()],
+        ..Default::default()
+    };
+    fields.validate().unwrap();
+    assert_eq!(fields.title, "Shared task");
+    assert_eq!(fields.labels, vec!["design"]);
+    fields.title = " \n ".into();
+    assert!(fields.validate().is_err());
+}
+
+async fn fixture() -> (Store, DomainStore, Principal, Principal, Access) {
+    use crate::{domain::AdminFacts, identity::Identity, store::Store};
+    let url =
+        std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").expect("disposable PostgreSQL required");
+    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
+        .await
+        .unwrap();
+    let domain = DomainStore::open(&url, "example.test", "_hagency_test_")
+        .await
+        .unwrap();
+    let suffix = crate::secret_token();
+    let now = crate::api::now_ms();
+    async fn login(auth: &Store, name: String, now: i64) -> Principal {
+        let grant = auth
+            .sign_in(
+                Identity {
+                    issuer: "https://example.test/auth/".into(),
+                    subject: name.clone(),
+                    mxid: format!("@{name}:example.test"),
+                    client_id: "board-test".into(),
+                    valid_until_ms: now + 600_000,
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        auth.authenticate(&grant.token, now, false).await.unwrap()
+    }
+    let alice = login(&auth, format!("alice_{suffix}"), now).await;
+    let bob = login(&auth, format!("bob_{suffix}"), now).await;
+    let space = format!("!board_{suffix}:example.test");
+    let facts = AdminFacts {
+        actor_mxid: alice.mxid.clone(),
+        room_id: space.clone(),
+        observed_at_ms: now,
+        joined: true,
+        can_manage_policy: true,
+        is_space: true,
+        linked_space_id: None,
+    };
+    let project = domain
+        .register_project(&alice, &space, &facts, now)
+        .await
+        .unwrap();
+    let access = Access {
+        project: project.id,
+        space,
+        actor: alice.mxid.clone(),
+        members: BTreeSet::from([alice.mxid.clone(), bob.mxid.clone()]),
+        observed: crate::api::now_ms(),
+    };
+    (auth, domain, alice, bob, access)
+}
+use crate::store::Store;
+fn create(key: &str, title: &str) -> Mutation {
+    Mutation::Create(Create {
+        idempotency_key: key.into(),
+        state: "todo".into(),
+        fields: Fields {
+            title: title.into(),
+            ..Default::default()
+        },
+    })
+}
+fn movement(key: &str, task: &str, version: i64, state: &str) -> Mutation {
+    Mutation::Move {
+        task: task.into(),
+        input: Move {
+            idempotency_key: key.into(),
+            expected_version: version,
+            state: state.into(),
+            expected_sequence: None,
+            before: None,
+            after: None,
+            position: Position::Append,
+        },
+    }
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_board_shared_storage_conflicts_replay_history_and_reopen() {
+    let (_auth, domain, alice, bob, access) = fixture().await;
+    let board = &domain.board;
+    let empty = board
+        .board(&alice, &access, Query::default())
+        .await
+        .unwrap();
+    assert_eq!(empty["sequence"], 0);
+    let first = board
+        .mutate(&alice, &access, create("first", "Design the shared board"))
+        .await
+        .unwrap();
+    let id = first["task"]["id"].as_str().unwrap();
+    assert_eq!(first["sequence"], 1);
+    let replay = board
+        .mutate(&alice, &access, create("first", "Design the shared board"))
+        .await
+        .unwrap();
+    assert_eq!(replay["task"], first["task"]);
+    assert_eq!(replay["replayed"], true);
+    assert!(matches!(
+        board
+            .mutate(&alice, &access, create("first", "Different payload"))
+            .await,
+        Err(Error::Conflict("board_idempotency_conflict"))
+    ));
+    let other = Access {
+        actor: bob.mxid.clone(),
+        members: access.members.clone(),
+        project: access.project.clone(),
+        space: access.space.clone(),
+        observed: crate::api::now_ms(),
+    };
+    assert_eq!(
+        board.detail(&bob, &other, id).await.unwrap()["task"]["title"],
+        "Design the shared board"
+    );
+    let (a, b) = tokio::join!(
+        board.mutate(&alice, &access, movement("move-a", id, 1, "in_progress")),
+        board.mutate(&bob, &other, movement("move-b", id, 1, "blocked"))
+    );
+    assert_ne!(a.is_ok(), b.is_ok());
+    assert!(matches!(
+        a.as_ref().err().or(b.as_ref().err()),
+        Some(Error::Conflict("board_version_conflict"))
+    ));
+    let moved = board.detail(&bob, &other, id).await.unwrap();
+    assert_eq!(moved["task"]["version"], 2);
+    let comment = board
+        .mutate(
+            &bob,
+            &other,
+            Mutation::Comment {
+                task: id.into(),
+                input: Comment {
+                    idempotency_key: "comment".into(),
+                    body: "Looks good".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(comment["sequence"], 3);
+    let comments = board
+        .history(&alice, &access, Some(id), 0, 1, true)
+        .await
+        .unwrap();
+    assert_eq!(comments["items"][0]["body"], "Looks good");
+    assert_eq!(comments["items"][0]["author"], bob.mxid);
+    let archived = board
+        .mutate(
+            &alice,
+            &access,
+            Mutation::Archive {
+                task: id.into(),
+                input: Versioned {
+                    idempotency_key: "archive".into(),
+                    expected_version: 2,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(archived["task"]["version"], 3);
+    assert_eq!(
+        board.tasks(&bob, &other, Query::default()).await.unwrap()["total"],
+        0
+    );
+    let archived_query = Query {
+        archived: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        board.tasks(&bob, &other, archived_query).await.unwrap()["total"],
+        1
+    );
+    let restored = board
+        .mutate(
+            &bob,
+            &other,
+            Mutation::Restore {
+                task: id.into(),
+                input: Versioned {
+                    idempotency_key: "restore".into(),
+                    expected_version: 3,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored["task"]["version"], 4);
+    let changes = board
+        .history(&alice, &access, None, 0, 2, false)
+        .await
+        .unwrap();
+    assert_eq!(changes["hasMore"], true);
+    assert_eq!(changes["next"], 2);
+    assert_eq!(changes["sequence"], 5);
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let reopened = BoardStore::open(&url).await.unwrap();
+    assert_eq!(
+        reopened.detail(&alice, &access, id).await.unwrap()["task"],
+        restored["task"]
+    );
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_board_permission_revocation_and_cross_project_are_refused() {
+    let (_auth, domain, alice, bob, access) = fixture().await;
+    let board = &domain.board;
+    let result = board
+        .mutate(&alice, &access, create("one", "Private project task"))
+        .await
+        .unwrap();
+    let id = result["task"]["id"].as_str().unwrap();
+    let mut left = Access {
+        actor: bob.mxid.clone(),
+        project: access.project.clone(),
+        space: access.space.clone(),
+        members: BTreeSet::from([alice.mxid.clone()]),
+        observed: crate::api::now_ms(),
+    };
+    assert!(matches!(
+        board.detail(&bob, &left, id).await,
+        Err(Error::Unauthorized(_))
+    ));
+    left.actor = alice.mxid.clone();
+    left.project = "prj_missing".into();
+    assert!(board.detail(&alice, &left, id).await.is_err());
+    left.project = access.project.clone();
+    left.observed = crate::api::now_ms() - 30_001;
+    assert!(matches!(
+        board
+            .mutate(&alice, &left, create("stale", "Must not save"))
+            .await,
+        Err(Error::Unavailable("board_membership_expired"))
+    ));
+    let input = Mutation::Create(Create {
+        idempotency_key: "assignee".into(),
+        state: "todo".into(),
+        fields: Fields {
+            title: "Invalid assignee".into(),
+            assignee_mxid: Some("@outsider:example.test".into()),
+            ..Default::default()
+        },
+    });
+    assert!(matches!(
+        board.mutate(&alice, &access, input).await,
+        Err(Error::Invalid("board_assignee_not_member"))
+    ));
+    let mut db = domain.db.lock().await.unwrap();
+    sql_query("UPDATE hagency_agent_v1.sessions SET revoked=true WHERE id=$1")
+        .bind::<Text, _>(&alice.session_id)
+        .execute(&mut *db)
+        .await
+        .unwrap();
+    drop(db);
+    assert!(matches!(
+        board.detail(&alice, &access, id).await,
+        Err(Error::Unauthorized(_))
+    ));
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_board_order_paging_filters_and_atomic_receipts() {
+    let (_auth, domain, alice, _bob, access) = fixture().await;
+    let board = &domain.board;
+    let mut ids = Vec::new();
+    for i in 0..4 {
+        let result = board
+            .mutate(
+                &alice,
+                &access,
+                create(&format!("create-{i}"), &format!("Task {i}")),
+            )
+            .await
+            .unwrap();
+        ids.push(result["task"]["id"].as_str().unwrap().to_owned());
+    }
+    let q = Query {
+        state: Some("todo".into()),
+        limit: Some(2),
+        ..Default::default()
+    };
+    let first = board.tasks(&alice, &access, q.clone()).await.unwrap();
+    assert_eq!(first["total"], 4);
+    assert_eq!(first["tasks"].as_array().unwrap().len(), 2);
+    let next = Query {
+        cursor: Some(first["nextCursor"].as_str().unwrap().into()),
+        sequence: Some(4),
+        ..q.clone()
+    };
+    let second = board.tasks(&alice, &access, next.clone()).await.unwrap();
+    assert_eq!(second["tasks"][0]["id"], ids[2]);
+    assert_eq!(second["nextCursor"], Value::Null);
+    let m = Move {
+        idempotency_key: "reorder".into(),
+        expected_version: 1,
+        state: "todo".into(),
+        expected_sequence: Some(4),
+        before: Some(ids[1].clone()),
+        after: Some(ids[0].clone()),
+        position: Position::Between,
+    };
+    board
+        .mutate(
+            &alice,
+            &access,
+            Mutation::Move {
+                task: ids[3].clone(),
+                input: m,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        board.tasks(&alice, &access, next).await,
+        Err(Error::Conflict("board_snapshot_changed"))
+    ));
+    let all = board
+        .tasks(&alice, &access, Query::default())
+        .await
+        .unwrap();
+    assert_eq!(all["tasks"][1]["id"], ids[3]);
+    let filtered = board
+        .tasks(
+            &alice,
+            &access,
+            Query {
+                query: Some("Task 2".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(filtered["total"], 1);
+    assert_eq!(filtered["tasks"][0]["id"], ids[2]);
+    let bad = Mutation::Move {
+        task: ids[2].clone(),
+        input: Move {
+            idempotency_key: "bad-neighbour".into(),
+            expected_version: 1,
+            state: "todo".into(),
+            expected_sequence: Some(5),
+            before: Some(ids[3].clone()),
+            after: None,
+            position: Position::Between,
+        },
+    };
+    assert!(matches!(
+        board.mutate(&alice, &access, bad).await,
+        Err(Error::Conflict("board_neighbours_changed"))
+    ));
+    assert_eq!(
+        board
+            .board(&alice, &access, Query::default())
+            .await
+            .unwrap()["sequence"],
+        5
+    );
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_board_http_authentication_live_membership_and_typed_payloads() {
+    use crate::{
+        api::App,
+        gateway::Gateway,
+        identity::{Identity, Verifier},
+    };
+    use salvo::{
+        Service,
+        http::StatusCode,
+        test::{ResponseExt, TestClient},
+    };
+    use std::sync::{Arc, RwLock};
+    let (auth, domain, alice, bob, access) = fixture().await;
+    async fn token(auth: &Store, p: &Principal) -> String {
+        auth.sign_in(
+            Identity {
+                issuer: "https://example.test/auth/".into(),
+                subject: p.subject.clone(),
+                mxid: p.mxid.clone(),
+                client_id: "board-http-test".into(),
+                valid_until_ms: crate::api::now_ms() + 600000,
+            },
+            crate::api::now_ms(),
+        )
+        .await
+        .unwrap()
+        .token
+    }
+    let alice_token = token(&auth, &alice).await;
+    let bob_token = token(&auth, &bob).await;
+    let members = Arc::new(RwLock::new(access.members.clone()));
+    let state = members.clone();
+    let space = access.space.clone();
+    let gateway = Gateway::new(
+        Arc::new(move |room| {
+            let state = state.clone();
+            let space = space.clone();
+            Box::pin(async move {
+                if room != space {
+                    return Err(Error::Unavailable("unknown_space"));
+                }
+                let mut events = vec![
+                    json!({"type":"m.room.create","state_key":"","content":{"type":"m.space"}}),
+                ];
+                events.extend(state.read().unwrap().iter().map(|m|json!({"type":"m.room.member","state_key":m,"content":{"membership":"join"}})));
+                Ok(events)
+            })
+        }),
+        "@_hagency_service:example.test".into(),
+    );
+    let verifier = Verifier::new(
+        "https://example.test/auth/".parse().unwrap(),
+        "https://example.test/auth/introspect".parse().unwrap(),
+        "https://example.test/".parse().unwrap(),
+        "fixture-secret".into(),
+        "example.test".into(),
+    )
+    .unwrap();
+    let app = App::new(
+        auth,
+        verifier,
+        "https://example.test/".parse().unwrap(),
+        "https://example.test/auth/".parse().unwrap(),
+        "example.test".into(),
+    )
+    .with_domain(domain, gateway);
+    let service = Service::new(app.router());
+    let root = format!(
+        "https://example.test/hagency/api/v1/projects/{}",
+        access.project
+    );
+    let mut response=TestClient::post(format!("{root}/tasks")).add_header("host","example.test",true).bearer_auth(&alice_token).json(&json!({"idempotencyKey":"http-create","state":"todo","fields":{"title":"From real HTTP","labels":["ui"]}})).send(&service).await;
+    assert_eq!(response.status_code, Some(StatusCode::OK));
+    let created = response.take_json::<Value>().await.unwrap();
+    let id = created["task"]["id"].as_str().unwrap();
+    let mut response = TestClient::get(format!("{root}/board?query=real&label=ui"))
+        .add_header("host", "example.test", true)
+        .bearer_auth(&bob_token)
+        .send(&service)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::OK));
+    assert_eq!(
+        response.take_json::<Value>().await.unwrap()["lanes"][0]["total"],
+        1
+    );
+    let response=TestClient::post(format!("{root}/tasks")).add_header("host","example.test",true).bearer_auth(&alice_token).json(&json!({"idempotencyKey":"forged","state":"todo","fields":{"title":"forged"},"mxid":alice.mxid})).send(&service).await;
+    assert_eq!(response.status_code, Some(StatusCode::BAD_REQUEST));
+    members.write().unwrap().remove(&bob.mxid);
+    for path in [
+        format!("{root}/board"),
+        format!("{root}/tasks/{id}"),
+        format!("{root}/board/changes?after=0"),
+    ] {
+        let response = TestClient::get(path)
+            .add_header("host", "example.test", true)
+            .bearer_auth(&bob_token)
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::UNAUTHORIZED));
+    }
+    let response = TestClient::get(format!("{root}/board"))
+        .add_header("host", "example.test", true)
+        .send(&service)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::UNAUTHORIZED));
+    let response = TestClient::get(format!("{root}/board?limit=1000"))
+        .add_header("host", "example.test", true)
+        .bearer_auth(&alice_token)
+        .send(&service)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::BAD_REQUEST));
+    let disabled = Service::new(app.with_project_board_enabled(false).router());
+    let mut response = TestClient::get("https://example.test/hagency/api/v1/discovery")
+        .add_header("host", "example.test", true)
+        .send(&disabled)
+        .await;
+    let discovery = response.take_json::<Value>().await.unwrap();
+    assert!(
+        !discovery["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == CAPABILITY)
+    );
+    let response = TestClient::get(format!("{root}/board"))
+        .add_header("host", "example.test", true)
+        .bearer_auth(&alice_token)
+        .send(&disabled)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::NOT_FOUND));
+}

@@ -2,7 +2,7 @@
 
 本目录描述实际实现，不是需求草案。仓库中的 Palpo/Matrix、Pasion/OIDC、浏览器代理及 hagency-client 本机 Console API 不在这两份 OpenAPI 的范围内。
 
-- `hagency-v1.openapi.json`：OpenAPI 3.1，契约版本 1.0.0；46 个操作，包含用户会话、设备、Project/Room 登记与权限、永久归属 Agent、Binding、命令查询、租约与执行、工具前远端事实核验、已知回复恢复及 `/readyz`。
+- `hagency-v1.openapi.json`：OpenAPI 3.1，契约版本 1.0.0；71 个操作，包含用户会话、设备、Project/Room 登记与权限、永久归属 Agent、Binding、命令查询、租约与执行、工具前远端事实核验、已知回复恢复及 `/readyz`。
 - `appservice-v1.openapi.json`：独立的 homeserver → 必装 Appservice 信任边界；4 个操作，包含事务、ping、用户和 Room alias 查询。
 - `scripts/validate-agent-openapi.py`：Python 标准库验证，不增加生产依赖。从仓库根目录执行 `python3 scripts/validate-agent-openapi.py --self-test`。
 
@@ -67,3 +67,7 @@ Agent 的创建者保持永久归属；服务范围通过 `visibility: public | 
 创建者通过 `PUT /hagency/api/v1/agents/{agentId}/visibility` 修改范围。切换 private 前必须完成所有共享 Room 的退出；失败返回 `leave_shared_rooms_before_private`。private 绑定请求返回 `private_agent_owner_direct_only`。此操作不启动或停止设备模型。
 
 升级只迁移尚无范围的旧记录：存在未完成退出的 project 绑定则 public，否则 private。已有范围不被重复迁移覆盖。旧创建命令保留原幂等摘要；更改服务范围使用独立接口。先升级 Server，再使用新 Client 的范围管理功能。
+
+## 共享项目看板
+
+新增 12 个 `project-board-v1` 操作使用用户会话与当前 Space 成员权限，覆盖任务、排序、归档、评论、活动与变更游标。它与 Agent 执行和本地 OperatorTask 分离。契约、可选 Server 关闭开关及跨仓库验证见 [project-board.md](../../../docs/project-board.md)。无需修改 Cloud 产品代码。

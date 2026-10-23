@@ -13,6 +13,9 @@ pub struct HostConfig {
     pub public_origin: Url,
     /// Hagency administration and relay state; independent of Palpo migrations.
     pub database_url: String,
+    /// Optional kill switch; no new configuration is required for existing hosts.
+    #[serde(default = "board_enabled")]
+    pub project_board_enabled: bool,
     #[serde(default)]
     pub public_dir: Option<PathBuf>,
     #[serde(default = "default_data_dir")]
@@ -65,6 +68,9 @@ impl Default for QueueConfig {
             event_ttl_ms: 86_400_000,
         }
     }
+}
+fn board_enabled() -> bool {
+    true
 }
 fn default_data_dir() -> PathBuf {
     PathBuf::from("data")

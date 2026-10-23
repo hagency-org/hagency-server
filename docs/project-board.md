@@ -1,0 +1,136 @@
+# Shared native Project board
+
+The Server is authoritative for human Project work items. Client's Project
+**Board** tab provides five lanes: To do, In progress, Blocked, In review and
+Done. This is separate from the historical local operator/runner task projection.
+It does not execute an Agent, import local tasks or read private Room messages.
+Cloud product code is unchanged; self-hosted servers work independently.
+
+## Availability and identity
+
+`project-board-v1` appears in native discovery only after the domain (including
+board storage) is initialized. The optional host TOML `project_board_enabled =
+false` removes that capability and closes board endpoints while retaining data.
+It defaults to true, so existing hosting configurations need no new input. This
+is a deliberate implementation choice instead of the report's suggested default
+closed rollout; deployments can explicitly set false before their pilot.
+
+All operations use the existing finite **user session bearer**, matching public
+Host and native Origin/Cookie restrictions. Fresh trusted Space membership is
+obtained on every operation, including counts, search, comments and changes.
+Project activation and current user/session/device facts are checked inside the
+transaction. Membership observations expire after 30 seconds and are checked
+again after lock waits and before writes commit. The authorization point is the
+trusted Matrix observation; Matrix and PostgreSQL do not share a transaction.
+Leaving a Room and leaving a Project Space remain independent operations.
+
+Current joined members can create, edit, move, comment, archive and restore. Only
+joined humans may be assigned; known Hagency puppets are refused. Cloud teams,
+Agent ownership/creation permissions and knowing a task ID confer no access.
+
+## Storage and concurrency
+
+Additive schema `hagency_project_v1` uses the same Hagency database, an independent
+four-connection pool and its own transaction-protected version-1 migration. It
+never changes the existing Agent domain version or Palpo/Pasion migrations.
+Opening an already migrated board store verifies the migration and avoids DDL.
+Pool checkout is bounded by eight seconds, SQL lock waits by five seconds and
+each statement by eight seconds. Cancelled transactions are discarded by the
+Diesel pool's broken-transaction recycling check.
+
+There is one logical board per Project; its physical board row is created on the
+first successful task mutation. Every mutation locks that row, checks the task
+version and commits task changes, activity, sequence and original idempotency
+receipt together. Different boards can proceed independently. Receipts are scoped
+by Project, actor and intent key and remain retained. Same canonical input
+replays its original result, including its original task version; another input
+using that key returns `board_idempotency_conflict`. Re-read after replay for the
+current board. Comments advance the board sequence without changing task fields.
+
+Server-issued `tsk_` IDs and Project-local numbers remain stable. Tasks have
+explicit Project foreign keys. Ranks use gapped positive integers with a target
+lane rebalance when gaps run out. A `between` move names the immediate previous
+(`after`) and next (`before`) task and requires the current board sequence.
+Append/prepend operate on the true server lane boundary. The moved task's version
+still must match. Filtered or partially loaded Client lanes use append, while a
+fully loaded unfiltered lane supports precise insertion.
+
+## HTTP contract
+
+See the reviewed `crates/agent-service/openapi/hagency-v1.openapi.json` for the
+12 board operations and strict input schemas. All use the existing prefix
+`/hagency/api/v1/projects/{projectId}`:
+
+| Method and suffix | Result |
+| --- | --- |
+| GET `board` | Five lanes, exact filtered counts, first page per lane, sequence and joined member IDs |
+| GET `tasks` | One filtered page with a revision-bound cursor |
+| POST `tasks` | Create a task with an original intent key |
+| GET / PATCH `tasks/{taskId}` | Full detail / versioned field update |
+| POST `tasks/{taskId}/move` | Atomic state/order change |
+| POST `tasks/{taskId}/archive` / `restore` | Retain history and hide / restore at a valid rank |
+| GET / POST `tasks/{taskId}/comments` | Page comments / append a comment |
+| GET `tasks/{taskId}/activity` | Page that task's activity |
+| GET `board/changes` | Page Project change metadata after a committed sequence |
+
+Task filters: `state`, exact `assignee`, exact `label`, literal case-insensitive
+substring `query`, `overdue`, `archived`, `limit`. Defaults are 50, maximum 100;
+Client snapshots use 50 per lane and omit descriptions. `overdue` compares the
+calendar date to today's **UTC** date and excludes Done tasks. Due dates remain
+calendar strings `YYYY-MM-DD`; they are never converted to timestamps. A task
+page cursor binds Project, filters and sequence; a concurrent mutation yields
+`board_snapshot_changed` instead of silently skipping cards. Both history
+endpoints use `after` (default 0) and `limit`; returned `next` is the committed
+cursor. A board cursor beyond the current sequence yields `board_cursor_reset`.
+The Client reloads the authoritative snapshot when the sequence changes.
+
+Task title: 1–240 Unicode characters; description: 32 KiB; at most 12 labels of
+1–32 characters; comment: 8 KiB; JSON mutation body: 64 KiB. Priority is
+`low/normal/high/urgent`; one optional joined human assignee. There can be at most
+10,000 active tasks per board. These bounds are product limits, not measured
+throughput claims. There is no permanent task deletion endpoint.
+
+## Native behavior
+
+The desktop uses closed typed commands through NativeOwner and its existing
+session lifecycle, and checks the Server capability before calling board APIs.
+It never creates a new local management listener or falls back to local tasks.
+Unsupported Servers show an explicit message. Mutations retain their exact
+intent/payload after an unconfirmed result and offer an explicit original retry.
+No write is automatically retried. Conflicts preserve the draft; loading the
+latest task requires an explicit discard choice. Account/Project generations
+reject late replies. Polls do not overlap, run about every five seconds while
+visible/foreground, stop while hidden and back off to 60 seconds after failures.
+The board cache and drafts are in memory; offline editing and crash recovery of
+an unconfirmed client draft are not promised.
+
+## Verification and release
+
+Run the repository's full Agent suite with a fresh disposable database and
+`--include-ignored --test-threads=1` (the existing script uses this isolation and
+ordering). Board tests cover live HTTP authentication/membership, shared durable
+storage, version races, idempotency, pagination, order and reopen.
+
+For cross-repository testing, launch the example `project_board_fixture` with
+`HAGENCY_AGENT_TEST_DATABASE_URL` pointing to a disposable loopback database
+whose name starts with `kanban_`. `HAGENCY_BOARD_FIXTURE_INFO` names the output
+JSON file. It runs the **real Server API and PostgreSQL**, with explicit fixture
+Pasion introspection and Matrix membership on loopback port 55474. In Client run:
+
+```sh
+HAGENCY_BOARD_FIXTURE_INFO=/tmp/hagency-kanban-fixture-info.json \
+  cargo +1.99.0 test --locked -p hagency --test project_board_http -- --ignored
+```
+
+The test uses two real NativeOwner instances and validates create/replay, shared
+read/move, stale edit rejection, local reopen and member/outsider refusal. It
+launches no model and is not real Matrix-account or two-desktop qualification.
+Never expose the fixture identity endpoints or include its router in production.
+
+Release Server first, then Client with capability detection. Verify the actual
+running Server image; changing a global image default or an ordinary restart
+need not update an existing deployment's saved image reference. Backup/recovery
+must include the complete Hagency database (including the new schema), Palpo,
+Pasion and existing persistent volume under the current operator procedure.
+A successful backup job alone does not establish restore qualification. No
+Cloud self-service recovery implementation is required by this feature.
