@@ -37,3 +37,38 @@
 ## 2026-10-21: Publish Agent audience changes to main
 
 - Operator explicitly authorized committing and pushing all Server/Client changes to origin main. Server publication preflight confirms local main matches origin/main, clean whitespace, successful formatting check and the previously recorded PostgreSQL80/web18/strict-Clippy/OpenAPI qualification. Include the new visibility SQL migration with the service, web UI, tests and contract documentation. This source publication does not perform a deployment or migrate production data.
+
+
+## 2026-10-23: Shared native Project kanban
+
+- Created codex/project-kanban from f48717f7 at operator request, coordinated with Client branch of the same name. Added hagency_project_v1 independent additive migration/pool, strict native board API, live Project/Space/session authorization, task versions, atomic rank/order, committed change sequence, permanent original-intent receipts, comments/activity, archive/restore and bounded filtered pages. No Cloud feature code or Agent execution changes.
+- Capability project-board-v1 is conditional on initialized domain and project_board_enabled. Optional host flag defaults true to avoid requiring new deployment inputs; false disables capability/routes while retaining storage. This differs explicitly from the report's suggested default-closed rollout; operators can opt out before pilot. OpenAPI has71 owner/4 AS operations and13 validator self-tests.
+- Fresh dedicated local PostgreSQL18 database kanban_final: complete agent-service suite with --include-ignored --test-threads=1 is85passed/0failed/0ignored (/tmp/hagency-kanban-server-final-tests.log). Backend check and strict no-deps Server/agent-service/xtask all-target Clippy pass; fmt and OpenAPI self-tests pass. No production migration.
+- Real TCP cross-repo fixture with actual SQL/API and two actual NativeOwner instances passes1/0/0, including share/replay/stale409/reopen/member exit/outsider refusal (/tmp/hagency-kanban-native-e2e-final.log). The dev-only example replaces Pasion introspection/Matrix facts explicitly; it is not real Matrix-account or multi-desktop qualification.
+- Earlier parallel full test run failed on existing DomainStore initialization DDL deadlocks; serial run on reused DB then failed2global outbox fixture cases due old rows. Original failures retained; final repository-prescribed fresh+serial run passes85. No skipped failure was declared passing.
+- Usage, API, rollback, fixture boundaries and release caveats: docs/project-board.md. Client App584/0/2 existing ignored; engine248/0/7 existing ignored plus Core3/0/0. No Windows/Linux/manual native UI, production restore or performance qualification. No deployment or push.
+- Final cleanup stopped only this task's loopback SQL/API fixture and native design-preview processes. Test data and logs remain in ignored target/temp paths for review; user applications and production services were untouched.
+
+
+## 2026-10-23: Custom columns, WIP, subtasks and checklists (v2)
+
+- Implemented the four operator-requested common features in Server and native Client on codex/project-kanban; matching additive contract in dev-vibe/project-kanban-common-features-contract-2026-10-23.zh.md. No Cloud product changes. Capability v2 explicitly gates the dynamic-column contract; Server/Client must upgrade together.
+- Server additive schema_v2 seeds existing columns, preserves task IDs/versions/original receipts, replaces fixed state with per-Project FK, and adds parent/checklist storage. Board row serialization protects configuration sequence, WIP create/cross-column/restore admission and bounded one-level parent relationships. Configuration changes have nullable taskId; progress reflects configured completed columns.
+- Native UI adds themed column settings/reorder/WIP controls, fixed stable-ID creation targets, editable/ordered checklist rows and progress, parent navigation/unlinking, child creation/navigation and progress. Same task-version/conflict/original-intent guards preserve nested fields. No placeholder local data path.
+- CUA native operation: added/reordered/renamed quality-verification column with WIP1; accepted #2 drag and refused #3 overflow; added/toggled/edited/reordered #2 checklist1/2; created child#18 and moved it done, parent progress1/1; nonempty column deletion refused. Restarted client AND local Server, reopened #2 and verified persisted columns/checklist/child. Read-only receipt /tmp/hagency-kanban-v2-native-receipt.json; local interactive app/API/PG intentionally left running for user inspection.
+- Final Server fresh PostgreSQL full suite88/0/0; App591/0/2existing ignored; Core3/0/0 and engine248/0/7existing ignored; separate two-NativeOwner real HTTP/SQL1/0/0 including a maximum multilingual checklist, membership revocation and independent child edits after parent archive. Strict affected no-deps Clippy, format, OpenAPI72+4/13guards and i18n2330/0missing pass. Logs /tmp/hagency-kanban-v2-{server-tests-release,app-tests-release,core-engine-tests,http-tests-final,client-clippy-release,server-clippy-release}.log.
+- Found Salvo payload parser's default64KiB while reviewing maximum checklist size; board body parser now explicitly128KiB inside existing router cap. Native board replies bounded4MiB. Initial native HTTP command omitted fixture-info env and failed setup; corrected configured run passes unchanged assertions. No platform/performance/production qualification or push claimed.
+
+## 2026-10-23: Complete native client local integration fixture
+
+- Extended only project_board_fixture with explicit OAuth metadata, device-bearing whoami, guarded empty Matrix sync and key/profile test endpoints, plus readable test Project metadata. Real production API/router unchanged; loopback/disposable database guards retained.
+- Client's complete hagency binary restored an isolated Alice SDK session, passed normal issuer/whoami/device checks and NativeOwner authorization, then navigated Projects → Project details → Board and read/wrote Markdown description/comments to actual PostgreSQL. Server and Client restart preserved task#20 v2 and comments. Fixture identity endpoints do not qualify real Pasion/Matrix chat.
+- Fixture build and strict no-deps example Clippy pass; unauthenticated Matrix sync returns401. No deployment or push. Client report dev-vibe/project-kanban-markdown-and-full-client-validation-2026-10-23.zh.md records native steps.
+
+## 2026-10-23 看板 v3 协作数据
+
+`codex/project-kanban` 增加 schema v3：结构化字段变更、按用户隔离的通知/已读状态、经项目成员权限读取的附件。通知与附件变更复用任务事务、board sequence、幂等 receipt；Cloud 无变更。独立临时 PostgreSQL 全套 90 passed / 0 ignored，包含 150 KB 附件专用 HTTP 路由及普通评论 body cap、成员撤销、跨任务与原请求重放；all-target strict Clippy、OpenAPI 77 owner / 4 AS + 13 self-tests 通过。完整原生 Alice/Bob 客户端已验证改派通知和图片上传/预览/下载，字节摘要一致。规范见 `docs/project-board.md`。未部署/推送。
+
+## 2026-10-23 看板内嵌图片回执
+
+上传附件返回稳定 attachment ID，保存在原幂等回执中，供 Client 在描述/评论插入 attachment: 引用。OpenAPI 同步，数据库测试覆盖初次上传与重放 ID 一致。完整隔离 PG 测试 90 通过，all-target Clippy 和 OpenAPI 校验通过；完整原生客户端验证了 PNG/截图上传与引用预览/删除。Cloud 无改动。

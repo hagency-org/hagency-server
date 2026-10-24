@@ -10,6 +10,8 @@ mod configuration_tests;
 pub mod configuration_types;
 mod database;
 pub mod domain;
+pub use domain::project_board;
+mod api_project_board;
 pub mod gateway;
 pub mod identity;
 pub mod matrix_client;

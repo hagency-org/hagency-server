@@ -25,6 +25,9 @@ mod owner_direct;
 pub(crate) use execution_devices::require_assigned;
 pub use execution_devices::{OwnerDevice, SetExecutionDevice};
 
+#[path = "project_board/mod.rs"]
+pub mod project_board;
+
 const MAX_FACT_AGE_MS: i64 = 30_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -415,6 +418,7 @@ struct Flag {
 
 #[derive(Clone)]
 pub struct DomainStore {
+    pub(crate) board: project_board::BoardStore,
     db: Arc<crate::database::Database>,
     server: String,
     namespace: String,
@@ -487,6 +491,7 @@ impl DomainStore {
 ).await?;
 
         Ok(Self {
+            board: project_board::BoardStore::open(url).await?,
             db: Arc::new(crate::database::Database::new(db, url)),
             server: server.into(),
             namespace: namespace.into(),
@@ -499,6 +504,14 @@ impl DomainStore {
         db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
             .await?;
 
+        Self::authorize_identity(db, p, now).await
+    }
+
+    pub(crate) async fn authorize_identity(
+        db: &mut AsyncPgConnection,
+        p: &Principal,
+        now: i64,
+    ) -> Result<()> {
         let valid=sql_query("SELECT true AS matched FROM hagency_agent_v1.sessions s JOIN hagency_agent_v1.users u ON u.id=s.user_id WHERE s.id=$1 AND u.id=$2 AND u.mxid=$3 AND s.client_id=$4 AND u.active AND NOT s.revoked AND s.valid_until_ms>greatest($5,(extract(epoch from clock_timestamp())*1000)::bigint) FOR SHARE OF s,u")
    .bind::<Text,_>(&p.session_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(&p.client_id).bind::<BigInt,_>(now).get_result::<Flag>(db).await;
 
