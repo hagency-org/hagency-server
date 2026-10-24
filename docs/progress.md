@@ -68,3 +68,7 @@
 ## 2026-10-23 看板 v3 协作数据
 
 `codex/project-kanban` 增加 schema v3：结构化字段变更、按用户隔离的通知/已读状态、经项目成员权限读取的附件。通知与附件变更复用任务事务、board sequence、幂等 receipt；Cloud 无变更。独立临时 PostgreSQL 全套 90 passed / 0 ignored，包含 150 KB 附件专用 HTTP 路由及普通评论 body cap、成员撤销、跨任务与原请求重放；all-target strict Clippy、OpenAPI 77 owner / 4 AS + 13 self-tests 通过。完整原生 Alice/Bob 客户端已验证改派通知和图片上传/预览/下载，字节摘要一致。规范见 `docs/project-board.md`。未部署/推送。
+
+## 2026-10-23 看板内嵌图片回执
+
+上传附件返回稳定 attachment ID，保存在原幂等回执中，供 Client 在描述/评论插入 attachment: 引用。OpenAPI 同步，数据库测试覆盖初次上传与重放 ID 一致。完整隔离 PG 测试 90 通过，all-target Clippy 和 OpenAPI 校验通过；完整原生客户端验证了 PNG/截图上传与引用预览/删除。Cloud 无改动。

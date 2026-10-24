@@ -89,10 +89,16 @@ impl App {
     }
     pub fn router(&self) -> Router {
         Router::new()
-            .push(Router::with_path("hagency/api/v1/projects/{project}/tasks/{task}/attachments")
-                .hoop(salvo::size_limiter::max_size(3*1024*1024)).goal(self.clone()))
-            .push(Router::with_path("hagency/api/v1/{**path}")
-                .hoop(salvo::size_limiter::max_size(131072)).goal(self.clone()))
+            .push(
+                Router::with_path("hagency/api/v1/projects/{project}/tasks/{task}/attachments")
+                    .hoop(salvo::size_limiter::max_size(3 * 1024 * 1024))
+                    .goal(self.clone()),
+            )
+            .push(
+                Router::with_path("hagency/api/v1/{**path}")
+                    .hoop(salvo::size_limiter::max_size(131072))
+                    .goal(self.clone()),
+            )
     }
     pub fn readiness_router(&self) -> Router {
         Router::with_path("readyz").get(StartupReadiness(self.startup_ready.clone()))

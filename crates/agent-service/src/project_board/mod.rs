@@ -492,9 +492,10 @@ impl BoardStore {
             let current_state=task.as_ref().and_then(|t|t["state"].as_str()).unwrap_or("").to_owned();
             let now=crate::api::now_ms();
             let mut comment=Value::Null;
+            let mut attachment=Value::Null;
             let id=match &mutation {
                 Mutation::UploadAttachment {task,input} => {
-                    Self::add_attachment(db,p,a,task,input,now).await?; Some(task.clone())
+                    attachment=json!(Self::add_attachment(db,p,a,task,input,now).await?); Some(task.clone())
                 }
                 Mutation::RemoveAttachment {task,input} => {
                     let changed=sql_query("UPDATE hagency_project_v1.attachments SET removed_at=$4 WHERE project_id=$1 AND task_id=$2 AND id=$3 AND removed_at IS NULL")
@@ -552,7 +553,7 @@ impl BoardStore {
             let previous=task.unwrap_or(Value::Null);
             let task=if let Some(id)=&id { Self::task(db,&a.project,id).await? } else { Value::Null };
             Self::record_collaboration(db,p,a,seq,&mutation,(&previous,&task),now).await?;
-            let result=json!({"task":task,"sequence":seq,"comment":comment,"replayed":false});
+            let result=json!({"task":task,"sequence":seq,"comment":comment,"attachment":attachment,"replayed":false});
             sql_query("INSERT INTO hagency_project_v1.receipts(project_id,actor,intent_key,digest,result) VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(&a.project).bind::<Text,_>(&p.mxid).bind::<Text,_>(mutation.intent()).bind::<Text,_>(&digest).bind::<Jsonb,_>(&result).execute(db).await?;
             DomainStore::authorize_identity(db,p,crate::api::now_ms()).await?;Self::fresh(a)?;
             Ok(result)

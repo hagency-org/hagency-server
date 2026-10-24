@@ -984,7 +984,12 @@ async fn postgres_collaboration_notifications_diffs_attachments_and_authorizatio
             data: STANDARD.encode(bytes),
         },
     };
-    board.mutate(&alice, &access, upload()).await.unwrap();
+    let uploaded = board.mutate(&alice, &access, upload()).await.unwrap();
+    assert!(uploaded["attachment"].as_str().unwrap().starts_with("att_"));
+    assert_eq!(
+        uploaded["attachment"],
+        board.mutate(&alice, &access, upload()).await.unwrap()["attachment"]
+    );
     assert_eq!(
         board.mutate(&alice, &access, upload()).await.unwrap()["replayed"],
         true
@@ -993,6 +998,7 @@ async fn postgres_collaboration_notifications_diffs_attachments_and_authorizatio
     assert_eq!(detail["attachments"].as_array().unwrap().len(), 1);
     assert_eq!(detail["task"]["attachmentCount"], 1);
     let attachment = detail["attachments"][0]["id"].as_str().unwrap();
+    assert_eq!(uploaded["attachment"], attachment);
     assert_eq!(
         board
             .attachment(&bob, &bob_access, task, attachment)

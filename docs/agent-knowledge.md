@@ -25,3 +25,7 @@
 - Complete desktop board integration now uses project_board_fixture's explicit Matrix/OAuth test protocol. whoami must include FIXTURE_ALICE/FIXTURE_BOB matching the SDK session device; metadata must include both query and fragment response modes. Empty sliding-sync responses must only return requested list names, since encryption and room-list connections differ. These test routes stay in the example, never app.router().
 
 - 看板协作能力为 project-board-v3，增量 schema v3；旧 v2 Client 需同步升级。通知在变更/receipt 同一事务产生，只投递给当前项目成员，操作者不收自己的通知。附件字节留存于独立表，仅精确上传路由允许 3 MiB body，其余 API 保持 128 KiB；单附件解码后最多 2 MiB。项目内通知不等于系统推送。
+
+## 看板图片引用回执
+
+Client 插图应使用上传事务返回的 attachment ID，不能根据文件名或详情列表顺序猜测。该 ID 随原幂等回执持久化，重试必须相同；其他 mutation 的 attachment 可为 null。客户端还需同步放宽本地转发请求的 Base64 预算，单改 Server 上传上限不足以支持截图。

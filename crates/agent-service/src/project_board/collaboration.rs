@@ -190,17 +190,18 @@ impl BoardStore {
         task: &str,
         input: &AttachmentUpload,
         now: i64,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let bytes = attachment_bytes(input)?;
+        let id = format!("att_{}", ulid::Ulid::generate());
         let full=sql_query("SELECT count(*) FILTER (WHERE removed_at IS NULL)>=20 OR coalesce(sum(octet_length(data)),0)+$3>41943040 AS value FROM hagency_project_v1.attachments WHERE project_id=$1 AND task_id=$2")
             .bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<BigInt,_>(bytes.len() as i64).get_result::<Flag>(db).await?.value;
         if full {
             return Err(Error::Conflict("board_attachment_limit"));
         }
         sql_query("INSERT INTO hagency_project_v1.attachments(id,project_id,task_id,filename,content_type,data,created_by,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-            .bind::<Text,_>(format!("att_{}",ulid::Ulid::generate())).bind::<Text,_>(&a.project).bind::<Text,_>(task)
+            .bind::<Text,_>(&id).bind::<Text,_>(&a.project).bind::<Text,_>(task)
             .bind::<Text,_>(&input.filename).bind::<Text,_>(&input.content_type).bind::<Binary,_>(bytes).bind::<Text,_>(&p.mxid).bind::<BigInt,_>(now).execute(db).await?;
-        Ok(())
+        Ok(id)
     }
     pub(crate) async fn attachment(
         &self,
