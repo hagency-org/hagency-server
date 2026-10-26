@@ -340,6 +340,8 @@ impl TransportStore {
             if !files_initialized.matched {db.batch_execute(include_str!("attachment_schema.sql")).await?;}
             let delivery_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !delivery_initialized.matched {db.batch_execute(include_str!("file_delivery/schema.sql")).await?;}
+            let denial_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_delivery_denials') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !denial_initialized.matched {db.batch_execute(include_str!("file_delivery/denials.sql")).await?;}
             db.batch_execute("SELECT id FROM hagency_agent_v1.file_sendable LIMIT 0").await.map_err(|_|Error::Conflict("file_delivery_schema_incompatible"))?;
             db.batch_execute("SELECT dispatch_id,descriptor,descriptor_digest FROM hagency_agent_v1.event_attachments LIMIT 0").await
                 .map_err(|_| Error::Conflict("attachment_schema_incompatible"))?;
@@ -546,6 +548,7 @@ impl TransportStore {
                 if scope.owner_user_id != p.user_id { return Err(Error::Unauthorized("transport_scope_not_authorized")); }
             }
             observation(&scope, requester, facts, now)?;
+            Self::block_files_observed(db,&scope,requester,facts).await?;
             let room = crate::domain::RoomFacts {
                 owner_direct_valid:facts.owner_direct_valid,
                 owner_mxid: facts.owner_mxid.clone(), room_id: facts.room_id.clone(),

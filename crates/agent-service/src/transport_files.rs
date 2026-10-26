@@ -133,6 +133,38 @@ fn target_matches(r: &FileRow, p: &Principal, target: &Target) -> Result<()> {
     Ok(())
 }
 impl TransportStore {
+    /// Shared trusted observations fence original file intents even after the
+    /// model's completed outcome, without rewriting that outcome or text replies.
+    pub(super) async fn block_files_observed(
+        db: &mut AsyncPgConnection,
+        scope: &RoutingScope,
+        requester: &str,
+        f: &DeliveryFacts,
+    ) -> Result<()> {
+        let binding_denied = !scope.active
+            || !f.owner_in_room
+            || !f.puppet_in_room
+            || !f.puppet_can_send_message
+            || f.encrypted
+            || if scope.space_id.is_empty() {
+                !f.owner_direct_valid
+            } else {
+                !f.owner_in_space || !f.room_in_space
+            };
+        if binding_denied || !f.requester_in_room {
+            sql_query("INSERT INTO hagency_agent_v1.file_delivery_denials(owner_event_id) SELECT e.id FROM hagency_agent_v1.owner_events e WHERE e.binding_id=$1 AND e.binding_generation=$2 AND ($3 OR e.requester_mxid=$4) AND (e.state IN ('pending','offered','acknowledged','running') OR EXISTS(SELECT 1 FROM hagency_agent_v1.file_outbox o WHERE o.owner_event_id=e.id AND o.state NOT IN ('sent','cancelled'))) ON CONFLICT DO NOTHING")
+                .bind::<Text,_>(&scope.binding_id).bind::<BigInt,_>(scope.binding_generation).bind::<Bool,_>(binding_denied).bind::<Text,_>(requester).execute(db).await?;
+        }
+        Ok(())
+    }
+    async fn file_allowed(db: &mut AsyncPgConnection, event: &str) -> Result<()> {
+        let denied=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.file_delivery_denials WHERE owner_event_id=$1) AS matched").bind::<Text,_>(event).get_result::<Flag>(db).await?;
+        if denied.matched {
+            Err(Error::Unauthorized("file_delivery_permanently_blocked"))
+        } else {
+            Ok(())
+        }
+    }
     async fn writable_file(
         db: &mut AsyncPgConnection,
         p: &Principal,
@@ -149,6 +181,7 @@ impl TransportStore {
         target_matches(&r, p, target)?;
         let event = Self::dispatch(db, p, &target.dispatch_id).await?;
         Self::dispatch_scope(db, p, lease, &event, f, now).await?;
+        Self::file_allowed(db, &target.dispatch_id).await?;
         fenced(&event, p, lease)?;
         if event.state != "running" || event.execution_id.as_deref() != Some(&target.execution_id) {
             return Err(Error::Conflict("execution_not_running"));
@@ -178,7 +211,7 @@ impl TransportStore {
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let (now,_)=Self::authenticate(db,p,now).await?;
-            let e=Self::dispatch(db,p,dispatch).await?;Self::dispatch_scope(db,p,lease,&e,f,now).await?;fenced(&e,p,lease)?;
+            let e=Self::dispatch(db,p,dispatch).await?;Self::dispatch_scope(db,p,lease,&e,f,now).await?;Self::file_allowed(db,dispatch).await?;fenced(&e,p,lease)?;
             if e.state!="running"||e.execution_id.as_deref()!=Some(execution) {return Err(Error::Conflict("execution_not_running"))}
             let prior=sql_query(format!("{SELECT} WHERE owner_event_id=$1 AND request_id=$2")).bind::<Text,_>(dispatch).bind::<Text,_>(request_id).get_result::<FileRow>(db).await.optional()?;
             if let Some(prior)=prior {if prior.manifest_digest!=digest||prior.manifest!=serde_json::to_value(&file).map_err(|_|Error::Invalid("invalid_file_manifest"))?||prior.execution_id!=execution {return Err(Error::Conflict("file_request_changed"))}return prior.public();}
@@ -334,7 +367,7 @@ impl TransportStore {
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;let r=row(db,id).await?;
             if !matches!(r.state.as_str(),"queued"|"uploaded") {return Err(Error::Conflict("file_not_sendable"))}
-            let scope=Self::scope(db,&r.binding_id).await?;facts(&scope,&r.requester_mxid,f,now)?;
+            let scope=Self::scope(db,&r.binding_id).await?;facts(&scope,&r.requester_mxid,f,now)?;Self::file_allowed(db,&r.owner_event_id).await?;
             if scope.binding_generation!=r.binding_generation||scope.owner_user_id!=r.owner_user_id||scope.agent_id!=r.agent_id||scope.puppet_mxid!=r.puppet_mxid {return Err(Error::Unauthorized("file_scope_revoked"))}
             // Revocation may use another database connection. Hold the actual
             // device/session/user rows until the irreversible intent commits.

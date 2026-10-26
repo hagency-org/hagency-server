@@ -106,3 +106,29 @@ all-targets no-deps 严格 Clippy 通过，日志
 未进入编译/测试阶段。现改为同一个完整原文件的 `[..3]` 切片，字节及断言
 保持原样；未添加词典豁免。原输出保留在
 `/tmp/hagency-send-server-ci-4f2f466.log`，后续提交重新验证。
+
+## 后续修正：任务完成后仍待投递的文件必须保留撤权证据
+
+发送宿主接线审查发现：owner_events已completed时，原reject_event_delivery不会
+改写已完成结果；单靠它封存文件，无法保留请求者退出、puppet失去发送权限或Room
+加密的否定观察。恢复正向事实后，旧queued/uploaded文件可能再取得发送权。
+新回归在未修复版本明确失败，日志 `/tmp/hagency-send-completed-before.log`。
+
+新增不可更新/删除的file_delivery_denials，按原owner_event登记否定证据。共享可信
+权限观察为同binding generation下、对应请求者或整binding的旧活跃请求/待投递文件
+留证；即使尚未准备文件也不能稍后给该旧请求创建发送意图。新原始请求保持独立。
+prepare/chunk/queue/claim和sendable view检查该证据；原completed结果和旧文本回复
+语义不变。否定后已可能发生的原发送仍可接受真实晚到回执，不能反推远端不存在。
+
+迁移仅添加日志表/禁止改写触发器及view，复用已有文本delivery_blocked的历史证据。
+在真正03c9e0b格式的旧独立测试库执行（迁移前file_outbox存在、denial表不存在），
+9条文件、199条原请求和14条回复的完整数据摘要前后不变；重复初始化也不改数据。
+日志 `/tmp/hagency-send-migration-{original-schema,original-counts,preservation}.log`。
+
+最终新库串行Agent-service106/106通过、0忽略，含完成后queued/uploaded的三种
+否定/恢复、准备前共享否定、新请求独立、迟到真实回执及不可删除见证。三包严格
+Clippy、全仓格式、typos1.48、OpenAPI82+4和19个负向守卫通过。日志为
+`/tmp/hagency-send-server-revocation-{final,clippy-final,fmt-check,spelling,openapi}.log`。
+中间全量105通过/1失败保留在revocation-full.log：永久拒绝覆盖了原明确的加密拒绝
+错误码。现先返回当前加密事实的原拒绝，再检查永久日志；原断言未改，记录仍永久。
+本修正的远端CI将在推送后另跑，03c9e0b的旧绿灯不代表新提交已完成远端验证。

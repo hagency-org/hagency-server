@@ -895,3 +895,223 @@ async fn postgres_file_uploaded_bytes_do_not_grant_send_after_device_revocation_
     assert!(historical.upload_accepted);
     assert!(historical.matrix_event_id.is_none());
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_completed_request_file_denial_is_permanent_after_requester_rejoins_or_speaking_returns()
+ {
+    for uploaded in [false, true] {
+        for kind in ["requester", "speaking", "encrypted"] {
+            let f = fixture().await;
+            let lease = lease(&f).await;
+            let (target, _) = staged(&f, &lease, "file-after-completion").await;
+            if uploaded {
+                let claim = f
+                    .transport
+                    .claim_file(&target.file_id, &f.facts, crate::api::now_ms())
+                    .await
+                    .unwrap();
+                f.transport
+                    .confirm_file_upload(
+                        &target.file_id,
+                        &claim.token,
+                        Some("mxc://example.test/completed-original"),
+                        crate::api::now_ms(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            f.transport
+                .submit_reply(
+                    &f.p,
+                    &lease,
+                    SubmitReply {
+                        dispatch_id: target.dispatch_id.clone(),
+                        execution_id: target.execution_id.clone(),
+                        body: "Original task completed; file still pending".into(),
+                    },
+                    &f.facts,
+                    crate::api::now_ms(),
+                )
+                .await
+                .unwrap();
+            let mut negative = f.facts.clone();
+            match kind {
+                "requester" => negative.requester_in_room = false,
+                "speaking" => negative.puppet_can_send_message = false,
+                _ => negative.encrypted = true,
+            }
+            assert!(
+                f.transport
+                    .claim_file(&target.file_id, &negative, crate::api::now_ms())
+                    .await
+                    .is_err()
+            );
+            // Old completed task outcomes cannot be rewritten just to fence a file.
+            {
+                let mut db = f.transport.db.lock().await.unwrap();
+                assert_eq!(
+                    TransportStore::dispatch(&mut db, &f.p, &target.dispatch_id)
+                        .await
+                        .unwrap()
+                        .state,
+                    "completed"
+                );
+            }
+            assert!(
+                f.transport
+                    .claim_file(&target.file_id, &f.facts, crate::api::now_ms())
+                    .await
+                    .is_err(),
+                "{kind} loss after completion must survive restored positive facts; uploaded={uploaded}"
+            );
+            f.transport
+                .expire_files(crate::api::now_ms())
+                .await
+                .unwrap();
+            let status = f
+                .transport
+                .file_delivery(&f.p, &target, crate::api::now_ms())
+                .await
+                .unwrap();
+            assert_eq!(status.state, "cancelled");
+            assert_eq!(status.upload_accepted, uploaded);
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_file_denial_before_preparation_is_shared_per_original_request_and_late_receipts_remain_historical()
+ {
+    let f = fixture().await;
+    let lease = lease(&f).await;
+    let first = enqueue(&f, "file-not-yet-prepared").await;
+    running(&f, &lease, &first, "file-first").await;
+    let mut negative = f.facts.clone();
+    negative.requester_in_room = false;
+    f.transport
+        .observe_delivery_authority(
+            None,
+            &f.binding,
+            &f.facts.requester_mxid,
+            Some(&first),
+            &negative,
+            crate::api::now_ms(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        f.transport
+            .prepare_file(
+                &f.p,
+                &lease,
+                &first,
+                "file-first",
+                "file",
+                manifest(),
+                &f.facts,
+                crate::api::now_ms()
+            )
+            .await
+            .is_err()
+    );
+    // A new original request after the restored membership remains independent.
+    let (target, _) = staged(&f, &lease, "file-new-request").await;
+    let upload = f
+        .transport
+        .claim_file(&target.file_id, &f.facts, crate::api::now_ms())
+        .await
+        .unwrap();
+    f.transport
+        .confirm_file_upload(
+            &target.file_id,
+            &upload.token,
+            Some("mxc://example.test/original-before-block"),
+            crate::api::now_ms(),
+        )
+        .await
+        .unwrap();
+    let send = f
+        .transport
+        .claim_file(&target.file_id, &f.facts, crate::api::now_ms())
+        .await
+        .unwrap();
+    f.transport
+        .observe_delivery_authority(
+            None,
+            &f.binding,
+            &f.facts.requester_mxid,
+            Some(&target.dispatch_id),
+            &negative,
+            crate::api::now_ms(),
+        )
+        .await
+        .unwrap();
+    f.transport
+        .confirm_file_sent(
+            &target.file_id,
+            &send.token,
+            Some("$actual_before_or_during_block"),
+        )
+        .await
+        .unwrap();
+    let history = f
+        .transport
+        .file_delivery(&f.p, &target, crate::api::now_ms())
+        .await
+        .unwrap();
+    assert_eq!(history.state, "sent");
+    assert_eq!(
+        history.matrix_event_id.as_deref(),
+        Some("$actual_before_or_during_block")
+    );
+    let mut db = f.transport.db.lock().await.unwrap();
+    for sql in [
+        "DELETE FROM hagency_agent_v1.file_delivery_denials WHERE owner_event_id=$1",
+        "UPDATE hagency_agent_v1.file_delivery_denials SET owner_event_id=owner_event_id WHERE owner_event_id=$1",
+    ] {
+        assert!(
+            sql_query(sql)
+                .bind::<Text, _>(&target.dispatch_id)
+                .execute(&mut *db)
+                .await
+                .is_err()
+        );
+    }
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_file_denial_upgrade_is_additive_and_preserves_all_original_records() {
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let mut db = AsyncPgConnection::establish(&url).await.unwrap();
+    let snapshot_sql = "SELECT 'snapshot' AS id,md5(coalesce((SELECT jsonb_agg(to_jsonb(f) ORDER BY id)::text FROM hagency_agent_v1.file_outbox f),'[]')||coalesce((SELECT jsonb_agg(to_jsonb(e) ORDER BY id)::text FROM hagency_agent_v1.owner_events e),'[]')||coalesce((SELECT jsonb_agg(to_jsonb(r) ORDER BY id)::text FROM hagency_agent_v1.reply_outbox r),'[]')) AS digest";
+    let before = sql_query(snapshot_sql)
+        .get_result::<Existing>(&mut db)
+        .await
+        .unwrap()
+        .digest;
+    let _store = TransportStore::open(&url, Limits::default()).await.unwrap();
+    let after = sql_query(snapshot_sql)
+        .get_result::<Existing>(&mut db)
+        .await
+        .unwrap()
+        .digest;
+    assert_eq!(before, after);
+    let _again = TransportStore::open(&url, Limits::default()).await.unwrap();
+    let ready = sql_query(
+        "SELECT to_regclass('hagency_agent_v1.file_delivery_denials') IS NOT NULL AS matched",
+    )
+    .get_result::<Flag>(&mut db)
+    .await
+    .unwrap();
+    assert!(ready.matched);
+    assert_eq!(
+        after,
+        sql_query(snapshot_sql)
+            .get_result::<Existing>(&mut db)
+            .await
+            .unwrap()
+            .digest
+    );
+}
