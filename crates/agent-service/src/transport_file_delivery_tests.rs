@@ -144,7 +144,15 @@ async fn postgres_file_staging_is_exact_scoped_and_unknown_upload_never_rearms()
     for _ in 0..2 {
         assert_eq!(
             f.transport
-                .stage_file_chunk(&f.p, &lease, &t, 0, b"hel", &f.facts, crate::api::now_ms())
+                .stage_file_chunk(
+                    &f.p,
+                    &lease,
+                    &t,
+                    0,
+                    &b"hello"[..3],
+                    &f.facts,
+                    crate::api::now_ms()
+                )
                 .await
                 .unwrap()
                 .received_bytes,

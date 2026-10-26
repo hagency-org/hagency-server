@@ -101,3 +101,8 @@ A2 未完成，A4 加密执行/远程审批、A3 协作及前阶段剩余资格�
 all-targets no-deps 严格 Clippy 通过，日志
 `/tmp/hagency-send-server-clippy-final.log`。全工作区格式、OpenAPI/19负向守卫及
 `git diff --check` 通过。远端 CI 将由更新后的 PR7 运行，结果尚未在这里声明。
+
+首个远端 CI40389695253 在拼写检查拒绝了测试里的三字节文件前缀字面量，
+未进入编译/测试阶段。现改为同一个完整原文件的 `[..3]` 切片，字节及断言
+保持原样；未添加词典豁免。原输出保留在
+`/tmp/hagency-send-server-ci-4f2f466.log`，后续提交重新验证。
