@@ -12,6 +12,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 #[path = "transport_attachments.rs"]
 mod attachments;
+#[path = "transport_files.rs"]
+pub(crate) mod files;
 #[path = "transport_history.rs"]
 mod history;
 #[path = "pause_notices.rs"]
@@ -336,6 +338,9 @@ impl TransportStore {
             }
             let files_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.event_attachments') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !files_initialized.matched {db.batch_execute(include_str!("attachment_schema.sql")).await?;}
+            let delivery_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !delivery_initialized.matched {db.batch_execute(include_str!("file_delivery/schema.sql")).await?;}
+            db.batch_execute("SELECT id FROM hagency_agent_v1.file_sendable LIMIT 0").await.map_err(|_|Error::Conflict("file_delivery_schema_incompatible"))?;
             db.batch_execute("SELECT dispatch_id,descriptor,descriptor_digest FROM hagency_agent_v1.event_attachments LIMIT 0").await
                 .map_err(|_| Error::Conflict("attachment_schema_incompatible"))?;
             db.batch_execute("SELECT id FROM hagency_agent_v1.processing_sendable LIMIT 0").await

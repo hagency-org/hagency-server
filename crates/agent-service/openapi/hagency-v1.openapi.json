@@ -8315,6 +8315,422 @@
           ]
         }
       }
+    },
+    "/hagency/api/v1/execution/files/prepare": {
+      "post": {
+        "operationId": "prepareExecutionFile",
+        "summary": "Prepare bounded original-execution file delivery",
+        "description": "Prepare only for the exact running execution, current leased execution device and fresh Gateway facts. Durable requestId binds the original immutable manifest; exact duplicates return existing state, changed duplicates conflict. Owner capacity is 4096 retained rows and 128MiB held declared bytes. This has no Matrix IO.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "delivery": {
+                      "$ref": "#/components/schemas/Delivery"
+                    }
+                  },
+                  "required": [
+                    "delivery"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FilePrepare"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/files/prepare\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        }
+      }
+    },
+    "/hagency/api/v1/execution/files/chunk": {
+      "post": {
+        "operationId": "stageExecutionFileChunk",
+        "summary": "Stage exact contiguous file bytes",
+        "description": "Append 1..65536 bytes under the original current lease/execution and fresh Gateway facts. Exact prior chunk retries compare actual bytes; changed, overlapping, gap or overrun writes fail. Generic 131072-byte HTTP limit remains. This has no Matrix IO.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "delivery": {
+                      "$ref": "#/components/schemas/Delivery"
+                    }
+                  },
+                  "required": [
+                    "delivery"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileChunk"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/files/chunk\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        }
+      }
+    },
+    "/hagency/api/v1/execution/files/queue": {
+      "post": {
+        "operationId": "queueExecutionFile",
+        "summary": "Queue verified original file bytes once",
+        "description": "Verify actual complete length and SHA-256 before queueing. Same identity returns its existing state; it never resets unknown. Workers independently recheck fresh scope/device/session/lease before upload and again before message publication. Persist uploading/sending before external IO, with fixed 60s custody deadlines. Unknown upload/send is never automatically retried. Plaintext Rooms only; encrypted Rooms require Client crypto and are refused. File publication retains the original Agent, Room/thread and fixed Matrix transaction ID, and never marks the original task complete.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "delivery": {
+                      "$ref": "#/components/schemas/Delivery"
+                    }
+                  },
+                  "required": [
+                    "delivery"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileWrite"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/files/queue\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        }
+      }
+    },
+    "/hagency/api/v1/execution/files/status": {
+      "post": {
+        "operationId": "readExecutionFileDelivery",
+        "summary": "Read safe original file delivery history",
+        "description": "Read-only historical status for a current authenticated device owned by the same owner and exact original dispatch/execution/file. No lease or Gateway observation required, no private MXC/blob/worker token, and no current send authority. Status remains queryable after the original lease ends. Only exact original Matrix HTTP receipt or verified Appservice event can settle sent; unknown is never a retry grant.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "delivery": {
+                      "$ref": "#/components/schemas/Delivery"
+                    }
+                  },
+                  "required": [
+                    "delivery"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Target"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/files/status\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        }
+      }
     }
   },
   "components": {
@@ -10124,7 +10540,7 @@
               "type": "string"
             },
             "uniqueItems": true,
-            "description": "Implemented capabilities. Encrypted Agent delivery is not currently advertised. agent-attachment-metadata-v1 is advertised only when transport is configured; it covers metadata admission/lookup, not file transfer completion."
+            "description": "Implemented capabilities. Encrypted Agent delivery is not currently advertised. agent-attachment-metadata-v1 requires transport and covers metadata admission/lookup. agent-file-delivery-v1 requires transport plus actual MatrixClient and covers original-execution staged plaintext delivery/status; it does not prove Client tool availability or end-to-end qualification."
           }
         },
         "required": [
@@ -13338,6 +13754,330 @@
         ],
         "additionalProperties": false,
         "description": "Immutable sender metadata. Digest is SHA-256 of canonical recursively key-sorted compact UTF-8 JSON [filename,messageType,contentType,declaredSize,source]. It is not a downloaded-file hash or transfer receipt."
+      },
+      "Manifest": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "description": "UTF-8 byte bound 255; no controls, slash, backslash, dot or dot-dot. Display name only."
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000,
+                "description": "UTF-8 byte bound 1000; no NUL. Empty/null uses filename as message body."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8388608
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "filename",
+          "caption",
+          "bytes",
+          "sha256"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/file_delivery.rs",
+          "name": "Manifest",
+          "serializedFields": [
+            "filename",
+            "caption",
+            "bytes",
+            "sha256"
+          ],
+          "strictInput": true
+        },
+        "description": "Exact bytes and display metadata, committed as SHA-256 of compact UTF-8 JSON [filename,caption,bytes,sha256]. Queue and upload claims independently verify actual complete bytes and SHA-256.",
+        "examples": [
+          {
+            "filename": "original.txt",
+            "caption": "Original caption",
+            "bytes": 5,
+            "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          }
+        ]
+      },
+      "Target": {
+        "type": "object",
+        "properties": {
+          "dispatchId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "executionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "fileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": [
+          "dispatchId",
+          "executionId",
+          "fileId"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/file_delivery.rs",
+          "name": "Target",
+          "serializedFields": [
+            "dispatch_id",
+            "execution_id",
+            "file_id"
+          ],
+          "strictInput": true
+        },
+        "description": "Exact original owner dispatch/execution/file association; never an arbitrary Room, URL or sender selector.",
+        "examples": [
+          {
+            "dispatchId": "dsp_example",
+            "executionId": "file-execution",
+            "fileId": "fil_example"
+          }
+        ]
+      },
+      "Delivery": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "dispatchId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "executionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "createdAtMs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/Manifest"
+          },
+          "manifestDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "receivedBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8388608
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "staging",
+              "queued",
+              "uploading",
+              "uploaded",
+              "sending",
+              "sent",
+              "unknown",
+              "cancelled"
+            ]
+          },
+          "uploadAccepted": {
+            "type": "boolean"
+          },
+          "matrixEventId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "dispatchId",
+          "executionId",
+          "requestId",
+          "createdAtMs",
+          "manifest",
+          "manifestDigest",
+          "receivedBytes",
+          "state",
+          "uploadAccepted",
+          "matrixEventId"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/file_delivery.rs",
+          "name": "Delivery",
+          "serializedFields": [
+            "id",
+            "dispatch_id",
+            "execution_id",
+            "request_id",
+            "created_at_ms",
+            "manifest",
+            "manifest_digest",
+            "received_bytes",
+            "state",
+            "upload_accepted",
+            "matrix_event_id"
+          ],
+          "strictInput": true
+        },
+        "description": "Safe historical delivery status. sent requires an actual Matrix event receipt; uploadAccepted alone is not message delivery or task completion. unknown is never reclaimed or resent. No private MXC, blob, worker token, or local source path."
+      },
+      "FilePrepare": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "dispatchId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "executionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "file": {
+            "$ref": "#/components/schemas/Manifest"
+          }
+        },
+        "required": [
+          "lease",
+          "dispatchId",
+          "executionId",
+          "requestId",
+          "file"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "name": "FilePrepare",
+          "serializedFields": [
+            "lease",
+            "dispatch_id",
+            "execution_id",
+            "request_id",
+            "file"
+          ],
+          "strictInput": true
+        }
+      },
+      "FileWrite": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Target"
+          }
+        },
+        "required": [
+          "lease",
+          "target"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "name": "FileWrite",
+          "serializedFields": [
+            "lease",
+            "target"
+          ],
+          "strictInput": true
+        }
+      },
+      "FileChunk": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Target"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8388608
+          },
+          "data": {
+            "type": "string",
+            "maxLength": 87384,
+            "pattern": "^[A-Za-z0-9+/]+$",
+            "description": "Unpadded standard Base64, decoding to 1..65536 bytes; exact contiguous offset or exact prior chunk retry only."
+          }
+        },
+        "required": [
+          "lease",
+          "target",
+          "offset",
+          "data"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "name": "FileChunk",
+          "serializedFields": [
+            "lease",
+            "target",
+            "offset",
+            "data"
+          ],
+          "strictInput": true
+        }
       }
     },
     "securitySchemes": {
@@ -13356,8 +14096,8 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "c3f89187f634e2610e4243c908ff085f5ac2055bed8ada0636094cade57bc13c",
-    "crates/agent-service/src/api_transport.rs": "332f68974537527e767c6449e8da1b4d64640f1b866436a9b8b9896712327eb9",
+    "crates/agent-service/src/api.rs": "14b694d52ca23335aa3b9fffaabc1a1a72a2285fd1a1a3a6648499f4d7a04e16",
+    "crates/agent-service/src/api_transport.rs": "0f6497dfdb9a01844d7927cd58e49f129edb090b3039e3ba28e3d9750bfc4390",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
     "crates/agent-service/src/api_project_board.rs": "92c621045fe4c00d665152622e99c8d061ab58c98bc5b3197db1c09e43eb7969"

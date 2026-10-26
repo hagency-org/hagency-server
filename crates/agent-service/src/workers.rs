@@ -112,7 +112,12 @@ fn parse_event(raw: &Value) -> Option<RoutedEvent> {
         is_edit: false,
     })
 }
-async fn route(inbox: &Inbox, t: &TransportStore, g: &Gateway, cursor: &mut String) -> Result<()> {
+pub(crate) async fn route(
+    inbox: &Inbox,
+    t: &TransportStore,
+    g: &Gateway,
+    cursor: &mut String,
+) -> Result<()> {
     let transactions = if cursor.is_empty() {
         inbox.pending().await?
     } else {
@@ -123,6 +128,11 @@ async fn route(inbox: &Inbox, t: &TransportStore, g: &Gateway, cursor: &mut Stri
         *cursor = transaction.id.clone();
         let mut retry = false;
         for raw in transaction.body["events"].as_array().into_iter().flatten() {
+            match t.observe_file_event(raw).await {
+                Ok(true) | Err(Error::Conflict("file_message_changed")) => continue,
+                Ok(false) => {}
+                Err(error) => return Err(error),
+            }
             let Some(event) = parse_event(raw) else {
                 continue;
             };
@@ -473,6 +483,76 @@ async fn send_processing(
     }
     Ok(())
 }
+pub(crate) async fn send_files(
+    t: &TransportStore,
+    g: &Gateway,
+    m: &MatrixClient,
+    cursor: &mut String,
+) -> Result<()> {
+    let mut unavailable_rooms = BTreeSet::new();
+    for candidate in t.file_candidates(cursor).await? {
+        *cursor = candidate.id.clone();
+        if unavailable_rooms.contains(&candidate.room_id) {
+            continue;
+        }
+        let scope = match t.binding_scope(&candidate.binding_id).await {
+            Ok(s) => s,
+            Err(Error::Unauthorized(_)) => continue,
+            Err(e) => return Err(e),
+        };
+        let facts = match tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            g.delivery(
+                &candidate.room_id,
+                &scope.space_id,
+                &scope.owner_mxid,
+                &candidate.requester_mxid,
+                &candidate.puppet_mxid,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(f)) => f,
+            _ => {
+                unavailable_rooms.insert(candidate.room_id.clone());
+                continue;
+            }
+        };
+        let claim = match t.claim_file(&candidate.id, &facts, now_ms()).await {
+            Ok(c) => c,
+            Err(Error::Unauthorized(_) | Error::Conflict(_)) => continue,
+            Err(e) => return Err(e),
+        };
+        if let Some(bytes) = claim.bytes {
+            let name = claim.row.upload_filename()?;
+            let uploaded = m.upload_file(&claim.row.puppet_mxid, &name, bytes).await;
+            t.confirm_file_upload(
+                &claim.row.id,
+                &claim.token,
+                uploaded.as_ref().ok().map(String::as_str),
+                now_ms(),
+            )
+            .await?;
+        } else {
+            let content = claim.row.content()?;
+            let sent = m
+                .send(
+                    &claim.row.puppet_mxid,
+                    &claim.row.room_id,
+                    &format!("hagency-file-{}", claim.row.id),
+                    content,
+                )
+                .await;
+            t.confirm_file_sent(
+                &claim.row.id,
+                &claim.token,
+                sent.as_ref().ok().map(String::as_str),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
 pub(crate) fn start(
     inbox: Inbox,
     t: TransportStore,
@@ -485,6 +565,7 @@ pub(crate) fn start(
         let mut processing_cursor = String::new();
         let mut pause_cursor = String::new();
         let mut request_cursor = String::new();
+        let mut file_cursor = String::new();
         // Each durable queue advances on its own clock. A slow Matrix lookup
         // or retry in one queue must not stall intake or another queue's replies.
         // These futures are owned by the parent task, so aborting it drops all
@@ -503,6 +584,8 @@ pub(crate) fn start(
         }
         tokio::join!(
             worker_loop!(t.invalidate_stale_dispatches(now_ms())),
+            worker_loop!(t.expire_files(now_ms())),
+            worker_loop!(send_files(&t, &g, &m, &mut file_cursor)),
             worker_loop!(route(&inbox, &t, &g, &mut route_cursor)),
             worker_loop!(send(&t, &g, &m, &mut reply_cursor)),
             worker_loop!(send_processing(&t, &g, &m, &mut processing_cursor)),

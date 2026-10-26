@@ -174,6 +174,59 @@ impl MatrixClient {
         .await?;
         Ok(())
     }
+    pub(crate) async fn upload_file(
+        &self,
+        puppet: &str,
+        filename: &str,
+        bytes: Vec<u8>,
+    ) -> Result<String> {
+        self.puppet(puppet)?;
+        if bytes.len() > crate::file_delivery::MAX_BYTES {
+            return Err(Error::Invalid("file_capacity_exceeded"));
+        }
+        let mut url = self.origin.clone();
+        url.path_segments_mut()
+            .map_err(|_| Error::Invalid("invalid_matrix_origin"))?
+            .clear()
+            .extend(["_matrix", "media", "v3", "upload"]);
+        url.query_pairs_mut()
+            .append_pair("user_id", puppet)
+            .append_pair("filename", filename);
+        let mut response = self
+            .http
+            .post(url)
+            .bearer_auth(&self.as_token)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .timeout(Duration::from_secs(30))
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|_| Error::Unavailable("matrix_outcome_unknown"))?;
+        if !response.status().is_success() {
+            return Err(Error::Unavailable("matrix_outcome_unknown"));
+        }
+        let mut raw = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| Error::Unavailable("matrix_outcome_unknown"))?
+        {
+            if raw.len() + chunk.len() > 32768 {
+                return Err(Error::Unavailable("matrix_response_too_large"));
+            }
+            raw.extend_from_slice(&chunk);
+        }
+        let value: Value = serde_json::from_slice(&raw)
+            .map_err(|_| Error::Unavailable("invalid_matrix_response"))?;
+        let url = value["content_uri"]
+            .as_str()
+            .ok_or(Error::Unavailable("invalid_matrix_response"))?;
+        crate::attachments::Attachment::from_content(
+            &json!({"msgtype":"m.file","body":"file","url":url}),
+        )
+        .map_err(|_| Error::Unavailable("invalid_matrix_response"))?;
+        Ok(url.to_owned())
+    }
     pub async fn send(
         &self,
         puppet: &str,

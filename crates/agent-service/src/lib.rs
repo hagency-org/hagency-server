@@ -11,6 +11,7 @@ mod configuration_tests;
 pub mod configuration_types;
 mod database;
 pub mod domain;
+pub mod file_delivery;
 pub use domain::project_board;
 mod api_project_board;
 pub mod gateway;

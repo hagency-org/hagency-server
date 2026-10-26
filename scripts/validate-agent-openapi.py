@@ -191,7 +191,12 @@ def validate(doc):
         require({p for p, _ in operations if p.startswith('/hagency/api/v1/execution/')} == {p for p, _ in literal if p.startswith('/hagency/api/v1/execution/')}, 'invented transport route')
         require(('/hagency/api/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
         require(('/hagency/api/v1/projects/{projectId}/rooms', 'post') not in operations, 'unimplemented Room creation advertised')
-        require(len(operations) == 78, 'reviewed owner route count drift')
+        for suffix, request in [('prepare', 'FilePrepare'), ('chunk', 'FileChunk'), ('queue', 'FileWrite'), ('status', 'Target')]:
+            operation = doc['paths']['/hagency/api/v1/execution/files/' + suffix]['post']
+            require(operation['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/' + request}, 'file request payload drift: ' + suffix)
+            response = operation['responses']['200']['content']['application/json']['schema']
+            require(response.get('additionalProperties') is False and response.get('required') == ['delivery'] and response['properties'] == {'delivery': {'$ref': '#/components/schemas/Delivery'}}, 'file response payload drift')
+        require(len(operations) == 82, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -210,6 +215,14 @@ class GuardTests(unittest.TestCase):
         self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/files/attachments'))
     def test_attachment_requires_device(self):
         self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/attachments']['post'].update(security=[{'userBearer': []}]))
+    def test_missing_file_delivery_route(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/files/queue'))
+    def test_file_status_requires_device(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/status']['post'].update(security=[{'userBearer': []}]))
+    def test_file_payload_drift(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/queue']['post']['requestBody']['content']['application/json'].update(schema={'$ref': '#/components/schemas/Target'}))
+    def test_file_response_private_field(self):
+        self.rejection(lambda d: d['components']['schemas']['Delivery']['properties'].update(workerToken={'type': 'string'}))
     def test_missing_board_route(self):
         self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/projects/{projectId}/board'))
     def test_wrong_board_bearer(self):

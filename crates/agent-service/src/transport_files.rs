@@ -1,0 +1,448 @@
+use super::*;
+use crate::file_delivery::{CHUNK_BYTES, Delivery, MAX_BYTES, Manifest, Target};
+use diesel::sql_types::{Binary, Jsonb};
+use serde_json::Value;
+const SELECT: &str = "SELECT id,request_id,owner_event_id,execution_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,requester_mxid,thread_root,binding_generation,dispatch_epoch,dispatch_device_id,manifest,manifest_digest,received_bytes,state,mxc_url,worker_phase,worker_token,worker_until_ms,matrix_event_id,created_at_ms FROM hagency_agent_v1.file_outbox";
+#[derive(diesel::QueryableByName)]
+pub(crate) struct FileRow {
+    #[diesel(sql_type=Text)]
+    pub id: String,
+    #[diesel(sql_type=Text)]
+    request_id: String,
+    #[diesel(sql_type=Text)]
+    pub owner_event_id: String,
+    #[diesel(sql_type=Text)]
+    execution_id: String,
+    #[diesel(sql_type=Text)]
+    agent_id: String,
+    #[diesel(sql_type=Text)]
+    pub binding_id: String,
+    #[diesel(sql_type=Text)]
+    owner_user_id: String,
+    #[diesel(sql_type=Text)]
+    pub room_id: String,
+    #[diesel(sql_type=Text)]
+    pub puppet_mxid: String,
+    #[diesel(sql_type=Text)]
+    pub requester_mxid: String,
+    #[diesel(sql_type=Text)]
+    thread_root: String,
+    #[diesel(sql_type=BigInt)]
+    binding_generation: i64,
+    #[diesel(sql_type=BigInt)]
+    dispatch_epoch: i64,
+    #[diesel(sql_type=Text)]
+    dispatch_device_id: String,
+    #[diesel(sql_type=Jsonb)]
+    manifest: Value,
+    #[diesel(sql_type=Text)]
+    manifest_digest: String,
+    #[diesel(sql_type=BigInt)]
+    received_bytes: i64,
+    #[diesel(sql_type=Text)]
+    pub state: String,
+    #[diesel(sql_type=Nullable<Text>)]
+    mxc_url: Option<String>,
+    #[diesel(sql_type=Nullable<Text>)]
+    worker_phase: Option<String>,
+    #[diesel(sql_type=Nullable<Text>)]
+    worker_token: Option<String>,
+    #[diesel(sql_type=BigInt)]
+    worker_until_ms: i64,
+    #[diesel(sql_type=Nullable<Text>)]
+    matrix_event_id: Option<String>,
+    #[diesel(sql_type=BigInt)]
+    created_at_ms: i64,
+}
+#[derive(diesel::QueryableByName)]
+struct Blob {
+    #[diesel(sql_type=Binary)]
+    content: Vec<u8>,
+}
+/// Private original claim. Never serialize it or recreate it from a public view.
+pub(crate) struct FileClaim {
+    pub row: FileRow,
+    pub token: String,
+    pub bytes: Option<Vec<u8>>,
+}
+impl FileRow {
+    pub(crate) fn upload_filename(&self) -> Result<String> {
+        Ok(self.manifest()?.filename)
+    }
+    fn manifest(&self) -> Result<Manifest> {
+        let manifest: Manifest = serde_json::from_value(self.manifest.clone())
+            .map_err(|_| Error::Unavailable("invalid_stored_file"))?;
+        if manifest.digest()? != self.manifest_digest
+            || self.received_bytes < 0
+            || self.received_bytes as u64 > manifest.bytes
+        {
+            return Err(Error::Unavailable("invalid_stored_file"));
+        }
+        Ok(manifest)
+    }
+    fn public(&self) -> Result<Delivery> {
+        Ok(Delivery {
+            id: self.id.clone(),
+            dispatch_id: self.owner_event_id.clone(),
+            execution_id: self.execution_id.clone(),
+            request_id: self.request_id.clone(),
+            created_at_ms: self.created_at_ms,
+            manifest: self.manifest()?,
+            manifest_digest: self.manifest_digest.clone(),
+            received_bytes: self.received_bytes as u64,
+            state: self.state.clone(),
+            upload_accepted: self.mxc_url.is_some(),
+            matrix_event_id: self.matrix_event_id.clone(),
+        })
+    }
+    pub(crate) fn content(&self) -> Result<Value> {
+        let f = self.manifest()?;
+        Ok(crate::file_delivery::content(
+            &f.filename,
+            f.caption.as_deref(),
+            f.bytes,
+            self.mxc_url
+                .as_deref()
+                .ok_or(Error::Conflict("file_not_uploaded"))?,
+            &self.id,
+            &self.room_id,
+            &self.thread_root,
+        ))
+    }
+}
+async fn row(db: &mut AsyncPgConnection, id: &str) -> Result<FileRow> {
+    sql_query(format!("{SELECT} WHERE id=$1"))
+        .bind::<Text, _>(id)
+        .get_result(db)
+        .await
+        .map_err(|e| {
+            if e == diesel::result::Error::NotFound {
+                Error::NotFound("file_delivery_not_found")
+            } else {
+                e.into()
+            }
+        })
+}
+fn target_matches(r: &FileRow, p: &Principal, target: &Target) -> Result<()> {
+    if r.owner_user_id != p.user_id
+        || r.owner_event_id != target.dispatch_id
+        || r.execution_id != target.execution_id
+    {
+        return Err(Error::NotFound("file_delivery_not_found"));
+    }
+    Ok(())
+}
+impl TransportStore {
+    async fn writable_file(
+        db: &mut AsyncPgConnection,
+        p: &Principal,
+        lease: &LeaseRef,
+        target: &Target,
+        f: &DeliveryFacts,
+        now: i64,
+    ) -> Result<FileRow> {
+        target.validate()?;
+        let r = row(db, &target.file_id).await?;
+        if r.dispatch_epoch != lease.epoch || r.dispatch_device_id != device(p)?.0 {
+            return Err(Error::Unauthorized("dispatch_epoch_expired"));
+        }
+        target_matches(&r, p, target)?;
+        let event = Self::dispatch(db, p, &target.dispatch_id).await?;
+        Self::dispatch_scope(db, p, lease, &event, f, now).await?;
+        fenced(&event, p, lease)?;
+        if event.state != "running" || event.execution_id.as_deref() != Some(&target.execution_id) {
+            return Err(Error::Conflict("execution_not_running"));
+        }
+        Ok(r)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prepare_file(
+        &self,
+        p: &Principal,
+        lease: &LeaseRef,
+        dispatch: &str,
+        execution: &str,
+        request_id: &str,
+        file: Manifest,
+        f: &DeliveryFacts,
+        now: i64,
+    ) -> Result<Delivery> {
+        key(request_id)?;
+        key(execution)?;
+        let digest = file.digest()?;
+        self.observe_event_authority(p, dispatch, f, now).await?;
+        if !f.requester_in_room {
+            self.reject_event_delivery(dispatch, f, now).await?;
+            return Err(Error::Unauthorized("requester_membership_revoked"));
+        }
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            Self::lock(db).await?;let (now,_)=Self::authenticate(db,p,now).await?;
+            let e=Self::dispatch(db,p,dispatch).await?;Self::dispatch_scope(db,p,lease,&e,f,now).await?;fenced(&e,p,lease)?;
+            if e.state!="running"||e.execution_id.as_deref()!=Some(execution) {return Err(Error::Conflict("execution_not_running"))}
+            let prior=sql_query(format!("{SELECT} WHERE owner_event_id=$1 AND request_id=$2")).bind::<Text,_>(dispatch).bind::<Text,_>(request_id).get_result::<FileRow>(db).await.optional()?;
+            if let Some(prior)=prior {if prior.manifest_digest!=digest||prior.manifest!=serde_json::to_value(&file).map_err(|_|Error::Invalid("invalid_file_manifest"))?||prior.execution_id!=execution {return Err(Error::Conflict("file_request_changed"))}return prior.public();}
+            let count=sql_query("SELECT count(*) AS total FROM hagency_agent_v1.file_outbox WHERE owner_user_id=$1").bind::<Text,_>(&p.user_id).get_result::<Count>(db).await?;
+            let held=sql_query("SELECT coalesce(sum((manifest->>'bytes')::bigint),0)::bigint AS total FROM hagency_agent_v1.file_outbox WHERE owner_user_id=$1 AND state NOT IN ('sent','cancelled')").bind::<Text,_>(&p.user_id).get_result::<Count>(db).await?;
+            if count.total>=4096||held.total.saturating_add(file.bytes as i64)>128*1024*1024 {return Err(Error::Conflict("file_capacity_exceeded"))}
+            let scope=Self::scope(db,&e.binding_id).await?;let id=format!("fil_{}",entity_id()?);
+            sql_query("INSERT INTO hagency_agent_v1.file_outbox(id,request_id,owner_event_id,execution_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,requester_mxid,thread_root,binding_generation,dispatch_epoch,dispatch_device_id,manifest,manifest_digest,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'staging',$17)")
+                .bind::<Text,_>(&id).bind::<Text,_>(request_id).bind::<Text,_>(dispatch).bind::<Text,_>(execution).bind::<Text,_>(&e.agent_id).bind::<Text,_>(&e.binding_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&e.room_id).bind::<Text,_>(&scope.puppet_mxid).bind::<Text,_>(&e.requester_mxid).bind::<Text,_>(&e.thread_root).bind::<BigInt,_>(e.binding_generation).bind::<BigInt,_>(lease.epoch).bind::<Text,_>(device(p)?.0).bind::<Jsonb,_>(serde_json::to_value(&file).map_err(|_|Error::Invalid("invalid_file_manifest"))?).bind::<Text,_>(digest).bind::<BigInt,_>(now).execute(db).await?;
+            row(db,&id).await?.public()
+        }).await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn stage_file_chunk(
+        &self,
+        p: &Principal,
+        lease: &LeaseRef,
+        target: &Target,
+        offset: u64,
+        bytes: &[u8],
+        f: &DeliveryFacts,
+        now: i64,
+    ) -> Result<Delivery> {
+        if bytes.is_empty() || bytes.len() > CHUNK_BYTES || offset > MAX_BYTES as u64 {
+            return Err(Error::Invalid("invalid_file_chunk"));
+        }
+        self.observe_event_authority(p, &target.dispatch_id, f, now)
+            .await?;
+        if !f.requester_in_room {
+            self.reject_event_delivery(&target.dispatch_id, f, now)
+                .await?;
+            return Err(Error::Unauthorized("requester_membership_revoked"));
+        }
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            Self::lock(db).await?;let(now,_)=Self::authenticate(db,p,now).await?;
+            let r=Self::writable_file(db,p,lease,target,f,now).await?;
+            if r.state!="staging" {return Err(Error::Conflict("file_not_staging"))}let manifest=r.manifest()?;
+            if offset.saturating_add(bytes.len() as u64)>manifest.bytes {return Err(Error::Invalid("file_size_mismatch"))}
+            if offset<r.received_bytes as u64 {
+                if offset+bytes.len() as u64>r.received_bytes as u64 {return Err(Error::Conflict("file_chunk_changed"))}
+                let stored=sql_query("SELECT substring(content FROM $2 FOR $3) AS content FROM hagency_agent_v1.file_outbox WHERE id=$1").bind::<Text,_>(&r.id).bind::<diesel::sql_types::Integer,_>(offset as i32+1).bind::<diesel::sql_types::Integer,_>(bytes.len() as i32).get_result::<Blob>(db).await?;
+                if stored.content!=bytes {return Err(Error::Conflict("file_chunk_changed"))}return r.public();
+            }
+            if offset!=r.received_bytes as u64 {return Err(Error::Conflict("file_chunk_gap"))}
+            sql_query("UPDATE hagency_agent_v1.file_outbox SET content=content||$2,received_bytes=received_bytes+$3 WHERE id=$1").bind::<Text,_>(&r.id).bind::<Binary,_>(bytes).bind::<BigInt,_>(bytes.len() as i64).execute(db).await?;row(db,&r.id).await?.public()
+        }).await
+    }
+    pub async fn queue_file(
+        &self,
+        p: &Principal,
+        lease: &LeaseRef,
+        target: &Target,
+        f: &DeliveryFacts,
+        now: i64,
+    ) -> Result<Delivery> {
+        self.observe_event_authority(p, &target.dispatch_id, f, now)
+            .await?;
+        if !f.requester_in_room {
+            self.reject_event_delivery(&target.dispatch_id, f, now)
+                .await?;
+            return Err(Error::Unauthorized("requester_membership_revoked"));
+        }
+        let mut db = self.db.lock().await?;
+        (*db)
+            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                Self::lock(db).await?;
+                let (now, _) = Self::authenticate(db, p, now).await?;
+                let r = Self::writable_file(db, p, lease, target, f, now).await?;
+                if r.state != "staging" {
+                    return r.public();
+                }
+                let f = r.manifest()?;
+                let blob =
+                    sql_query("SELECT content FROM hagency_agent_v1.file_outbox WHERE id=$1")
+                        .bind::<Text, _>(&r.id)
+                        .get_result::<Blob>(db)
+                        .await?;
+                if blob.content.len() as u64 != f.bytes
+                    || r.received_bytes as u64 != f.bytes
+                    || hash_bytes(&blob.content) != f.sha256
+                {
+                    return Err(Error::Conflict("file_bytes_mismatch"));
+                }
+                sql_query("UPDATE hagency_agent_v1.file_outbox SET state='queued' WHERE id=$1")
+                    .bind::<Text, _>(&r.id)
+                    .execute(db)
+                    .await?;
+                row(db, &r.id).await?.public()
+            })
+            .await
+    }
+    /// Historical safe status. This never grants current upload/send authority.
+    pub async fn file_delivery(
+        &self,
+        p: &Principal,
+        target: &Target,
+        now: i64,
+    ) -> Result<Delivery> {
+        target.validate()?;
+        let mut db = self.db.lock().await?;
+        (*db)
+            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                Self::authenticate(db, p, now).await?;
+                let r = row(db, &target.file_id).await?;
+                target_matches(&r, p, target)?;
+                r.public()
+            })
+            .await
+    }
+    pub(crate) async fn expire_files(&self, now: i64) -> Result<()> {
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            Self::lock(db).await?;let now=Self::clock(db,now).await?;
+            sql_query("UPDATE hagency_agent_v1.file_outbox SET state='unknown' WHERE state IN ('uploading','sending') AND worker_until_ms<=$1").bind::<BigInt,_>(now).execute(db).await?;
+            sql_query("UPDATE hagency_agent_v1.file_outbox SET state='cancelled',content=''::bytea WHERE state IN ('staging','queued','uploaded') AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.file_sendable v WHERE v.id=file_outbox.id)").execute(db).await?;Ok(())
+        }).await
+    }
+    pub(crate) async fn file_candidates(&self, cursor: &str) -> Result<Vec<FileRow>> {
+        let mut db = self.db.lock().await?;
+        Ok(sql_query(format!(
+            "{SELECT} WHERE state IN ('queued','uploaded') ORDER BY (id<=$1),id LIMIT 10"
+        ))
+        .bind::<Text, _>(cursor)
+        .load(&mut *db)
+        .await?)
+    }
+    pub(crate) async fn claim_file(
+        &self,
+        id: &str,
+        f: &DeliveryFacts,
+        now: i64,
+    ) -> Result<FileClaim> {
+        let original = {
+            let mut db = self.db.lock().await?;
+            row(&mut db, id).await?
+        };
+        self.observe_delivery_authority(
+            None,
+            &original.binding_id,
+            &original.requester_mxid,
+            Some(&original.owner_event_id),
+            f,
+            now,
+        )
+        .await?;
+        if !f.requester_in_room {
+            self.reject_event_delivery(&original.owner_event_id, f, now)
+                .await?;
+            return Err(Error::Unauthorized("requester_membership_revoked"));
+        }
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            Self::lock(db).await?;let now=Self::clock(db,now).await?;let r=row(db,id).await?;
+            if !matches!(r.state.as_str(),"queued"|"uploaded") {return Err(Error::Conflict("file_not_sendable"))}
+            let scope=Self::scope(db,&r.binding_id).await?;facts(&scope,&r.requester_mxid,f,now)?;
+            if scope.binding_generation!=r.binding_generation||scope.owner_user_id!=r.owner_user_id||scope.agent_id!=r.agent_id||scope.puppet_mxid!=r.puppet_mxid {return Err(Error::Unauthorized("file_scope_revoked"))}
+            // Revocation may use another database connection. Hold the actual
+            // device/session/user rows until the irreversible intent commits.
+            let locked=sql_query("SELECT true AS matched FROM hagency_agent_v1.execution_leases l JOIN hagency_agent_v1.devices d ON d.id=l.device_id JOIN hagency_agent_v1.sessions s ON s.id=d.session_id JOIN hagency_agent_v1.users u ON u.id=d.user_id WHERE l.agent_id=$1 AND l.owner_user_id=$2 AND l.epoch=$3 AND l.device_id=$4 AND l.device_generation=d.generation AND d.user_id=l.owner_user_id AND s.user_id=l.owner_user_id AND NOT d.revoked AND NOT s.revoked AND u.active FOR SHARE OF d,s,u")
+                .bind::<Text,_>(&r.agent_id).bind::<Text,_>(&r.owner_user_id).bind::<BigInt,_>(r.dispatch_epoch).bind::<Text,_>(&r.dispatch_device_id).get_result::<Flag>(db).await;
+            match locked {Ok(_)=>(),Err(diesel::result::Error::NotFound)=>return Err(Error::Unauthorized("file_lease_expired")),Err(e)=>return Err(e.into())}
+            let phase=if r.state=="queued" {"upload"}else{"send"};let state=if phase=="upload" {"uploading"}else{"sending"};
+            let bytes=if phase=="upload" {let blob=sql_query("SELECT content FROM hagency_agent_v1.file_outbox WHERE id=$1").bind::<Text,_>(id).get_result::<Blob>(db).await?;let manifest=r.manifest()?;if blob.content.len() as u64!=manifest.bytes||hash_bytes(&blob.content)!=manifest.sha256 {return Err(Error::Unavailable("invalid_stored_file"))}Some(blob.content)}else{None};
+            // Recheck after lock waits and byte hashing, using the real DB clock.
+            let now=Self::clock(db,now).await?;facts(&scope,&r.requester_mxid,f,now)?;
+            let live=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.file_sendable WHERE id=$1) AND EXISTS(SELECT 1 FROM hagency_agent_v1.owner_events WHERE id=$2 AND created_at_ms>$3) AS matched").bind::<Text,_>(id).bind::<Text,_>(&r.owner_event_id).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).get_result::<Flag>(db).await?;
+            if !live.matched {return Err(Error::Unauthorized("file_lease_expired"))}
+            let token=secret_token();sql_query("UPDATE hagency_agent_v1.file_outbox SET state=$2,worker_phase=$3,worker_token=$4,worker_until_ms=$5 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(state).bind::<Text,_>(phase).bind::<Text,_>(&token).bind::<BigInt,_>(now+60_000).execute(db).await?;
+            Ok(FileClaim{row:row(db,id).await?,token,bytes})
+        }).await
+    }
+    pub(crate) async fn confirm_file_upload(
+        &self,
+        id: &str,
+        token: &str,
+        mxc: Option<&str>,
+        now: i64,
+    ) -> Result<()> {
+        if let Some(url) = mxc {
+            crate::attachments::Attachment::from_content(
+                &serde_json::json!({"msgtype":"m.file","body":"file","url":url}),
+            )?;
+        }
+        let mut db = self.db.lock().await?;
+        (*db)
+            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                Self::lock(db).await?;
+                let now = Self::clock(db, now).await?;
+                let r = row(db, id).await?;
+                if r.worker_phase.as_deref() != Some("upload")
+                    || r.worker_token.as_deref() != Some(token)
+                {
+                    return Err(Error::Conflict("stale_file_worker"));
+                }
+                if let Some(known) = &r.mxc_url {
+                    if Some(known.as_str()) != mxc {
+                        return Err(Error::Conflict("file_media_changed"));
+                    }
+                    return Ok(());
+                }
+                if !matches!(r.state.as_str(), "uploading" | "unknown") {
+                    return Err(Error::Conflict("file_not_uploading"));
+                }
+                let state = if r.state == "uploading" && r.worker_until_ms > now && mxc.is_some() {
+                    "uploaded"
+                } else {
+                    "unknown"
+                };
+                if r.state == "unknown" && mxc.is_none() {
+                    return Ok(());
+                }
+                sql_query(
+                    "UPDATE hagency_agent_v1.file_outbox SET state=$2,mxc_url=$3 WHERE id=$1",
+                )
+                .bind::<Text, _>(id)
+                .bind::<Text, _>(state)
+                .bind::<Nullable<Text>, _>(mxc)
+                .execute(db)
+                .await?;
+                Ok(())
+            })
+            .await
+    }
+    pub(crate) async fn confirm_file_sent(
+        &self,
+        id: &str,
+        token: &str,
+        event: Option<&str>,
+    ) -> Result<()> {
+        if let Some(event) = event {
+            matrix_id(event, '$')?;
+        }
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            Self::lock(db).await?;let r=row(db,id).await?;
+            if r.worker_phase.as_deref()!=Some("send")||r.worker_token.as_deref()!=Some(token) {return Err(Error::Conflict("stale_file_worker"))}
+            if r.state=="sent" {if r.matrix_event_id.as_deref()!=event {return Err(Error::Conflict("file_message_changed"))}return Ok(())}
+            if !matches!(r.state.as_str(),"sending"|"unknown") {return Err(Error::Conflict("file_not_sending"))}
+            if event.is_none()&&r.state=="unknown" {return Ok(())}
+            sql_query("UPDATE hagency_agent_v1.file_outbox SET state=$2,matrix_event_id=$3,content=CASE WHEN $3::text IS NOT NULL THEN ''::bytea ELSE content END WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(if event.is_some(){"sent"}else{"unknown"}).bind::<Nullable<Text>,_>(event).execute(db).await?;Ok(())
+        }).await
+    }
+    /// Verified Appservice observation can settle an original possible send.
+    /// It never retries an upload or publication, or queues model inference.
+    pub(crate) async fn observe_file_event(&self, event: &Value) -> Result<bool> {
+        if event["type"] != "m.room.message" || event["content"]["msgtype"] != "m.file" {
+            return Ok(false);
+        }
+        let Some(id) = event["content"]["org.hagency.file_delivery_id"].as_str() else {
+            return Ok(false);
+        };
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            Self::lock(db).await?;
+            let r=match row(db,id).await {Ok(r)=>r,Err(Error::NotFound(_))=>return Ok(false),Err(e)=>return Err(e)};
+            if r.worker_phase.as_deref()!=Some("send") || !matches!(r.state.as_str(),"sending"|"unknown"|"sent") || event["sender"]!=r.puppet_mxid||event["room_id"]!=r.room_id||event["content"]!=r.content()? {return Ok(false)}
+            let event=event["event_id"].as_str().ok_or(Error::Invalid("invalid_event"))?;matrix_id(event,'$')?;
+            if r.state=="sent" {if r.matrix_event_id.as_deref()!=Some(event){return Err(Error::Conflict("file_message_changed"))}return Ok(true)}
+            sql_query("UPDATE hagency_agent_v1.file_outbox SET state='sent',matrix_event_id=$2,content=''::bytea WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(event).execute(db).await?;Ok(true)
+        }).await
+    }
+}
+fn hash_bytes(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}

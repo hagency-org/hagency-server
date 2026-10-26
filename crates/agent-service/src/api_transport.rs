@@ -99,6 +99,29 @@ pub(crate) async fn call(
         lease: LeaseRef,
         reply: SubmitReply,
     }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct FilePrepare {
+        lease: LeaseRef,
+        dispatch_id: String,
+        execution_id: String,
+        request_id: String,
+        file: crate::file_delivery::Manifest,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct FileWrite {
+        lease: LeaseRef,
+        target: crate::file_delivery::Target,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct FileChunk {
+        lease: LeaseRef,
+        target: crate::file_delivery::Target,
+        offset: u64,
+        data: String,
+    }
     match path.as_str() {
         "/hagency/api/v1/execution/history" => {
             let b: History = body(req).await?;
@@ -169,6 +192,36 @@ pub(crate) async fn call(
             Ok(
                 json!({"processing":t.mark_processing(p,&b.lease,&b.dispatch_id,&b.execution_id,&f,now_ms()).await?}),
             )
+        }
+        "/hagency/api/v1/execution/files/prepare" => {
+            let b: FilePrepare = body(req).await?;
+            let f = facts(t, g, p, &b.dispatch_id).await?;
+            Ok(
+                json!({"delivery":t.prepare_file(p,&b.lease,&b.dispatch_id,&b.execution_id,&b.request_id,b.file,&f,now_ms()).await?}),
+            )
+        }
+        "/hagency/api/v1/execution/files/chunk" => {
+            use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
+            let b: FileChunk = body(req).await?;
+            if b.data.len() > 87384 {
+                return Err(Error::Invalid("invalid_file_chunk"));
+            }
+            let data = STANDARD_NO_PAD
+                .decode(&b.data)
+                .map_err(|_| Error::Invalid("invalid_file_chunk"))?;
+            let f = facts(t, g, p, &b.target.dispatch_id).await?;
+            Ok(
+                json!({"delivery":t.stage_file_chunk(p,&b.lease,&b.target,b.offset,&data,&f,now_ms()).await?}),
+            )
+        }
+        "/hagency/api/v1/execution/files/queue" => {
+            let b: FileWrite = body(req).await?;
+            let f = facts(t, g, p, &b.target.dispatch_id).await?;
+            Ok(json!({"delivery":t.queue_file(p,&b.lease,&b.target,&f,now_ms()).await?}))
+        }
+        "/hagency/api/v1/execution/files/status" => {
+            let b: crate::file_delivery::Target = body(req).await?;
+            Ok(json!({"delivery":t.file_delivery(p,&b,now_ms()).await?}))
         }
         "/hagency/api/v1/execution/files/attachments" => {
             let b: Start = body(req).await?;

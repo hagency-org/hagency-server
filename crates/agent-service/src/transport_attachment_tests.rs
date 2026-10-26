@@ -78,6 +78,13 @@ async fn postgres_attachment_http_requires_exact_execution_and_current_matrix_me
                 .contains(&json!(crate::attachments::CAPABILITY)),
             supported
         );
+        assert!(
+            !discovery["capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(crate::file_delivery::CAPABILITY)),
+            "metadata-only deployments cannot promise delivery"
+        );
     }
     async fn post(
         service: &Service,
