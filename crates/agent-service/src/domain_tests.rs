@@ -2391,3 +2391,16 @@ async fn postgres_agent_audience_migration_preserves_private_defaults_and_saved_
         .await
         .unwrap();
 }
+
+#[test]
+fn version12_room_ids_are_opaque_but_user_ids_still_require_servers() {
+    for room in [
+        "!xBwLsfb3tVTO0jgpqkLGnxHIT4qWA6yILBlXdpHMSmY",
+        "!legacy:test",
+    ] {
+        assert!(matrix_id(room, '!').is_ok());
+    }
+    for invalid in ["!", "!bad room", "@alice", "@alice:", "@:test"] {
+        assert!(matrix_id(invalid, if invalid.starts_with('@') { '@' } else { '!' }).is_err());
+    }
+}

@@ -120,9 +120,14 @@ fn matrix_id(value: &str, sigil: char) -> Result<()> {
     if value.len() > 255
         || !value.starts_with(sigil)
         || value.chars().any(|c| c.is_whitespace() || c.is_control())
-        || !value[1..]
+        || !(value[1..]
             .split_once(':')
             .is_some_and(|(local, server)| !local.is_empty() && !server.is_empty())
+            || (sigil == '!'
+                && value.len() == 44
+                && value[1..]
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')))
     {
         return Err(Error::Invalid("invalid_matrix_identifier"));
     }
