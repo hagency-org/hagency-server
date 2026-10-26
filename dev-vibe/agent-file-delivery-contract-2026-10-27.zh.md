@@ -132,3 +132,28 @@ Clippy、全仓格式、typos1.48、OpenAPI82+4和19个负向守卫通过。日�
 中间全量105通过/1失败保留在revocation-full.log：永久拒绝覆盖了原明确的加密拒绝
 错误码。现先返回当前加密事实的原拒绝，再检查永久日志；原断言未改，记录仍永久。
 本修正的远端CI将在推送后另跑，03c9e0b的旧绿灯不代表新提交已完成远端验证。
+
+## 历史查询协议基础：丢失prepare响应也能查原意图
+
+新增`agent-file-history-v1`和设备专用只读`POST execution/files/lookup`，请求仅含
+原dispatchId/executionId/requestId。无需原lease、正向Matrix事实或重新启动模型；
+响应严格绑定原请求，并只含安全delivery和preparationClosed，不含文件字节/MXC/
+worker令牌。没有记录且preparationClosed=false仅为暂时缺失，不能当成取消。
+
+查询与prepare、终态转换共用原Transport事务锁，并在锁内核验当前会话、设备及
+原始执行的永久owner/执行编号；只有unknown/completed/cancelled这三个不可回到
+running的状态会给出preparationClosed=true。即使关闭，已有delivery仍按原状态
+观察，不能将未知发送改写为取消。若关闭且无记录，后续原prepare必被拒绝，因而
+形成最终未准备证据；这不会恢复任何写权，也不会在Server伪造文件回执。
+
+真正PG覆盖“无准备/丢失准备响应”两种顺序、运行中暂时缺失、同owner另一设备、
+不同owner/执行拒绝、结束后只读查询、重开保留和未来prepare拒绝。真实Salvo路径
+覆盖普通用户token拒绝、禁止夹带lease及原请求精确查回。完整新库107/107通过，
+0忽略；严格三包Clippy、全仓格式、拼写、OpenAPI83+4及22项负向守卫通过。
+日志`/tmp/hagency-file-lookup-{first,full,server-clippy-final,openapi,server-spelling}.log`。
+启动fixture时一次遗漏自定义PG端口，已在同一专用实例恢复55437；测试本身通过。
+首个收尾脚本错误使用zsh只读status变量，另一次Clippy错用不存在包名xtask，均未
+修改生产断言；更正为任务专用变量及hagency-xtask后完成检查，原日志保留。
+
+Client已提供相同严格类型/只读设备操作，主人历史界面及最终未准备证据的本地
+容量结清尚未接通，A2仍在进行。f5ac86c的CI40404302743已通过；本节新提交另行CI。

@@ -1,5 +1,7 @@
 use super::*;
-use crate::file_delivery::{CHUNK_BYTES, Delivery, MAX_BYTES, Manifest, Target};
+use crate::file_delivery::{
+    CHUNK_BYTES, Delivery, FileLookup, FileObservation, MAX_BYTES, Manifest, Target,
+};
 use diesel::sql_types::{Binary, Jsonb};
 use serde_json::Value;
 const SELECT: &str = "SELECT id,request_id,owner_event_id,execution_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,requester_mxid,thread_root,binding_generation,dispatch_epoch,dispatch_device_id,manifest,manifest_digest,received_bytes,state,mxc_url,worker_phase,worker_token,worker_until_ms,matrix_event_id,created_at_ms FROM hagency_agent_v1.file_outbox";
@@ -319,6 +321,44 @@ impl TransportStore {
                 let r = row(db, &target.file_id).await?;
                 target_matches(&r, p, target)?;
                 r.public()
+            })
+            .await
+    }
+    /// Read-only recovery of the original preparation, never a new write grant.
+    /// The transport/auth transaction lock serializes absence with prepare and
+    /// terminal execution transitions, including across Server instances.
+    pub async fn lookup_file(
+        &self,
+        p: &Principal,
+        request: &FileLookup,
+        now: i64,
+    ) -> Result<FileObservation> {
+        request.validate()?;
+        let mut db = self.db.lock().await?;
+        (*db)
+            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                Self::authenticate(db, p, now).await?;
+                let event = Self::dispatch(db, p, &request.dispatch_id).await?;
+                if event.execution_id.as_deref() != Some(&request.execution_id) {
+                    return Err(Error::NotFound("file_execution_not_found"));
+                }
+                let prior = sql_query(format!(
+                    "{SELECT} WHERE owner_event_id=$1 AND execution_id=$2 AND request_id=$3"
+                ))
+                .bind::<Text, _>(&request.dispatch_id)
+                .bind::<Text, _>(&request.execution_id)
+                .bind::<Text, _>(&request.request_id)
+                .get_result::<FileRow>(db)
+                .await
+                .optional()?;
+                Ok(FileObservation {
+                    request: request.clone(),
+                    delivery: prior.map(|r| r.public()).transpose()?,
+                    preparation_closed: matches!(
+                        event.state.as_str(),
+                        "unknown" | "completed" | "cancelled"
+                    ),
+                })
             })
             .await
     }

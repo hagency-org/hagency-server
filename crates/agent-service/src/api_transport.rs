@@ -223,6 +223,10 @@ pub(crate) async fn call(
             let b: crate::file_delivery::Target = body(req).await?;
             Ok(json!({"delivery":t.file_delivery(p,&b,now_ms()).await?}))
         }
+        "/hagency/api/v1/execution/files/lookup" => {
+            let b: crate::file_delivery::FileLookup = body(req).await?;
+            Ok(json!({"observation":t.lookup_file(p,&b,now_ms()).await?}))
+        }
         "/hagency/api/v1/execution/files/attachments" => {
             let b: Start = body(req).await?;
             let f = facts(t, g, p, &b.dispatch_id).await?;

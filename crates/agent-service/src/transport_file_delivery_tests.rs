@@ -603,6 +603,36 @@ async fn postgres_file_real_routes_and_matrix_bytes_retain_original_sender_threa
             StatusCode::OK,
         )
         .await;
+        let lookup =
+            json!({"dispatchId":dispatch,"executionId":"file-execution","requestId":"wire-file"});
+        post(
+            &service,
+            "lookup",
+            &f.credential,
+            lookup.clone(),
+            StatusCode::UNAUTHORIZED,
+        )
+        .await;
+        let mut extra = lookup.clone();
+        extra["lease"] = json!(lease);
+        post(
+            &service,
+            "lookup",
+            &f.device_token,
+            extra,
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+        let observation = post(
+            &service,
+            "lookup",
+            &f.device_token,
+            lookup.clone(),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(observation["observation"]["delivery"], d["delivery"]);
+        assert_eq!(observation["observation"]["preparationClosed"], false);
         let id = d["delivery"]["id"].as_str().unwrap().to_owned();
         let target = Target {
             dispatch_id: dispatch.clone(),
@@ -1114,4 +1144,122 @@ async fn postgres_file_denial_upgrade_is_additive_and_preserves_all_original_rec
             .unwrap()
             .digest
     );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_file_lookup_recovers_lost_prepare_and_fences_final_absence() {
+    use crate::file_delivery::FileLookup;
+    for prepare_first in [false, true] {
+        let f = fixture().await;
+        let lease = lease(&f).await;
+        let id = enqueue(&f, "lookup-original").await;
+        running(&f, &lease, &id, "lookup-execution").await;
+        let query = FileLookup {
+            dispatch_id: id.clone(),
+            execution_id: "lookup-execution".into(),
+            request_id: "lost-prepare-response".into(),
+        };
+        let before = f
+            .transport
+            .lookup_file(&f.p, &query, crate::api::now_ms())
+            .await
+            .unwrap();
+        assert!(before.delivery.is_none());
+        assert!(
+            !before.preparation_closed,
+            "temporary absence is not final evidence"
+        );
+        if prepare_first {
+            let prepared = f
+                .transport
+                .prepare_file(
+                    &f.p,
+                    &lease,
+                    &id,
+                    &query.execution_id,
+                    &query.request_id,
+                    manifest(),
+                    &f.facts,
+                    crate::api::now_ms(),
+                )
+                .await
+                .unwrap();
+            let recovered = f
+                .transport
+                .lookup_file(&f.second, &query, crate::api::now_ms())
+                .await
+                .unwrap();
+            assert_eq!(recovered.delivery.unwrap().id, prepared.id);
+            assert!(!recovered.preparation_closed);
+        }
+        f.transport
+            .finish_without_reply(
+                &f.p,
+                &lease,
+                &id,
+                &query.execution_id,
+                "unknown",
+                crate::api::now_ms(),
+            )
+            .await
+            .unwrap();
+        // No lease, running execution or fresh positive Matrix facts are needed
+        // to observe history. This must never mint an upload or replay grant.
+        let closed = f
+            .transport
+            .lookup_file(&f.second, &query, crate::api::now_ms())
+            .await
+            .unwrap();
+        assert!(closed.preparation_closed);
+        assert_eq!(closed.delivery.is_some(), prepare_first);
+        let text = serde_json::to_string(&closed).unwrap();
+        for private in ["mxc://", "workerToken", "worker_token", "content", "lease"] {
+            assert!(!text.contains(private));
+        }
+        assert!(
+            f.transport
+                .prepare_file(
+                    &f.p,
+                    &lease,
+                    &id,
+                    &query.execution_id,
+                    &query.request_id,
+                    manifest(),
+                    &f.facts,
+                    crate::api::now_ms()
+                )
+                .await
+                .is_err()
+        );
+        let wrong = FileLookup {
+            execution_id: "different-execution".into(),
+            ..query.clone()
+        };
+        assert!(
+            f.transport
+                .lookup_file(&f.p, &wrong, crate::api::now_ms())
+                .await
+                .is_err()
+        );
+        let other = fixture().await;
+        assert!(
+            f.transport
+                .lookup_file(&other.p, &query, crate::api::now_ms())
+                .await
+                .is_err()
+        );
+        let reopened = TransportStore::open(
+            &std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap(),
+            Limits::default(),
+        )
+        .await
+        .unwrap();
+        let restored = reopened
+            .lookup_file(&f.p, &query, crate::api::now_ms())
+            .await
+            .unwrap();
+        assert!(restored.preparation_closed);
+        assert_eq!(restored.delivery.is_some(), prepare_first);
+    }
 }

@@ -4,6 +4,7 @@ use crate::{Error, Result, hash};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 pub const CAPABILITY: &str = "agent-file-delivery-v1";
+pub const HISTORY_CAPABILITY: &str = "agent-file-history-v1";
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 pub const CHUNK_BYTES: usize = 64 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,6 +59,31 @@ impl Target {
         }
         Ok(())
     }
+}
+/// Original preparation identity, including when its response/file ID was lost.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileLookup {
+    pub dispatch_id: String,
+    pub execution_id: String,
+    pub request_id: String,
+}
+impl FileLookup {
+    pub fn validate(&self) -> Result<()> {
+        for key in [&self.dispatch_id, &self.execution_id, &self.request_id] {
+            crate::key(key)?;
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileObservation {
+    pub request: FileLookup,
+    pub delivery: Option<Delivery>,
+    /// Read under the same fence as preparation; no future preparation is legal
+    /// for this exact execution. Does not cancel or settle any existing delivery.
+    pub preparation_closed: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

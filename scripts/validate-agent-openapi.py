@@ -196,7 +196,10 @@ def validate(doc):
             require(operation['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/' + request}, 'file request payload drift: ' + suffix)
             response = operation['responses']['200']['content']['application/json']['schema']
             require(response.get('additionalProperties') is False and response.get('required') == ['delivery'] and response['properties'] == {'delivery': {'$ref': '#/components/schemas/Delivery'}}, 'file response payload drift')
-        require(len(operations) == 82, 'reviewed owner route count drift')
+        lookup = doc['paths']['/hagency/api/v1/execution/files/lookup']['post']
+        require(lookup['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/FileLookup'}, 'file lookup identity drift')
+        require(lookup['responses']['200']['content']['application/json']['schema'] == {'type': 'object', 'properties': {'observation': {'$ref': '#/components/schemas/FileObservation'}}, 'required': ['observation'], 'additionalProperties': False}, 'file observation response drift')
+        require(len(operations) == 83, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -219,6 +222,12 @@ class GuardTests(unittest.TestCase):
         self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/files/queue'))
     def test_file_status_requires_device(self):
         self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/status']['post'].update(security=[{'userBearer': []}]))
+    def test_file_lookup_requires_device(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/lookup']['post'].update(security=[{'userBearer': []}]))
+    def test_file_lookup_has_no_write_payload(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/lookup']['post']['requestBody']['content']['application/json'].update(schema={'$ref': '#/components/schemas/FilePrepare'}))
+    def test_file_lookup_closure_is_boolean(self):
+        self.rejection(lambda d: d['components']['schemas']['FileObservation']['properties'].update(preparationClosed={'type':'string'}))
     def test_file_payload_drift(self):
         self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/queue']['post']['requestBody']['content']['application/json'].update(schema={'$ref': '#/components/schemas/Target'}))
     def test_file_response_private_field(self):

@@ -8731,6 +8731,110 @@
           ]
         }
       }
+    },
+    "/hagency/api/v1/execution/files/lookup": {
+      "post": {
+        "operationId": "lookupOriginalExecutionFile",
+        "summary": "Look up original file preparation by request ID",
+        "description": "Device-only owner history, including lost prepare acknowledgement. Reads exact original dispatch/execution/request under the same transaction fence as prepare and terminal transitions. No lease, positive Gateway facts, model restart, write grant or private locators. A missing row while execution is running is temporary absence; preparationClosed attests no future preparation is legal for this original execution. It never settles an existing delivery.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "observation": {
+                      "$ref": "#/components/schemas/FileObservation"
+                    }
+                  },
+                  "required": [
+                    "observation"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileLookup"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/files/lookup\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        }
+      }
     }
   },
   "components": {
@@ -14078,6 +14182,91 @@
           ],
           "strictInput": true
         }
+      },
+      "FileLookup": {
+        "type": "object",
+        "properties": {
+          "dispatchId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "executionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": [
+          "dispatchId",
+          "executionId",
+          "requestId"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/file_delivery.rs",
+          "name": "FileLookup",
+          "serializedFields": [
+            "dispatch_id",
+            "execution_id",
+            "request_id"
+          ],
+          "strictInput": true
+        },
+        "description": "Original preparation identity, usable without its lost response/file ID; no destination or write capability.",
+        "examples": [
+          {
+            "dispatchId": "dsp_example",
+            "executionId": "file-execution",
+            "requestId": "file_original"
+          }
+        ]
+      },
+      "FileObservation": {
+        "type": "object",
+        "properties": {
+          "request": {
+            "$ref": "#/components/schemas/FileLookup"
+          },
+          "delivery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Delivery"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "preparationClosed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "request",
+          "delivery",
+          "preparationClosed"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/file_delivery.rs",
+          "name": "FileObservation",
+          "serializedFields": [
+            "request",
+            "delivery",
+            "preparation_closed"
+          ],
+          "strictInput": true
+        },
+        "description": "Read under the preparation/terminal-execution fence. Null delivery is final absence only when preparationClosed is true; this is not a cancelled delivery or permission to retry. An existing delivery keeps its own state regardless of preparationClosed."
       }
     },
     "securitySchemes": {
@@ -14096,8 +14285,8 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "14b694d52ca23335aa3b9fffaabc1a1a72a2285fd1a1a3a6648499f4d7a04e16",
-    "crates/agent-service/src/api_transport.rs": "0f6497dfdb9a01844d7927cd58e49f129edb090b3039e3ba28e3d9750bfc4390",
+    "crates/agent-service/src/api.rs": "9e6a0e11967f0591fd653204e8098fa41979738fac5b667d20b70138da412b6f",
+    "crates/agent-service/src/api_transport.rs": "8b125bf602daf2b854090317312280eec3010889349109443d5a06a3a852e063",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
     "crates/agent-service/src/api_project_board.rs": "92c621045fe4c00d665152622e99c8d061ab58c98bc5b3197db1c09e43eb7969"
