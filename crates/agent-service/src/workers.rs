@@ -53,16 +53,22 @@ fn request_notice_content(
     content
 }
 
-/// Only canonical plaintext text events enter the model queue. In particular,
+/// Only canonical plaintext text/media events enter the model queue. In particular,
 /// HTML-looking mentions, edits, and encrypted bodies do not create prompts.
 fn parse_event(raw: &Value) -> Option<RoutedEvent> {
     if raw["type"] != "m.room.message"
         || raw.get("state_key").is_some()
-        || raw["content"]["msgtype"] != "m.text"
+        || !matches!(
+            raw["content"]["msgtype"].as_str(),
+            Some("m.text" | "m.file" | "m.image" | "m.audio" | "m.video")
+        )
     {
         return None;
     }
     let c = &raw["content"];
+    if c["msgtype"] != "m.text" && crate::attachments::Attachment::from_content(c).is_err() {
+        return None;
+    }
     if c["m.relates_to"]["rel_type"] == "m.replace" {
         return None;
     }
@@ -154,9 +160,16 @@ async fn route(inbox: &Inbox, t: &TransportStore, g: &Gateway, cursor: &mut Stri
                     }
                 };
                 match t
-                    .ingest_routed_received(
+                    .ingest_routed_attachment_received(
                         &scope.binding_id,
                         event.clone(),
+                        if raw["content"]["msgtype"] == "m.text" {
+                            None
+                        } else {
+                            Some(crate::attachments::Attachment::from_content(
+                                &raw["content"],
+                            )?)
+                        },
                         &f,
                         transaction.received_at_ms,
                         now_ms(),
@@ -752,6 +765,21 @@ mod tests {
             }
             assert!(parse_event(&json!({"type":"m.room.message","event_id":"$notice","room_id":"!room:x","sender":"@bot:x","content":content})).is_none());
         }
+    }
+    #[test]
+    fn canonical_media_retains_caption_mentions_and_original_thread() {
+        let mut event = json!({"type":"m.room.message","event_id":"$media","room_id":"!room:x","sender":"@u:x","content":{"msgtype":"m.file","body":"Analyze this\nwith care","url":"mxc://media.test/file","m.mentions":{"user_ids":["@bot:x"]},"m.relates_to":{"rel_type":"m.thread","event_id":"$root"}}});
+        let parsed = parse_event(&event).unwrap();
+        assert_eq!(parsed.body, "Analyze this\nwith care");
+        assert!(parsed.mentioned_mxids.contains("@bot:x"));
+        assert_eq!(parsed.thread_root.as_deref(), Some("$root"));
+        event["content"]["url"] = json!("https://arbitrary.test/file");
+        assert!(parse_event(&event).is_none());
+        event["content"]["url"] = json!("mxc://media.test/file");
+        event["content"]["m.relates_to"]["rel_type"] = json!("m.replace");
+        assert!(parse_event(&event).is_none());
+        event["type"] = json!("m.room.encrypted");
+        assert!(parse_event(&event).is_none());
     }
     #[test]
     fn canonical_mentions_and_threads_only() {

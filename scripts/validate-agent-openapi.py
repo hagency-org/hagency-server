@@ -191,7 +191,7 @@ def validate(doc):
         require({p for p, _ in operations if p.startswith('/hagency/api/v1/execution/')} == {p for p, _ in literal if p.startswith('/hagency/api/v1/execution/')}, 'invented transport route')
         require(('/hagency/api/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
         require(('/hagency/api/v1/projects/{projectId}/rooms', 'post') not in operations, 'unimplemented Room creation advertised')
-        require(len(operations) == 77, 'reviewed owner route count drift')
+        require(len(operations) == 78, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -206,6 +206,10 @@ class GuardTests(unittest.TestCase):
             validate(doc)
     def test_missing_real_route(self):
         self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/events/authorize-tool'))
+    def test_missing_attachment_route(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/files/attachments'))
+    def test_attachment_requires_device(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/attachments']['post'].update(security=[{'userBearer': []}]))
     def test_missing_board_route(self):
         self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/projects/{projectId}/board'))
     def test_wrong_board_bearer(self):

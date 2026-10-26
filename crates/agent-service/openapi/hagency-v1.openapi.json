@@ -8199,6 +8199,122 @@
           }
         }
       }
+    },
+    "/hagency/api/v1/execution/files/attachments": {
+      "post": {
+        "operationId": "readExecutionAttachments",
+        "summary": "Read original running request attachment descriptors",
+        "description": "Device-only host metadata for the exact currently running dispatch/execution and lease. Fresh Gateway membership, owner/puppet speaking authority and original binding generation are required. Requester departure seals this original request; a later join cannot reopen it. No arbitrary event/Room/URL selector, media download, owner tool approval, path publication or send operation. Empty attachments is valid for text requests.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "dispatchId": {
+                      "type": "string"
+                    },
+                    "executionId": {
+                      "type": "string"
+                    },
+                    "attachments": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Attachment"
+                      },
+                      "maxItems": 1
+                    }
+                  },
+                  "required": [
+                    "dispatchId",
+                    "executionId",
+                    "attachments"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Start"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/files/attachments\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        }
+      }
     }
   },
   "components": {
@@ -9683,6 +9799,11 @@
           "bindingId": {
             "type": "string",
             "description": "Explicit owner-started binding under lease agent. Filtered in SQL before limit; other Room events are never returned."
+          },
+          "acceptFiles": {
+            "type": "boolean",
+            "default": false,
+            "description": "Explicit opt-in by a host with attachment handling. Omitted/false excludes attachment requests in SQL before limit. No media locator/key enters the ordinary Dispatch envelope."
           }
         },
         "required": [
@@ -9697,6 +9818,7 @@
           "serializedFields": [
             "lease",
             "binding_id",
+            "accept_files",
             "limit"
           ],
           "strictInput": true
@@ -10002,7 +10124,7 @@
               "type": "string"
             },
             "uniqueItems": true,
-            "description": "Implemented capabilities. Encrypted Agent delivery is not currently advertised."
+            "description": "Implemented capabilities. Encrypted Agent delivery is not currently advertised. agent-attachment-metadata-v1 is advertised only when transport is configured; it covers metadata admission/lookup, not file transfer completion."
           }
         },
         "required": [
@@ -12649,7 +12771,10 @@
           },
           "attachment": {
             "description": "Stable attachment ID on upload, including idempotent replay; null for other mutations.",
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "replayed": {
             "type": "boolean"
@@ -13043,6 +13168,176 @@
         "required": [
           "read"
         ]
+      },
+      "AttachmentSource": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "plain"
+              },
+              "url": {
+                "type": "string",
+                "pattern": "^mxc://",
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "kind",
+              "url"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "encrypted"
+              },
+              "file": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "pattern": "^mxc://",
+                    "maxLength": 4096
+                  },
+                  "v": {
+                    "const": "v2"
+                  },
+                  "key": {
+                    "type": "object",
+                    "properties": {
+                      "kty": {
+                        "const": "oct"
+                      },
+                      "alg": {
+                        "const": "A256CTR"
+                      },
+                      "ext": {
+                        "const": true
+                      },
+                      "key_ops": {
+                        "type": "array",
+                        "items": {
+                          "enum": [
+                            "encrypt",
+                            "decrypt"
+                          ]
+                        },
+                        "uniqueItems": true,
+                        "minItems": 2,
+                        "maxItems": 2
+                      },
+                      "k": {
+                        "type": "string",
+                        "description": "Private URL-safe unpadded base64 AES-256 key; decoded length 32."
+                      }
+                    },
+                    "required": [
+                      "kty",
+                      "alg",
+                      "ext",
+                      "key_ops",
+                      "k"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "iv": {
+                    "type": "string",
+                    "description": "Private unpadded base64 16-byte IV."
+                  },
+                  "hashes": {
+                    "type": "object",
+                    "properties": {
+                      "sha256": {
+                        "type": "string",
+                        "description": "Unpadded base64 32-byte ciphertext SHA-256."
+                      }
+                    },
+                    "required": [
+                      "sha256"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "url",
+                  "v",
+                  "key",
+                  "iv",
+                  "hashes"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "kind",
+              "file"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "description": "Private host-only media source; never model metadata. Rust validates MXC syntax and exact decoded key/IV/hash lengths. Encrypted file descriptors do not imply encrypted Room execution support."
+      },
+      "Attachment": {
+        "type": "object",
+        "properties": {
+          "descriptorDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "filename": {
+            "type": "string",
+            "maxLength": 65536,
+            "description": "Untrusted original filename or body fallback (UTF-8 byte bound 65536); display metadata, never a local path."
+          },
+          "messageType": {
+            "enum": [
+              "m.file",
+              "m.image",
+              "m.audio",
+              "m.video"
+            ]
+          },
+          "contentType": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "declaredSize": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/AttachmentSource"
+          }
+        },
+        "required": [
+          "descriptorDigest",
+          "filename",
+          "messageType",
+          "contentType",
+          "declaredSize",
+          "source"
+        ],
+        "additionalProperties": false,
+        "description": "Immutable sender metadata. Digest is SHA-256 of canonical recursively key-sorted compact UTF-8 JSON [filename,messageType,contentType,declaredSize,source]. It is not a downloaded-file hash or transfer receipt."
       }
     },
     "securitySchemes": {
@@ -13061,8 +13356,8 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "7da2795d85de74d182d231f294f4ca17541d7b041f67356b4603ec929b6294dd",
-    "crates/agent-service/src/api_transport.rs": "572e64784679c2c40ff2da96b4ff558c38c157b67ff2544e576540b7922087f7",
+    "crates/agent-service/src/api.rs": "c3f89187f634e2610e4243c908ff085f5ac2055bed8ada0636094cade57bc13c",
+    "crates/agent-service/src/api_transport.rs": "332f68974537527e767c6449e8da1b4d64640f1b866436a9b8b9896712327eb9",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
     "crates/agent-service/src/api_project_board.rs": "92c621045fe4c00d665152622e99c8d061ab58c98bc5b3197db1c09e43eb7969"

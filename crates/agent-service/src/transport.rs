@@ -10,6 +10,8 @@ use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncC
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
 
+#[path = "transport_attachments.rs"]
+mod attachments;
 #[path = "transport_history.rs"]
 mod history;
 #[path = "pause_notices.rs"]
@@ -332,6 +334,10 @@ impl TransportStore {
             if !notices_initialized.matched {
                 db.batch_execute(include_str!("request_notices_schema.sql")).await?;
             }
+            let files_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.event_attachments') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !files_initialized.matched {db.batch_execute(include_str!("attachment_schema.sql")).await?;}
+            db.batch_execute("SELECT dispatch_id,descriptor,descriptor_digest FROM hagency_agent_v1.event_attachments LIMIT 0").await
+                .map_err(|_| Error::Conflict("attachment_schema_incompatible"))?;
             db.batch_execute("SELECT id FROM hagency_agent_v1.processing_sendable LIMIT 0").await
                 .map_err(|_| Error::Conflict("processing_schema_incompatible"))?;
             db.batch_execute("SELECT delivery_epoch FROM hagency_agent_v1.reply_outbox LIMIT 0")
@@ -624,6 +630,21 @@ impl TransportStore {
         received_at_ms: i64,
         now: i64,
     ) -> Result<RouteResult> {
+        self.ingest_routed_attachment_received(binding, event, None, f, received_at_ms, now)
+            .await
+    }
+    pub async fn ingest_routed_attachment_received(
+        &self,
+        binding: &str,
+        event: RoutedEvent,
+        attachment: Option<crate::attachments::Attachment>,
+        f: &DeliveryFacts,
+        received_at_ms: i64,
+        now: i64,
+    ) -> Result<RouteResult> {
+        if let Some(a) = &attachment {
+            a.validate()?;
+        }
         self.observe_delivery_authority(None, binding, &event.sender_mxid, None, f, now)
             .await?;
         key(binding)?;
@@ -637,8 +658,14 @@ impl TransportStore {
         if event.is_edit {
             return Ok(RouteResult::Ignored);
         }
-        let digest =
-            hash(&serde_json::to_string(&event).map_err(|_| Error::Invalid("invalid_event"))?);
+        let digest = if let Some(a) = &attachment {
+            hash(
+                &serde_json::to_string(&(&event, a))
+                    .map_err(|_| Error::Invalid("invalid_event"))?,
+            )
+        } else {
+            hash(&serde_json::to_string(&event).map_err(|_| Error::Invalid("invalid_event"))?)
+        };
         let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
@@ -670,6 +697,9 @@ impl TransportStore {
             let id=format!("evt_{}",entity_id()?);
             sql_query("INSERT INTO hagency_agent_v1.owner_events(id,binding_id,agent_id,owner_user_id,event_id,room_id,requester_mxid,thread_root,body,digest,binding_generation,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',$12)")
                 .bind::<Text,_>(&id).bind::<Text,_>(binding).bind::<Text,_>(&scope.agent_id).bind::<Text,_>(&scope.owner_user_id).bind::<Text,_>(&event.event_id).bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.sender_mxid).bind::<Text,_>(root).bind::<Text,_>(&event.body).bind::<Text,_>(digest).bind::<BigInt,_>(scope.binding_generation).bind::<BigInt,_>(received_at_ms).execute(db).await?;
+            if let Some(a)=&attachment {
+                sql_query("INSERT INTO hagency_agent_v1.event_attachments(dispatch_id,descriptor,descriptor_digest) VALUES($1,$2,$3)").bind::<Text,_>(&id).bind::<diesel::sql_types::Jsonb,_>(serde_json::to_value(a).map_err(|_|Error::Invalid("invalid_agent_attachment"))?).bind::<Text,_>(&a.descriptor_digest).execute(db).await?;
+            }
             sql_query("INSERT INTO hagency_agent_v1.agent_threads(binding_id,thread_root) VALUES($1,$2) ON CONFLICT DO NOTHING").bind::<Text,_>(binding).bind::<Text,_>(root).execute(db).await?;
             Ok(RouteResult::Queued{dispatch_id:id})
         }).await
@@ -683,7 +713,7 @@ impl TransportStore {
         limit: usize,
         now: i64,
     ) -> Result<Vec<EventHeader>> {
-        self.event_candidates_scoped(p, reference, None, limit, now)
+        self.event_candidates_scoped(p, reference, None, false, limit, now)
             .await
     }
     pub async fn event_candidates_for_binding(
@@ -695,7 +725,19 @@ impl TransportStore {
         now: i64,
     ) -> Result<Vec<EventHeader>> {
         key(binding)?;
-        self.event_candidates_scoped(p, reference, Some(binding), limit, now)
+        self.event_candidates_scoped(p, reference, Some(binding), false, limit, now)
+            .await
+    }
+    pub async fn event_candidates_with_attachments(
+        &self,
+        p: &Principal,
+        reference: &LeaseRef,
+        binding: &str,
+        limit: usize,
+        now: i64,
+    ) -> Result<Vec<EventHeader>> {
+        key(binding)?;
+        self.event_candidates_scoped(p, reference, Some(binding), true, limit, now)
             .await
     }
     async fn event_candidates_scoped(
@@ -703,6 +745,7 @@ impl TransportStore {
         p: &Principal,
         reference: &LeaseRef,
         binding: Option<&str>,
+        accept_files: bool,
         limit: usize,
         now: i64,
     ) -> Result<Vec<EventHeader>> {
@@ -720,7 +763,7 @@ impl TransportStore {
                 }
             }
             Self::expire_pending(db,self.limits.event_ttl_ms,now).await?;
-            Ok(sql_query("SELECT e.id,e.binding_id,e.event_id,e.room_id,e.requester_mxid,e.thread_root FROM hagency_agent_v1.owner_events e JOIN hagency_agent_v1.bindings b ON b.id=e.binding_id WHERE e.owner_user_id=$1 AND e.agent_id=$2 AND e.state IN ('pending','offered','acknowledged') AND e.binding_generation=b.generation AND b.state='active' AND e.created_at_ms>$4 AND ($5::text IS NULL OR e.binding_id=$5) ORDER BY e.created_at_ms,e.id LIMIT $3").bind::<Text,_>(&p.user_id).bind::<Text,_>(&reference.agent_id).bind::<BigInt,_>(limit as i64).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).bind::<Nullable<Text>,_>(binding).load(db).await?)
+            Ok(sql_query("SELECT e.id,e.binding_id,e.event_id,e.room_id,e.requester_mxid,e.thread_root FROM hagency_agent_v1.owner_events e JOIN hagency_agent_v1.bindings b ON b.id=e.binding_id WHERE e.owner_user_id=$1 AND e.agent_id=$2 AND e.state IN ('pending','offered','acknowledged') AND e.binding_generation=b.generation AND b.state='active' AND e.created_at_ms>$4 AND ($5::text IS NULL OR e.binding_id=$5) AND ($6 OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.event_attachments a WHERE a.dispatch_id=e.id)) ORDER BY e.created_at_ms,e.id LIMIT $3").bind::<Text,_>(&p.user_id).bind::<Text,_>(&reference.agent_id).bind::<BigInt,_>(limit as i64).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).bind::<Nullable<Text>,_>(binding).bind::<Bool,_>(accept_files).load(db).await?)
         }).await
     }
     async fn dispatch(db: &mut AsyncPgConnection, p: &Principal, id: &str) -> Result<Dispatch> {

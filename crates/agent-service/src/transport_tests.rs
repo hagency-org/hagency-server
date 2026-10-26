@@ -3058,3 +3058,6 @@ async fn postgres_private_audience_refuses_stale_shared_routing_execution_and_re
         .unwrap();
     assert_eq!(row.id, "cancelled");
 }
+
+#[path = "transport_attachment_tests.rs"]
+mod attachment_tests;

@@ -68,6 +68,8 @@ pub(crate) async fn call(
     struct Poll {
         lease: LeaseRef,
         binding_id: String,
+        #[serde(default)]
+        accept_files: bool,
         limit: usize,
     }
     #[derive(Deserialize)]
@@ -122,10 +124,14 @@ pub(crate) async fn call(
         "/hagency/api/v1/execution/events/poll" => {
             let b: Poll = body(req).await?;
             let mut events = Vec::new();
-            for header in t
-                .event_candidates_for_binding(p, &b.lease, &b.binding_id, b.limit, now_ms())
-                .await?
-            {
+            let candidates = if b.accept_files {
+                t.event_candidates_with_attachments(p, &b.lease, &b.binding_id, b.limit, now_ms())
+                    .await?
+            } else {
+                t.event_candidates_for_binding(p, &b.lease, &b.binding_id, b.limit, now_ms())
+                    .await?
+            };
+            for header in candidates {
                 let f = match facts(t, g, p, &header.id).await {
                     Ok(f) => f,
                     Err(Error::Unauthorized(_)) => continue,
@@ -162,6 +168,13 @@ pub(crate) async fn call(
             let f = facts(t, g, p, &b.dispatch_id).await?;
             Ok(
                 json!({"processing":t.mark_processing(p,&b.lease,&b.dispatch_id,&b.execution_id,&f,now_ms()).await?}),
+            )
+        }
+        "/hagency/api/v1/execution/files/attachments" => {
+            let b: Start = body(req).await?;
+            let f = facts(t, g, p, &b.dispatch_id).await?;
+            Ok(
+                json!({"dispatchId":b.dispatch_id,"executionId":b.execution_id,"attachments":t.execution_attachments(p,&b.lease,&b.dispatch_id,&b.execution_id,&f,now_ms()).await?}),
             )
         }
         "/hagency/api/v1/execution/events/authorize-tool" => {

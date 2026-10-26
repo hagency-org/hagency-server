@@ -5,6 +5,7 @@ mod api_configuration;
 mod api_discovery_tests;
 mod api_transport;
 pub mod appservice;
+pub mod attachments;
 #[cfg(test)]
 mod configuration_tests;
 pub mod configuration_types;

@@ -1,0 +1,82 @@
+[
+  {
+    "content": {
+      "msgtype": "m.file",
+      "body": "first line\nsecond line",
+      "filename": "untrusted 中文.bin",
+      "info": {
+        "mimetype": "application/octet-stream",
+        "size": 5
+      },
+      "url": "mxc://media.test/opaque"
+    },
+    "descriptor": {
+      "descriptorDigest": "68549c5c6d521544ef55061e0ff0c577d4a5b9482ab3fa2df95f2c8ac86318ce",
+      "filename": "untrusted 中文.bin",
+      "messageType": "m.file",
+      "contentType": "application/octet-stream",
+      "declaredSize": 5,
+      "source": {
+        "kind": "plain",
+        "url": "mxc://media.test/opaque"
+      }
+    }
+  },
+  {
+    "content": {
+      "msgtype": "m.file",
+      "body": "first line\nsecond line",
+      "filename": "untrusted 中文.bin",
+      "info": {
+        "mimetype": "application/octet-stream",
+        "size": 5
+      },
+      "file": {
+        "url": "mxc://media.test/secret",
+        "v": "v2",
+        "key": {
+          "kty": "oct",
+          "alg": "A256CTR",
+          "ext": true,
+          "key_ops": [
+            "encrypt",
+            "decrypt"
+          ],
+          "k": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+        },
+        "iv": "CAgICAgICAgICAgICAgICA",
+        "hashes": {
+          "sha256": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+        }
+      }
+    },
+    "descriptor": {
+      "descriptorDigest": "63a60dfa6553d3c2655c78de89d240db6c0f0a1ee0b5b96fbc2e35765758cc6d",
+      "filename": "untrusted 中文.bin",
+      "messageType": "m.file",
+      "contentType": "application/octet-stream",
+      "declaredSize": 5,
+      "source": {
+        "kind": "encrypted",
+        "file": {
+          "url": "mxc://media.test/secret",
+          "v": "v2",
+          "key": {
+            "kty": "oct",
+            "alg": "A256CTR",
+            "ext": true,
+            "key_ops": [
+              "encrypt",
+              "decrypt"
+            ],
+            "k": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+          },
+          "iv": "CAgICAgICAgICAgICAgICA",
+          "hashes": {
+            "sha256": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+          }
+        }
+      }
+    }
+  }
+]
