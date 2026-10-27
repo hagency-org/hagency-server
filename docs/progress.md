@@ -85,3 +85,23 @@
 ## 2026-10-23 看板内嵌图片回执
 
 上传附件返回稳定 attachment ID，保存在原幂等回执中，供 Client 在描述/评论插入 attachment: 引用。OpenAPI 同步，数据库测试覆盖初次上传与重放 ID 一致。完整隔离 PG 测试 90 通过，all-target Clippy 和 OpenAPI 校验通过；完整原生客户端验证了 PNG/截图上传与引用预览/删除。Cloud 无改动。
+
+## 2026-10-27: Revocable independent Agent crypto identity
+
+- Current identity-only broker has7 closed SDK endpoints and an additive public
+  key-pin schema. Stable Agent/host Matrix keys survive authorization epochs;
+  account cross-signing pins survive reassignment. Before every bounded HTTP IO
+  validate actual owner/session/device/Agent rows and post-wait clock; commit
+  public pins first. Separate crypto connection/4slots keep ordinary domain work
+  out of the external-HTTP queue. No AS/login/private keys leave Server.
+- Actual Synapse/two Agent SDKs/NativeOwner identity6 passes independent public
+  keys, store reopen, actual API device revocation, direct-HS bearer401 and native
+  checked-close/drop/reopen with device generation1→3 and unchanged keys. Actual
+  homeserver retains one Matrix device per Agent; native calls0 and Server leases0.
+  OAuth introspection remains the explicit qualification bridge, not production.
+- Fresh PG full114/0/0 and current4security regressions pass; all-target strict
+  Clippy, format and OpenAPI90owner+4AS/22guard tests pass. Preserve earlier
+  compiler, versions-masquerade, driver URL/field/state-lock failures and reused-DB
+ 112/2 notice failure; never reinterpret them as passed. Client report in dev-vibe
+  records exact receipts/logs and remaining normal runtime/trust/encrypted task/file
+  integration, A3 and earlier manual/platform/OAuth gates. Full goal stays active.

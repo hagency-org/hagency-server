@@ -3,6 +3,8 @@ use crate::{Error, Result, domain::Agent};
 use reqwest::{Client, Method, Url};
 use serde_json::{Value, json};
 use std::time::Duration;
+#[path = "matrix_crypto.rs"]
+mod crypto;
 #[derive(Clone)]
 pub struct MatrixClient {
     http: Client,

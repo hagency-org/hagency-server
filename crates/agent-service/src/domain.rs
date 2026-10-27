@@ -16,6 +16,8 @@ use std::{collections::BTreeSet, sync::Arc};
 #[path = "domain_discovery.rs"]
 mod discovery;
 pub use discovery::RoomAgent;
+#[path = "agent_crypto.rs"]
+pub(crate) mod agent_crypto;
 #[path = "execution_configuration.rs"]
 mod execution_configuration;
 #[path = "execution_devices.rs"]
@@ -425,6 +427,7 @@ struct Flag {
 pub struct DomainStore {
     pub(crate) board: project_board::BoardStore,
     db: Arc<crate::database::Database>,
+    crypto_db: Arc<crate::database::Database>,
     server: String,
     namespace: String,
 }
@@ -481,6 +484,7 @@ impl DomainStore {
             }
             db.batch_execute(include_str!("configuration_schema.sql")).await?;
             db.batch_execute(include_str!("visibility_schema.sql")).await?;
+            db.batch_execute(include_str!("agent_crypto_schema.sql")).await?;
             let pause_initialized=sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='bindings' AND column_name='owner_service_paused') AS matched").get_result::<Flag>(db).await?;
             if !pause_initialized.matched {
                 db.batch_execute("ALTER TABLE hagency_agent_v1.bindings ADD COLUMN owner_service_paused boolean NOT NULL DEFAULT false").await?;
@@ -495,7 +499,13 @@ impl DomainStore {
         }
 ).await?;
 
+        // Crypto HTTP holds only its own connection while actual authorization
+        // rows stay locked; unrelated domain work must not queue behind it.
+        let crypto_db = AsyncPgConnection::establish(url)
+            .await
+            .map_err(|_| Error::Unavailable("database_unavailable"))?;
         Ok(Self {
+            crypto_db: Arc::new(crate::database::Database::new(crypto_db, url)),
             board: project_board::BoardStore::open(url).await?,
             db: Arc::new(crate::database::Database::new(db, url)),
             server: server.into(),

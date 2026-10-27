@@ -170,7 +170,9 @@ def validate(doc):
             require('responses' in operation and operation['responses'], 'no responses')
             for security in operation['security']:
                 require(set(security) <= set(doc['components']['securitySchemes']), 'security scheme missing')
-            if path.startswith('/hagency/api/v1/execution/'):
+            if path.startswith('/hagency/agent-crypto/'):
+                require(operation['security'] == [{'deviceBearer': []}], 'Agent crypto device security drift')
+            elif path.startswith('/hagency/api/v1/execution/'):
                 require(operation['security'] == [{'deviceBearer': []}] and method == 'post', 'execution bearer/method drift')
             elif '/configuration' in path or path.startswith('/hagency/api/v1/device-configuration/'):
                 require(operation['security'] == [{'deviceBearer': []}], 'configuration device security drift')
@@ -199,7 +201,12 @@ def validate(doc):
         lookup = doc['paths']['/hagency/api/v1/execution/files/lookup']['post']
         require(lookup['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/FileLookup'}, 'file lookup identity drift')
         require(lookup['responses']['200']['content']['application/json']['schema'] == {'type': 'object', 'properties': {'observation': {'$ref': '#/components/schemas/FileObservation'}}, 'required': ['observation'], 'additionalProperties': False}, 'file observation response drift')
-        require(len(operations) == 83, 'reviewed owner route count drift')
+        crypto_source = (ROOT / 'crates/agent-service/src/agent_crypto.rs').read_text()
+        crypto_prefix = '/hagency/agent-crypto/{agentId}/{generation}'
+        crypto_routes = {(crypto_prefix + p, m.lower()) for m, p in re.findall(r'\("(GET|POST)", "(/_matrix/[^"]+)"\) => Ok\(Self::', crypto_source)}
+        crypto_routes.add((crypto_prefix + '/provision', 'post'))
+        require(len(crypto_routes) == 7 and crypto_routes == {(p,m) for p,m in operations if p.startswith('/hagency/agent-crypto/')}, 'Agent crypto route drift')
+        require(len(operations) == 90, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)

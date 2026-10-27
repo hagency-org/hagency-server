@@ -90,6 +90,11 @@ impl App {
     pub fn router(&self) -> Router {
         Router::new()
             .push(
+                Router::with_path("hagency/agent-crypto/{**path}")
+                    .hoop(salvo::size_limiter::max_size(131072))
+                    .goal(self.clone()),
+            )
+            .push(
                 Router::with_path("hagency/api/v1/projects/{project}/tasks/{task}/attachments")
                     .hoop(salvo::size_limiter::max_size(3 * 1024 * 1024))
                     .goal(self.clone()),
@@ -172,7 +177,7 @@ impl App {
             json!({"commandState":if creation.binding.state=="active"{"active"}else{"pending"},"creation":creation,"pendingReason":null}),
         )
     }
-    async fn call(&self, req: &mut Request) -> Result<Value> {
+    fn native_request(&self, req: &Request) -> Result<()> {
         let hosts = req.headers().get_all("host").iter().collect::<Vec<_>>();
         let expected = self.public[url::Position::BeforeHost..url::Position::AfterPort].to_owned();
         if hosts.len() != 1
@@ -183,6 +188,85 @@ impl App {
         {
             return Err(Error::Unauthorized("native_origin_required"));
         }
+        Ok(())
+    }
+    async fn crypto_call(&self, req: &mut Request) -> Result<(u16, Value)> {
+        use crate::domain::agent_crypto::{MAX_BYTES, Operation, PREFIX};
+        self.native_request(req)?;
+        if req.uri().query().is_some() {
+            return Err(Error::Invalid("invalid_agent_crypto_request"));
+        }
+        let path = req
+            .uri()
+            .path()
+            .strip_prefix(PREFIX)
+            .ok_or(Error::Invalid("invalid_agent_crypto_request"))?
+            .to_owned();
+        let (agent, remaining) = path
+            .split_once('/')
+            .ok_or(Error::Invalid("invalid_agent_crypto_request"))?;
+        let (generation, tail) = remaining
+            .split_once('/')
+            .ok_or(Error::Invalid("invalid_agent_crypto_request"))?;
+        let parsed = generation
+            .parse::<i64>()
+            .map_err(|_| Error::Invalid("invalid_agent_crypto_request"))?;
+        if parsed < 1 || generation != parsed.to_string() {
+            return Err(Error::Invalid("invalid_agent_crypto_request"));
+        }
+        crate::key(agent)?;
+        let provision = tail == "provision" && req.method() == salvo::http::Method::POST;
+        let operation = if provision {
+            Operation::Provision
+        } else {
+            Operation::route(req.method().as_str(), &format!("/{tail}"))?
+        };
+        let credential = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .ok_or(Error::Unauthorized("authentication_required"))?
+            .to_owned();
+        let p = self.store.authenticate(&credential, now_ms(), true).await?;
+        let payload = req
+            .payload()
+            .await
+            .map_err(|_| Error::Invalid("invalid_agent_crypto_request"))?;
+        if payload.len() > MAX_BYTES {
+            return Err(Error::Invalid("invalid_agent_crypto_request"));
+        }
+        let body = if payload.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(payload)
+                .map_err(|_| Error::Invalid("invalid_agent_crypto_request"))?
+        };
+        let (domain, _) = self
+            .domain
+            .as_ref()
+            .ok_or(Error::Unavailable("domain_unavailable"))?;
+        let matrix = self
+            .matrix_client
+            .as_ref()
+            .ok_or(Error::Unavailable("matrix_unavailable"))?;
+        let (status, value, device) = domain
+            .crypto_request(matrix, &p, agent, parsed, operation, body)
+            .await?;
+        if provision && (200..300).contains(&status) {
+            let a = domain.agent(&p, agent, now_ms()).await?;
+            if a.generation != parsed || a.execution_device_id != p.device_id {
+                return Err(Error::Conflict("stale_agent_generation"));
+            }
+            return Ok((
+                200,
+                json!({"agentId":agent,"agentGeneration":parsed,"executionDeviceId":p.device_id,"deviceGeneration":p.device_generation,"matrixUserId":a.puppet_mxid,"matrixDeviceId":device,"serverVersions":value["versions"],"homeserver":self.public.join(&format!("{PREFIX}{agent}/{parsed}")).map_err(|_|Error::Unavailable("invalid_matrix_origin"))?}),
+            ));
+        }
+        Ok((status, value))
+    }
+    async fn call(&self, req: &mut Request) -> Result<Value> {
+        self.native_request(req)?;
         // Proxies may add X-Forwarded-Host. Ignore it: only the actual Host
         // above can establish the configured public authority.
         let path = req.uri().path().to_owned();
@@ -193,7 +277,7 @@ impl App {
         if path == "/hagency/api/v1/discovery" && method == salvo::http::Method::GET {
             return Ok(
                 json!({"product":"hagency-server","version":env!("CARGO_PKG_VERSION"),
-                "capabilities":(["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","processing-reaction-v1","execution-configuration-v1"].into_iter().chain(self.transport.as_ref().map(|_|crate::attachments::CAPABILITY)).chain((self.transport.is_some()&&self.matrix_client.is_some()).then_some(crate::file_delivery::CAPABILITY)).chain(self.transport.as_ref().map(|_|crate::file_delivery::HISTORY_CAPABILITY)).chain(if self.board_enabled && self.domain.is_some() {Some(crate::project_board::CAPABILITY)}else{None}).collect::<Vec<_>>()),
+                "capabilities":(["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","processing-reaction-v1","execution-configuration-v1"].into_iter().chain(self.transport.as_ref().map(|_|crate::attachments::CAPABILITY)).chain((self.transport.is_some()&&self.matrix_client.is_some()).then_some(crate::file_delivery::CAPABILITY)).chain(self.transport.as_ref().map(|_|crate::file_delivery::HISTORY_CAPABILITY)).chain((self.domain.is_some()&&self.matrix_client.is_some()).then_some(crate::domain::agent_crypto::CAPABILITY)).chain(if self.board_enabled && self.domain.is_some() {Some(crate::project_board::CAPABILITY)}else{None}).collect::<Vec<_>>()),
                 "protocolVersion":3,"serverName":self.server_name,"homeserver":self.public,
                 "serviceMxid":format!("@_hagency_service:{}",self.server_name),"issuer":self.issuer,"authorizationEndpoint":self.issuer.join("authorize").unwrap(),
                 "tokenEndpoint":self.issuer.join("oauth2/token").unwrap(),
@@ -875,6 +959,25 @@ pub fn now_ms() -> i64 {
 impl App {
     async fn handle(&self, req: &mut Request, res: &mut Response) {
         res.add_header("cache-control", "no-store", true).unwrap();
+        if req
+            .uri()
+            .path()
+            .starts_with(crate::domain::agent_crypto::PREFIX)
+        {
+            match self.crypto_call(req).await {
+                Ok((status, value)) => {
+                    res.status_code(
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                    );
+                    res.render(Json(value));
+                }
+                Err(error) => {
+                    res.status_code(StatusCode::from_u16(error.status()).unwrap());
+                    res.render(Json(json!({"errcode":if error.status()==401{"M_UNKNOWN_TOKEN"}else{"M_FORBIDDEN"},"error":error.to_string()})));
+                }
+            }
+            return;
+        }
         match self.call(req).await {
             Ok(value) => {
                 if value["commandState"] == "pending" {

@@ -1,3 +1,16 @@
+# Independent Agent crypto identity checkpoint (2026-10-27)
+
+Keep permanent Agent/host Matrix device keys separate from rotating Hagency
+credentials. Pin account cross-signing keys across all hosts; no reassignment
+can silently reset them. Commit public digests before HTTP and hold actual scope
+rows through bounded IO, using a separate crypto connection and4request slots.
+AS registration inhibits login; global versions must not masquerade as an
+unregistered Agent. Actual device whoami probes support without lying about the
+advertised Matrix version. Client retains private encrypted SDK keys. Actual
+identity6 proves two Agents, revocation and native credential1→3 continuity;
+calls/leases0. This does not open encrypted task/reply/file or owner trust gates.
+Detailed contract and actual/failed qualification evidence are in dev-vibe.
+
 # 持久知识
 
 - Synapse资格示例的OAuth桥可验证多个实际主人SDK token，但必须逐token查真实
