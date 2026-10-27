@@ -211,7 +211,11 @@ def validate(doc):
         require(len(receive_routes) == 8 and crypto_routes | receive_routes == {(p,m) for p,m in operations if p.startswith('/hagency/agent-crypto/')}, 'Agent crypto route drift')
         sync = doc['paths'][crypto_prefix + '/receive/_matrix/client/v3/sync']['get']
         require({p['name'] for p in sync['parameters'] if p['in'] == 'query'} == {'since','timeout','set_presence','full_state','use_state_after'}, 'receiver sync query drift')
-        require(len(operations) == 100, 'reviewed owner route count drift')
+        for suffix, request in [('prepare', 'EncryptedPrepare'), ('ack', 'EncryptedReference'), ('admission', 'EncryptedReference')]:
+            operation = doc['paths']['/hagency/api/v1/execution/ciphertexts/' + suffix]['post']
+            require(operation['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/' + request}, 'encrypted admission request drift')
+            require(operation['responses']['200']['content']['application/json']['schema'] == {'type':'object','properties':{'admission':{'$ref':'#/components/schemas/EncryptedAdmission'}},'required':['admission'],'additionalProperties':False}, 'encrypted admission response drift')
+        require(len(operations) == 103, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -224,6 +228,12 @@ class GuardTests(unittest.TestCase):
         doc = copy.deepcopy(self.doc); mutate(doc)
         with self.assertRaises((ValueError, KeyError, TypeError)):
             validate(doc)
+    def test_missing_encrypted_ack(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/ciphertexts/ack'))
+    def test_encrypted_prepare_never_accepts_plaintext(self):
+        self.rejection(lambda d: d['components']['schemas']['EncryptedPrepare']['properties'].update(body={'type':'string'}))
+    def test_encrypted_ack_requires_device(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/ciphertexts/ack']['post'].update(security=[{'userBearer': []}]))
     def test_missing_original_ciphertext_route(self):
         self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/ciphertexts/read'))
     def test_ciphertext_poll_requires_device(self):

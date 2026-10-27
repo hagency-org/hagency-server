@@ -2,7 +2,7 @@
 
 本目录描述实际实现，不是需求草案。仓库中的 Palpo/Matrix、Pasion/OIDC、浏览器代理及 hagency-client 本机 Console API 不在这两份 OpenAPI 的范围内。
 
-- `hagency-v1.openapi.json`：OpenAPI 3.1，契约版本 1.0.0；100 个操作，包含用户会话、设备、Project/Room 登记与权限、永久归属 Agent、Binding、命令查询、租约与执行、工具前远端事实核验、已知回复恢复及 `/readyz`。
+- `hagency-v1.openapi.json`：OpenAPI 3.1，契约版本 1.0.0；103 个操作，包含用户会话、设备、Project/Room 登记与权限、永久归属 Agent、Binding、命令查询、租约与执行、工具前远端事实核验、已知回复恢复及 `/readyz`。
 - `appservice-v1.openapi.json`：独立的 homeserver → 必装 Appservice 信任边界；4 个操作，包含事务、ping、用户和 Room alias 查询。
 - `scripts/validate-agent-openapi.py`：Python 标准库验证，不增加生产依赖。从仓库根目录执行 `python3 scripts/validate-agent-openapi.py --self-test`。
 
@@ -104,3 +104,10 @@ AS正文。摘要为排序 UTF-8 JSON `["agent-encrypted-inbox-v1",event]` 的 S
 墓碑，不能改写或删除。读取不修改执行状态，不能作为任务 ACK/准入/start/lease。
 Server 不接收解密明文；任务路由、加密回复和文件还需 Client完整执行链。
 标准外部 `m.relates_to` 只作为原始不可信元数据保留，不据此执行 thread/mention。
+
+`agent-encrypted-admission-v1` 增加独立 ciphertexts/prepare、ack、admission。
+仅提交原始 inboxId/sourceDigest 与解密后认证的 thread/mentions 投影；Server
+保存原始密文作为历史正文，以 encrypted_* 状态隔离普通执行接口。主机须先原子
+持久化本地明文、原始密文与两种历史摘要，再 ACK。重复 ACK、重启和换租约保留
+原 dispatch；同一加密载荷改外层 event_id 不得创建新任务。ACK 不允许模型/工具
+执行；完整加密 start/reply/file 流程仍未实现。

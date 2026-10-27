@@ -40,7 +40,7 @@ pub(crate) struct Header {
     pub sender_mxid: String,
 }
 // Independent of serde_json's preserve_order feature; never hash display order.
-fn canonical(v: &Value) -> Result<String> {
+pub(super) fn canonical(v: &Value) -> Result<String> {
     Ok(match v {
         Value::Object(o) => {
             let mut pairs = o.iter().collect::<Vec<_>>();
@@ -67,6 +67,27 @@ fn canonical(v: &Value) -> Result<String> {
 }
 fn invalid() -> Error {
     Error::Invalid("invalid_ciphertext_event")
+}
+pub(super) fn seal_digest(c: &Ciphertext) -> Result<String> {
+    use base64::Engine;
+    let content = &c.event["content"];
+    let raw = content["ciphertext"].as_str().ok_or_else(invalid)?;
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(raw.trim_end_matches('='))
+        .map_err(|_| invalid())?;
+    let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(bytes);
+    let session = content["session_id"]
+        .as_str()
+        .ok_or_else(invalid)?
+        .trim_end_matches('=');
+    Ok(hash(&canonical(&json!([
+        "agent-encrypted-seal-v1",
+        c.agent_id,
+        c.room_id,
+        content["algorithm"],
+        session,
+        encoded
+    ]))?))
 }
 pub(crate) fn parse(raw: &Value) -> Result<(Value, String)> {
     if raw["type"] != "m.room.encrypted"
@@ -139,7 +160,7 @@ impl TransportStore {
    }
    if source.received_at_ms<=now.saturating_sub(self.limits.event_ttl_ms){return Err(Error::Conflict("event_expired"));}
    sql_query("UPDATE hagency_agent_v1.ciphertext_inbox SET state='expired',event=NULL WHERE state='pending' AND received_at_ms<=$1").bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).execute(db).await?;
-   let count=sql_query("SELECT (SELECT count(*) FROM hagency_agent_v1.ciphertext_inbox WHERE owner_user_id=$1 AND state='pending')+(SELECT count(*) FROM hagency_agent_v1.owner_events WHERE owner_user_id=$1 AND state IN ('pending','offered','acknowledged','running','unknown')) AS total").bind::<Text,_>(&scope.owner_user_id).get_result::<Count>(db).await?;
+   let count=sql_query("SELECT (SELECT count(*) FROM hagency_agent_v1.ciphertext_inbox WHERE owner_user_id=$1 AND state='pending' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.encrypted_dispatches d WHERE d.inbox_id=hagency_agent_v1.ciphertext_inbox.id))+(SELECT count(*) FROM hagency_agent_v1.owner_events WHERE owner_user_id=$1 AND state IN ('pending','offered','acknowledged','running','unknown','encrypted_pending','encrypted_offered','encrypted_acknowledged','encrypted_running','encrypted_unknown')) AS total").bind::<Text,_>(&scope.owner_user_id).get_result::<Count>(db).await?;
    if count.total>=self.limits.max_owner_events{return Err(Error::Unavailable("owner_queue_full"));}
    let generation=sql_query("SELECT generation AS value FROM hagency_agent_v1.agents WHERE id=$1").bind::<Text,_>(&scope.agent_id).get_result::<Generation>(db).await?.value;
    sql_query("INSERT INTO hagency_agent_v1.ciphertext_inbox(id,transaction_id,binding_id,agent_id,owner_user_id,agent_generation,binding_generation,event_id,room_id,sender_mxid,source_digest,event,received_at_ms,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending')")
@@ -163,7 +184,7 @@ impl TransportStore {
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
    let(now,_)=Self::authenticate(db,p,now).await?;Self::lease(db,p,lease,now).await?;Self::agent_active(db,p,&lease.agent_id).await?;
    let scope=Self::scope(db,binding).await?;if scope.owner_user_id!=p.user_id||scope.agent_id!=lease.agent_id||!scope.active||scope.service_paused{return Err(Error::Unauthorized("ciphertext_scope_revoked"));}
-   Ok(sql_query("SELECT c.id,c.binding_id,c.sender_mxid FROM hagency_agent_v1.ciphertext_inbox c JOIN hagency_agent_v1.bindings b ON b.id=c.binding_id JOIN hagency_agent_v1.agents a ON a.id=c.agent_id WHERE c.owner_user_id=$1 AND c.agent_id=$2 AND c.binding_id=$3 AND c.state='pending' AND c.binding_generation=b.generation AND c.agent_generation=a.generation AND c.received_at_ms>$4 ORDER BY c.received_at_ms,c.id LIMIT $5").bind::<Text,_>(&p.user_id).bind::<Text,_>(&lease.agent_id).bind::<Text,_>(binding).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).bind::<BigInt,_>(limit as i64).load(db).await?)
+   Ok(sql_query("SELECT c.id,c.binding_id,c.sender_mxid FROM hagency_agent_v1.ciphertext_inbox c JOIN hagency_agent_v1.bindings b ON b.id=c.binding_id JOIN hagency_agent_v1.agents a ON a.id=c.agent_id WHERE c.owner_user_id=$1 AND c.agent_id=$2 AND c.binding_id=$3 AND c.state='pending' AND c.binding_generation=b.generation AND c.agent_generation=a.generation AND c.received_at_ms>$4 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.encrypted_dispatches d JOIN hagency_agent_v1.owner_events e ON e.id=d.dispatch_id WHERE d.inbox_id=c.id AND e.state NOT IN ('encrypted_pending','encrypted_offered')) ORDER BY c.received_at_ms,c.id LIMIT $5").bind::<Text,_>(&p.user_id).bind::<Text,_>(&lease.agent_id).bind::<Text,_>(binding).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).bind::<BigInt,_>(limit as i64).load(db).await?)
   }).await
     }
     pub(crate) async fn ciphertext_header(
@@ -186,16 +207,49 @@ impl TransportStore {
     ) -> Result<Ciphertext> {
         key(id)?;
         let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
-   let(now,_)=Self::authenticate(db,p,now).await?;Self::lease(db,p,lease,now).await?;Self::agent_active(db,p,&lease.agent_id).await?;
-   let c=sql_query("SELECT id,binding_id,agent_id,agent_generation,binding_generation,event_id,room_id,sender_mxid,source_digest,received_at_ms,event FROM hagency_agent_v1.ciphertext_inbox WHERE id=$1 AND owner_user_id=$2 AND state='pending' AND received_at_ms>$3").bind::<Text,_>(id).bind::<Text,_>(&p.user_id).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).get_result::<Ciphertext>(db).await.map_err(unauthorized)?;
-   let scope=Self::scope(db,&c.binding_id).await?;
-   let generation=sql_query("SELECT generation AS value FROM hagency_agent_v1.agents WHERE id=$1").bind::<Text,_>(&scope.agent_id).get_result::<Generation>(db).await?.value;
-   if scope.owner_user_id!=p.user_id||scope.agent_id!=lease.agent_id||c.agent_id!=lease.agent_id||c.binding_generation!=scope.binding_generation||c.agent_generation!=generation||scope.service_paused{return Err(Error::Unauthorized("ciphertext_scope_revoked"));}
-   facts_mode(&scope,&c.sender_mxid,f,now,true)?;
-   let(_,digest)=parse(&c.event)?;if digest!=c.source_digest{return Err(Error::Conflict("ciphertext_changed"));}
-   Ok(c)
-  }).await
+        (*db)
+            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                Self::current_ciphertext(db, p, lease, id, f, self.limits.event_ttl_ms, now)
+                    .await
+                    .map(|(event, _)| event)
+            })
+            .await
+    }
+    pub(super) async fn current_ciphertext(
+        db: &mut AsyncPgConnection,
+        p: &Principal,
+        lease: &LeaseRef,
+        id: &str,
+        f: &DeliveryFacts,
+        ttl: i64,
+        now: i64,
+    ) -> Result<(Ciphertext, i64)> {
+        let (now, _) = Self::authenticate(db, p, now).await?;
+        Self::lease(db, p, lease, now).await?;
+        Self::agent_active(db, p, &lease.agent_id).await?;
+        let c=sql_query("SELECT id,binding_id,agent_id,agent_generation,binding_generation,event_id,room_id,sender_mxid,source_digest,received_at_ms,event FROM hagency_agent_v1.ciphertext_inbox WHERE id=$1 AND owner_user_id=$2 AND state='pending' AND received_at_ms>$3").bind::<Text,_>(id).bind::<Text,_>(&p.user_id).bind::<BigInt,_>(now.saturating_sub(ttl)).get_result::<Ciphertext>(db).await.map_err(unauthorized)?;
+        let scope = Self::scope(db, &c.binding_id).await?;
+        let generation =
+            sql_query("SELECT generation AS value FROM hagency_agent_v1.agents WHERE id=$1")
+                .bind::<Text, _>(&scope.agent_id)
+                .get_result::<Generation>(db)
+                .await?
+                .value;
+        if scope.owner_user_id != p.user_id
+            || scope.agent_id != lease.agent_id
+            || c.agent_id != lease.agent_id
+            || c.binding_generation != scope.binding_generation
+            || c.agent_generation != generation
+            || scope.service_paused
+        {
+            return Err(Error::Unauthorized("ciphertext_scope_revoked"));
+        }
+        facts_mode(&scope, &c.sender_mxid, f, now, true)?;
+        let (_, digest) = parse(&c.event)?;
+        if digest != c.source_digest {
+            return Err(Error::Conflict("ciphertext_changed"));
+        }
+        Ok((c, now))
     }
 }
 #[derive(diesel::QueryableByName)]

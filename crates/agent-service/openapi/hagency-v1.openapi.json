@@ -11741,6 +11741,315 @@
           ]
         }
       }
+    },
+    "/hagency/api/v1/execution/ciphertexts/prepare": {
+      "post": {
+        "operationId": "prepareEncryptedDispatch",
+        "summary": "prepareEncryptedDispatch",
+        "description": "Current original AS source, digest, member, binding, Agent generation and lease checks. Metadata only. Idempotently reserves an encrypted dispatch using authenticated host thread/mentions projection. No caller plaintext or trust flag. Exact sealed ciphertext cannot create a second dispatch under changed outer headers.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "admission": {
+                      "$ref": "#/components/schemas/EncryptedAdmission"
+                    }
+                  },
+                  "required": [
+                    "admission"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EncryptedPrepare"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/ciphertexts/prepare\" =>"
+          ]
+        }
+      }
+    },
+    "/hagency/api/v1/execution/ciphertexts/ack": {
+      "post": {
+        "operationId": "ackEncryptedDispatch",
+        "summary": "ackEncryptedDispatch",
+        "description": "Current original AS source, digest, member, binding, Agent generation and lease checks. Metadata only. Host must atomically persist the decrypted input and original ciphertext/history commitments before ACK. Idempotent exact original receipt; does not grant model execution.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "admission": {
+                      "$ref": "#/components/schemas/EncryptedAdmission"
+                    }
+                  },
+                  "required": [
+                    "admission"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EncryptedReference"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/ciphertexts/ack\" =>"
+          ]
+        }
+      }
+    },
+    "/hagency/api/v1/execution/ciphertexts/admission": {
+      "post": {
+        "operationId": "readEncryptedAdmission",
+        "summary": "readEncryptedAdmission",
+        "description": "Current original AS source, digest, member, binding, Agent generation and lease checks. Metadata only. Read the exact original encrypted admission under current authority; no work is created or started.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "admission": {
+                      "$ref": "#/components/schemas/EncryptedAdmission"
+                    }
+                  },
+                  "required": [
+                    "admission"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EncryptedReference"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/ciphertexts/admission\" =>"
+          ]
+        }
+      }
     }
   },
   "components": {
@@ -12514,7 +12823,8 @@
             "description": "Immutable logical conversation key: exact Room ID for new top-level owner-direct requests; Matrix event ID for explicit threads and Project requests. Historical event-root intents retain their threaded reply shape."
           },
           "body": {
-            "type": "string"
+            "type": "string",
+            "description": "Plain request text for ordinary states; canonical original ciphertext JSON for encrypted_* states. Encrypted plaintext exists only in the host ledger."
           },
           "state": {
             "type": "string",
@@ -12525,7 +12835,14 @@
               "running",
               "completed",
               "unknown",
-              "cancelled"
+              "cancelled",
+              "encrypted_pending",
+              "encrypted_offered",
+              "encrypted_acknowledged",
+              "encrypted_running",
+              "encrypted_completed",
+              "encrypted_unknown",
+              "encrypted_cancelled"
             ]
           },
           "bindingGeneration": {
@@ -17335,6 +17652,149 @@
         ],
         "additionalProperties": false,
         "description": "Data-only original AS custody envelope, not admission/ACK/start/lease authority. sourceDigest is SHA256 of canonical sorted UTF-8 JSON [\"agent-encrypted-inbox-v1\",event]."
+      },
+      "Projection": {
+        "type": "object",
+        "properties": {
+          "threadRoot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mentionedMxids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 128,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "threadRoot",
+          "mentionedMxids"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/encrypted_dispatches.rs",
+          "name": "Projection",
+          "serializedFields": [
+            "thread_root",
+            "mentioned_mxids"
+          ],
+          "strictInput": true
+        }
+      },
+      "EncryptedPrepare": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "inboxId": {
+            "type": "string"
+          },
+          "sourceDigest": {
+            "type": "string"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/Projection"
+          }
+        },
+        "required": [
+          "lease",
+          "inboxId",
+          "sourceDigest",
+          "projection"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/encrypted_dispatches.rs",
+          "name": "Prepare",
+          "serializedFields": [
+            "lease",
+            "inbox_id",
+            "source_digest",
+            "projection"
+          ],
+          "strictInput": true
+        }
+      },
+      "EncryptedReference": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "inboxId": {
+            "type": "string"
+          },
+          "sourceDigest": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease",
+          "inboxId",
+          "sourceDigest"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/encrypted_dispatches.rs",
+          "name": "Reference",
+          "serializedFields": [
+            "lease",
+            "inbox_id",
+            "source_digest"
+          ],
+          "strictInput": true
+        }
+      },
+      "EncryptedAdmission": {
+        "type": "object",
+        "properties": {
+          "inboxId": {
+            "type": "string"
+          },
+          "sourceDigest": {
+            "type": "string"
+          },
+          "agentGeneration": {
+            "type": "integer"
+          },
+          "ownerDirect": {
+            "type": "boolean"
+          },
+          "dispatch": {
+            "$ref": "#/components/schemas/Dispatch"
+          }
+        },
+        "required": [
+          "inboxId",
+          "sourceDigest",
+          "agentGeneration",
+          "ownerDirect",
+          "dispatch"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/encrypted_dispatches.rs",
+          "name": "Admission",
+          "serializedFields": [
+            "inbox_id",
+            "source_digest",
+            "agent_generation",
+            "owner_direct",
+            "dispatch"
+          ],
+          "strictInput": false
+        },
+        "description": "Original ciphertext metadata receipt. dispatch.body is canonical original ciphertext JSON, never decrypted text. encrypted_* state cannot use plaintext execution endpoints. ACK grants no model/tool execution."
       }
     },
     "securitySchemes": {
@@ -17353,17 +17813,20 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "17a40c5ac3ae5d7176feb7263a94890c4d71624421271942b39b6364186a7600",
-    "crates/agent-service/src/api_transport.rs": "0396033b9456dae8c11d733edae94a28d6edee5723b7fffe87dc5f61c86c351a",
+    "crates/agent-service/src/api.rs": "6e707deab911075db1eb3197727522817c65138e8c0ae11edef1f0ccbca633e8",
+    "crates/agent-service/src/api_transport.rs": "7640e0daf51fdfbf3c68de74861263f462488b6bd0b26f605518dd9ff43951df",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
     "crates/agent-service/src/api_project_board.rs": "92c621045fe4c00d665152622e99c8d061ab58c98bc5b3197db1c09e43eb7969",
     "crates/agent-service/src/agent_crypto.rs": "f06d40512863eddb9e5b3d00694429e66837bcb02dda6ac371d07c548b6ae95a",
     "crates/agent-service/src/matrix_crypto.rs": "efeb19edada56af0866c7716f84bbf74e1d701db7a0c9319572b2f5d9fd59043",
     "crates/agent-service/src/agent_crypto_receive.rs": "bd943476196f9e1aff7b8e9d72a4b63438116aaa128964efca2933ad1a4d9523",
-    "crates/agent-service/src/transport_ciphertexts.rs": "3102af2b78904be267758fc8d9a4cceed83aa8e952d6a2ec5da4df0c213a2e14",
+    "crates/agent-service/src/transport_ciphertexts.rs": "4a1fe84564151dbb1ffe2791569d8e7a441a1f3d2c30b343ddf51b6f73c80116",
     "crates/agent-service/src/ciphertext_schema.sql": "ea43c360e60a316d3cd15e16494bee1b5c60f5482b4d0ad9bbe0883c2f07ad29",
-    "crates/agent-service/src/workers.rs": "3c4ea90ebf863b8bc88d9e06839fb399bc1fec07e311b74ed4983ff38c95b361"
+    "crates/agent-service/src/workers.rs": "3c4ea90ebf863b8bc88d9e06839fb399bc1fec07e311b74ed4983ff38c95b361",
+    "crates/agent-service/src/encrypted_dispatches.rs": "f172a4fd602b7302199c297348df20e7b35b59796724521708d93df59e7390d8",
+    "crates/agent-service/src/encrypted_dispatches_schema.sql": "73c338d99a17eb64e2173c6fdb7246962039d5e7229e03345bad14237852427d",
+    "crates/agent-service/src/transport.rs": "317dd66b26c28718dac69b5a5d1ed20d216d2dab175493c21fce60b65adc0946"
   },
   "x-not-implemented": [
     "POST /hagency/api/v1/projects (create Matrix Space)",
@@ -17371,6 +17834,6 @@
     "GET /hagency/api/v1/rooms (global Room catalog; implemented project Room list is membership-filtered)",
     "Any Agent transfer/owner reassignment endpoint (intentionally forbidden)",
     "Server-admin approval of owner model credentials, compute allocation, token quotas, requester policy or tool proposals (intentionally local)",
-    "Encrypted task admission/start/reply/file execution (original ciphertext intake/read is implemented but grants no execution authority)"
+    "Encrypted model/tool start and original encrypted reply/file execution (original ciphertext intake, local admission metadata prepare/ACK are implemented; ACK is not execution authority)"
   ]
 }

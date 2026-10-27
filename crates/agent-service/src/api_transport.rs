@@ -136,6 +136,29 @@ pub(crate) async fn call(
         inbox_id: String,
     }
     match path.as_str() {
+        "/hagency/api/v1/execution/ciphertexts/prepare" => {
+            let b: crate::transport::encrypted::Prepare = body(req).await?;
+            let h = t.ciphertext_header(p, &b.inbox_id, now_ms()).await?;
+            let s = t.binding_scope(&h.binding_id).await?;
+            let f = g
+                .delivery(
+                    &s.room_id,
+                    &s.space_id,
+                    &s.owner_mxid,
+                    &h.sender_mxid,
+                    &s.puppet_mxid,
+                )
+                .await?;
+            Ok(json!({"admission":t.prepare_ciphertext(p,&b,&f,now_ms()).await?}))
+        }
+        "/hagency/api/v1/execution/ciphertexts/ack" => {
+            let b: crate::transport::encrypted::Reference = body(req).await?;
+            encrypted_receipt(t, g, p, &b, true).await
+        }
+        "/hagency/api/v1/execution/ciphertexts/admission" => {
+            let b: crate::transport::encrypted::Reference = body(req).await?;
+            encrypted_receipt(t, g, p, &b, false).await
+        }
         "/hagency/api/v1/execution/ciphertexts/poll" => {
             let b: CipherPoll = body(req).await?;
             let mut events = Vec::new();
@@ -319,4 +342,25 @@ pub(crate) async fn call(
         }
         _ => Err(Error::Invalid("unsupported_operation")),
     }
+}
+
+async fn encrypted_receipt(
+    t: &TransportStore,
+    g: &Gateway,
+    p: &Principal,
+    b: &crate::transport::encrypted::Reference,
+    ack: bool,
+) -> Result<Value> {
+    let h = t.ciphertext_header(p, &b.inbox_id, now_ms()).await?;
+    let s = t.binding_scope(&h.binding_id).await?;
+    let f = g
+        .delivery(
+            &s.room_id,
+            &s.space_id,
+            &s.owner_mxid,
+            &h.sender_mxid,
+            &s.puppet_mxid,
+        )
+        .await?;
+    Ok(json!({"admission":t.ciphertext_admission(p,b,&f,ack,now_ms()).await?}))
 }

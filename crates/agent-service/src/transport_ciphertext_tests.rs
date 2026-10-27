@@ -254,3 +254,212 @@ async fn postgres_ciphertext_capacity_expiry_and_tombstone_cannot_rearm_or_mutat
             .is_err()
     );
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_encrypted_prepare_ack_are_original_idempotent_and_plain_execution_stays_closed() {
+    let mut f = fixture().await;
+    f.facts.encrypted = true;
+    let now = crate::api::now_ms();
+    let inbox = inbox().await;
+    let event = raw(&f, "prepare-ack");
+    let tx = secret_token();
+    inbox
+        .accept(&tx, json!({"events":[event]}), now)
+        .await
+        .unwrap();
+    f.transport
+        .ingest_ciphertext(&tx, &f.binding, &event, &f.facts, now)
+        .await
+        .unwrap();
+    let lease = f
+        .transport
+        .acquire_for_test(&f.p, &f.agent, 30_000, false, now)
+        .await
+        .unwrap();
+    let lease = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: lease.epoch,
+    };
+    let headers = f
+        .transport
+        .ciphertext_candidates(&f.p, &lease, &f.binding, 4, now)
+        .await
+        .unwrap();
+    let c = f
+        .transport
+        .read_ciphertext(&f.p, &lease, &headers[0].id, &f.facts, now)
+        .await
+        .unwrap();
+    let projection = encrypted::Projection {
+        thread_root: Some("$original-root".into()),
+        mentioned_mxids: [f.facts.puppet_mxid.clone()].into(),
+    };
+    let b = encrypted::Prepare {
+        lease: lease.clone(),
+        inbox_id: c.id.clone(),
+        source_digest: c.source_digest.clone(),
+        projection: projection.clone(),
+    };
+    let prepared = f
+        .transport
+        .prepare_ciphertext(&f.p, &b, &f.facts, now)
+        .await
+        .unwrap();
+    assert_eq!(prepared.dispatch.state, "encrypted_offered");
+    assert_eq!(
+        serde_json::from_str::<Value>(&prepared.dispatch.body).unwrap(),
+        event
+    );
+    assert_eq!(
+        f.transport
+            .prepare_ciphertext(&f.p, &b, &f.facts, now)
+            .await
+            .unwrap()
+            .dispatch
+            .id,
+        prepared.dispatch.id
+    );
+    assert!(
+        f.transport
+            .event_candidates_with_attachments(&f.p, &lease, &f.binding, 10, now)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        f.transport
+            .claim_event(&f.p, &lease, &prepared.dispatch.id, &f.facts, now)
+            .await
+            .is_err()
+    );
+    assert!(
+        f.transport
+            .acknowledge(&f.p, &lease, &prepared.dispatch.id, now)
+            .await
+            .is_err()
+    );
+    assert!(
+        f.transport
+            .start_execution(
+                &f.p,
+                &lease,
+                &prepared.dispatch.id,
+                "exec_plain",
+                &f.facts,
+                now
+            )
+            .await
+            .is_err()
+    );
+    let mut changed = b;
+    changed.projection.thread_root = Some("$changed".into());
+    assert!(
+        f.transport
+            .prepare_ciphertext(&f.p, &changed, &f.facts, now)
+            .await
+            .is_err()
+    );
+    let reference = encrypted::Reference {
+        lease: lease.clone(),
+        inbox_id: c.id.clone(),
+        source_digest: c.source_digest.clone(),
+    };
+    assert!(
+        f.transport
+            .ciphertext_admission(&f.second, &reference, &f.facts, true, now)
+            .await
+            .is_err()
+    );
+    let mut denied = f.facts.clone();
+    denied.requester_in_room = false;
+    assert!(
+        f.transport
+            .ciphertext_admission(&f.p, &reference, &denied, true, now)
+            .await
+            .is_err()
+    );
+    for _ in 0..2 {
+        let ack = f
+            .transport
+            .ciphertext_admission(&f.p, &reference, &f.facts, true, now)
+            .await
+            .unwrap();
+        assert_eq!(ack.dispatch.state, "encrypted_acknowledged");
+        assert_eq!(ack.dispatch.id, prepared.dispatch.id);
+    }
+    assert!(
+        f.transport
+            .ciphertext_candidates(&f.p, &lease, &f.binding, 4, now)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        sql_query("UPDATE hagency_agent_v1.owner_events SET state='acknowledged' WHERE id=$1")
+            .bind::<Text, _>(&prepared.dispatch.id)
+            .execute(&mut *f.transport.db.lock().await.unwrap())
+            .await
+            .is_err()
+    );
+    assert!(sql_query("UPDATE hagency_agent_v1.encrypted_dispatches SET source_digest='changed' WHERE dispatch_id=$1").bind::<Text,_>(&prepared.dispatch.id).execute(&mut *f.transport.db.lock().await.unwrap()).await.is_err());
+    let mut replay = event.clone();
+    replay["event_id"] = json!("$replay-header");
+    replay["origin_server_ts"] = json!(124);
+    replay["content"]["ciphertext"] = json!("c2VhbGVk=");
+    let replay_tx = secret_token();
+    inbox
+        .accept(&replay_tx, json!({"events":[replay]}), now)
+        .await
+        .unwrap();
+    f.transport
+        .ingest_ciphertext(&replay_tx, &f.binding, &replay, &f.facts, now)
+        .await
+        .unwrap();
+    let rows = f
+        .transport
+        .ciphertext_candidates(&f.p, &lease, &f.binding, 4, now)
+        .await
+        .unwrap();
+    let replay = f
+        .transport
+        .read_ciphertext(&f.p, &lease, &rows[0].id, &f.facts, now)
+        .await
+        .unwrap();
+    let replay = encrypted::Prepare {
+        lease: lease.clone(),
+        inbox_id: replay.id,
+        source_digest: replay.source_digest,
+        projection: projection.clone(),
+    };
+    assert!(matches!(
+        f.transport
+            .prepare_ciphertext(&f.p, &replay, &f.facts, now)
+            .await,
+        Err(Error::Conflict("encrypted_ciphertext_replayed"))
+    ));
+    f.transport.release_lease(&f.p, &lease, now).await.unwrap();
+    let next = f
+        .transport
+        .acquire_for_test(&f.p, &f.agent, 30_000, false, now)
+        .await
+        .unwrap();
+    assert!(next.epoch > lease.epoch);
+    let b = encrypted::Prepare {
+        lease: LeaseRef {
+            agent_id: f.agent.clone(),
+            epoch: next.epoch,
+        },
+        inbox_id: c.id,
+        source_digest: c.source_digest,
+        projection,
+    };
+    let again = f
+        .transport
+        .prepare_ciphertext(&f.p, &b, &f.facts, now)
+        .await
+        .unwrap();
+    assert_eq!(again.dispatch.id, prepared.dispatch.id);
+    assert_eq!(again.dispatch.state, "encrypted_offered");
+    assert_eq!(again.dispatch.dispatch_epoch, Some(next.epoch));
+}
