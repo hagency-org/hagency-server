@@ -16,6 +16,8 @@ mod attachments;
 pub(crate) mod ciphertexts;
 #[path = "encrypted_dispatches.rs"]
 pub(crate) mod encrypted;
+#[path = "encrypted_execution.rs"]
+pub(crate) mod encrypted_execution;
 #[path = "transport_files.rs"]
 pub(crate) mod files;
 #[path = "transport_history.rs"]
@@ -338,6 +340,7 @@ impl TransportStore {
             let encrypted_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.encrypted_dispatches') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !encrypted_initialized.matched {db.batch_execute(include_str!("encrypted_dispatches_schema.sql")).await?;}
             db.batch_execute("SELECT dispatch_id,inbox_id,source_digest,projection,seal_digest FROM hagency_agent_v1.encrypted_dispatches LIMIT 0").await.map_err(|_|Error::Conflict("encrypted_admission_schema_incompatible"))?;
+            db.batch_execute(include_str!("encrypted_execution_schema.sql")).await?;
             let pause_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.pause_notice_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !pause_initialized.matched {
                 db.batch_execute(include_str!("pause_notices_schema.sql")).await?;

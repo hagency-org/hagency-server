@@ -236,7 +236,7 @@ fn creating(
         return Err(Error::Unauthorized("service_invitation_denied"));
     }
 
-    if f.encrypted {
+    if f.encrypted && !(space.is_empty() && f.owner_direct_valid) {
         return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
     }
 
@@ -1161,7 +1161,7 @@ impl DomainStore {
             if f.owner_mxid!=owner.mxid || f.room_id!=b.room_id || f.space_id!=space || f.puppet_mxid.as_deref()!=Some(&a.puppet_mxid) || !f.owner_in_room || (if space.is_empty() {!f.owner_direct_valid} else {!f.owner_in_space || !f.room_in_space}) || !pp.permits(&owner.mxid) || !rp.permits(&owner.mxid) {
                 return Err(Error::Unauthorized("provisioning_authority_revoked"));
             }
-            if f.encrypted { return Err(Error::Conflict("encrypted_room_requires_client_crypto")); }
+            if f.encrypted && b.scope_kind!="owner_direct" { return Err(Error::Conflict("encrypted_room_requires_client_crypto")); }
             if !f.puppet_in_room && !f.service_can_invite && !f.owner_direct_valid { return Err(Error::Unauthorized("service_invitation_denied")); }
             if activate {
                 if !f.puppet_in_room { return Err(Error::Conflict("puppet_join_not_confirmed")); }
@@ -1313,7 +1313,7 @@ impl DomainStore {
                     return Err(Error::Unauthorized("puppet_not_joined"));
                 }
 
-                if f.encrypted {
+                if f.encrypted && b.scope_kind != "owner_direct" {
                     return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
                 }
 
@@ -1608,7 +1608,7 @@ impl DomainStore {
             if !f.puppet_in_room || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid) {
                 return Err(Error::Conflict("puppet_join_not_confirmed"));
             }
-            if f.encrypted {
+            if f.encrypted && b.scope_kind!="owner_direct" {
                 return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
             }
 

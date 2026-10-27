@@ -249,7 +249,7 @@ impl MatrixClient {
         self.send_typed(puppet, room, transaction, "m.reaction", content)
             .await
     }
-    async fn send_typed(
+    pub(crate) async fn send_typed(
         &self,
         puppet: &str,
         room: &str,
@@ -279,6 +279,28 @@ impl MatrixClient {
             .filter(|id| id.starts_with('$'))
             .map(str::to_owned)
             .ok_or(Error::Unavailable("invalid_matrix_response"))
+    }
+    pub(crate) async fn encrypted_share(
+        &self,
+        puppet: &str,
+        txn: &str,
+        messages: Value,
+    ) -> Result<()> {
+        self.call(
+            Method::PUT,
+            &[
+                "_matrix",
+                "client",
+                "v3",
+                "sendToDevice",
+                "m.room.encrypted",
+                txn,
+            ],
+            puppet,
+            Some(serde_json::json!({"messages":messages})),
+        )
+        .await?;
+        Ok(())
     }
     pub async fn leave(&self, puppet: &str, room: &str) -> Result<()> {
         self.call(

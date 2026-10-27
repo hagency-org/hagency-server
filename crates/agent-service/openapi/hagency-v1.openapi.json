@@ -10032,7 +10032,7 @@
       "post": {
         "operationId": "provisionAgentCryptoIdentityOwnerReceive",
         "summary": "provisionAgentCryptoIdentityOwnerReceive",
-        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace.",
+        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, arbitrary peer key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace.",
         "security": [
           {
             "deviceBearer": []
@@ -10196,7 +10196,7 @@
       "get": {
         "operationId": "getAgentCryptoVersionsOwnerReceive",
         "summary": "getAgentCryptoVersionsOwnerReceive",
-        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace.",
+        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, arbitrary peer key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace.",
         "security": [
           {
             "deviceBearer": []
@@ -10360,7 +10360,7 @@
       "get": {
         "operationId": "getAgentCryptoWhoamiOwnerReceive",
         "summary": "getAgentCryptoWhoamiOwnerReceive",
-        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace.",
+        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, arbitrary peer key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace.",
         "security": [
           {
             "deviceBearer": []
@@ -10524,7 +10524,7 @@
       "post": {
         "operationId": "uploadAgentCryptoKeysOwnerReceive",
         "summary": "uploadAgentCryptoKeysOwnerReceive",
-        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace.",
+        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, arbitrary peer key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace.",
         "security": [
           {
             "deviceBearer": []
@@ -10699,7 +10699,7 @@
       "post": {
         "operationId": "queryAgentCryptoOwnKeysOwnerReceive",
         "summary": "queryAgentCryptoOwnKeysOwnerReceive",
-        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace. Query targets are limited to this Agent or its permanent owner. Own Agent requests may select only this current device.",
+        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, arbitrary peer key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace. Query targets are limited to this Agent or its permanent owner. Own Agent requests may select only this current device.",
         "security": [
           {
             "deviceBearer": []
@@ -10874,7 +10874,7 @@
       "post": {
         "operationId": "uploadAgentCryptoSigningKeysOwnerReceive",
         "summary": "uploadAgentCryptoSigningKeysOwnerReceive",
-        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace.",
+        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, arbitrary peer key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace.",
         "security": [
           {
             "deviceBearer": []
@@ -11049,7 +11049,7 @@
       "post": {
         "operationId": "uploadAgentCryptoSignaturesOwnerReceive",
         "summary": "uploadAgentCryptoSignaturesOwnerReceive",
-        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace. Exactly one target user: this Agent (original own-key rules) or its owner master key. Owner signatures must use the permanently pinned Agent user-signing key. Other users' signatures are removed before forwarding.",
+        "description": "Owner-scoped SDK crypto receiver. Every operation requires the current designated execution device, exact Agent generation, active owner/session/device and permanent ownership. Server injects the Agent Matrix user/device and retains AS credentials. Reuses permanently pinned Agent/device public keys and the original private client store; generation and namespace changes cannot rotate keys. Public pins commit before possible HTTP. No room history/state, message/media send, arbitrary peer key claim, backup, login or arbitrary peer queries. Caller query parameters are forbidden on this operation; receiving sync is a separate GET in this namespace. Exactly one target user: this Agent (original own-key rules) or its owner master key. Owner signatures must use the permanently pinned Agent user-signing key. Other users' signatures are removed before forwarding.",
         "security": [
           {
             "deviceBearer": []
@@ -12048,6 +12048,289 @@
           "anchors": [
             "\"/hagency/api/v1/execution/ciphertexts/admission\" =>"
           ]
+        }
+      }
+    },
+    "/hagency/api/v1/execution/encrypted/action": {
+      "post": {
+        "operationId": "encryptedOwnerExecutionAction",
+        "summary": "encryptedOwnerExecutionAction",
+        "description": "Start, freshly authorize or stop an original encrypted owner-direct execution; publish sealed original reply/file ciphertext or read its historical receipt. Requires actual current member/owner/device/lease facts. No plaintext prompt/reply/filename/key is accepted. Current exclusive private owner/Agent Room is required; shared Project encrypted execution stays refused. Publish commits possible before any Matrix write; duplicate ID/payload never resends, changed payload conflicts. Actual accepted reply closes execution; file receipt alone does not. Current output encryption is performed by the host SDK for verified owner devices only.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "For start/authorize: original ciphertext dispatch and newlyStarted where applicable; finish: finished; publication/status: original opaque id/state/actual Matrix event receipt. Contains no plaintext."
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EncryptedAction"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/encrypted/action\" =>"
+          ]
+        }
+      }
+    },
+    "/hagency/agent-crypto/{agentId}/{generation}/receive/_matrix/client/v3/keys/claim": {
+      "post": {
+        "operationId": "claimAgentOwnerDeviceKeys",
+        "summary": "claimAgentOwnerDeviceKeys",
+        "description": "Claim signed_curve25519 one-time keys only for this Agent permanent owner devices (at most64); exact Agent/device/generation and active owner/session checks remain. No foreign peer/Agent recipient, Room/media send, to-device send or arbitrary URL authority. Used to seal encrypted owner-conversation replies; final publication uses the separate current-execution API.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          },
+          {
+            "name": "generation",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Actual identity/public-key response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Matrix-style refusal or original homeserver error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "errcode",
+                    "error"
+                  ],
+                  "properties": {
+                    "errcode": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Matrix-style refusal or original homeserver error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "errcode",
+                    "error"
+                  ],
+                  "properties": {
+                    "errcode": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Matrix-style refusal or original homeserver error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "errcode",
+                    "error"
+                  ],
+                  "properties": {
+                    "errcode": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Matrix-style refusal or original homeserver error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "errcode",
+                    "error"
+                  ],
+                  "properties": {
+                    "errcode": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Matrix-style refusal or original homeserver error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "errcode",
+                    "error"
+                  ],
+                  "properties": {
+                    "errcode": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/agent_crypto_receive.rs",
+          "anchors": [
+            "\"/_matrix/client/v3/keys/claim\"",
+            "Operation::OwnerClaim"
+          ]
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "one_time_keys": {
+                    "type": "object",
+                    "description": "Exactly one key equal to the pinned owner MXID, mapping1..64 device IDs to signed_curve25519."
+                  },
+                  "timeout": {
+                    "type": "integer",
+                    "maximum": 10000
+                  }
+                },
+                "required": [
+                  "one_time_keys"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
         }
       }
     }
@@ -17795,6 +18078,73 @@
           "strictInput": false
         },
         "description": "Original ciphertext metadata receipt. dispatch.body is canonical original ciphertext JSON, never decrypted text. encrypted_* state cannot use plaintext execution endpoints. ACK grants no model/tool execution."
+      },
+      "EncryptedAction": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "dispatchId": {
+            "type": "string"
+          },
+          "executionId": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "authorize",
+              "finish",
+              "publish",
+              "status"
+            ]
+          },
+          "requestId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "reply",
+                  "file"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "type": "object",
+                "description": "Sealed SDK content and owner-only encrypted key shares; no plaintext body, media key or filename."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "lease",
+          "dispatchId",
+          "executionId",
+          "action"
+        ],
+        "additionalProperties": false,
+        "description": "Current original owner-direct encrypted execution only. Optional selectors are required for publication/status. Immutable publication reserves possible IO before key shares/message; same original ID/payload only observes after admission."
       }
     },
     "securitySchemes": {
@@ -17813,20 +18163,25 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "6e707deab911075db1eb3197727522817c65138e8c0ae11edef1f0ccbca633e8",
-    "crates/agent-service/src/api_transport.rs": "7640e0daf51fdfbf3c68de74861263f462488b6bd0b26f605518dd9ff43951df",
+    "crates/agent-service/src/api.rs": "77091bf744f4182ea61e2120d8e2521ba1e4ef99f9e75e7d36fc9a8a4d8ad7b7",
+    "crates/agent-service/src/api_transport.rs": "2d6c562882c7c35d10e716bbc771f70310752db69263d0378eafab60e0c3f5d4",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
     "crates/agent-service/src/api_project_board.rs": "92c621045fe4c00d665152622e99c8d061ab58c98bc5b3197db1c09e43eb7969",
-    "crates/agent-service/src/agent_crypto.rs": "f06d40512863eddb9e5b3d00694429e66837bcb02dda6ac371d07c548b6ae95a",
+    "crates/agent-service/src/agent_crypto.rs": "0c65f525954e86856bfe60b6e198fcf701fa414163a03f9dac474141ee8e87e5",
     "crates/agent-service/src/matrix_crypto.rs": "efeb19edada56af0866c7716f84bbf74e1d701db7a0c9319572b2f5d9fd59043",
-    "crates/agent-service/src/agent_crypto_receive.rs": "bd943476196f9e1aff7b8e9d72a4b63438116aaa128964efca2933ad1a4d9523",
+    "crates/agent-service/src/agent_crypto_receive.rs": "20e437890a3cca872e810bfbcb1f5dc696567caff53a8bdb684b34e9c142566a",
     "crates/agent-service/src/transport_ciphertexts.rs": "4a1fe84564151dbb1ffe2791569d8e7a441a1f3d2c30b343ddf51b6f73c80116",
     "crates/agent-service/src/ciphertext_schema.sql": "ea43c360e60a316d3cd15e16494bee1b5c60f5482b4d0ad9bbe0883c2f07ad29",
     "crates/agent-service/src/workers.rs": "3c4ea90ebf863b8bc88d9e06839fb399bc1fec07e311b74ed4983ff38c95b361",
     "crates/agent-service/src/encrypted_dispatches.rs": "f172a4fd602b7302199c297348df20e7b35b59796724521708d93df59e7390d8",
     "crates/agent-service/src/encrypted_dispatches_schema.sql": "73c338d99a17eb64e2173c6fdb7246962039d5e7229e03345bad14237852427d",
-    "crates/agent-service/src/transport.rs": "317dd66b26c28718dac69b5a5d1ed20d216d2dab175493c21fce60b65adc0946"
+    "crates/agent-service/src/transport.rs": "0e6bc47db89d1a602e34c4d2b0a8cc71094b51ca4d8175be7218e3b937b5211a",
+    "crates/agent-service/src/encrypted_execution.rs": "04277fab5ef934ca8ded24fe8d63299fce965a0e3494d7a1b1df57110cc269e1",
+    "crates/agent-service/src/encrypted_execution_schema.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
+    "crates/agent-service/src/owner_direct.rs": "8ca02b365672bf575fa170395a24cb100e40e2db7ccc64e4b9e05c891263755c",
+    "crates/agent-service/src/domain.rs": "ec2fd30e125ee69136704441d9d1bdd88104324e42ca7d0379789022db4c84c5",
+    "crates/agent-service/src/matrix_client.rs": "0e5514d6af19b74e58b6ac6fd7dfcd17c7f667f97677dc2a364d533c04584664"
   },
   "x-not-implemented": [
     "POST /hagency/api/v1/projects (create Matrix Space)",
@@ -17834,6 +18189,6 @@
     "GET /hagency/api/v1/rooms (global Room catalog; implemented project Room list is membership-filtered)",
     "Any Agent transfer/owner reassignment endpoint (intentionally forbidden)",
     "Server-admin approval of owner model credentials, compute allocation, token quotas, requester policy or tool proposals (intentionally local)",
-    "Encrypted model/tool start and original encrypted reply/file execution (original ciphertext intake, local admission metadata prepare/ACK are implemented; ACK is not execution authority)"
+    "Encrypted shared-Project requester execution and cross-host key recovery (verified owner-direct encrypted task/Codex/reply/file chain is implemented)."
   ]
 }

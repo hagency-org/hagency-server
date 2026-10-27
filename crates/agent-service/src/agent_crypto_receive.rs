@@ -8,6 +8,9 @@ pub(crate) fn route(method: &str, path: &str) -> Result<Operation> {
     if (method, path) == ("GET", "/_matrix/client/v3/sync") {
         return Ok(Operation::ReceiveSync);
     }
+    if (method, path) == ("POST", "/_matrix/client/v3/keys/claim") {
+        return Ok(Operation::OwnerClaim);
+    }
     Operation::route(method, path).map(|op| match op {
         Operation::Query => Operation::OwnerQuery,
         Operation::Signatures => Operation::OwnerSignatures,
@@ -46,6 +49,31 @@ pub(crate) fn fingerprints(
     owner: &str,
 ) -> Result<Vec<(&'static str, String)>> {
     match op {
+        Operation::OwnerClaim => {
+            object(body, &["one_time_keys", "timeout"])?;
+            let users = body["one_time_keys"]
+                .as_object()
+                .filter(|o| o.len() == 1 && o.contains_key(owner))
+                .ok_or_else(invalid)?;
+            let devices = users[owner]
+                .as_object()
+                .filter(|o| !o.is_empty() && o.len() <= 64)
+                .ok_or_else(invalid)?;
+            if devices.iter().any(|(id, v)| {
+                id.is_empty()
+                    || id.len() > 255
+                    || id.chars().any(char::is_control)
+                    || v != "signed_curve25519"
+            }) {
+                return Err(invalid());
+            }
+            if body
+                .get("timeout")
+                .is_some_and(|v| v.as_u64().is_none_or(|n| n > 10000))
+            {
+                return Err(invalid());
+            }
+        }
         Operation::ReceiveSync => {
             let o = object(body, &["since"])?;
             if let Some(v) = o.get("since").filter(|v| !v.is_null()) {
@@ -230,7 +258,6 @@ mod tests {
                 "PUT",
                 "/_matrix/client/v3/sendToDevice/m.room.encrypted/txn",
             ),
-            ("POST", "/_matrix/client/v3/keys/claim"),
             ("POST", "/_matrix/client/v3/login"),
             ("GET", "/_matrix/client/v3/rooms/r/messages"),
             ("GET", "/_matrix/client/v3/room_keys/keys"),
@@ -244,6 +271,28 @@ mod tests {
         ));
         let user = "@_hagency_agent:test";
         let owner = "@owner:test";
+        assert!(matches!(
+            route("POST", "/_matrix/client/v3/keys/claim").unwrap(),
+            Operation::OwnerClaim
+        ));
+        assert!(
+            fingerprints(
+                Operation::OwnerClaim,
+                &json!({"one_time_keys":{owner:{"SIGNED":"signed_curve25519"}},"timeout":10000}),
+                user,
+                "DEVICE",
+                owner
+            )
+            .is_ok()
+        );
+        for value in [
+            json!({"one_time_keys":{"@foreign:test":{"DEVICE":"signed_curve25519"}}}),
+            json!({"one_time_keys":{owner:{"DEVICE":"curve25519"}}}),
+            json!({"one_time_keys":{user:{"DEVICE":"signed_curve25519"}}}),
+        ] {
+            assert!(fingerprints(Operation::OwnerClaim, &value, user, "DEVICE", owner).is_err());
+        }
+
         assert!(
             fingerprints(
                 Operation::OwnerQuery,

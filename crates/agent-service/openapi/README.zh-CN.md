@@ -2,7 +2,7 @@
 
 本目录描述实际实现，不是需求草案。仓库中的 Palpo/Matrix、Pasion/OIDC、浏览器代理及 hagency-client 本机 Console API 不在这两份 OpenAPI 的范围内。
 
-- `hagency-v1.openapi.json`：OpenAPI 3.1，契约版本 1.0.0；103 个操作，包含用户会话、设备、Project/Room 登记与权限、永久归属 Agent、Binding、命令查询、租约与执行、工具前远端事实核验、已知回复恢复及 `/readyz`。
+- `hagency-v1.openapi.json`：OpenAPI 3.1，契约版本 1.0.0；105 个操作，包含用户会话、设备、Project/Room 登记与权限、永久归属 Agent、Binding、命令查询、租约与执行、工具前远端事实核验、已知回复恢复及 `/readyz`。
 - `appservice-v1.openapi.json`：独立的 homeserver → 必装 Appservice 信任边界；4 个操作，包含事务、ping、用户和 Room alias 查询。
 - `scripts/validate-agent-openapi.py`：Python 标准库验证，不增加生产依赖。从仓库根目录执行 `python3 scripts/validate-agent-openapi.py --self-test`。
 
@@ -111,3 +111,11 @@ Server 不接收解密明文；任务路由、加密回复和文件还需 Client
 持久化本地明文、原始密文与两种历史摘要，再 ACK。重复 ACK、重启和换租约保留
 原 dispatch；同一加密载荷改外层 event_id 不得创建新任务。ACK 不允许模型/工具
 执行；完整加密 start/reply/file 流程仍未实现。
+
+`agent-encrypted-owner-execution-v1` 完成已验证主人私聊的加密任务运行链：
+独立 encrypted/action 处理原任务 Start、每次工具授权、停止、原密文发布和
+历史读取。主机 SDK 本地加密文本/文件，Server 只保存原始密文和 owner-only
+Olm 密钥分享；发布前提交 possible，重复元数据提交只返回原状态，不重复发送。
+实际 HTTP 原事件回执才记 sent；未知不能变成新的发送权限。Receive broker 仅
+增加当前永久主人的 signed_curve25519 key claim，不接受任意 peer/to-device/
+Room/media 写入。共享 Project 的加密请求者执行和跨主机恢复仍未实现。

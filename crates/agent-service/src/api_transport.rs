@@ -31,6 +31,7 @@ pub(crate) async fn call(
     t: &TransportStore,
     g: &Gateway,
     p: &Principal,
+    matrix: Option<&crate::matrix_client::MatrixClient>,
     req: &mut Request,
 ) -> Result<Value> {
     if req.method() != salvo::http::Method::POST {
@@ -197,6 +198,54 @@ pub(crate) async fn call(
                 )
                 .await?;
             Ok(json!({"ciphertext":t.read_ciphertext(p,&b.lease,&b.inbox_id,&f,now_ms()).await?}))
+        }
+
+        "/hagency/api/v1/execution/encrypted/action" => {
+            let b: crate::transport::encrypted_execution::Action = body(req).await?;
+            let f = facts(t, g, p, &b.dispatch_id).await?;
+            let (mut result, send) = t.encrypted_action(p, &b, &f, now_ms()).await?;
+            if send {
+                let matrix = matrix.ok_or(Error::Unavailable("matrix_unavailable"))?;
+                let id = result["publication"]["id"]
+                    .as_str()
+                    .ok_or(Error::Unavailable("encrypted_publication_unknown"))?
+                    .to_owned();
+                let room = result["room"].as_str().unwrap().to_owned();
+                let puppet = result["puppet"].as_str().unwrap().to_owned();
+                let payload = b.payload.as_ref().unwrap();
+                for share in payload["shares"].as_array().unwrap() {
+                    let f = facts(t, g, p, &b.dispatch_id).await?;
+                    let check = crate::transport::encrypted_execution::Action {
+                        action: "authorize".into(),
+                        payload: None,
+                        ..b.clone_for_check()
+                    };
+                    t.encrypted_action(p, &check, &f, now_ms()).await?;
+                    matrix
+                        .encrypted_share(
+                            &puppet,
+                            share["txnId"].as_str().unwrap(),
+                            share["messages"].clone(),
+                        )
+                        .await?;
+                }
+                let f = facts(t, g, p, &b.dispatch_id).await?;
+                let check = b.clone_for_check();
+                t.encrypted_action(p, &check, &f, now_ms()).await?;
+                let event = matrix
+                    .send_typed(
+                        &puppet,
+                        &room,
+                        &id,
+                        "m.room.encrypted",
+                        payload["content"].clone(),
+                    )
+                    .await?;
+                t.encrypted_sent(&id, &event).await?;
+                let status = b.status();
+                result = t.encrypted_action(p, &status, &f, now_ms()).await?.0;
+            }
+            Ok(result)
         }
 
         "/hagency/api/v1/execution/history" => {

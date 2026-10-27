@@ -15,7 +15,7 @@ impl DomainStore {
             Self::authorize(db,p,now).await?;let a=Self::agent_db(db,p,agent).await?;
             if a.state!="active" {return Err(Error::Conflict("agent_identity_not_active"));}
             membership(p,f,room,"",now)?;
-            if f.puppet_mxid.as_deref()!=Some(a.puppet_mxid.as_str())||f.encrypted||!f.owner_direct_valid {return Err(Error::Unauthorized("owner_direct_room_required"));}
+            if f.puppet_mxid.as_deref()!=Some(a.puppet_mxid.as_str())||!f.owner_direct_valid {return Err(Error::Unauthorized("owner_direct_room_required"));}
             if let Some(existing)=&a.owner_direct_room_id && existing!=room {return Err(Error::Conflict("owner_direct_room_already_assigned"));}
             if let Some(binding)=sql_query("SELECT id,agent_id,project_id,room_id,state,generation,scope_kind,owner_service_paused,thread_auto_reply FROM hagency_agent_v1.bindings WHERE agent_id=$1 AND room_id=$2").bind::<Text,_>(agent).bind::<Text,_>(room).get_result::<Binding>(db).await.optional()? {
                 if binding.scope_kind!="owner_direct" {return Err(Error::Conflict("room_already_project_bound"));}

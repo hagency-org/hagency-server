@@ -207,15 +207,17 @@ def validate(doc):
         crypto_routes.add((crypto_prefix + '/provision', 'post'))
         require(len(crypto_routes) == 7, 'identity-only crypto route drift')
         receive_routes = {(crypto_prefix + '/receive' + p[len(crypto_prefix):], m) for p,m in crypto_routes if not p.endswith('/provision')}
-        receive_routes |= {(crypto_prefix + '/receive', 'post'), (crypto_prefix + '/receive/_matrix/client/v3/sync', 'get')}
-        require(len(receive_routes) == 8 and crypto_routes | receive_routes == {(p,m) for p,m in operations if p.startswith('/hagency/agent-crypto/')}, 'Agent crypto route drift')
+        receive_routes |= {(crypto_prefix + '/receive', 'post'), (crypto_prefix + '/receive/_matrix/client/v3/sync', 'get'), (crypto_prefix + '/receive/_matrix/client/v3/keys/claim', 'post')}
+        require(len(receive_routes) == 9 and crypto_routes | receive_routes == {(p,m) for p,m in operations if p.startswith('/hagency/agent-crypto/')}, 'Agent crypto route drift')
         sync = doc['paths'][crypto_prefix + '/receive/_matrix/client/v3/sync']['get']
         require({p['name'] for p in sync['parameters'] if p['in'] == 'query'} == {'since','timeout','set_presence','full_state','use_state_after'}, 'receiver sync query drift')
         for suffix, request in [('prepare', 'EncryptedPrepare'), ('ack', 'EncryptedReference'), ('admission', 'EncryptedReference')]:
             operation = doc['paths']['/hagency/api/v1/execution/ciphertexts/' + suffix]['post']
             require(operation['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/' + request}, 'encrypted admission request drift')
             require(operation['responses']['200']['content']['application/json']['schema'] == {'type':'object','properties':{'admission':{'$ref':'#/components/schemas/EncryptedAdmission'}},'required':['admission'],'additionalProperties':False}, 'encrypted admission response drift')
-        require(len(operations) == 103, 'reviewed owner route count drift')
+        action = doc['components']['schemas']['EncryptedAction']
+        require(set(action['properties']) == {'lease','dispatchId','executionId','action','requestId','kind','payload'} and action.get('additionalProperties') is False, 'encrypted action must contain metadata and sealed payload only')
+        require(len(operations) == 105, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -228,6 +230,14 @@ class GuardTests(unittest.TestCase):
         doc = copy.deepcopy(self.doc); mutate(doc)
         with self.assertRaises((ValueError, KeyError, TypeError)):
             validate(doc)
+    def test_encrypted_action_never_accepts_plaintext_body(self):
+        self.rejection(lambda d: d['components']['schemas']['EncryptedAction']['properties'].update(body={'type':'string'}))
+    def test_missing_encrypted_execution_action(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/encrypted/action'))
+    def test_missing_owner_key_claim(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/agent-crypto/{agentId}/{generation}/receive/_matrix/client/v3/keys/claim'))
+    def test_encrypted_execution_device_boundary(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/encrypted/action']['post'].update(security=[{'userBearer': []}]))
     def test_missing_encrypted_ack(self):
         self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/ciphertexts/ack'))
     def test_encrypted_prepare_never_accepts_plaintext(self):

@@ -414,11 +414,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             now,
         )
         .await?;
-    call(&context.matrix,reqwest::Method::POST,&["_matrix","client","v3","register"],AS,None,Some(json!({"type":"m.login.application_service","username":agent.puppet_mxid.split(':').next().unwrap().trim_start_matches('@'),"inhibit_login":true}))).await?;
+    let existing = call(
+        &context.matrix,
+        reqwest::Method::GET,
+        &["_matrix", "client", "v3", "account", "whoami"],
+        AS,
+        Some(&agent.puppet_mxid),
+        None,
+    )
+    .await;
+    if !existing.is_ok_and(|v| v["user_id"] == agent.puppet_mxid) {
+        call(&context.matrix,reqwest::Method::POST,&["_matrix","client","v3","register"],AS,None,Some(json!({"type":"m.login.application_service","username":agent.puppet_mxid.split(':').next().unwrap().trim_start_matches('@'),"inhibit_login":true}))).await?;
+    }
+
     matrix_client.provision(&agent, &room, true).await?;
-    domain
-        .confirm_identity_provisioned(&agent.id, agent.generation)
-        .await?;
+    if agent.state == "creating" {
+        domain
+            .confirm_identity_provisioned(&agent.id, agent.generation)
+            .await?;
+    }
+
     let facts = gateway
         .room(&room, &space, OWNER, Some(&agent.puppet_mxid))
         .await?;
@@ -429,7 +444,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             BindRoom {
                 project_id: project.id,
                 room_id: room.clone(),
-                idempotency_key: "synapse-file-binding".into(),
+                idempotency_key: format!(
+                    "synapse-file-binding-{}",
+                    hagency_agent_service::api::now_ms()
+                ),
             },
             &facts,
             now,
@@ -471,12 +489,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let readiness = app
         .start_matrix_readiness(inbox.clone())
         .ok_or("readiness worker")?;
-    tokio::time::timeout(Duration::from_secs(20), async {
+    if tokio::time::timeout(Duration::from_secs(20), async {
         while !app.startup_ready() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await?;
+    .await
+    .is_err()
+    {
+        // Preserve the original AS recovery worker after the observation deadline.
+        // A Synapse retry backoff can exceed 20 seconds. Readiness stays false;
+        // no model qualification is admitted until the actual callback arrives.
+        eprintln!(
+            "Original AS readiness observation expired; keeping original workers for actual recovery"
+        );
+        while !app.startup_ready() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
     let info = json!({"origin":public,"owner":OWNER,"room":room,"requester":REQUESTER,"thread":context.thread,"agent":domain.agent(&p,&agent.id,hagency_agent_service::api::now_ms()).await?,"binding":binding,"realHomeserver":true,"fixture":"actual Synapse/API/PG/AS/workers; explicit OAuth introspection bridge"});
     std::fs::write(
         std::env::var("HAGENCY_FILE_FIXTURE_INFO")?,

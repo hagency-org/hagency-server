@@ -24,6 +24,7 @@ pub(crate) enum Operation {
     OwnerQuery,
     OwnerSignatures,
     ReceiveSync,
+    OwnerClaim,
 }
 impl Operation {
     pub(crate) fn route(method: &str, path: &str) -> Result<Self> {
@@ -54,6 +55,7 @@ impl Operation {
                 );
             }
             Self::Upload => "upload",
+            Self::OwnerClaim => "claim",
             Self::Query | Self::OwnerQuery => "query",
             Self::Signing => "device_signing/upload",
             Self::Signatures | Self::OwnerSignatures => "signatures/upload",
@@ -264,7 +266,10 @@ fn fingerprints(
                 }
             }
         }
-        Operation::OwnerQuery | Operation::OwnerSignatures | Operation::ReceiveSync => {
+        Operation::OwnerQuery
+        | Operation::OwnerSignatures
+        | Operation::ReceiveSync
+        | Operation::OwnerClaim => {
             return Err(invalid());
         }
         Operation::Provision | Operation::Versions | Operation::Whoami => {

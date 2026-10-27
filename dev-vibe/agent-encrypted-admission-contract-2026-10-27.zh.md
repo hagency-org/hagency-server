@@ -1,3 +1,6 @@
+最新进度：主人私聊完整执行、加密回复和文件收发已通过真实联合验收，见
+[完整执行报告](agent-encrypted-owner-execution-2026-10-27.zh.md)。以下保留 ACK 阶段历史。
+
 # 原始加密输入准备与确认
 
 `agent-encrypted-admission-v1` 增加 ciphertexts/prepare、ack、admission。
