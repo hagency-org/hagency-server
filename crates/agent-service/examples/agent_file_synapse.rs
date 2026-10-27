@@ -465,6 +465,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Server::new(acceptor).serve(router).await;
     });
     let worker = app.start_delivery(inbox.clone()).ok_or("delivery worker")?;
+    let cleanup = app
+        .start_cleanup()
+        .ok_or("identity and membership worker")?;
     let readiness = app
         .start_matrix_readiness(inbox.clone())
         .ok_or("readiness worker")?;
@@ -482,6 +485,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Actual Synapse file qualification ready; loopback only");
     tokio::signal::ctrl_c().await?;
     worker.abort();
+    cleanup.abort();
     readiness.abort();
     server.abort();
     Ok(())

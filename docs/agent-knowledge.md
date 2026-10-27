@@ -1,3 +1,17 @@
+# Owner-scoped crypto receive checkpoint (2026-10-27)
+
+Keep identity7 separate from receiver8 operations. Force device-bound zero-wait
+empty-room sync and accept the SDK fixed use_state_after=true hint only. Owner
+master signatures must use the Agent permanently pinned user signer; strip other
+signers. Crypto evidence does not establish original AS event origin or execution
+authority. Original receive task registration and stop snapshot share the slot
+lock; stop/shutdown join tasks even if the observer disappears. Actual fixtures
+must start the same identity/membership cleanup worker as backend. A fresh SDK
+store cannot reuse an old Matrix device (OTK collision). Fresh receive5 proves
+actual owner ciphertext, exact negative scopes/tamper and native restart1→2;
+OpenSSL Agent→owner signature and independent ledger calls/lease rows0 pass.
+Original encrypted admission/ACK/current-member/lease/replies/files remain open.
+
 # Independent Agent crypto identity checkpoint (2026-10-27)
 
 Keep permanent Agent/host Matrix device keys separate from rotating Hagency

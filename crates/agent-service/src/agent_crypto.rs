@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 pub(crate) const CAPABILITY: &str = "agent-crypto-identity-v1";
 pub(crate) const PREFIX: &str = "/hagency/agent-crypto/";
 pub(crate) const MAX_BYTES: usize = 131_072;
+#[path = "agent_crypto_receive.rs"]
+pub(crate) mod receive;
 static REQUESTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 #[derive(Clone, Copy)]
@@ -19,6 +21,9 @@ pub(crate) enum Operation {
     Query,
     Signing,
     Signatures,
+    OwnerQuery,
+    OwnerSignatures,
+    ReceiveSync,
 }
 impl Operation {
     pub(crate) fn route(method: &str, path: &str) -> Result<Self> {
@@ -49,9 +54,10 @@ impl Operation {
                 );
             }
             Self::Upload => "upload",
-            Self::Query => "query",
+            Self::Query | Self::OwnerQuery => "query",
             Self::Signing => "device_signing/upload",
-            Self::Signatures => "signatures/upload",
+            Self::Signatures | Self::OwnerSignatures => "signatures/upload",
+            Self::ReceiveSync => return (Method::GET, vec!["_matrix", "client", "v3", "sync"]),
         };
         let mut segments = vec!["_matrix", "client", "v3", "keys"];
         segments.extend(tail.split('/'));
@@ -258,6 +264,9 @@ fn fingerprints(
                 }
             }
         }
+        Operation::OwnerQuery | Operation::OwnerSignatures | Operation::ReceiveSync => {
+            return Err(invalid());
+        }
         Operation::Provision | Operation::Versions | Operation::Whoami => {
             if !body.is_null() {
                 return Err(invalid());
@@ -330,7 +339,11 @@ impl DomainStore {
         let mut db = self.crypto_db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let s=Self::crypto_scope(db,p,agent,generation).await?;
-            let pins=fingerprints(op,&body,&s.agent.puppet_mxid,&s.matrix_device)?;
+            let pins=receive::fingerprints(op,&body,&s.agent.puppet_mxid,&s.matrix_device,&p.mxid)?;
+            if let Some(expected)=receive::signing_digest(op,&body,&s.agent.puppet_mxid,&p.mxid)? {
+                let pins=sql_query("SELECT user_signing_key_digest AS digest FROM hagency_agent_v1.agent_crypto_identities WHERE agent_id=$1 ORDER BY matrix_device_id FOR SHARE").bind::<Text,_>(agent).load::<Pin>(db).await?;
+                if !pins.iter().any(|p|p.digest.as_ref()==Some(&expected)) || pins.iter().any(|p|p.digest.as_ref().is_some_and(|d|d!=&expected)){return Err(Error::Conflict("agent_crypto_identity_changed"));}
+            }
             sql_query("INSERT INTO hagency_agent_v1.agent_crypto_identities(agent_id,first_agent_generation,execution_device_id,first_device_generation,matrix_device_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING")
                 .bind::<Text,_>(agent).bind::<BigInt,_>(generation).bind::<Text,_>(&s.execution_device).bind::<BigInt,_>(s.device_generation).bind::<Text,_>(&s.matrix_device).execute(db).await?;
             for (column,digest) in pins {

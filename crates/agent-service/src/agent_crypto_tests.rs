@@ -146,7 +146,7 @@ impl Matrix {
             self.calls
                 .lock()
                 .unwrap()
-                .push((req.uri().to_string(), body));
+                .push((req.uri().to_string(), body.clone()));
             res.render(Json(json!({"versions":["v1.15"]})));
             return;
         }
@@ -154,7 +154,7 @@ impl Matrix {
         self.calls
             .lock()
             .unwrap()
-            .push((req.uri().to_string(), body));
+            .push((req.uri().to_string(), body.clone()));
         if self.fail.as_ref().load(Ordering::Acquire) {
             res.status_code(StatusCode::SERVICE_UNAVAILABLE);
             res.render(Json(
@@ -164,6 +164,15 @@ impl Matrix {
         }
         if url.path().ends_with("/versions") {
             res.render(Json(json!({"versions":["v1.15"]})));
+        } else if url.path().ends_with("/sync") {
+            assert_eq!(req.method(), salvo::http::Method::GET);
+            assert_eq!(params["timeout"], "0");
+            assert_eq!(params["set_presence"], "offline");
+            assert_eq!(params["filter"], receive::FILTER);
+            assert!(params["device_id"].starts_with("HAGENCY_"));
+            assert_eq!(params["since"], "opaque-test-token");
+            assert!(body.is_null());
+            res.render(Json(json!({"next_batch":"next-test-token","to_device":{"events":[{"sender":"@owner:example.test","type":"m.room.encrypted","content":{"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":{}}}]}})));
         } else if url.path().ends_with("/whoami") {
             res.render(Json(json!({"user_id":params["user_id"],"device_id":params["device_id"],"is_guest":false})));
         } else {
@@ -510,7 +519,56 @@ async fn native_identity_proxy_rejects_scope_injection_and_message_endpoints_bef
     let who: Value = who.take_json().await.unwrap();
     assert_eq!(who["device_id"], manifest["matrixDeviceId"]);
     assert_eq!(who["user_id"], manifest["matrixUserId"]);
+    let mut received = TestClient::post(format!("{root}/receive"))
+        .add_header("host", "example.test", true)
+        .bearer_auth(&f.token)
+        .send(&service)
+        .await;
+    assert_eq!(received.status_code, Some(StatusCode::OK));
+    let receive_manifest: Value = received.take_json().await.unwrap();
+    assert_eq!(receive_manifest["homeserver"], format!("{root}/receive"));
+    assert_eq!(
+        receive_manifest["matrixDeviceId"],
+        manifest["matrixDeviceId"]
+    );
+    let mut synced = TestClient::get(format!("{root}/receive/_matrix/client/v3/sync?since=opaque-test-token&timeout=5000&set_presence=online&full_state=false&use_state_after=true"))
+        .add_header("host", "example.test", true).bearer_auth(&f.token).send(&service).await;
+    assert_eq!(synced.status_code, Some(StatusCode::OK));
+    let synced: Value = synced.take_json().await.unwrap();
+    assert_eq!(synced["next_batch"], "next-test-token");
+    assert_eq!(synced["to_device"]["events"].as_array().unwrap().len(), 1);
     let count = f.calls.lock().unwrap().len();
+    for query in [
+        "filter={}",
+        "user_id=@foreign:example.test",
+        "device_id=other",
+        "access_token=injected",
+        "since=a&since=b",
+        "full_state=true",
+        "timeout=5001",
+    ] {
+        let response = TestClient::get(format!("{root}/receive/_matrix/client/v3/sync?{query}"))
+            .add_header("host", "example.test", true)
+            .bearer_auth(&f.token)
+            .send(&service)
+            .await;
+        assert!(
+            !response.status_code.unwrap_or(StatusCode::OK).is_success(),
+            "{query}"
+        );
+    }
+    for tail in [
+        "/receive/_matrix/client/v3/sync",
+        "/receive/_matrix/client/v3/rooms/r/messages",
+    ] {
+        let response = TestClient::get(format!("{root}{tail}"))
+            .add_header("host", "example.test", true)
+            .bearer_auth(&f.second_token)
+            .send(&service)
+            .await;
+        assert!(!response.status_code.unwrap_or(StatusCode::OK).is_success());
+    }
+    assert_eq!(count, f.calls.lock().unwrap().len());
     for suffix in [
         "/_matrix/client/v3/login",
         "/_matrix/client/v3/keys/claim",
@@ -645,4 +703,145 @@ async fn identity_expiry_is_resampled_after_a_real_agent_row_lock_wait() {
         Err(Error::Unauthorized("authorization_expired"))
     ));
     assert!(f.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn owner_receive_signatures_require_original_agent_user_signer_before_http() {
+    let f = fixture().await;
+    let device = provision(&f).await;
+    let a = f.domain.agent(&f.p, &f.agent, now_ms()).await.unwrap();
+    let signer = STANDARD_NO_PAD.encode([41u8; 32]);
+    let master = STANDARD_NO_PAD.encode([42u8; 32]);
+    let signature = STANDARD_NO_PAD.encode([43u8; 64]);
+    let body = json!({&f.p.mxid:{&master:{"user_id":&f.p.mxid,"usage":["master"],"keys":{format!("ed25519:{master}"):&master},"signatures":{&a.puppet_mxid:{format!("ed25519:{signer}"):&signature},&f.p.mxid:{"ed25519:owner":"must-not-forward"}}}}});
+    let count = f.calls.lock().unwrap().len();
+    assert!(
+        f.domain
+            .crypto_request(
+                &f.matrix,
+                &f.p,
+                &f.agent,
+                1,
+                Operation::OwnerSignatures,
+                body.clone()
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(count, f.calls.lock().unwrap().len());
+    f.domain.crypto_request(&f.matrix,&f.p,&f.agent,1,Operation::Signing,json!({"user_signing_key":{"user_id":&a.puppet_mxid,"usage":["user_signing"],"keys":{format!("ed25519:{signer}"):&signer}}})).await.unwrap();
+    let count = f.calls.lock().unwrap().len();
+    let mut wrong = body.clone();
+    wrong[&f.p.mxid][&master]["signatures"][&a.puppet_mxid] =
+        json!({format!("ed25519:{master}"):&signature});
+    assert!(
+        f.domain
+            .crypto_request(
+                &f.matrix,
+                &f.p,
+                &f.agent,
+                1,
+                Operation::OwnerSignatures,
+                wrong
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        f.domain
+            .crypto_request(
+                &f.matrix,
+                &f.second,
+                &f.agent,
+                1,
+                Operation::OwnerSignatures,
+                body.clone()
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        f.domain
+            .crypto_request(
+                &f.matrix,
+                &f.p,
+                &f.agent,
+                2,
+                Operation::OwnerSignatures,
+                body.clone()
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        f.domain
+            .crypto_request(
+                &f.matrix,
+                &f.p,
+                &f.agent,
+                1,
+                Operation::OwnerQuery,
+                json!({"device_keys":{"@foreign:example.test":[]}})
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(count, f.calls.lock().unwrap().len());
+    assert_eq!(
+        f.domain
+            .crypto_request(
+                &f.matrix,
+                &f.p,
+                &f.agent,
+                1,
+                Operation::OwnerSignatures,
+                body
+            )
+            .await
+            .unwrap()
+            .0,
+        200
+    );
+    {
+        let calls = f.calls.lock().unwrap();
+        let (uri, forwarded) = calls.last().unwrap();
+        let url = url::Url::parse(&format!("http://example.test{uri}")).unwrap();
+        let params = url
+            .query_pairs()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(params["user_id"], a.puppet_mxid);
+        assert_eq!(params["device_id"], device);
+        assert_eq!(
+            forwarded[&f.p.mxid][&master]["signatures"]
+                .as_object()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            forwarded[&f.p.mxid][&master]["signatures"]
+                .get(&f.p.mxid)
+                .is_none()
+        );
+    }
+    f.auth
+        .revoke_device(&f.session, f.p.device_id.as_ref().unwrap(), now_ms())
+        .await
+        .unwrap();
+    let count = f.calls.lock().unwrap().len();
+    assert!(
+        f.domain
+            .crypto_request(
+                &f.matrix,
+                &f.p,
+                &f.agent,
+                1,
+                Operation::ReceiveSync,
+                json!({"since":"opaque-test-token"})
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(count, f.calls.lock().unwrap().len());
 }

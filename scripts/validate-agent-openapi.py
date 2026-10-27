@@ -205,8 +205,13 @@ def validate(doc):
         crypto_prefix = '/hagency/agent-crypto/{agentId}/{generation}'
         crypto_routes = {(crypto_prefix + p, m.lower()) for m, p in re.findall(r'\("(GET|POST)", "(/_matrix/[^"]+)"\) => Ok\(Self::', crypto_source)}
         crypto_routes.add((crypto_prefix + '/provision', 'post'))
-        require(len(crypto_routes) == 7 and crypto_routes == {(p,m) for p,m in operations if p.startswith('/hagency/agent-crypto/')}, 'Agent crypto route drift')
-        require(len(operations) == 90, 'reviewed owner route count drift')
+        require(len(crypto_routes) == 7, 'identity-only crypto route drift')
+        receive_routes = {(crypto_prefix + '/receive' + p[len(crypto_prefix):], m) for p,m in crypto_routes if not p.endswith('/provision')}
+        receive_routes |= {(crypto_prefix + '/receive', 'post'), (crypto_prefix + '/receive/_matrix/client/v3/sync', 'get')}
+        require(len(receive_routes) == 8 and crypto_routes | receive_routes == {(p,m) for p,m in operations if p.startswith('/hagency/agent-crypto/')}, 'Agent crypto route drift')
+        sync = doc['paths'][crypto_prefix + '/receive/_matrix/client/v3/sync']['get']
+        require({p['name'] for p in sync['parameters'] if p['in'] == 'query'} == {'since','timeout','set_presence','full_state','use_state_after'}, 'receiver sync query drift')
+        require(len(operations) == 98, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -219,6 +224,10 @@ class GuardTests(unittest.TestCase):
         doc = copy.deepcopy(self.doc); mutate(doc)
         with self.assertRaises((ValueError, KeyError, TypeError)):
             validate(doc)
+    def test_missing_crypto_receive_sync(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/agent-crypto/{agentId}/{generation}/receive/_matrix/client/v3/sync'))
+    def test_receiver_has_no_caller_filter(self):
+        self.rejection(lambda d: d['paths']['/hagency/agent-crypto/{agentId}/{generation}/receive/_matrix/client/v3/sync']['get']['parameters'].append({'name':'filter','in':'query','required':False,'schema':{'type':'string'}}))
     def test_missing_real_route(self):
         self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/events/authorize-tool'))
     def test_missing_attachment_route(self):

@@ -105,3 +105,21 @@
  112/2 notice failure; never reinterpret them as passed. Client report in dev-vibe
   records exact receipts/logs and remaining normal runtime/trust/encrypted task/file
   integration, A3 and earlier manual/platform/OAuth gates. Full goal stays active.
+
+
+## 2026-10-27 — scoped owner crypto receive
+
+- Separate receiver8 endpoints, original identity7 unchanged. Owner-only public
+  queries/signatures and fixed device-bound empty-room sync preserve current
+  owner/session/device/Agent scope locks and original public pins.
+- SDK compatibility hint use_state_after=true accepted explicitly; caller filters
+  or identity/wait control stay refused. Received Room content is rejected.
+- Fresh119 PG tests/no ignores, strict all-target Clippy, OpenAPI98owner+4AS and
+ 24guards pass. Actual Synapse receive5 with normal Client Native lifecycle
+  proves original owner ciphertext, wrong Agent/gen/room/sender/tamper refusal,
+  restart1→2 retaining original Megolm keys, independent OpenSSL signer proof and
+  native calls0/Server leases0/pins2. No paid inference or execution grant.
+- Explicit Synapse fixture now starts the actual production cleanup worker so
+  new Agents finish identity provisioning. Earlier failed runs remain separate
+  in the Client owner-receive dev-vibe report. Encrypted admission/ACK/current
+  membership+lease and original replies/files still require implementation.

@@ -193,9 +193,7 @@ impl App {
     async fn crypto_call(&self, req: &mut Request) -> Result<(u16, Value)> {
         use crate::domain::agent_crypto::{MAX_BYTES, Operation, PREFIX};
         self.native_request(req)?;
-        if req.uri().query().is_some() {
-            return Err(Error::Invalid("invalid_agent_crypto_request"));
-        }
+        let query = req.uri().query().map(str::to_owned);
         let path = req
             .uri()
             .path()
@@ -215,12 +213,22 @@ impl App {
             return Err(Error::Invalid("invalid_agent_crypto_request"));
         }
         crate::key(agent)?;
-        let provision = tail == "provision" && req.method() == salvo::http::Method::POST;
+        let receive = tail == "receive" || tail.starts_with("receive/");
+        let provision =
+            (tail == "provision" || tail == "receive") && req.method() == salvo::http::Method::POST;
         let operation = if provision {
             Operation::Provision
+        } else if receive {
+            crate::domain::agent_crypto::receive::route(
+                req.method().as_str(),
+                &format!("/{}", tail.strip_prefix("receive/").unwrap_or_default()),
+            )?
         } else {
             Operation::route(req.method().as_str(), &format!("/{tail}"))?
         };
+        if query.is_some() && !matches!(operation, Operation::ReceiveSync) {
+            return Err(Error::Invalid("invalid_agent_crypto_request"));
+        }
         let credential = req
             .headers()
             .get("authorization")
@@ -236,7 +244,12 @@ impl App {
         if payload.len() > MAX_BYTES {
             return Err(Error::Invalid("invalid_agent_crypto_request"));
         }
-        let body = if payload.is_empty() {
+        let body = if matches!(operation, Operation::ReceiveSync) {
+            if !payload.is_empty() {
+                return Err(Error::Invalid("invalid_agent_crypto_request"));
+            }
+            crate::domain::agent_crypto::receive::sync_query(query.as_deref())?
+        } else if payload.is_empty() {
             Value::Null
         } else {
             serde_json::from_slice(payload)
@@ -260,7 +273,7 @@ impl App {
             }
             return Ok((
                 200,
-                json!({"agentId":agent,"agentGeneration":parsed,"executionDeviceId":p.device_id,"deviceGeneration":p.device_generation,"matrixUserId":a.puppet_mxid,"matrixDeviceId":device,"serverVersions":value["versions"],"homeserver":self.public.join(&format!("{PREFIX}{agent}/{parsed}")).map_err(|_|Error::Unavailable("invalid_matrix_origin"))?}),
+                json!({"agentId":agent,"agentGeneration":parsed,"executionDeviceId":p.device_id,"deviceGeneration":p.device_generation,"matrixUserId":a.puppet_mxid,"matrixDeviceId":device,"serverVersions":value["versions"],"homeserver":self.public.join(&format!("{PREFIX}{agent}/{parsed}{}",if receive {"/receive"}else{""})).map_err(|_|Error::Unavailable("invalid_matrix_origin"))?}),
             ));
         }
         Ok((status, value))
@@ -277,7 +290,7 @@ impl App {
         if path == "/hagency/api/v1/discovery" && method == salvo::http::Method::GET {
             return Ok(
                 json!({"product":"hagency-server","version":env!("CARGO_PKG_VERSION"),
-                "capabilities":(["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","processing-reaction-v1","execution-configuration-v1"].into_iter().chain(self.transport.as_ref().map(|_|crate::attachments::CAPABILITY)).chain((self.transport.is_some()&&self.matrix_client.is_some()).then_some(crate::file_delivery::CAPABILITY)).chain(self.transport.as_ref().map(|_|crate::file_delivery::HISTORY_CAPABILITY)).chain((self.domain.is_some()&&self.matrix_client.is_some()).then_some(crate::domain::agent_crypto::CAPABILITY)).chain(if self.board_enabled && self.domain.is_some() {Some(crate::project_board::CAPABILITY)}else{None}).collect::<Vec<_>>()),
+                "capabilities":(["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","processing-reaction-v1","execution-configuration-v1"].into_iter().chain(self.transport.as_ref().map(|_|crate::attachments::CAPABILITY)).chain((self.transport.is_some()&&self.matrix_client.is_some()).then_some(crate::file_delivery::CAPABILITY)).chain(self.transport.as_ref().map(|_|crate::file_delivery::HISTORY_CAPABILITY)).chain((self.domain.is_some()&&self.matrix_client.is_some()).then_some(crate::domain::agent_crypto::CAPABILITY)).chain((self.domain.is_some()&&self.matrix_client.is_some()).then_some(crate::domain::agent_crypto::receive::CAPABILITY)).chain(if self.board_enabled && self.domain.is_some() {Some(crate::project_board::CAPABILITY)}else{None}).collect::<Vec<_>>()),
                 "protocolVersion":3,"serverName":self.server_name,"homeserver":self.public,
                 "serviceMxid":format!("@_hagency_service:{}",self.server_name),"issuer":self.issuer,"authorizationEndpoint":self.issuer.join("authorize").unwrap(),
                 "tokenEndpoint":self.issuer.join("oauth2/token").unwrap(),
