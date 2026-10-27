@@ -11531,6 +11531,216 @@
           ]
         }
       }
+    },
+    "/hagency/api/v1/execution/ciphertexts/poll": {
+      "post": {
+        "operationId": "pollOriginalCiphertexts",
+        "summary": "pollOriginalCiphertexts",
+        "description": "Read original verified AS ciphertext under current owner/session/device/assignment/Agent/binding/Room-member facts and execution lease. Plain Poll never returns these records. No plaintext or caller event/Room URL is accepted. Reading does not ACK, admit, start or consume an execution. Source persists before AS routing compaction; expired ciphertext retains immutable tombstones and cannot rearm.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ciphertexts"
+                  ],
+                  "properties": {
+                    "ciphertexts": {
+                      "type": "array",
+                      "maxItems": 4,
+                      "items": {
+                        "$ref": "#/components/schemas/Ciphertext"
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CipherPoll"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/ciphertexts/poll\" =>"
+          ]
+        }
+      }
+    },
+    "/hagency/api/v1/execution/ciphertexts/read": {
+      "post": {
+        "operationId": "readOriginalCiphertext",
+        "summary": "readOriginalCiphertext",
+        "description": "Read original verified AS ciphertext under current owner/session/device/assignment/Agent/binding/Room-member facts and execution lease. Plain Poll never returns these records. No plaintext or caller event/Room URL is accepted. Reading does not ACK, admit, start or consume an execution. Source persists before AS routing compaction; expired ciphertext retains immutable tombstones and cannot rearm.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ciphertext"
+                  ],
+                  "properties": {
+                    "ciphertext": {
+                      "$ref": "#/components/schemas/Ciphertext"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CipherRead"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/ciphertexts/read\" =>"
+          ]
+        }
+      }
     }
   },
   "components": {
@@ -17011,6 +17221,120 @@
             }
           }
         }
+      },
+      "CipherPoll": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "bindingId": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4
+          }
+        },
+        "required": [
+          "lease",
+          "bindingId",
+          "limit"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "name": "CipherPoll",
+          "serializedFields": [
+            "lease",
+            "binding_id",
+            "limit"
+          ],
+          "strictInput": true
+        }
+      },
+      "CipherRead": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "inboxId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease",
+          "inboxId"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "name": "CipherRead",
+          "serializedFields": [
+            "lease",
+            "inbox_id"
+          ],
+          "strictInput": true
+        }
+      },
+      "Ciphertext": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "bindingId": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "eventId": {
+            "type": "string"
+          },
+          "roomId": {
+            "type": "string"
+          },
+          "senderMxid": {
+            "type": "string"
+          },
+          "sourceDigest": {
+            "type": "string"
+          },
+          "agentGeneration": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "bindingGeneration": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "receivedAtMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "event": {
+            "type": "object",
+            "description": "Canonical original AS encrypted event only; exact event_id/room_id/sender/origin_server_ts/type/content. No plaintext body or verification flags."
+          }
+        },
+        "required": [
+          "id",
+          "bindingId",
+          "agentId",
+          "eventId",
+          "roomId",
+          "senderMxid",
+          "sourceDigest",
+          "agentGeneration",
+          "bindingGeneration",
+          "receivedAtMs",
+          "event"
+        ],
+        "additionalProperties": false,
+        "description": "Data-only original AS custody envelope, not admission/ACK/start/lease authority. sourceDigest is SHA256 of canonical sorted UTF-8 JSON [\"agent-encrypted-inbox-v1\",event]."
       }
     },
     "securitySchemes": {
@@ -17029,14 +17353,17 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "a51056cc7b319f96dbe1e09a8b80df5079cca149a665325ff6c1b92b74f03afe",
-    "crates/agent-service/src/api_transport.rs": "8b125bf602daf2b854090317312280eec3010889349109443d5a06a3a852e063",
+    "crates/agent-service/src/api.rs": "17a40c5ac3ae5d7176feb7263a94890c4d71624421271942b39b6364186a7600",
+    "crates/agent-service/src/api_transport.rs": "0396033b9456dae8c11d733edae94a28d6edee5723b7fffe87dc5f61c86c351a",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
     "crates/agent-service/src/api_project_board.rs": "92c621045fe4c00d665152622e99c8d061ab58c98bc5b3197db1c09e43eb7969",
     "crates/agent-service/src/agent_crypto.rs": "f06d40512863eddb9e5b3d00694429e66837bcb02dda6ac371d07c548b6ae95a",
     "crates/agent-service/src/matrix_crypto.rs": "efeb19edada56af0866c7716f84bbf74e1d701db7a0c9319572b2f5d9fd59043",
-    "crates/agent-service/src/agent_crypto_receive.rs": "bd943476196f9e1aff7b8e9d72a4b63438116aaa128964efca2933ad1a4d9523"
+    "crates/agent-service/src/agent_crypto_receive.rs": "bd943476196f9e1aff7b8e9d72a4b63438116aaa128964efca2933ad1a4d9523",
+    "crates/agent-service/src/transport_ciphertexts.rs": "3102af2b78904be267758fc8d9a4cceed83aa8e952d6a2ec5da4df0c213a2e14",
+    "crates/agent-service/src/ciphertext_schema.sql": "ea43c360e60a316d3cd15e16494bee1b5c60f5482b4d0ad9bbe0883c2f07ad29",
+    "crates/agent-service/src/workers.rs": "3c4ea90ebf863b8bc88d9e06839fb399bc1fec07e311b74ed4983ff38c95b361"
   },
   "x-not-implemented": [
     "POST /hagency/api/v1/projects (create Matrix Space)",
@@ -17044,6 +17371,6 @@
     "GET /hagency/api/v1/rooms (global Room catalog; implemented project Room list is membership-filtered)",
     "Any Agent transfer/owner reassignment endpoint (intentionally forbidden)",
     "Server-admin approval of owner model credentials, compute allocation, token quotas, requester policy or tool proposals (intentionally local)",
-    "End-to-end encrypted event decryption in the Agent routing/execution API (encrypted Room routing is unsupported)"
+    "Encrypted task admission/start/reply/file execution (original ciphertext intake/read is implemented but grants no execution authority)"
   ]
 }

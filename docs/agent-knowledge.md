@@ -1,3 +1,18 @@
+# Original AS ciphertext custody checkpoint (2026-10-27)
+
+Copy exact original pending AS ciphertext under the shared routing/compaction
+transaction lock into a separate inbox; never accept a client event as provenance.
+Canonical sorted SHA256 commitments and immutable binding/Agent generation remain
+through expiry tombstones. Plain Poll cannot see this table; known Agent senders
+never create loops. Current lease, assignment, generations, membership, pause,
+crypto state and expiry guard every poll/read. External relations are opaque.
+Reading/SDK decryption is not task ACK/admission/start; Server retains no plaintext.
+Fresh intake2 proves actual normal/thread AS messages after compaction, current
+negative scopes and native restart. Independent actual-HS/Python/PG proves both
+original commitments, calls0/live leases0 and one historical lease retained.
+Native owned jobs must not take calls while Stop may hold it and join them.
+Local inbox/history/ACK and full encrypted Codex replies/files remain open.
+
 # Owner-scoped crypto receive checkpoint (2026-10-27)
 
 Keep identity7 separate from receiver8 operations. Force device-bound zero-wait

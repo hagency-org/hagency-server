@@ -123,3 +123,27 @@
   new Agents finish identity provisioning. Earlier failed runs remain separate
   in the Client owner-receive dev-vibe report. Encrypted admission/ACK/current
   membership+lease and original replies/files still require implementation.
+
+
+## 2026-10-27 — original ciphertext inbox/current-lease transport
+
+- Copy original verified pending AS raw events under the same transaction lock
+  before routing compaction. Separate immutable ciphertext inbox and canonical
+  source commitments, shared owner capacity, expiry tombstones and Agent-loop
+  exclusion retain origin independently of the plaintext task queue.
+- Device-only ciphertext poll/read use original IDs/current leases and fresh
+  Gateway facts, generation/assignment/paused/expiry checks. No plaintext input,
+  arbitrary URL, verification claim, task ACK/admission/model start is accepted.
+- Fresh full122 PG tests/no ignores, final ciphertext3 and all-target strict
+  Clippy pass; OpenAPI100owner+4AS/27guards passes. Preserve initial borrow error/
+  incremental compiler ICE; corrected source verified without incremental cache
+  or production flag changes. Cross-repo canonical fixture bytes match.
+- Final Client intake2 uses actual Synapse, normal Native SDK lifecycle and actual
+  encrypted normal/thread events. Wrong Agent/epoch/released lease refuses;
+  Native restart1→2 retains crypto. Independent HS event reads/Python SHA/PG
+  prove two original retained ciphertexts after AS routed/body compaction, plain
+  task rows0, native calls0/current leases0 and historical lease1 retained.
+- Both owned fixtures and PG stopped with evidence preserved; Client dev-vibe
+  ciphertext-intake report records exact paths and remaining local admission/
+  history/ACK/Codex encrypted replies/files/shared requester trust and A3 gates.
+  No paid inference, deployment or merge; full goal remains active.

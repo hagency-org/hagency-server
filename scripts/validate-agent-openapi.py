@@ -211,7 +211,7 @@ def validate(doc):
         require(len(receive_routes) == 8 and crypto_routes | receive_routes == {(p,m) for p,m in operations if p.startswith('/hagency/agent-crypto/')}, 'Agent crypto route drift')
         sync = doc['paths'][crypto_prefix + '/receive/_matrix/client/v3/sync']['get']
         require({p['name'] for p in sync['parameters'] if p['in'] == 'query'} == {'since','timeout','set_presence','full_state','use_state_after'}, 'receiver sync query drift')
-        require(len(operations) == 98, 'reviewed owner route count drift')
+        require(len(operations) == 100, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -224,6 +224,12 @@ class GuardTests(unittest.TestCase):
         doc = copy.deepcopy(self.doc); mutate(doc)
         with self.assertRaises((ValueError, KeyError, TypeError)):
             validate(doc)
+    def test_missing_original_ciphertext_route(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/ciphertexts/read'))
+    def test_ciphertext_poll_requires_device(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/ciphertexts/poll']['post'].update(security=[{'userBearer': []}]))
+    def test_ciphertext_read_never_accepts_arbitrary_room_url(self):
+        self.rejection(lambda d: d['components']['schemas']['CipherRead']['properties'].update(url={'type':'string'}))
     def test_missing_crypto_receive_sync(self):
         self.rejection(lambda d: d['paths'].pop('/hagency/agent-crypto/{agentId}/{generation}/receive/_matrix/client/v3/sync'))
     def test_receiver_has_no_caller_filter(self):

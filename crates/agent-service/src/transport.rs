@@ -12,6 +12,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 #[path = "transport_attachments.rs"]
 mod attachments;
+#[path = "transport_ciphertexts.rs"]
+pub(crate) mod ciphertexts;
 #[path = "transport_files.rs"]
 pub(crate) mod files;
 #[path = "transport_history.rs"]
@@ -328,6 +330,9 @@ impl TransportStore {
                     .await?;
                 db.batch_execute(include_str!("processing_schema.sql")).await?;
             }
+            let cipher_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.ciphertext_inbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !cipher_initialized.matched {db.batch_execute(include_str!("ciphertext_schema.sql")).await?;}
+            db.batch_execute("SELECT id,source_digest,event,agent_generation,binding_generation,state FROM hagency_agent_v1.ciphertext_inbox LIMIT 0").await.map_err(|_|Error::Conflict("ciphertext_schema_incompatible"))?;
             let pause_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.pause_notice_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !pause_initialized.matched {
                 db.batch_execute(include_str!("pause_notices_schema.sql")).await?;
@@ -1298,6 +1303,15 @@ fn observation(scope: &RoutingScope, requester: &str, f: &DeliveryFacts, now: i6
     Ok(())
 }
 fn facts(scope: &RoutingScope, requester: &str, f: &DeliveryFacts, now: i64) -> Result<()> {
+    facts_mode(scope, requester, f, now, false)
+}
+fn facts_mode(
+    scope: &RoutingScope,
+    requester: &str,
+    f: &DeliveryFacts,
+    now: i64,
+    encrypted: bool,
+) -> Result<()> {
     let now = now.max(crate::api::now_ms());
     if f.observed_at_ms < 0 || f.observed_at_ms > now || now - f.observed_at_ms > 30_000 {
         return Err(Error::Unavailable("matrix_state_unavailable"));
@@ -1320,7 +1334,7 @@ fn facts(scope: &RoutingScope, requester: &str, f: &DeliveryFacts, now: i64) -> 
     {
         return Err(Error::Unauthorized("room_delivery_denied"));
     }
-    if f.encrypted {
+    if f.encrypted != encrypted {
         return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
     }
     Ok(())

@@ -122,7 +122,60 @@ pub(crate) async fn call(
         offset: u64,
         data: String,
     }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CipherPoll {
+        lease: LeaseRef,
+        binding_id: String,
+        limit: usize,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CipherRead {
+        lease: LeaseRef,
+        inbox_id: String,
+    }
     match path.as_str() {
+        "/hagency/api/v1/execution/ciphertexts/poll" => {
+            let b: CipherPoll = body(req).await?;
+            let mut events = Vec::new();
+            for header in t
+                .ciphertext_candidates(p, &b.lease, &b.binding_id, b.limit, now_ms())
+                .await?
+            {
+                let scope = t.binding_scope(&header.binding_id).await?;
+                let f = g
+                    .delivery(
+                        &scope.room_id,
+                        &scope.space_id,
+                        &scope.owner_mxid,
+                        &header.sender_mxid,
+                        &scope.puppet_mxid,
+                    )
+                    .await?;
+                events.push(
+                    t.read_ciphertext(p, &b.lease, &header.id, &f, now_ms())
+                        .await?,
+                );
+            }
+            Ok(json!({"ciphertexts":events}))
+        }
+        "/hagency/api/v1/execution/ciphertexts/read" => {
+            let b: CipherRead = body(req).await?;
+            let header = t.ciphertext_header(p, &b.inbox_id, now_ms()).await?;
+            let scope = t.binding_scope(&header.binding_id).await?;
+            let f = g
+                .delivery(
+                    &scope.room_id,
+                    &scope.space_id,
+                    &scope.owner_mxid,
+                    &header.sender_mxid,
+                    &scope.puppet_mxid,
+                )
+                .await?;
+            Ok(json!({"ciphertext":t.read_ciphertext(p,&b.lease,&b.inbox_id,&f,now_ms()).await?}))
+        }
+
         "/hagency/api/v1/execution/history" => {
             let b: History = body(req).await?;
             Ok(

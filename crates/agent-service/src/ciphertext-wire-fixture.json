@@ -1,0 +1,24 @@
+{
+  "id": "enc_fixture",
+  "bindingId": "bnd_fixture",
+  "agentId": "agt_fixture",
+  "agentGeneration": 1,
+  "bindingGeneration": 2,
+  "eventId": "$opaque_cipher",
+  "roomId": "!fixture:test",
+  "senderMxid": "@owner:test",
+  "sourceDigest": "0fd672819c66fa163547e58c76e6de210479a4869a4ef532d03d21e03c26322c",
+  "receivedAtMs": 100,
+  "event": {
+    "event_id": "$opaque_cipher",
+    "room_id": "!fixture:test",
+    "sender": "@owner:test",
+    "origin_server_ts": 123,
+    "type": "m.room.encrypted",
+    "content": {
+      "algorithm": "m.megolm.v1.aes-sha2",
+      "ciphertext": "c2VhbGVk",
+      "session_id": "session"
+    }
+  }
+}

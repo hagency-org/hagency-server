@@ -2,7 +2,7 @@
 
 本目录描述实际实现，不是需求草案。仓库中的 Palpo/Matrix、Pasion/OIDC、浏览器代理及 hagency-client 本机 Console API 不在这两份 OpenAPI 的范围内。
 
-- `hagency-v1.openapi.json`：OpenAPI 3.1，契约版本 1.0.0；98 个操作，包含用户会话、设备、Project/Room 登记与权限、永久归属 Agent、Binding、命令查询、租约与执行、工具前远端事实核验、已知回复恢复及 `/readyz`。
+- `hagency-v1.openapi.json`：OpenAPI 3.1，契约版本 1.0.0；100 个操作，包含用户会话、设备、Project/Room 登记与权限、永久归属 Agent、Binding、命令查询、租约与执行、工具前远端事实核验、已知回复恢复及 `/readyz`。
 - `appservice-v1.openapi.json`：独立的 homeserver → 必装 Appservice 信任边界；4 个操作，包含事务、ping、用户和 Room alias 查询。
 - `scripts/validate-agent-openapi.py`：Python 标准库验证，不增加生产依赖。从仓库根目录执行 `python3 scripts/validate-agent-openapi.py --self-test`。
 
@@ -90,3 +90,17 @@ Agent 的创建者保持永久归属；服务范围通过 `visibility: public | 
 
 此接口仅提供客户端密码学接收能力，不能作为入站事件授权、ACK、租约或模型执行许可。
 加密执行仍需独立完成原始密文接纳、当前成员/绑定/租约核验及加密回复链路。
+
+
+## 原始加密入站队列
+
+`agent-encrypted-inbox-v1` 提供独立的 `POST execution/ciphertexts/poll` 与
+`read`，只接受当前设备 lease、binding/原 inbox ID，最多4项。逐条使用真实
+Gateway成员事实并再次核对 lease、设备/Agent/绑定代次、暂停、过期和加密状态。
+原 AS event 在同一事务锁下核对持久原事务后保存；路由接纳成功后才允许压缩
+AS正文。摘要为排序 UTF-8 JSON `["agent-encrypted-inbox-v1",event]` 的 SHA256。
+
+普通 Poll/附件 Poll 不返回密文。相同事件幂等，内容改变冲突；过期保留不可重启
+墓碑，不能改写或删除。读取不修改执行状态，不能作为任务 ACK/准入/start/lease。
+Server 不接收解密明文；任务路由、加密回复和文件还需 Client完整执行链。
+标准外部 `m.relates_to` 只作为原始不可信元数据保留，不据此执行 thread/mention。

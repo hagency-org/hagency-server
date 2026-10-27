@@ -133,10 +133,28 @@ pub(crate) async fn route(
                 Ok(false) => {}
                 Err(error) => return Err(error),
             }
-            let Some(event) = parse_event(raw) else {
+            let plain = parse_event(raw);
+            let cipher = if raw["type"] == "m.room.encrypted" {
+                crate::transport::ciphertexts::parse(raw).ok()
+            } else {
+                None
+            };
+            let (event_id, room_id, sender) = if let Some(event) = &plain {
+                (
+                    event.event_id.as_str(),
+                    event.room_id.as_str(),
+                    event.sender_mxid.as_str(),
+                )
+            } else if let Some((event, _)) = &cipher {
+                (
+                    event["event_id"].as_str().unwrap(),
+                    event["room_id"].as_str().unwrap(),
+                    event["sender"].as_str().unwrap(),
+                )
+            } else {
                 continue;
             };
-            let scopes = match t.routing_scopes(&event.room_id).await {
+            let scopes = match t.routing_scopes(room_id).await {
                 Ok(scopes) => scopes,
                 Err(_) => {
                     retry = true;
@@ -154,7 +172,7 @@ pub(crate) async fn route(
                         &scope.room_id,
                         &scope.space_id,
                         &scope.owner_mxid,
-                        &event.sender_mxid,
+                        sender,
                         &scope.puppet_mxid,
                     ),
                 )
@@ -169,8 +187,8 @@ pub(crate) async fn route(
                         continue;
                     }
                 };
-                match t
-                    .ingest_routed_attachment_received(
+                let routed = if let Some(event) = &plain {
+                    t.ingest_routed_attachment_received(
                         &scope.binding_id,
                         event.clone(),
                         if raw["content"]["msgtype"] == "m.text" {
@@ -185,18 +203,18 @@ pub(crate) async fn route(
                         now_ms(),
                     )
                     .await
-                {
+                    .map(|_| ())
+                } else {
+                    t.ingest_ciphertext(&transaction.id, &scope.binding_id, raw, &f, now_ms())
+                        .await
+                };
+                match routed {
                     // A permanently rejected message cannot block subsequent
                     // transactions. Storage/overload failures retain the intent.
                     Ok(_) => (),
                     Err(e @ (Error::Unauthorized(_) | Error::Invalid(_) | Error::Conflict(_))) => {
                         inbox
-                            .rejected(
-                                &transaction.id,
-                                &event.event_id,
-                                &scope.binding_id,
-                                &e.to_string(),
-                            )
+                            .rejected(&transaction.id, event_id, &scope.binding_id, &e.to_string())
                             .await?;
                     }
                     Err(_) => retry = true,
