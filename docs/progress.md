@@ -1,5 +1,18 @@
 # 进度
 
+## 2026-10-27 — 真实远程审批资格支持
+
+- 当前codex/agent-file-transfer修改前获取最新main，确认祖先关系。仅扩展开发示例
+  的OAuth桥为真实whoami逐token验证，支持两个实际主人设备并拒绝外人；隔离脚本
+  可选保留新test主人的私有密码。生产router/认证/schema不变。
+- Client真实Synapse/双SDK/双NativeOwner/实际Codex远程审批通过，原加密事件、
+ 31字节文件、completed验证设备审计、一调用10912Token结算及whole_tree停止匹配。
+  当前live lease0，历史epoch行1保留。示例严格Clippy、脚本语法及实际正反身份
+  检查通过；没有重复声称全Server110项对本批又通过。
+- 初次header借用编译失败保留；Client前三轮独立资格失败和10967Token原调用亦
+  保留，不重发旧请求。所有本轮Server/Synapse/PG已停止，证据留存；生产OAuth、
+  人工UI和Agent加密执行仍待完成。详细报告在dev-vibe。
+
 ## 2026-10-13 — Desktop issue #2 / Server
 
 已保存并独立复审最终方案，再实现 execution-configuration-v1：设备鉴权 API、严格非秘密 DTO、独立 PostgreSQL 队列/心跳/观察缓存、Agent 和请求双方设备 generation/session fences、幂等 create/complete、16 outstanding 上限、单设备 claim/单 Agent mutation、过期 pending=expired / claimed=unknown、七天历史保留。领取永不重发；配置不使用模型 execution lease，不能修改 Agent 主人或执行设备。

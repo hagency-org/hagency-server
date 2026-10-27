@@ -34,6 +34,8 @@ def main():
     p.add_argument("--root", type=Path, required=True)
     p.add_argument("--port", type=int, required=True)
     p.add_argument("--agent-port", type=int, required=True)
+    p.add_argument("--retain-owner-password", action="store_true",
+                   help="Keep only this new isolated owner's password privately for multi-device SDK qualification")
     p.add_argument("--callback-host", default="host.docker.internal",
                    help="Docker host callback; use the Docker internal IPv4 if IPv6 is unavailable")
     a = p.parse_args()
@@ -98,6 +100,8 @@ def main():
             "device_id": "JOINT-SDK-" + user.upper(),
         })
         users[user] = session
+        if user == "alice" and a.retain_owner_password:
+            (a.root / "owner-password.txt").write_text(password)
     request(origin, "/_matrix/client/v3/register?kind=user", {
         "type": "m.login.application_service", "username": "_hagency_service",
         "inhibit_login": True,

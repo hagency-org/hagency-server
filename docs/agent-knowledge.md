@@ -1,5 +1,11 @@
 # 持久知识
 
+- Synapse资格示例的OAuth桥可验证多个实际主人SDK token，但必须逐token查真实
+  whoami并拒绝Bob/无效token；不能将第二台设备的任意字符串视为主人。可选
+  --retain-owner-password仅保存新隔离test主人的密码，默认关闭，绝不用于生产。
+  双SDK/双NativeOwner/真实Codex远程审批联合验收通过，但普通Room任务不代表
+  加密Agent执行已完成；生产OAuth/人工UI仍是独立门槛。
+
 - 配置协议固定在 `docs/design/2026-10-13-cross-device-agent-configuration-review.zh-CN.md`，Server DTO 位于 `crates/agent-service/src/configuration_types.rs`。队列只传白名单非秘密信息；credentialRef 是 opaque 本地引用，不是凭据。
 - 配置 HTTP 路由必须在通用 session bearer 鉴权分流前执行 device bearer 鉴权。`Store::authenticate(false)` 只接受 session token，不接受 device token。
 - 配置 worker 的 claim 永不重发，包括 poll 响应丢失。pending 超时 expired；claimed 超时 unknown；丢 complete 响应重试同结果幂等。历史与幂等记录保留七天，调用方须使用唯一 intent key，不可跨原请求生命周期重试。

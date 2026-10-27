@@ -71,8 +71,31 @@ async fn introspect(req: &mut Request, depot: &Depot, res: &mut Response) {
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok());
-    let valid = secret == Some("Bearer fixture-introspection-secret")
-        && req.form::<String>("token").await.as_deref() == Some(c.owner.as_str());
+    // Multiple real owner SDK devices have different tokens. This explicit
+    // OAuth bridge checks the actual local homeserver identity for each token;
+    // it never treats a token-shaped string or another test user as the owner.
+    let authorized = secret == Some("Bearer fixture-introspection-secret");
+    let token = req.form::<String>("token").await;
+    let valid = if authorized {
+        if let Some(token) = token {
+            call(
+                &c.matrix,
+                reqwest::Method::GET,
+                &["_matrix", "client", "v3", "account", "whoami"],
+                &token,
+                None,
+                None,
+            )
+            .await
+            .is_ok_and(|v| {
+                v["user_id"] == OWNER && v["device_id"].as_str().is_some_and(|d| !d.is_empty())
+            })
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     res.render(Json(if valid {json!({"active":true,"sub":"alice","username":"alice","client_id":"sdk-client","scope":"urn:matrix:client:api:*","exp":hagency_agent_service::api::now_ms()/1000+3600})}else{json!({"active":false})}));
 }
 #[handler]
