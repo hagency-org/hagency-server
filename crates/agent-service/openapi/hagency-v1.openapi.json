@@ -6092,7 +6092,7 @@
       "get": {
         "operationId": "getProjectBoard",
         "summary": "getProjectBoard",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6250,7 +6250,7 @@
       "get": {
         "operationId": "listProjectTasks",
         "summary": "listProjectTasks",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6423,7 +6423,7 @@
       "post": {
         "operationId": "createProjectTask",
         "summary": "createProjectTask",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6527,7 +6527,7 @@
       "get": {
         "operationId": "getProjectTask",
         "summary": "getProjectTask",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6628,7 +6628,7 @@
       "patch": {
         "operationId": "updateProjectTask",
         "summary": "updateProjectTask",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6741,7 +6741,7 @@
       "post": {
         "operationId": "moveProjectTask",
         "summary": "moveProjectTask",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6854,7 +6854,7 @@
       "post": {
         "operationId": "archiveProjectTask",
         "summary": "archiveProjectTask",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -6967,7 +6967,7 @@
       "post": {
         "operationId": "restoreProjectTask",
         "summary": "restoreProjectTask",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7080,7 +7080,7 @@
       "get": {
         "operationId": "listProjectTaskComments",
         "summary": "listProjectTaskComments",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7202,7 +7202,7 @@
       "post": {
         "operationId": "commentOnProjectTask",
         "summary": "commentOnProjectTask",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7315,7 +7315,7 @@
       "get": {
         "operationId": "getProjectTaskActivity",
         "summary": "getProjectTaskActivity",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7439,7 +7439,7 @@
       "get": {
         "operationId": "getProjectBoardChanges",
         "summary": "getProjectBoardChanges",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7554,7 +7554,7 @@
       "patch": {
         "operationId": "configureProjectBoardColumns",
         "summary": "Configure Project board columns and WIP limits",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7658,7 +7658,7 @@
       "get": {
         "operationId": "listProjectBoardNotifications",
         "summary": "listProjectBoardNotifications",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7762,7 +7762,7 @@
       "post": {
         "operationId": "readProjectBoardNotifications",
         "summary": "readProjectBoardNotifications",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7866,7 +7866,7 @@
       "post": {
         "operationId": "uploadProjectTaskAttachment",
         "summary": "uploadProjectTaskAttachment",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -7979,7 +7979,7 @@
       "get": {
         "operationId": "getProjectTaskAttachment",
         "summary": "getProjectTaskAttachment",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -8091,7 +8091,7 @@
       "post": {
         "operationId": "removeProjectTaskAttachment",
         "summary": "removeProjectTaskAttachment",
-        "description": "Shared human work items; requires project-board-v3 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
+        "description": "Shared human work items; requires project-board-v4 and fresh joined Project Space membership. Server owns order, versions and committed cursors. No Agent execution or Cloud authorization. Mutations require an original idempotency key; retries replay its original result. Full query/paging/order semantics: docs/project-board.md.",
         "security": [
           {
             "userBearer": []
@@ -16207,6 +16207,20 @@
           },
           "fields": {
             "$ref": "#/components/schemas/Fields"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "description": "Optional destination column, saved atomically with fields under one expectedVersion and WIP check."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -16219,6 +16233,7 @@
           "file": "crates/agent-service/src/project_board/types.rs",
           "name": "Update",
           "serializedFields": [
+            "state",
             "idempotency_key",
             "expected_version",
             "fields"
@@ -16567,6 +16582,10 @@
           },
           "taskCount": {
             "type": "integer"
+          },
+          "archived": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -16578,7 +16597,8 @@
           "title",
           "wipLimit",
           "isDone",
-          "taskCount"
+          "taskCount",
+          "archived"
         ],
         "additionalProperties": false
       },
@@ -16608,7 +16628,13 @@
           },
           "capability": {
             "type": "string",
-            "const": "project-board-v3"
+            "const": "project-board-v4"
+          },
+          "memberNames": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -16616,7 +16642,8 @@
           "sequence",
           "lanes",
           "members",
-          "capability"
+          "capability",
+          "memberNames"
         ],
         "additionalProperties": false
       },
@@ -16929,6 +16956,10 @@
           },
           "isDone": {
             "type": "boolean"
+          },
+          "archived": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -16942,6 +16973,7 @@
           "file": "crates/agent-service/src/project_board/types.rs",
           "name": "ColumnDefinition",
           "serializedFields": [
+            "archived",
             "id",
             "title",
             "wip_limit",
@@ -18167,7 +18199,7 @@
     "crates/agent-service/src/api_transport.rs": "2d6c562882c7c35d10e716bbc771f70310752db69263d0378eafab60e0c3f5d4",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
-    "crates/agent-service/src/api_project_board.rs": "92c621045fe4c00d665152622e99c8d061ab58c98bc5b3197db1c09e43eb7969",
+    "crates/agent-service/src/api_project_board.rs": "bb5e7c2a57c5aa61f17b75ea6e92ed994b0130070bc415d84e685f4f43b0ee53",
     "crates/agent-service/src/agent_crypto.rs": "0c65f525954e86856bfe60b6e198fcf701fa414163a03f9dac474141ee8e87e5",
     "crates/agent-service/src/matrix_crypto.rs": "efeb19edada56af0866c7716f84bbf74e1d701db7a0c9319572b2f5d9fd59043",
     "crates/agent-service/src/agent_crypto_receive.rs": "20e437890a3cca872e810bfbcb1f5dc696567caff53a8bdb684b34e9c142566a",

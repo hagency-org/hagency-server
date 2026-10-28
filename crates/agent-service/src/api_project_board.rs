@@ -101,7 +101,24 @@ pub(crate) async fn call(
     if !project.active || !members.contains(&principal.mxid) {
         return Err(Error::Unauthorized("project_membership_required"));
     }
+    let member_names = state
+        .iter()
+        .filter(|e| e["type"] == "m.room.member" && e["content"]["membership"] == "join")
+        .filter_map(|e| {
+            Some((
+                e["state_key"].as_str()?.to_owned(),
+                e["content"]["displayname"].as_str()?.trim().to_owned(),
+            ))
+        })
+        .filter(|(id, name)| {
+            members.contains(id)
+                && !name.is_empty()
+                && name.chars().count() <= 256
+                && !name.chars().any(char::is_control)
+        })
+        .collect();
     let access = Access {
+        member_names,
         project: project.id,
         space: project.space_id,
         actor: principal.mxid.clone(),

@@ -26,6 +26,7 @@ pub(crate) struct Access {
     pub space: String,
     pub actor: String,
     pub members: BTreeSet<String>,
+    pub member_names: std::collections::BTreeMap<String, String>,
     pub observed: i64,
 }
 #[derive(diesel::QueryableByName)]
@@ -143,7 +144,16 @@ impl Mutation {
                 i.fields.validate()?;
                 state(&i.state)?;
             }
-            Self::Update { input, .. } => input.fields.validate()?,
+            Self::Update { input, .. } => {
+                input.fields.validate()?;
+                if input
+                    .state
+                    .as_deref()
+                    .is_some_and(|state| !types::valid_state(state))
+                {
+                    return Err(Error::Invalid("invalid_board_state"));
+                }
+            }
             Self::Move { task, input } => {
                 state(&input.state)?;
                 for id in [&input.before, &input.after].into_iter().flatten() {
@@ -198,18 +208,21 @@ impl BoardStore {
             let exists=sql_query("SELECT to_regclass('hagency_project_v1.migrations') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
             if exists {
                 let version=sql_query("SELECT coalesce(max(version),0)::bigint AS value FROM hagency_project_v1.migrations").get_result::<Number>(db).await?.value;
-                if !(1..=3).contains(&version){return Err(Error::Conflict("board_schema_incompatible"));}
+                if !(1..=4).contains(&version){return Err(Error::Conflict("board_schema_incompatible"));}
                 let complete=sql_query("SELECT to_regclass('hagency_project_v1.boards') IS NOT NULL AND to_regclass('hagency_project_v1.tasks') IS NOT NULL AND to_regclass('hagency_project_v1.comments') IS NOT NULL AND to_regclass('hagency_project_v1.changes') IS NOT NULL AND to_regclass('hagency_project_v1.receipts') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
                 if version>=2 && !sql_query("SELECT to_regclass('hagency_project_v1.columns') IS NOT NULL AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if version>=3 && !sql_query("SELECT to_regclass('hagency_project_v1.notifications') IS NOT NULL AND to_regclass('hagency_project_v1.attachments') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='changes' AND column_name='details') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
+                if version>=4 && !sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='columns' AND column_name='archived') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if !complete{return Err(Error::Conflict("board_schema_incompatible"));}
                 if version == 1 { db.batch_execute(include_str!("schema_v2.sql")).await?; }
                 if version < 3 { db.batch_execute(include_str!("schema_v3.sql")).await?; }
+                if version < 4 { db.batch_execute(include_str!("schema_v4.sql")).await?; }
                 return Ok(());
             }
             db.batch_execute(include_str!("schema.sql")).await?;
             db.batch_execute(include_str!("schema_v2.sql")).await?;
             db.batch_execute(include_str!("schema_v3.sql")).await?;
+            db.batch_execute(include_str!("schema_v4.sql")).await?;
             Ok(())
         }).await?;
         drop(db);
@@ -334,11 +347,11 @@ impl BoardStore {
                 let count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND state_key=$2 AND archived_at IS NULL").bind::<Text,_>(&a.project).bind::<Text,_>(name).get_result::<Number>(db).await?.value;
                 let mut query=q.clone();query.state=Some(name.clone());
                 let mut page=if q.state.as_ref().is_some_and(|s| s!=name) { json!({"tasks":[],"total":0,"nextCursor":null,"sequence":seq}) } else { Self::page(db,&a.project,&query,seq).await? };
-                page["state"]=json!(name);page["title"]=json!(column.title);page["wipLimit"]=json!(column.wip_limit);page["isDone"]=json!(column.is_done);page["taskCount"]=json!(count);lanes.push(page);
+                page["archived"]=json!(column.archived);page["state"]=json!(name);page["title"]=json!(column.title);page["wipLimit"]=json!(column.wip_limit);page["isDone"]=json!(column.is_done);page["taskCount"]=json!(count);lanes.push(page);
             }
             let members:Vec<_>=a.members.iter().filter(|m|!m.starts_with("@_hagency_")).take(1000).collect();
             Self::fresh(a)?;
-            Ok(json!({"projectId":a.project,"sequence":seq,"lanes":lanes,"members":members,"capability":CAPABILITY}))
+            Ok(json!({"projectId":a.project,"sequence":seq,"lanes":lanes,"members":members,"memberNames":a.member_names,"capability":CAPABILITY}))
         }).await
     }
     pub(crate) async fn tasks(&self, p: &Principal, a: &Access, q: Query) -> Result<Value> {
@@ -490,6 +503,7 @@ impl BoardStore {
                 if archived&&!matches!(mutation,Mutation::Restore{..}) || !archived&&matches!(mutation,Mutation::Restore{..}){return Err(Error::Conflict("board_archive_conflict"));}
             }
             let current_state=task.as_ref().and_then(|t|t["state"].as_str()).unwrap_or("").to_owned();
+            if task.is_some() && Self::columns(db,&a.project).await?.iter().any(|c| c.id==current_state && c.archived) { return Err(Error::Conflict("board_column_archived")); }
             let now=crate::api::now_ms();
             let mut comment=Value::Null;
             let mut attachment=Value::Null;
@@ -520,8 +534,11 @@ impl BoardStore {
                 }
                 Mutation::Update{task,input}=>{
                     Self::assignee(db,a,&input.fields).await?;Self::parent(db,&a.project,task,&input.fields).await?;let f=&input.fields;
-                    sql_query("UPDATE hagency_project_v1.tasks SET title=$3,description=$4,priority=$5,assignee_mxid=$6,labels=$7,due_date=$8::text::date,version=version+1,updated_at=$9,parent_id=$10,checklist=$11 WHERE project_id=$1 AND id=$2")
-                        .bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<Text,_>(&f.title).bind::<Text,_>(&f.description).bind::<Text,_>(&f.priority).bind::<Nullable<Text>,_>(&f.assignee_mxid).bind::<Jsonb,_>(json!(f.labels)).bind::<Nullable<Text>,_>(&f.due_date).bind::<BigInt,_>(now).bind::<Nullable<Text>,_>(&f.parent_id).bind::<Jsonb,_>(json!(f.checklist)).execute(db).await?;
+                    let state=input.state.as_deref().unwrap_or(&current_state);
+                    Self::admit(db,&a.project,state,state==current_state).await?;
+                    let rank=if state==current_state { None } else { Some(Self::rank(db,&a.project,state,task,None).await?) };
+                    sql_query("UPDATE hagency_project_v1.tasks SET title=$3,description=$4,priority=$5,assignee_mxid=$6,labels=$7,due_date=$8::text::date,version=version+1,updated_at=$9,parent_id=$10,checklist=$11,state_key=$12,rank=coalesce($13,rank) WHERE project_id=$1 AND id=$2")
+                        .bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<Text,_>(&f.title).bind::<Text,_>(&f.description).bind::<Text,_>(&f.priority).bind::<Nullable<Text>,_>(&f.assignee_mxid).bind::<Jsonb,_>(json!(f.labels)).bind::<Nullable<Text>,_>(&f.due_date).bind::<BigInt,_>(now).bind::<Nullable<Text>,_>(&f.parent_id).bind::<Jsonb,_>(json!(f.checklist)).bind::<Text,_>(state).bind::<Nullable<BigInt>,_>(rank).execute(db).await?;
                     Some(task.clone())
                 }
                 Mutation::Move{task,input}=>{

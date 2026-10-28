@@ -72,6 +72,7 @@ async fn fixture() -> (Store, DomainStore, Principal, Principal, Access) {
         .await
         .unwrap();
     let access = Access {
+        member_names: Default::default(),
         project: project.id,
         space,
         actor: alice.mxid.clone(),
@@ -134,6 +135,7 @@ async fn postgres_board_shared_storage_conflicts_replay_history_and_reopen() {
         Err(Error::Conflict("board_idempotency_conflict"))
     ));
     let other = Access {
+        member_names: Default::default(),
         actor: bob.mxid.clone(),
         members: access.members.clone(),
         project: access.project.clone(),
@@ -243,6 +245,7 @@ async fn postgres_board_permission_revocation_and_cross_project_are_refused() {
         .unwrap();
     let id = result["task"]["id"].as_str().unwrap();
     let mut left = Access {
+        member_names: Default::default(),
         actor: bob.mxid.clone(),
         project: access.project.clone(),
         space: access.space.clone(),
@@ -597,6 +600,7 @@ async fn postgres_custom_columns_wip_races_and_config_replay() {
     columns.insert(
         1,
         ColumnDefinition {
+            archived: false,
             id: "testing".into(),
             title: "验证".into(),
             wip_limit: Some(1),
@@ -726,6 +730,7 @@ async fn postgres_custom_columns_wip_races_and_config_replay() {
         .await
         .unwrap();
     ordered.push(ColumnDefinition {
+        archived: false,
         id: "temporary_empty".into(),
         title: "Temporary empty".into(),
         wip_limit: None,
@@ -805,6 +810,7 @@ async fn postgres_subtasks_checklist_versions_and_independent_completion() {
     let update = Mutation::Update {
         task: id.into(),
         input: Update {
+            state: None,
             idempotency_key: "check".into(),
             expected_version: 1,
             fields: checked,
@@ -824,6 +830,7 @@ async fn postgres_subtasks_checklist_versions_and_independent_completion() {
                 Mutation::Update {
                     task: id.into(),
                     input: Update {
+                        state: None,
                         idempotency_key: "stale".into(),
                         expected_version: 1,
                         fields: fields.clone()
@@ -844,6 +851,7 @@ async fn postgres_subtasks_checklist_versions_and_independent_completion() {
                     Mutation::Update {
                         task: parent_id.into(),
                         input: Update {
+                            state: None,
                             idempotency_key: format!("cycle-{invalid}"),
                             expected_version: 1,
                             fields: nested
@@ -894,6 +902,7 @@ async fn postgres_collaboration_notifications_diffs_attachments_and_authorizatio
     let (_auth, domain, alice, bob, access) = fixture().await;
     let board = &domain.board;
     let bob_access = Access {
+        member_names: Default::default(),
         project: access.project.clone(),
         space: access.space.clone(),
         actor: bob.mxid.clone(),
@@ -921,6 +930,7 @@ async fn postgres_collaboration_notifications_diffs_attachments_and_authorizatio
             Mutation::Update {
                 task: task.into(),
                 input: Update {
+                    state: None,
                     idempotency_key: "collaboration-assign".into(),
                     expected_version: 1,
                     fields,
@@ -1013,6 +1023,7 @@ async fn postgres_collaboration_notifications_diffs_attachments_and_authorizatio
             .is_err()
     );
     let mut revoked = Access {
+        member_names: Default::default(),
         project: access.project.clone(),
         space: access.space.clone(),
         actor: bob.mxid.clone(),
@@ -1054,5 +1065,161 @@ async fn postgres_collaboration_notifications_diffs_attachments_and_authorizatio
     assert_eq!(
         board.detail(&bob, &bob_access, task).await.unwrap()["task"]["attachmentCount"],
         0
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_atomic_status_save_and_archived_column_restore_preserve_cards() {
+    let (_auth, domain, alice, bob, mut access) = fixture().await;
+    access
+        .member_names
+        .insert(alice.mxid.clone(), "Project coordinator".into());
+    let board = &domain.board;
+    let first = board
+        .mutate(&alice, &access, create("first", "Original title"))
+        .await
+        .unwrap();
+    let id = first["task"]["id"].as_str().unwrap().to_owned();
+    let mut columns = default_columns();
+    columns[1].wip_limit = Some(1);
+    board
+        .mutate(
+            &alice,
+            &access,
+            Mutation::ConfigureColumns(ConfigureColumns {
+                idempotency_key: "limits".into(),
+                expected_sequence: 1,
+                columns: columns.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+    let update = |key: &str, version, title: &str, state: &str| Mutation::Update {
+        task: id.clone(),
+        input: Update {
+            idempotency_key: key.into(),
+            expected_version: version,
+            state: Some(state.into()),
+            fields: Fields {
+                title: title.into(),
+                ..Default::default()
+            },
+        },
+    };
+    let mutation = update("atomic", 1, "Title and status together", "in_progress");
+    let ack = board
+        .mutate(&alice, &access, mutation.clone())
+        .await
+        .unwrap();
+    assert_eq!(ack["task"]["state"], "in_progress");
+    assert_eq!(ack["task"]["title"], "Title and status together");
+    assert_eq!(ack["task"]["version"], 2);
+    assert_eq!(
+        board.mutate(&alice, &access, mutation).await.unwrap()["task"],
+        ack["task"]
+    );
+    let other = Access {
+        actor: bob.mxid.clone(),
+        project: access.project.clone(),
+        space: access.space.clone(),
+        members: access.members.clone(),
+        member_names: access.member_names.clone(),
+        observed: access.observed,
+    };
+    assert!(matches!(
+        board
+            .mutate(&bob, &other, update("stale", 1, "Lost update", "done"))
+            .await,
+        Err(Error::Conflict("board_version_conflict"))
+    ));
+    let second = board
+        .mutate(&alice, &access, create("second", "Another task"))
+        .await
+        .unwrap();
+    let second_id = second["task"]["id"].as_str().unwrap();
+    let full = Mutation::Update {
+        task: second_id.into(),
+        input: Update {
+            idempotency_key: "full".into(),
+            expected_version: 1,
+            state: Some("in_progress".into()),
+            fields: Fields {
+                title: "Must not partially change".into(),
+                ..Default::default()
+            },
+        },
+    };
+    assert!(matches!(
+        board.mutate(&alice, &access, full).await,
+        Err(Error::Conflict("board_wip_limit_reached"))
+    ));
+    let unchanged = board.detail(&alice, &access, second_id).await.unwrap();
+    assert_eq!(unchanged["task"]["title"], "Another task");
+    assert_eq!(unchanged["task"]["state"], "todo");
+    assert_eq!(unchanged["task"]["version"], 1);
+    // Archive a non-empty column, and reorder it in the same atomic configuration.
+    columns[1].archived = true;
+    columns.swap(0, 1);
+    let snapshot = board
+        .board(&alice, &access, Query::default())
+        .await
+        .unwrap();
+    let seq = snapshot["sequence"].as_i64().unwrap();
+    board
+        .mutate(
+            &alice,
+            &access,
+            Mutation::ConfigureColumns(ConfigureColumns {
+                idempotency_key: "archive-list".into(),
+                expected_sequence: seq,
+                columns: columns.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+    let snapshot = board.board(&bob, &other, Query::default()).await.unwrap();
+    assert_eq!(snapshot["lanes"][0]["state"], "in_progress");
+    assert_eq!(snapshot["lanes"][0]["archived"], true);
+    for (key, value) in snapshot["lanes"][0]["tasks"][0].as_object().unwrap() {
+        assert_eq!(value, &ack["task"][key], "summary field {key}");
+    }
+    assert_eq!(
+        board.detail(&bob, &other, &id).await.unwrap()["task"],
+        ack["task"]
+    );
+    assert_eq!(snapshot["memberNames"][&alice.mxid], "Project coordinator");
+    assert!(matches!(
+        board
+            .mutate(
+                &alice,
+                &access,
+                update("archived-write", 2, "Forbidden", "done")
+            )
+            .await,
+        Err(Error::Conflict("board_column_archived"))
+    ));
+    // Restore the exact ordered column; task metadata and version are unchanged.
+    columns[0].archived = false;
+    board
+        .mutate(
+            &alice,
+            &access,
+            Mutation::ConfigureColumns(ConfigureColumns {
+                idempotency_key: "restore-list".into(),
+                expected_sequence: snapshot["sequence"].as_i64().unwrap(),
+                columns,
+            }),
+        )
+        .await
+        .unwrap();
+    let restored = board.board(&bob, &other, Query::default()).await.unwrap();
+    assert_eq!(restored["lanes"][0]["archived"], false);
+    for (key, value) in restored["lanes"][0]["tasks"][0].as_object().unwrap() {
+        assert_eq!(value, &ack["task"][key], "restored summary field {key}");
+    }
+    assert_eq!(
+        board.detail(&bob, &other, &id).await.unwrap()["task"],
+        ack["task"]
     );
 }

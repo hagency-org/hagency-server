@@ -4,7 +4,7 @@ impl BoardStore {
         db: &mut AsyncPgConnection,
         project: &str,
     ) -> Result<Vec<ColumnDefinition>> {
-        let rows = sql_query("SELECT jsonb_build_object('id',column_key,'title',title,'wipLimit',wip_limit,'isDone',is_done) AS value FROM hagency_project_v1.columns WHERE project_id=$1 ORDER BY position,column_key")
+        let rows = sql_query("SELECT jsonb_build_object('id',column_key,'title',title,'wipLimit',wip_limit,'isDone',is_done,'archived',archived) AS value FROM hagency_project_v1.columns WHERE project_id=$1 ORDER BY position,column_key")
             .bind::<Text,_>(project).load::<Row>(db).await?;
         if rows.is_empty() {
             return Ok(default_columns());
@@ -37,8 +37,8 @@ impl BoardStore {
         c: &ColumnDefinition,
         position: i64,
     ) -> Result<()> {
-        sql_query("INSERT INTO hagency_project_v1.columns(project_id,column_key,title,position,wip_limit,is_done) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,column_key) DO UPDATE SET title=$3,position=$4,wip_limit=$5,is_done=$6")
-            .bind::<Text,_>(project).bind::<Text,_>(&c.id).bind::<Text,_>(&c.title).bind::<BigInt,_>(position).bind::<Nullable<BigInt>,_>(c.wip_limit).bind::<Bool,_>(c.is_done).execute(db).await?;
+        sql_query("INSERT INTO hagency_project_v1.columns(project_id,column_key,title,position,wip_limit,is_done,archived) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(project_id,column_key) DO UPDATE SET title=$3,position=$4,wip_limit=$5,is_done=$6,archived=$7")
+            .bind::<Text,_>(project).bind::<Text,_>(&c.id).bind::<Text,_>(&c.title).bind::<BigInt,_>(position).bind::<Nullable<BigInt>,_>(c.wip_limit).bind::<Bool,_>(c.is_done).bind::<Bool,_>(c.archived).execute(db).await?;
         Ok(())
     }
     pub(super) async fn configure(
@@ -82,6 +82,9 @@ impl BoardStore {
             .into_iter()
             .find(|c| c.id == state)
             .ok_or(Error::Invalid("invalid_board_state"))?;
+        if column.archived {
+            return Err(Error::Conflict("board_column_archived"));
+        }
         if !same_column && let Some(limit) = column.wip_limit {
             let count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND state_key=$2 AND archived_at IS NULL").bind::<Text,_>(project).bind::<Text,_>(state).get_result::<Number>(db).await?.value;
             if count >= limit {

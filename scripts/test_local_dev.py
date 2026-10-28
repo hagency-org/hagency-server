@@ -65,8 +65,8 @@ class LauncherTests(unittest.TestCase):
     def test_listener_health_without_board_is_not_ready(self):
         for product, capabilities, expected in (
             ("hagency-server", ["project-board-v2"], False),
-            ("other", ["project-board-v3"], False),
-            ("hagency-server", ["project-board-v3"], True),
+            ("other", ["project-board-v4"], False),
+            ("hagency-server", ["project-board-v4"], True),
         ):
             with self.subTest(product=product, capabilities=capabilities), patch.object(dev, "get", side_effect=[
                 b"{}", json.dumps({"product": product, "capabilities": capabilities}).encode()

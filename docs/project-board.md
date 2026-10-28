@@ -8,7 +8,7 @@ Cloud product code is unchanged; self-hosted servers work independently.
 
 ## Availability and identity
 
-`project-board-v3` appears in native discovery only after the domain (including
+`project-board-v4` appears in native discovery only after the domain (including
 board storage) is initialized. The optional host TOML `project_board_enabled =
 false` removes that capability and closes board endpoints while retaining data.
 It defaults to true, so existing hosting configurations need no new input. This
@@ -138,7 +138,7 @@ Cloud self-service recovery implementation is required by this feature.
 
 ## Custom columns, WIP, subtasks and checklists (v2)
 
-Upgrade Server and Client together. Discovery advertises only `project-board-v3`:
+Upgrade Server and Client together. Discovery advertises only `project-board-v4`:
 a fixed-five-column v1 Client must explicitly refuse the incompatible board.
 The additive `schema_v2.sql` seeds every existing board's five columns, replaces
 the fixed-state constraint with a project/column foreign key, and retains task
@@ -202,3 +202,30 @@ and returns the original bytes as base64. POST `.../attachments/remove` soft
 removes the specified attachment. Removed bytes remain counted in retained quota.
 No public URLs are issued. Client preview has dimension/allocation limits;
 external Markdown image URLs are not fetched automatically.
+
+## Atomic editing and list lifecycle (v4)
+
+`PATCH /projects/{projectId}/tasks/{taskId}` accepts optional `state`. Fields and
+state commit together under the board lock, expected task version, destination
+WIP check and original idempotency key. A rejected move cannot partially save
+fields. Omitting state retains the current column and the old request digest.
+
+Column configuration remains sequence-fenced and ordered. `archived` defaults to
+false and is persisted by schema migration 4. Archiving a non-empty list keeps
+its cards, ranks, comments and individual archive flags; clients hide the list
+and block editing until it is restored via Columns & WIP. At least two active
+columns, including one completed column, must remain. Archived columns count
+toward the 12-column bound. Empty-column deletion remains distinct and refuses
+any list containing cards, including individually archived cards.
+
+Snapshots include `memberNames` from the same fresh joined Space membership
+observation used for authorization. Names are presentation metadata; Matrix IDs
+remain the identity and assignment keys. Upgrade Server and Client together;
+v4 discovery prevents an older client from editing an archive-unaware snapshot.
+
+Real two-native-user validation (2026-10-28) covered atomic status+fields save,
+WIP rollback, stale-version draft retention, nonempty column archive/restore,
+column reorder and current Space display names. See the sibling Client report
+[双用户问题修复与看板列验收](../../hagency-client/dev-vibe/two-user-board-fixes-and-lists-validation-2026-10-28.zh.md).
+Runtime credentials, SQL/API readbacks and screenshots stay in the ignored local
+`.run/local-dev/collaboration-20261028/` directory; they are not repository inputs.
