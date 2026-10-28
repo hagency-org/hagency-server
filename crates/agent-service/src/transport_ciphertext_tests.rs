@@ -616,6 +616,48 @@ async fn postgres_encrypted_execution_and_original_publication_are_fenced_and_ne
     b.action = "publish".into();
     b.kind = Some("reply".into());
     b.request_id = Some("reply".into());
+    // Invalid envelopes must not irreversibly reserve this original request.
+    // A valid SDK publication must still obtain the first send custody below.
+    for session in [
+        None,
+        Some(json!(null)),
+        Some(json!(42)),
+        Some(json!("")),
+        Some(json!("invalid\nvalue")),
+    ] {
+        let mut invalid = payload.clone();
+        if let Some(session) = session {
+            invalid["content"]["session_id"] = session;
+        } else {
+            invalid["content"]
+                .as_object_mut()
+                .unwrap()
+                .remove("session_id");
+        }
+        b.payload = Some(invalid);
+        assert!(matches!(
+            f.transport.encrypted_action(&f.p, &b, &f.facts, now).await,
+            Err(Error::Invalid("invalid_encrypted_publication"))
+        ));
+        let status = f
+            .transport
+            .encrypted_action(&f.p, &b.status(), &f.facts, now)
+            .await
+            .unwrap()
+            .0;
+        assert!(status["publication"].is_null());
+        assert_eq!(
+            TransportStore::dispatch(
+                &mut f.transport.db.lock().await.unwrap(),
+                &f.p,
+                &b.dispatch_id
+            )
+            .await
+            .unwrap()
+            .state,
+            "encrypted_running"
+        );
+    }
     b.payload = Some(payload.clone());
     let queued = f
         .transport

@@ -18129,7 +18129,7 @@
             "anyOf": [
               {
                 "type": "object",
-                "description": "Sealed SDK content and owner-only encrypted key shares; no plaintext body, media key or filename."
+                "description": "Sealed SDK content and owner-only encrypted key shares; no plaintext body, media key or filename. Megolm content requires nonempty string ciphertext and session_id without control characters. Invalid envelopes are refused before irreversible publication reservation."
               },
               {
                 "type": "null"
@@ -18177,7 +18177,7 @@
     "crates/agent-service/src/encrypted_dispatches.rs": "f172a4fd602b7302199c297348df20e7b35b59796724521708d93df59e7390d8",
     "crates/agent-service/src/encrypted_dispatches_schema.sql": "73c338d99a17eb64e2173c6fdb7246962039d5e7229e03345bad14237852427d",
     "crates/agent-service/src/transport.rs": "0e6bc47db89d1a602e34c4d2b0a8cc71094b51ca4d8175be7218e3b937b5211a",
-    "crates/agent-service/src/encrypted_execution.rs": "04277fab5ef934ca8ded24fe8d63299fce965a0e3494d7a1b1df57110cc269e1",
+    "crates/agent-service/src/encrypted_execution.rs": "a495dd49337b462a97bb95c7edd8d7cf48373768b5a4dba72b01c1495d6f1950",
     "crates/agent-service/src/encrypted_execution_schema.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "8ca02b365672bf575fa170395a24cb100e40e2db7ccc64e4b9e05c891263755c",
     "crates/agent-service/src/domain.rs": "ec2fd30e125ee69136704441d9d1bdd88104324e42ca7d0379789022db4c84c5",

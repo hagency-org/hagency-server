@@ -77,3 +77,9 @@ Detailed contract and actual/failed qualification evidence are in dev-vibe.
 ## 看板图片引用回执
 
 Client 插图应使用上传事务返回的 attachment ID，不能根据文件名或详情列表顺序猜测。该 ID 随原幂等回执持久化，重试必须相同；其他 mutation 的 attachment 可为 null。客户端还需同步放宽本地转发请求的 Base64 预算，单改 Server 上传上限不足以支持截图。
+
+- **Megolm 发布 envelope，2026-10-28 review：** 除 algorithm 和 ciphertext 外，
+  session_id 也是必需字段。发布前须拒绝缺失/非字符串/空值/控制字符，不能先
+  消耗永久 possible 发布见证。用真实 PG 断言 status 仍无 publication、原任务
+  仍 running，随后原 request 合法载荷仍有首次 custody。device_id/sender_key
+  已废弃，不能重新强制要求；正常 SDK 的 org.matrix.msgid 仍允许。

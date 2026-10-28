@@ -43,3 +43,35 @@ send_file 审计，并记录 whole_tree 停止。两次服务重开后调用和�
 全量新建专用 PG 显式 --include-ignored：125通过、0忽略；严格 all-target Clippy
 及格式通过。OpenAPI105 Owner +4 AS，34个负例通过。Client 配套报告：
 https://github.com/hagency-org/hagency-client/blob/codex/remote-owner-approvals/dev-vibe/agent-encrypted-codex-validation-2026-10-27.zh.md
+
+## 2026-10-28：合并前直接复核与发布校验修复
+
+复核起点为 Server PR7 f24b95d；配套 Client PR9–12 已合入 main b906dd68。
+确认用途是接通原附件、独立 Agent 身份、原始加密接收/执行与回复/文件，
+不是把 ACK、未知发送或公开历史当作执行权限。检查了当前 owner/device/
+Agent/binding/lease fences、只面向永久主人的受限 broker、明文入口隔离、
+不可变发布见证及实际 Matrix receipt。共享 Project 加密 requester 仍关闭。
+
+发现 P2：validate_payload 未要求 Megolm 必需的 session_id，缺失该字段的
+发布可先创建不可逆 possible 记录，再尝试发送无法解密的事件。新单元回归
+在原代码明确失败于 missing session_id；修复后通过。现在 session_id 和
+ciphertext 必须为非空且无控制字符的字符串，保留原 ciphertext 与总长度上限；
+不强制已经废弃的 device_id/sender_key 字段，不改变正常 SDK 载荷。
+规范：https://spec.matrix.org/v1.17/client-server-api/#mroomencrypted
+
+扩展实际 PostgreSQL 原执行/发布回归：缺失、null、数字、空串、控制字符均
+在创建 publication 前拒绝，status 仍为空，原任务保持 encrypted_running；
+随后原 request 的合法载荷仍恰好首次获得发送 custody，原重复/变更/撤租约/
+晚回执断言保留。专用全新 loopback PostgreSQL 库全套显式 include-ignored、
+单测试线程：126 passed、0 failed、0 ignored。没有新付费推理或生产数据库操作。
+
+同步 OpenAPI 载荷说明；重新审阅该源文件后只更新其 x-source-sha256。
+105 Owner/4 AS 操作和34个 validator 自测通过。原质量 CI40505663342 的
+125项实际成功保留，不冒充本修复新头的 CI。新头远端结果将记录在 PR 评论，
+避免为最终结果再产生 docs-only head。
+
+本地证据目录 /tmp/hagency-server-pr7-review-data：megolm-before.log（原失败）、
+megolm-after.log、agent-service-all.log、openapi-after.log、clippy.log。
+
+受影响 agent-service 全目标严格 Clippy（-D warnings）、全 workspace 格式和
+空白检查通过。真实模型、生产 OAuth 和人工/跨平台联合验收仍沿用原有边界。

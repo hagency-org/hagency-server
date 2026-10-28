@@ -147,3 +147,17 @@
   ciphertext-intake report records exact paths and remaining local admission/
   history/ACK/Codex encrypted replies/files/shared requester trust and A3 gates.
   No paid inference, deployment or merge; full goal remains active.
+
+## 2026-10-28 — Server PR7 用途、实现与 CI 直接复核
+
+- 从 f24b95d 在独立 /tmp/hagency-server-pr7-review 复核，不修改其他 checkout。
+  Client main b906dd68 已包含配套四个 PR。当前 owner 私聊完整链具有实际用途；
+  broker、原输入/执行/发布 custody 和兼容门禁保留，不扩大共享 requester 权限。
+- 修复已复现的 P2：Megolm publish 缺失 session_id 仍被接受。新单位回归原代码
+  失败，修复后通过；四行校验变更拒绝缺失/错误类型/空值/控制字符，不消耗发布。
+  实际 PG 回归验证状态不变和随后原 request 正常首次发布，所有原断言保留。
+- 全新隔离 loopback PostgreSQL 库，include-ignored + test-threads=1：126/0/0。
+  OpenAPI105+4操作/34自测通过；源 hash 在重新审阅验证改动后同步，无路由变动。
+  详见 dev-vibe/agent-encrypted-owner-execution-2026-10-27.zh.md 合并前复核节。
+  最终新头 CI 与合并状态记录在 PR 评论，不把原125项成功关联到新提交。
+- 本地 agent-service all-target strict Clippy、全 workspace format、diff 检查均通过。

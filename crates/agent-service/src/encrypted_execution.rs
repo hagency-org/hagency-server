@@ -72,7 +72,10 @@ pub(crate) fn validate_payload(payload: &Value, owner: &str) -> Result<()> {
     }) || c.get("algorithm") != Some(&json!("m.megolm.v1.aes-sha2"))
         || c.get("ciphertext")
             .and_then(Value::as_str)
-            .is_none_or(|s| s.is_empty() || s.len() > 100000)
+            .is_none_or(|s| s.is_empty() || s.len() > 100000 || s.chars().any(char::is_control))
+        || c.get("session_id")
+            .and_then(Value::as_str)
+            .is_none_or(|s| s.is_empty() || s.chars().any(char::is_control))
     {
         return Err(bad());
     }
@@ -226,6 +229,35 @@ impl TransportStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn encrypted_publication_requires_megolm_session_and_ciphertext() {
+        let valid = json!({"content":{"algorithm":"m.megolm.v1.aes-sha2","session_id":"original-session","ciphertext":"sealed"},"shares":[]});
+        assert!(validate_payload(&valid, "@owner:test").is_ok());
+        for field in ["session_id", "ciphertext"] {
+            let mut missing = valid.clone();
+            missing["content"].as_object_mut().unwrap().remove(field);
+            assert!(
+                validate_payload(&missing, "@owner:test").is_err(),
+                "missing {field}"
+            );
+            for value in [
+                json!(null),
+                json!(42),
+                json!({}),
+                json!([]),
+                json!(""),
+                json!("invalid\nvalue"),
+            ] {
+                let mut malformed = valid.clone();
+                malformed["content"][field] = value;
+                assert!(
+                    validate_payload(&malformed, "@owner:test").is_err(),
+                    "malformed {field}: {}",
+                    malformed["content"][field]
+                );
+            }
+        }
+    }
     #[test]
     fn encrypted_publication_accepts_actual_sdk_message_id_but_no_plaintext_or_foreign_recipient() {
         let owner = "@owner:test";
