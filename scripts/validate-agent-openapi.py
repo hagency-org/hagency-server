@@ -170,7 +170,9 @@ def validate(doc):
             require('responses' in operation and operation['responses'], 'no responses')
             for security in operation['security']:
                 require(set(security) <= set(doc['components']['securitySchemes']), 'security scheme missing')
-            if path.startswith('/hagency/api/v1/execution/'):
+            if path.startswith('/hagency/agent-crypto/'):
+                require(operation['security'] == [{'deviceBearer': []}], 'Agent crypto device security drift')
+            elif path.startswith('/hagency/api/v1/execution/'):
                 require(operation['security'] == [{'deviceBearer': []}] and method == 'post', 'execution bearer/method drift')
             elif '/configuration' in path or path.startswith('/hagency/api/v1/device-configuration/'):
                 require(operation['security'] == [{'deviceBearer': []}], 'configuration device security drift')
@@ -191,7 +193,31 @@ def validate(doc):
         require({p for p, _ in operations if p.startswith('/hagency/api/v1/execution/')} == {p for p, _ in literal if p.startswith('/hagency/api/v1/execution/')}, 'invented transport route')
         require(('/hagency/api/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
         require(('/hagency/api/v1/projects/{projectId}/rooms', 'post') not in operations, 'unimplemented Room creation advertised')
-        require(len(operations) == 77, 'reviewed owner route count drift')
+        for suffix, request in [('prepare', 'FilePrepare'), ('chunk', 'FileChunk'), ('queue', 'FileWrite'), ('status', 'Target')]:
+            operation = doc['paths']['/hagency/api/v1/execution/files/' + suffix]['post']
+            require(operation['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/' + request}, 'file request payload drift: ' + suffix)
+            response = operation['responses']['200']['content']['application/json']['schema']
+            require(response.get('additionalProperties') is False and response.get('required') == ['delivery'] and response['properties'] == {'delivery': {'$ref': '#/components/schemas/Delivery'}}, 'file response payload drift')
+        lookup = doc['paths']['/hagency/api/v1/execution/files/lookup']['post']
+        require(lookup['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/FileLookup'}, 'file lookup identity drift')
+        require(lookup['responses']['200']['content']['application/json']['schema'] == {'type': 'object', 'properties': {'observation': {'$ref': '#/components/schemas/FileObservation'}}, 'required': ['observation'], 'additionalProperties': False}, 'file observation response drift')
+        crypto_source = (ROOT / 'crates/agent-service/src/agent_crypto.rs').read_text()
+        crypto_prefix = '/hagency/agent-crypto/{agentId}/{generation}'
+        crypto_routes = {(crypto_prefix + p, m.lower()) for m, p in re.findall(r'\("(GET|POST)", "(/_matrix/[^"]+)"\) => Ok\(Self::', crypto_source)}
+        crypto_routes.add((crypto_prefix + '/provision', 'post'))
+        require(len(crypto_routes) == 7, 'identity-only crypto route drift')
+        receive_routes = {(crypto_prefix + '/receive' + p[len(crypto_prefix):], m) for p,m in crypto_routes if not p.endswith('/provision')}
+        receive_routes |= {(crypto_prefix + '/receive', 'post'), (crypto_prefix + '/receive/_matrix/client/v3/sync', 'get'), (crypto_prefix + '/receive/_matrix/client/v3/keys/claim', 'post')}
+        require(len(receive_routes) == 9 and crypto_routes | receive_routes == {(p,m) for p,m in operations if p.startswith('/hagency/agent-crypto/')}, 'Agent crypto route drift')
+        sync = doc['paths'][crypto_prefix + '/receive/_matrix/client/v3/sync']['get']
+        require({p['name'] for p in sync['parameters'] if p['in'] == 'query'} == {'since','timeout','set_presence','full_state','use_state_after'}, 'receiver sync query drift')
+        for suffix, request in [('prepare', 'EncryptedPrepare'), ('ack', 'EncryptedReference'), ('admission', 'EncryptedReference')]:
+            operation = doc['paths']['/hagency/api/v1/execution/ciphertexts/' + suffix]['post']
+            require(operation['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/' + request}, 'encrypted admission request drift')
+            require(operation['responses']['200']['content']['application/json']['schema'] == {'type':'object','properties':{'admission':{'$ref':'#/components/schemas/EncryptedAdmission'}},'required':['admission'],'additionalProperties':False}, 'encrypted admission response drift')
+        action = doc['components']['schemas']['EncryptedAction']
+        require(set(action['properties']) == {'lease','dispatchId','executionId','action','requestId','kind','payload'} and action.get('additionalProperties') is False, 'encrypted action must contain metadata and sealed payload only')
+        require(len(operations) == 105, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -204,8 +230,50 @@ class GuardTests(unittest.TestCase):
         doc = copy.deepcopy(self.doc); mutate(doc)
         with self.assertRaises((ValueError, KeyError, TypeError)):
             validate(doc)
+    def test_encrypted_action_never_accepts_plaintext_body(self):
+        self.rejection(lambda d: d['components']['schemas']['EncryptedAction']['properties'].update(body={'type':'string'}))
+    def test_missing_encrypted_execution_action(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/encrypted/action'))
+    def test_missing_owner_key_claim(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/agent-crypto/{agentId}/{generation}/receive/_matrix/client/v3/keys/claim'))
+    def test_encrypted_execution_device_boundary(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/encrypted/action']['post'].update(security=[{'userBearer': []}]))
+    def test_missing_encrypted_ack(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/ciphertexts/ack'))
+    def test_encrypted_prepare_never_accepts_plaintext(self):
+        self.rejection(lambda d: d['components']['schemas']['EncryptedPrepare']['properties'].update(body={'type':'string'}))
+    def test_encrypted_ack_requires_device(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/ciphertexts/ack']['post'].update(security=[{'userBearer': []}]))
+    def test_missing_original_ciphertext_route(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/ciphertexts/read'))
+    def test_ciphertext_poll_requires_device(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/ciphertexts/poll']['post'].update(security=[{'userBearer': []}]))
+    def test_ciphertext_read_never_accepts_arbitrary_room_url(self):
+        self.rejection(lambda d: d['components']['schemas']['CipherRead']['properties'].update(url={'type':'string'}))
+    def test_missing_crypto_receive_sync(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/agent-crypto/{agentId}/{generation}/receive/_matrix/client/v3/sync'))
+    def test_receiver_has_no_caller_filter(self):
+        self.rejection(lambda d: d['paths']['/hagency/agent-crypto/{agentId}/{generation}/receive/_matrix/client/v3/sync']['get']['parameters'].append({'name':'filter','in':'query','required':False,'schema':{'type':'string'}}))
     def test_missing_real_route(self):
         self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/events/authorize-tool'))
+    def test_missing_attachment_route(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/files/attachments'))
+    def test_attachment_requires_device(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/attachments']['post'].update(security=[{'userBearer': []}]))
+    def test_missing_file_delivery_route(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/files/queue'))
+    def test_file_status_requires_device(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/status']['post'].update(security=[{'userBearer': []}]))
+    def test_file_lookup_requires_device(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/lookup']['post'].update(security=[{'userBearer': []}]))
+    def test_file_lookup_has_no_write_payload(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/lookup']['post']['requestBody']['content']['application/json'].update(schema={'$ref': '#/components/schemas/FilePrepare'}))
+    def test_file_lookup_closure_is_boolean(self):
+        self.rejection(lambda d: d['components']['schemas']['FileObservation']['properties'].update(preparationClosed={'type':'string'}))
+    def test_file_payload_drift(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/execution/files/queue']['post']['requestBody']['content']['application/json'].update(schema={'$ref': '#/components/schemas/Target'}))
+    def test_file_response_private_field(self):
+        self.rejection(lambda d: d['components']['schemas']['Delivery']['properties'].update(workerToken={'type': 'string'}))
     def test_missing_board_route(self):
         self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/projects/{projectId}/board'))
     def test_wrong_board_bearer(self):

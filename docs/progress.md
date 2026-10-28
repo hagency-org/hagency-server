@@ -1,5 +1,18 @@
 # 进度
 
+## 2026-10-27 — 真实远程审批资格支持
+
+- 当前codex/agent-file-transfer修改前获取最新main，确认祖先关系。仅扩展开发示例
+  的OAuth桥为真实whoami逐token验证，支持两个实际主人设备并拒绝外人；隔离脚本
+  可选保留新test主人的私有密码。生产router/认证/schema不变。
+- Client真实Synapse/双SDK/双NativeOwner/实际Codex远程审批通过，原加密事件、
+ 31字节文件、completed验证设备审计、一调用10912Token结算及whole_tree停止匹配。
+  当前live lease0，历史epoch行1保留。示例严格Clippy、脚本语法及实际正反身份
+  检查通过；没有重复声称全Server110项对本批又通过。
+- 初次header借用编译失败保留；Client前三轮独立资格失败和10967Token原调用亦
+  保留，不重发旧请求。所有本轮Server/Synapse/PG已停止，证据留存；生产OAuth、
+  人工UI和Agent加密执行仍待完成。详细报告在dev-vibe。
+
 ## 2026-10-13 — Desktop issue #2 / Server
 
 已保存并独立复审最终方案，再实现 execution-configuration-v1：设备鉴权 API、严格非秘密 DTO、独立 PostgreSQL 队列/心跳/观察缓存、Agent 和请求双方设备 generation/session fences、幂等 create/complete、16 outstanding 上限、单设备 claim/单 Agent mutation、过期 pending=expired / claimed=unknown、七天历史保留。领取永不重发；配置不使用模型 execution lease，不能修改 Agent 主人或执行设备。
@@ -72,3 +85,79 @@
 ## 2026-10-23 看板内嵌图片回执
 
 上传附件返回稳定 attachment ID，保存在原幂等回执中，供 Client 在描述/评论插入 attachment: 引用。OpenAPI 同步，数据库测试覆盖初次上传与重放 ID 一致。完整隔离 PG 测试 90 通过，all-target Clippy 和 OpenAPI 校验通过；完整原生客户端验证了 PNG/截图上传与引用预览/删除。Cloud 无改动。
+
+## 2026-10-27: Revocable independent Agent crypto identity
+
+- Current identity-only broker has7 closed SDK endpoints and an additive public
+  key-pin schema. Stable Agent/host Matrix keys survive authorization epochs;
+  account cross-signing pins survive reassignment. Before every bounded HTTP IO
+  validate actual owner/session/device/Agent rows and post-wait clock; commit
+  public pins first. Separate crypto connection/4slots keep ordinary domain work
+  out of the external-HTTP queue. No AS/login/private keys leave Server.
+- Actual Synapse/two Agent SDKs/NativeOwner identity6 passes independent public
+  keys, store reopen, actual API device revocation, direct-HS bearer401 and native
+  checked-close/drop/reopen with device generation1→3 and unchanged keys. Actual
+  homeserver retains one Matrix device per Agent; native calls0 and Server leases0.
+  OAuth introspection remains the explicit qualification bridge, not production.
+- Fresh PG full114/0/0 and current4security regressions pass; all-target strict
+  Clippy, format and OpenAPI90owner+4AS/22guard tests pass. Preserve earlier
+  compiler, versions-masquerade, driver URL/field/state-lock failures and reused-DB
+ 112/2 notice failure; never reinterpret them as passed. Client report in dev-vibe
+  records exact receipts/logs and remaining normal runtime/trust/encrypted task/file
+  integration, A3 and earlier manual/platform/OAuth gates. Full goal stays active.
+
+
+## 2026-10-27 — scoped owner crypto receive
+
+- Separate receiver8 endpoints, original identity7 unchanged. Owner-only public
+  queries/signatures and fixed device-bound empty-room sync preserve current
+  owner/session/device/Agent scope locks and original public pins.
+- SDK compatibility hint use_state_after=true accepted explicitly; caller filters
+  or identity/wait control stay refused. Received Room content is rejected.
+- Fresh119 PG tests/no ignores, strict all-target Clippy, OpenAPI98owner+4AS and
+ 24guards pass. Actual Synapse receive5 with normal Client Native lifecycle
+  proves original owner ciphertext, wrong Agent/gen/room/sender/tamper refusal,
+  restart1→2 retaining original Megolm keys, independent OpenSSL signer proof and
+  native calls0/Server leases0/pins2. No paid inference or execution grant.
+- Explicit Synapse fixture now starts the actual production cleanup worker so
+  new Agents finish identity provisioning. Earlier failed runs remain separate
+  in the Client owner-receive dev-vibe report. Encrypted admission/ACK/current
+  membership+lease and original replies/files still require implementation.
+
+
+## 2026-10-27 — original ciphertext inbox/current-lease transport
+
+- Copy original verified pending AS raw events under the same transaction lock
+  before routing compaction. Separate immutable ciphertext inbox and canonical
+  source commitments, shared owner capacity, expiry tombstones and Agent-loop
+  exclusion retain origin independently of the plaintext task queue.
+- Device-only ciphertext poll/read use original IDs/current leases and fresh
+  Gateway facts, generation/assignment/paused/expiry checks. No plaintext input,
+  arbitrary URL, verification claim, task ACK/admission/model start is accepted.
+- Fresh full122 PG tests/no ignores, final ciphertext3 and all-target strict
+  Clippy pass; OpenAPI100owner+4AS/27guards passes. Preserve initial borrow error/
+  incremental compiler ICE; corrected source verified without incremental cache
+  or production flag changes. Cross-repo canonical fixture bytes match.
+- Final Client intake2 uses actual Synapse, normal Native SDK lifecycle and actual
+  encrypted normal/thread events. Wrong Agent/epoch/released lease refuses;
+  Native restart1→2 retains crypto. Independent HS event reads/Python SHA/PG
+  prove two original retained ciphertexts after AS routed/body compaction, plain
+  task rows0, native calls0/current leases0 and historical lease1 retained.
+- Both owned fixtures and PG stopped with evidence preserved; Client dev-vibe
+  ciphertext-intake report records exact paths and remaining local admission/
+  history/ACK/Codex encrypted replies/files/shared requester trust and A3 gates.
+  No paid inference, deployment or merge; full goal remains active.
+
+## 2026-10-28 — Server PR7 用途、实现与 CI 直接复核
+
+- 从 f24b95d 在独立 /tmp/hagency-server-pr7-review 复核，不修改其他 checkout。
+  Client main b906dd68 已包含配套四个 PR。当前 owner 私聊完整链具有实际用途；
+  broker、原输入/执行/发布 custody 和兼容门禁保留，不扩大共享 requester 权限。
+- 修复已复现的 P2：Megolm publish 缺失 session_id 仍被接受。新单位回归原代码
+  失败，修复后通过；四行校验变更拒绝缺失/错误类型/空值/控制字符，不消耗发布。
+  实际 PG 回归验证状态不变和随后原 request 正常首次发布，所有原断言保留。
+- 全新隔离 loopback PostgreSQL 库，include-ignored + test-threads=1：126/0/0。
+  OpenAPI105+4操作/34自测通过；源 hash 在重新审阅验证改动后同步，无路由变动。
+  详见 dev-vibe/agent-encrypted-owner-execution-2026-10-27.zh.md 合并前复核节。
+  最终新头 CI 与合并状态记录在 PR 评论，不把原125项成功关联到新提交。
+- 本地 agent-service all-target strict Clippy、全 workspace format、diff 检查均通过。

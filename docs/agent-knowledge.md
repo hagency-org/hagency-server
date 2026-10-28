@@ -1,4 +1,52 @@
+# Original AS ciphertext custody checkpoint (2026-10-27)
+
+Copy exact original pending AS ciphertext under the shared routing/compaction
+transaction lock into a separate inbox; never accept a client event as provenance.
+Canonical sorted SHA256 commitments and immutable binding/Agent generation remain
+through expiry tombstones. Plain Poll cannot see this table; known Agent senders
+never create loops. Current lease, assignment, generations, membership, pause,
+crypto state and expiry guard every poll/read. External relations are opaque.
+Reading/SDK decryption is not task ACK/admission/start; Server retains no plaintext.
+Fresh intake2 proves actual normal/thread AS messages after compaction, current
+negative scopes and native restart. Independent actual-HS/Python/PG proves both
+original commitments, calls0/live leases0 and one historical lease retained.
+Native owned jobs must not take calls while Stop may hold it and join them.
+Local inbox/history/ACK and full encrypted Codex replies/files remain open.
+
+# Owner-scoped crypto receive checkpoint (2026-10-27)
+
+Keep identity7 separate from receiver8 operations. Force device-bound zero-wait
+empty-room sync and accept the SDK fixed use_state_after=true hint only. Owner
+master signatures must use the Agent permanently pinned user signer; strip other
+signers. Crypto evidence does not establish original AS event origin or execution
+authority. Original receive task registration and stop snapshot share the slot
+lock; stop/shutdown join tasks even if the observer disappears. Actual fixtures
+must start the same identity/membership cleanup worker as backend. A fresh SDK
+store cannot reuse an old Matrix device (OTK collision). Fresh receive5 proves
+actual owner ciphertext, exact negative scopes/tamper and native restart1→2;
+OpenSSL Agent→owner signature and independent ledger calls/lease rows0 pass.
+Original encrypted admission/ACK/current-member/lease/replies/files remain open.
+
+# Independent Agent crypto identity checkpoint (2026-10-27)
+
+Keep permanent Agent/host Matrix device keys separate from rotating Hagency
+credentials. Pin account cross-signing keys across all hosts; no reassignment
+can silently reset them. Commit public digests before HTTP and hold actual scope
+rows through bounded IO, using a separate crypto connection and4request slots.
+AS registration inhibits login; global versions must not masquerade as an
+unregistered Agent. Actual device whoami probes support without lying about the
+advertised Matrix version. Client retains private encrypted SDK keys. Actual
+identity6 proves two Agents, revocation and native credential1→3 continuity;
+calls/leases0. This does not open encrypted task/reply/file or owner trust gates.
+Detailed contract and actual/failed qualification evidence are in dev-vibe.
+
 # 持久知识
+
+- Synapse资格示例的OAuth桥可验证多个实际主人SDK token，但必须逐token查真实
+  whoami并拒绝Bob/无效token；不能将第二台设备的任意字符串视为主人。可选
+  --retain-owner-password仅保存新隔离test主人的密码，默认关闭，绝不用于生产。
+  双SDK/双NativeOwner/真实Codex远程审批联合验收通过，但普通Room任务不代表
+  加密Agent执行已完成；生产OAuth/人工UI仍是独立门槛。
 
 - 配置协议固定在 `docs/design/2026-10-13-cross-device-agent-configuration-review.zh-CN.md`，Server DTO 位于 `crates/agent-service/src/configuration_types.rs`。队列只传白名单非秘密信息；credentialRef 是 opaque 本地引用，不是凭据。
 - 配置 HTTP 路由必须在通用 session bearer 鉴权分流前执行 device bearer 鉴权。`Store::authenticate(false)` 只接受 session token，不接受 device token。
@@ -29,3 +77,9 @@
 ## 看板图片引用回执
 
 Client 插图应使用上传事务返回的 attachment ID，不能根据文件名或详情列表顺序猜测。该 ID 随原幂等回执持久化，重试必须相同；其他 mutation 的 attachment 可为 null。客户端还需同步放宽本地转发请求的 Base64 预算，单改 Server 上传上限不足以支持截图。
+
+- **Megolm 发布 envelope，2026-10-28 review：** 除 algorithm 和 ciphertext 外，
+  session_id 也是必需字段。发布前须拒绝缺失/非字符串/空值/控制字符，不能先
+  消耗永久 possible 发布见证。用真实 PG 断言 status 仍无 publication、原任务
+  仍 running，随后原 request 合法载荷仍有首次 custody。device_id/sender_key
+  已废弃，不能重新强制要求；正常 SDK 的 org.matrix.msgid 仍允许。

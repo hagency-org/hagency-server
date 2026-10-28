@@ -10,6 +10,16 @@ use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncC
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
 
+#[path = "transport_attachments.rs"]
+mod attachments;
+#[path = "transport_ciphertexts.rs"]
+pub(crate) mod ciphertexts;
+#[path = "encrypted_dispatches.rs"]
+pub(crate) mod encrypted;
+#[path = "encrypted_execution.rs"]
+pub(crate) mod encrypted_execution;
+#[path = "transport_files.rs"]
+pub(crate) mod files;
 #[path = "transport_history.rs"]
 mod history;
 #[path = "pause_notices.rs"]
@@ -324,6 +334,13 @@ impl TransportStore {
                     .await?;
                 db.batch_execute(include_str!("processing_schema.sql")).await?;
             }
+            let cipher_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.ciphertext_inbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !cipher_initialized.matched {db.batch_execute(include_str!("ciphertext_schema.sql")).await?;}
+            db.batch_execute("SELECT id,source_digest,event,agent_generation,binding_generation,state FROM hagency_agent_v1.ciphertext_inbox LIMIT 0").await.map_err(|_|Error::Conflict("ciphertext_schema_incompatible"))?;
+            let encrypted_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.encrypted_dispatches') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !encrypted_initialized.matched {db.batch_execute(include_str!("encrypted_dispatches_schema.sql")).await?;}
+            db.batch_execute("SELECT dispatch_id,inbox_id,source_digest,projection,seal_digest FROM hagency_agent_v1.encrypted_dispatches LIMIT 0").await.map_err(|_|Error::Conflict("encrypted_admission_schema_incompatible"))?;
+            db.batch_execute(include_str!("encrypted_execution_schema.sql")).await?;
             let pause_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.pause_notice_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !pause_initialized.matched {
                 db.batch_execute(include_str!("pause_notices_schema.sql")).await?;
@@ -332,6 +349,15 @@ impl TransportStore {
             if !notices_initialized.matched {
                 db.batch_execute(include_str!("request_notices_schema.sql")).await?;
             }
+            let files_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.event_attachments') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !files_initialized.matched {db.batch_execute(include_str!("attachment_schema.sql")).await?;}
+            let delivery_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !delivery_initialized.matched {db.batch_execute(include_str!("file_delivery/schema.sql")).await?;}
+            let denial_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_delivery_denials') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !denial_initialized.matched {db.batch_execute(include_str!("file_delivery/denials.sql")).await?;}
+            db.batch_execute("SELECT id FROM hagency_agent_v1.file_sendable LIMIT 0").await.map_err(|_|Error::Conflict("file_delivery_schema_incompatible"))?;
+            db.batch_execute("SELECT dispatch_id,descriptor,descriptor_digest FROM hagency_agent_v1.event_attachments LIMIT 0").await
+                .map_err(|_| Error::Conflict("attachment_schema_incompatible"))?;
             db.batch_execute("SELECT id FROM hagency_agent_v1.processing_sendable LIMIT 0").await
                 .map_err(|_| Error::Conflict("processing_schema_incompatible"))?;
             db.batch_execute("SELECT delivery_epoch FROM hagency_agent_v1.reply_outbox LIMIT 0")
@@ -430,6 +456,7 @@ impl TransportStore {
         // Re-executing an in-flight tool after failover is unsafe. Retain unknown
         // state for explicit operator reconciliation; ACK alone is not execution.
         sql_query("UPDATE hagency_agent_v1.owner_events SET state=CASE WHEN state='running' THEN 'unknown' ELSE 'pending' END WHERE agent_id=$1 AND state IN ('offered','acknowledged','running')").bind::<Text,_>(agent).execute(db).await?;
+        sql_query("UPDATE hagency_agent_v1.owner_events SET state=CASE WHEN state='encrypted_running' THEN 'encrypted_unknown' ELSE 'encrypted_pending' END WHERE agent_id=$1 AND state IN ('encrypted_offered','encrypted_acknowledged','encrypted_running')").bind::<Text,_>(agent).execute(db).await?;
         sql_query("UPDATE hagency_agent_v1.reply_outbox SET state='cancelled' WHERE agent_id=$1 AND state='pending'").bind::<Text,_>(agent).execute(db).await?;
         Ok(())
     }
@@ -535,6 +562,7 @@ impl TransportStore {
                 if scope.owner_user_id != p.user_id { return Err(Error::Unauthorized("transport_scope_not_authorized")); }
             }
             observation(&scope, requester, facts, now)?;
+            Self::block_files_observed(db,&scope,requester,facts).await?;
             let room = crate::domain::RoomFacts {
                 owner_direct_valid:facts.owner_direct_valid,
                 owner_mxid: facts.owner_mxid.clone(), room_id: facts.room_id.clone(),
@@ -600,7 +628,7 @@ impl TransportStore {
         Ok(())
     }
     async fn expire_pending(db: &mut AsyncPgConnection, ttl: i64, now: i64) -> Result<usize> {
-        Ok(sql_query("UPDATE hagency_agent_v1.owner_events SET state='cancelled',outcome='expired' WHERE state IN ('pending','offered','acknowledged') AND created_at_ms<=$1")
+        Ok(sql_query("UPDATE hagency_agent_v1.owner_events SET state=CASE WHEN state LIKE 'encrypted_%' THEN 'encrypted_cancelled' ELSE 'cancelled' END,outcome='expired' WHERE state IN ('pending','offered','acknowledged','encrypted_pending','encrypted_offered','encrypted_acknowledged') AND created_at_ms<=$1")
             .bind::<BigInt,_>(now.saturating_sub(ttl)).execute(db).await?)
     }
     /// Trusted AS routing worker: durable queue insert succeeds independently of
@@ -624,6 +652,21 @@ impl TransportStore {
         received_at_ms: i64,
         now: i64,
     ) -> Result<RouteResult> {
+        self.ingest_routed_attachment_received(binding, event, None, f, received_at_ms, now)
+            .await
+    }
+    pub async fn ingest_routed_attachment_received(
+        &self,
+        binding: &str,
+        event: RoutedEvent,
+        attachment: Option<crate::attachments::Attachment>,
+        f: &DeliveryFacts,
+        received_at_ms: i64,
+        now: i64,
+    ) -> Result<RouteResult> {
+        if let Some(a) = &attachment {
+            a.validate()?;
+        }
         self.observe_delivery_authority(None, binding, &event.sender_mxid, None, f, now)
             .await?;
         key(binding)?;
@@ -637,8 +680,14 @@ impl TransportStore {
         if event.is_edit {
             return Ok(RouteResult::Ignored);
         }
-        let digest =
-            hash(&serde_json::to_string(&event).map_err(|_| Error::Invalid("invalid_event"))?);
+        let digest = if let Some(a) = &attachment {
+            hash(
+                &serde_json::to_string(&(&event, a))
+                    .map_err(|_| Error::Invalid("invalid_event"))?,
+            )
+        } else {
+            hash(&serde_json::to_string(&event).map_err(|_| Error::Invalid("invalid_event"))?)
+        };
         let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
@@ -657,7 +706,7 @@ impl TransportStore {
             if scope.service_paused {
                 return self.queue_pause_notice(db,&scope,&event,&digest,received_at_ms,now).await;
             }
-            let count=sql_query("SELECT count(*) AS total FROM hagency_agent_v1.owner_events WHERE owner_user_id=$1 AND state IN ('pending','offered','acknowledged','running','unknown')").bind::<Text,_>(&scope.owner_user_id).get_result::<Count>(db).await?;
+            let count=sql_query("SELECT (SELECT count(*) FROM hagency_agent_v1.owner_events WHERE owner_user_id=$1 AND state IN ('pending','offered','acknowledged','running','unknown','encrypted_pending','encrypted_offered','encrypted_acknowledged','encrypted_running','encrypted_unknown'))+(SELECT count(*) FROM hagency_agent_v1.ciphertext_inbox c WHERE c.owner_user_id=$1 AND c.state='pending' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.encrypted_dispatches d WHERE d.inbox_id=c.id)) AS total").bind::<Text,_>(&scope.owner_user_id).get_result::<Count>(db).await?;
             if count.total>=self.limits.max_owner_events {return Err(Error::Unavailable("owner_queue_full"));}
             // A top-level owner DM uses its immutable Room ID as the context key.
             // Explicit Matrix threads and Project messages retain event roots.
@@ -670,6 +719,9 @@ impl TransportStore {
             let id=format!("evt_{}",entity_id()?);
             sql_query("INSERT INTO hagency_agent_v1.owner_events(id,binding_id,agent_id,owner_user_id,event_id,room_id,requester_mxid,thread_root,body,digest,binding_generation,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',$12)")
                 .bind::<Text,_>(&id).bind::<Text,_>(binding).bind::<Text,_>(&scope.agent_id).bind::<Text,_>(&scope.owner_user_id).bind::<Text,_>(&event.event_id).bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.sender_mxid).bind::<Text,_>(root).bind::<Text,_>(&event.body).bind::<Text,_>(digest).bind::<BigInt,_>(scope.binding_generation).bind::<BigInt,_>(received_at_ms).execute(db).await?;
+            if let Some(a)=&attachment {
+                sql_query("INSERT INTO hagency_agent_v1.event_attachments(dispatch_id,descriptor,descriptor_digest) VALUES($1,$2,$3)").bind::<Text,_>(&id).bind::<diesel::sql_types::Jsonb,_>(serde_json::to_value(a).map_err(|_|Error::Invalid("invalid_agent_attachment"))?).bind::<Text,_>(&a.descriptor_digest).execute(db).await?;
+            }
             sql_query("INSERT INTO hagency_agent_v1.agent_threads(binding_id,thread_root) VALUES($1,$2) ON CONFLICT DO NOTHING").bind::<Text,_>(binding).bind::<Text,_>(root).execute(db).await?;
             Ok(RouteResult::Queued{dispatch_id:id})
         }).await
@@ -683,7 +735,7 @@ impl TransportStore {
         limit: usize,
         now: i64,
     ) -> Result<Vec<EventHeader>> {
-        self.event_candidates_scoped(p, reference, None, limit, now)
+        self.event_candidates_scoped(p, reference, None, false, limit, now)
             .await
     }
     pub async fn event_candidates_for_binding(
@@ -695,7 +747,19 @@ impl TransportStore {
         now: i64,
     ) -> Result<Vec<EventHeader>> {
         key(binding)?;
-        self.event_candidates_scoped(p, reference, Some(binding), limit, now)
+        self.event_candidates_scoped(p, reference, Some(binding), false, limit, now)
+            .await
+    }
+    pub async fn event_candidates_with_attachments(
+        &self,
+        p: &Principal,
+        reference: &LeaseRef,
+        binding: &str,
+        limit: usize,
+        now: i64,
+    ) -> Result<Vec<EventHeader>> {
+        key(binding)?;
+        self.event_candidates_scoped(p, reference, Some(binding), true, limit, now)
             .await
     }
     async fn event_candidates_scoped(
@@ -703,6 +767,7 @@ impl TransportStore {
         p: &Principal,
         reference: &LeaseRef,
         binding: Option<&str>,
+        accept_files: bool,
         limit: usize,
         now: i64,
     ) -> Result<Vec<EventHeader>> {
@@ -720,7 +785,7 @@ impl TransportStore {
                 }
             }
             Self::expire_pending(db,self.limits.event_ttl_ms,now).await?;
-            Ok(sql_query("SELECT e.id,e.binding_id,e.event_id,e.room_id,e.requester_mxid,e.thread_root FROM hagency_agent_v1.owner_events e JOIN hagency_agent_v1.bindings b ON b.id=e.binding_id WHERE e.owner_user_id=$1 AND e.agent_id=$2 AND e.state IN ('pending','offered','acknowledged') AND e.binding_generation=b.generation AND b.state='active' AND e.created_at_ms>$4 AND ($5::text IS NULL OR e.binding_id=$5) ORDER BY e.created_at_ms,e.id LIMIT $3").bind::<Text,_>(&p.user_id).bind::<Text,_>(&reference.agent_id).bind::<BigInt,_>(limit as i64).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).bind::<Nullable<Text>,_>(binding).load(db).await?)
+            Ok(sql_query("SELECT e.id,e.binding_id,e.event_id,e.room_id,e.requester_mxid,e.thread_root FROM hagency_agent_v1.owner_events e JOIN hagency_agent_v1.bindings b ON b.id=e.binding_id WHERE e.owner_user_id=$1 AND e.agent_id=$2 AND e.state IN ('pending','offered','acknowledged') AND e.binding_generation=b.generation AND b.state='active' AND e.created_at_ms>$4 AND ($5::text IS NULL OR e.binding_id=$5) AND ($6 OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.event_attachments a WHERE a.dispatch_id=e.id)) ORDER BY e.created_at_ms,e.id LIMIT $3").bind::<Text,_>(&p.user_id).bind::<Text,_>(&reference.agent_id).bind::<BigInt,_>(limit as i64).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).bind::<Nullable<Text>,_>(binding).bind::<Bool,_>(accept_files).load(db).await?)
         }).await
     }
     async fn dispatch(db: &mut AsyncPgConnection, p: &Principal, id: &str) -> Result<Dispatch> {
@@ -742,6 +807,11 @@ impl TransportStore {
             || event.binding_generation != scope.binding_generation
         {
             return Err(Error::Unauthorized("dispatch_scope_revoked"));
+        }
+        if event.state.starts_with("encrypted_") {
+            return Err(Error::Conflict(
+                "encrypted_dispatch_requires_ciphertext_api",
+            ));
         }
         facts(&scope, &event.requester_mxid, f, now)?;
         Ok(scope)
@@ -785,6 +855,11 @@ impl TransportStore {
             let scope = Self::scope(db, &e.binding_id).await?;
             if !scope.active || scope.binding_generation != e.binding_generation {
                 return Err(Error::Unauthorized("dispatch_scope_revoked"));
+            }
+            if e.state.starts_with("encrypted_") {
+                return Err(Error::Conflict(
+                    "encrypted_dispatch_requires_ciphertext_api",
+                ));
             }
             if e.state == "acknowledged" {
                 return Ok(());
@@ -1247,6 +1322,15 @@ fn observation(scope: &RoutingScope, requester: &str, f: &DeliveryFacts, now: i6
     Ok(())
 }
 fn facts(scope: &RoutingScope, requester: &str, f: &DeliveryFacts, now: i64) -> Result<()> {
+    facts_mode(scope, requester, f, now, false)
+}
+fn facts_mode(
+    scope: &RoutingScope,
+    requester: &str,
+    f: &DeliveryFacts,
+    now: i64,
+    encrypted: bool,
+) -> Result<()> {
     let now = now.max(crate::api::now_ms());
     if f.observed_at_ms < 0 || f.observed_at_ms > now || now - f.observed_at_ms > 30_000 {
         return Err(Error::Unavailable("matrix_state_unavailable"));
@@ -1269,7 +1353,7 @@ fn facts(scope: &RoutingScope, requester: &str, f: &DeliveryFacts, now: i64) -> 
     {
         return Err(Error::Unauthorized("room_delivery_denied"));
     }
-    if f.encrypted {
+    if f.encrypted != encrypted {
         return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
     }
     Ok(())

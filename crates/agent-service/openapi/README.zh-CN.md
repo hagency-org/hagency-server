@@ -2,7 +2,7 @@
 
 本目录描述实际实现，不是需求草案。仓库中的 Palpo/Matrix、Pasion/OIDC、浏览器代理及 hagency-client 本机 Console API 不在这两份 OpenAPI 的范围内。
 
-- `hagency-v1.openapi.json`：OpenAPI 3.1，契约版本 1.0.0；71 个操作，包含用户会话、设备、Project/Room 登记与权限、永久归属 Agent、Binding、命令查询、租约与执行、工具前远端事实核验、已知回复恢复及 `/readyz`。
+- `hagency-v1.openapi.json`：OpenAPI 3.1，契约版本 1.0.0；105 个操作，包含用户会话、设备、Project/Room 登记与权限、永久归属 Agent、Binding、命令查询、租约与执行、工具前远端事实核验、已知回复恢复及 `/readyz`。
 - `appservice-v1.openapi.json`：独立的 homeserver → 必装 Appservice 信任边界；4 个操作，包含事务、ping、用户和 Room alias 查询。
 - `scripts/validate-agent-openapi.py`：Python 标准库验证，不增加生产依赖。从仓库根目录执行 `python3 scripts/validate-agent-openapi.py --self-test`。
 
@@ -71,3 +71,51 @@ Agent 的创建者保持永久归属；服务范围通过 `visibility: public | 
 ## 共享项目看板
 
 新增 12 个 `project-board-v1` 操作使用用户会话与当前 Space 成员权限，覆盖任务、排序、归档、评论、活动与变更游标。它与 Agent 执行和本地 OperatorTask 分离。契约、可选 Server 关闭开关及跨仓库验证见 [project-board.md](../../../docs/project-board.md)。无需修改 Cloud 产品代码。
+
+
+## 独立 Agent 密钥接收
+
+`agent-crypto-owner-receive-v1` 使用单独的
+`/hagency/agent-crypto/{agentId}/{generation}/receive` 命名空间，共8个操作。
+原身份命名空间仍只有7个操作。两者共享同一永久 Agent/主机设备公钥与
+当前会话、设备 generation、Agent generation 和执行设备分配校验。
+接收入口 POST 返回以 `/receive` 结尾的 SDK homeserver；不分发 Matrix 登录 token。
+
+新增 sync 只转发当前 Agent 设备的 to-device 加密更新。服务端固定
+`timeout=0`、`set_presence=offline`，过滤所有 Room、presence 和 account-data；
+调用方不能提供 filter、user_id、device_id 或 access_token。成功响应最多1MiB，
+最多256个 to-device 事件，出现房间内容直接拒绝。query 仅允许本 Agent 和
+永久主人；主人 master key 的签名必须匹配已经固定的 Agent user-signing key，
+转发前移除其他用户的签名。它不开放发送、房间历史、key claim、备份或任意用户查询。
+
+此接口仅提供客户端密码学接收能力，不能作为入站事件授权、ACK、租约或模型执行许可。
+加密执行仍需独立完成原始密文接纳、当前成员/绑定/租约核验及加密回复链路。
+
+
+## 原始加密入站队列
+
+`agent-encrypted-inbox-v1` 提供独立的 `POST execution/ciphertexts/poll` 与
+`read`，只接受当前设备 lease、binding/原 inbox ID，最多4项。逐条使用真实
+Gateway成员事实并再次核对 lease、设备/Agent/绑定代次、暂停、过期和加密状态。
+原 AS event 在同一事务锁下核对持久原事务后保存；路由接纳成功后才允许压缩
+AS正文。摘要为排序 UTF-8 JSON `["agent-encrypted-inbox-v1",event]` 的 SHA256。
+
+普通 Poll/附件 Poll 不返回密文。相同事件幂等，内容改变冲突；过期保留不可重启
+墓碑，不能改写或删除。读取不修改执行状态，不能作为任务 ACK/准入/start/lease。
+Server 不接收解密明文；任务路由、加密回复和文件还需 Client完整执行链。
+标准外部 `m.relates_to` 只作为原始不可信元数据保留，不据此执行 thread/mention。
+
+`agent-encrypted-admission-v1` 增加独立 ciphertexts/prepare、ack、admission。
+仅提交原始 inboxId/sourceDigest 与解密后认证的 thread/mentions 投影；Server
+保存原始密文作为历史正文，以 encrypted_* 状态隔离普通执行接口。主机须先原子
+持久化本地明文、原始密文与两种历史摘要，再 ACK。重复 ACK、重启和换租约保留
+原 dispatch；同一加密载荷改外层 event_id 不得创建新任务。ACK 不允许模型/工具
+执行；完整加密 start/reply/file 流程仍未实现。
+
+`agent-encrypted-owner-execution-v1` 完成已验证主人私聊的加密任务运行链：
+独立 encrypted/action 处理原任务 Start、每次工具授权、停止、原密文发布和
+历史读取。主机 SDK 本地加密文本/文件，Server 只保存原始密文和 owner-only
+Olm 密钥分享；发布前提交 possible，重复元数据提交只返回原状态，不重复发送。
+实际 HTTP 原事件回执才记 sent；未知不能变成新的发送权限。Receive broker 仅
+增加当前永久主人的 signed_curve25519 key claim，不接受任意 peer/to-device/
+Room/media 写入。共享 Project 的加密请求者执行和跨主机恢复仍未实现。

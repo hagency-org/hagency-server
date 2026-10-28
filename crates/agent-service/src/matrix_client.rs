@@ -3,6 +3,8 @@ use crate::{Error, Result, domain::Agent};
 use reqwest::{Client, Method, Url};
 use serde_json::{Value, json};
 use std::time::Duration;
+#[path = "matrix_crypto.rs"]
+mod crypto;
 #[derive(Clone)]
 pub struct MatrixClient {
     http: Client,
@@ -174,6 +176,59 @@ impl MatrixClient {
         .await?;
         Ok(())
     }
+    pub(crate) async fn upload_file(
+        &self,
+        puppet: &str,
+        filename: &str,
+        bytes: Vec<u8>,
+    ) -> Result<String> {
+        self.puppet(puppet)?;
+        if bytes.len() > crate::file_delivery::MAX_BYTES {
+            return Err(Error::Invalid("file_capacity_exceeded"));
+        }
+        let mut url = self.origin.clone();
+        url.path_segments_mut()
+            .map_err(|_| Error::Invalid("invalid_matrix_origin"))?
+            .clear()
+            .extend(["_matrix", "media", "v3", "upload"]);
+        url.query_pairs_mut()
+            .append_pair("user_id", puppet)
+            .append_pair("filename", filename);
+        let mut response = self
+            .http
+            .post(url)
+            .bearer_auth(&self.as_token)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .timeout(Duration::from_secs(30))
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|_| Error::Unavailable("matrix_outcome_unknown"))?;
+        if !response.status().is_success() {
+            return Err(Error::Unavailable("matrix_outcome_unknown"));
+        }
+        let mut raw = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| Error::Unavailable("matrix_outcome_unknown"))?
+        {
+            if raw.len() + chunk.len() > 32768 {
+                return Err(Error::Unavailable("matrix_response_too_large"));
+            }
+            raw.extend_from_slice(&chunk);
+        }
+        let value: Value = serde_json::from_slice(&raw)
+            .map_err(|_| Error::Unavailable("invalid_matrix_response"))?;
+        let url = value["content_uri"]
+            .as_str()
+            .ok_or(Error::Unavailable("invalid_matrix_response"))?;
+        crate::attachments::Attachment::from_content(
+            &json!({"msgtype":"m.file","body":"file","url":url}),
+        )
+        .map_err(|_| Error::Unavailable("invalid_matrix_response"))?;
+        Ok(url.to_owned())
+    }
     pub async fn send(
         &self,
         puppet: &str,
@@ -194,7 +249,7 @@ impl MatrixClient {
         self.send_typed(puppet, room, transaction, "m.reaction", content)
             .await
     }
-    async fn send_typed(
+    pub(crate) async fn send_typed(
         &self,
         puppet: &str,
         room: &str,
@@ -224,6 +279,28 @@ impl MatrixClient {
             .filter(|id| id.starts_with('$'))
             .map(str::to_owned)
             .ok_or(Error::Unavailable("invalid_matrix_response"))
+    }
+    pub(crate) async fn encrypted_share(
+        &self,
+        puppet: &str,
+        txn: &str,
+        messages: Value,
+    ) -> Result<()> {
+        self.call(
+            Method::PUT,
+            &[
+                "_matrix",
+                "client",
+                "v3",
+                "sendToDevice",
+                "m.room.encrypted",
+                txn,
+            ],
+            puppet,
+            Some(serde_json::json!({"messages":messages})),
+        )
+        .await?;
+        Ok(())
     }
     pub async fn leave(&self, puppet: &str, room: &str) -> Result<()> {
         self.call(

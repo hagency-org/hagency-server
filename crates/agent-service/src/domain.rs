@@ -16,6 +16,8 @@ use std::{collections::BTreeSet, sync::Arc};
 #[path = "domain_discovery.rs"]
 mod discovery;
 pub use discovery::RoomAgent;
+#[path = "agent_crypto.rs"]
+pub(crate) mod agent_crypto;
 #[path = "execution_configuration.rs"]
 mod execution_configuration;
 #[path = "execution_devices.rs"]
@@ -120,9 +122,14 @@ fn matrix_id(value: &str, sigil: char) -> Result<()> {
     if value.len() > 255
         || !value.starts_with(sigil)
         || value.chars().any(|c| c.is_whitespace() || c.is_control())
-        || !value[1..]
+        || !(value[1..]
             .split_once(':')
             .is_some_and(|(local, server)| !local.is_empty() && !server.is_empty())
+            || (sigil == '!'
+                && value.len() == 44
+                && value[1..]
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')))
     {
         return Err(Error::Invalid("invalid_matrix_identifier"));
     }
@@ -229,7 +236,7 @@ fn creating(
         return Err(Error::Unauthorized("service_invitation_denied"));
     }
 
-    if f.encrypted {
+    if f.encrypted && !(space.is_empty() && f.owner_direct_valid) {
         return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
     }
 
@@ -420,6 +427,7 @@ struct Flag {
 pub struct DomainStore {
     pub(crate) board: project_board::BoardStore,
     db: Arc<crate::database::Database>,
+    crypto_db: Arc<crate::database::Database>,
     server: String,
     namespace: String,
 }
@@ -476,6 +484,7 @@ impl DomainStore {
             }
             db.batch_execute(include_str!("configuration_schema.sql")).await?;
             db.batch_execute(include_str!("visibility_schema.sql")).await?;
+            db.batch_execute(include_str!("agent_crypto_schema.sql")).await?;
             let pause_initialized=sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='bindings' AND column_name='owner_service_paused') AS matched").get_result::<Flag>(db).await?;
             if !pause_initialized.matched {
                 db.batch_execute("ALTER TABLE hagency_agent_v1.bindings ADD COLUMN owner_service_paused boolean NOT NULL DEFAULT false").await?;
@@ -490,7 +499,13 @@ impl DomainStore {
         }
 ).await?;
 
+        // Crypto HTTP holds only its own connection while actual authorization
+        // rows stay locked; unrelated domain work must not queue behind it.
+        let crypto_db = AsyncPgConnection::establish(url)
+            .await
+            .map_err(|_| Error::Unavailable("database_unavailable"))?;
         Ok(Self {
+            crypto_db: Arc::new(crate::database::Database::new(crypto_db, url)),
             board: project_board::BoardStore::open(url).await?,
             db: Arc::new(crate::database::Database::new(db, url)),
             server: server.into(),
@@ -1146,7 +1161,7 @@ impl DomainStore {
             if f.owner_mxid!=owner.mxid || f.room_id!=b.room_id || f.space_id!=space || f.puppet_mxid.as_deref()!=Some(&a.puppet_mxid) || !f.owner_in_room || (if space.is_empty() {!f.owner_direct_valid} else {!f.owner_in_space || !f.room_in_space}) || !pp.permits(&owner.mxid) || !rp.permits(&owner.mxid) {
                 return Err(Error::Unauthorized("provisioning_authority_revoked"));
             }
-            if f.encrypted { return Err(Error::Conflict("encrypted_room_requires_client_crypto")); }
+            if f.encrypted && b.scope_kind!="owner_direct" { return Err(Error::Conflict("encrypted_room_requires_client_crypto")); }
             if !f.puppet_in_room && !f.service_can_invite && !f.owner_direct_valid { return Err(Error::Unauthorized("service_invitation_denied")); }
             if activate {
                 if !f.puppet_in_room { return Err(Error::Conflict("puppet_join_not_confirmed")); }
@@ -1298,7 +1313,7 @@ impl DomainStore {
                     return Err(Error::Unauthorized("puppet_not_joined"));
                 }
 
-                if f.encrypted {
+                if f.encrypted && b.scope_kind != "owner_direct" {
                     return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
                 }
 
@@ -1593,7 +1608,7 @@ impl DomainStore {
             if !f.puppet_in_room || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid) {
                 return Err(Error::Conflict("puppet_join_not_confirmed"));
             }
-            if f.encrypted {
+            if f.encrypted && b.scope_kind!="owner_direct" {
                 return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
             }
 

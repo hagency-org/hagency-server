@@ -53,16 +53,22 @@ fn request_notice_content(
     content
 }
 
-/// Only canonical plaintext text events enter the model queue. In particular,
+/// Only canonical plaintext text/media events enter the model queue. In particular,
 /// HTML-looking mentions, edits, and encrypted bodies do not create prompts.
 fn parse_event(raw: &Value) -> Option<RoutedEvent> {
     if raw["type"] != "m.room.message"
         || raw.get("state_key").is_some()
-        || raw["content"]["msgtype"] != "m.text"
+        || !matches!(
+            raw["content"]["msgtype"].as_str(),
+            Some("m.text" | "m.file" | "m.image" | "m.audio" | "m.video")
+        )
     {
         return None;
     }
     let c = &raw["content"];
+    if c["msgtype"] != "m.text" && crate::attachments::Attachment::from_content(c).is_err() {
+        return None;
+    }
     if c["m.relates_to"]["rel_type"] == "m.replace" {
         return None;
     }
@@ -106,7 +112,12 @@ fn parse_event(raw: &Value) -> Option<RoutedEvent> {
         is_edit: false,
     })
 }
-async fn route(inbox: &Inbox, t: &TransportStore, g: &Gateway, cursor: &mut String) -> Result<()> {
+pub(crate) async fn route(
+    inbox: &Inbox,
+    t: &TransportStore,
+    g: &Gateway,
+    cursor: &mut String,
+) -> Result<()> {
     let transactions = if cursor.is_empty() {
         inbox.pending().await?
     } else {
@@ -117,10 +128,33 @@ async fn route(inbox: &Inbox, t: &TransportStore, g: &Gateway, cursor: &mut Stri
         *cursor = transaction.id.clone();
         let mut retry = false;
         for raw in transaction.body["events"].as_array().into_iter().flatten() {
-            let Some(event) = parse_event(raw) else {
+            match t.observe_file_event(raw).await {
+                Ok(true) | Err(Error::Conflict("file_message_changed")) => continue,
+                Ok(false) => {}
+                Err(error) => return Err(error),
+            }
+            let plain = parse_event(raw);
+            let cipher = if raw["type"] == "m.room.encrypted" {
+                crate::transport::ciphertexts::parse(raw).ok()
+            } else {
+                None
+            };
+            let (event_id, room_id, sender) = if let Some(event) = &plain {
+                (
+                    event.event_id.as_str(),
+                    event.room_id.as_str(),
+                    event.sender_mxid.as_str(),
+                )
+            } else if let Some((event, _)) = &cipher {
+                (
+                    event["event_id"].as_str().unwrap(),
+                    event["room_id"].as_str().unwrap(),
+                    event["sender"].as_str().unwrap(),
+                )
+            } else {
                 continue;
             };
-            let scopes = match t.routing_scopes(&event.room_id).await {
+            let scopes = match t.routing_scopes(room_id).await {
                 Ok(scopes) => scopes,
                 Err(_) => {
                     retry = true;
@@ -138,7 +172,7 @@ async fn route(inbox: &Inbox, t: &TransportStore, g: &Gateway, cursor: &mut Stri
                         &scope.room_id,
                         &scope.space_id,
                         &scope.owner_mxid,
-                        &event.sender_mxid,
+                        sender,
                         &scope.puppet_mxid,
                     ),
                 )
@@ -153,27 +187,34 @@ async fn route(inbox: &Inbox, t: &TransportStore, g: &Gateway, cursor: &mut Stri
                         continue;
                     }
                 };
-                match t
-                    .ingest_routed_received(
+                let routed = if let Some(event) = &plain {
+                    t.ingest_routed_attachment_received(
                         &scope.binding_id,
                         event.clone(),
+                        if raw["content"]["msgtype"] == "m.text" {
+                            None
+                        } else {
+                            Some(crate::attachments::Attachment::from_content(
+                                &raw["content"],
+                            )?)
+                        },
                         &f,
                         transaction.received_at_ms,
                         now_ms(),
                     )
                     .await
-                {
+                    .map(|_| ())
+                } else {
+                    t.ingest_ciphertext(&transaction.id, &scope.binding_id, raw, &f, now_ms())
+                        .await
+                };
+                match routed {
                     // A permanently rejected message cannot block subsequent
                     // transactions. Storage/overload failures retain the intent.
                     Ok(_) => (),
                     Err(e @ (Error::Unauthorized(_) | Error::Invalid(_) | Error::Conflict(_))) => {
                         inbox
-                            .rejected(
-                                &transaction.id,
-                                &event.event_id,
-                                &scope.binding_id,
-                                &e.to_string(),
-                            )
+                            .rejected(&transaction.id, event_id, &scope.binding_id, &e.to_string())
                             .await?;
                     }
                     Err(_) => retry = true,
@@ -460,6 +501,76 @@ async fn send_processing(
     }
     Ok(())
 }
+pub(crate) async fn send_files(
+    t: &TransportStore,
+    g: &Gateway,
+    m: &MatrixClient,
+    cursor: &mut String,
+) -> Result<()> {
+    let mut unavailable_rooms = BTreeSet::new();
+    for candidate in t.file_candidates(cursor).await? {
+        *cursor = candidate.id.clone();
+        if unavailable_rooms.contains(&candidate.room_id) {
+            continue;
+        }
+        let scope = match t.binding_scope(&candidate.binding_id).await {
+            Ok(s) => s,
+            Err(Error::Unauthorized(_)) => continue,
+            Err(e) => return Err(e),
+        };
+        let facts = match tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            g.delivery(
+                &candidate.room_id,
+                &scope.space_id,
+                &scope.owner_mxid,
+                &candidate.requester_mxid,
+                &candidate.puppet_mxid,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(f)) => f,
+            _ => {
+                unavailable_rooms.insert(candidate.room_id.clone());
+                continue;
+            }
+        };
+        let claim = match t.claim_file(&candidate.id, &facts, now_ms()).await {
+            Ok(c) => c,
+            Err(Error::Unauthorized(_) | Error::Conflict(_)) => continue,
+            Err(e) => return Err(e),
+        };
+        if let Some(bytes) = claim.bytes {
+            let name = claim.row.upload_filename()?;
+            let uploaded = m.upload_file(&claim.row.puppet_mxid, &name, bytes).await;
+            t.confirm_file_upload(
+                &claim.row.id,
+                &claim.token,
+                uploaded.as_ref().ok().map(String::as_str),
+                now_ms(),
+            )
+            .await?;
+        } else {
+            let content = claim.row.content()?;
+            let sent = m
+                .send(
+                    &claim.row.puppet_mxid,
+                    &claim.row.room_id,
+                    &format!("hagency-file-{}", claim.row.id),
+                    content,
+                )
+                .await;
+            t.confirm_file_sent(
+                &claim.row.id,
+                &claim.token,
+                sent.as_ref().ok().map(String::as_str),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
 pub(crate) fn start(
     inbox: Inbox,
     t: TransportStore,
@@ -472,6 +583,7 @@ pub(crate) fn start(
         let mut processing_cursor = String::new();
         let mut pause_cursor = String::new();
         let mut request_cursor = String::new();
+        let mut file_cursor = String::new();
         // Each durable queue advances on its own clock. A slow Matrix lookup
         // or retry in one queue must not stall intake or another queue's replies.
         // These futures are owned by the parent task, so aborting it drops all
@@ -490,6 +602,8 @@ pub(crate) fn start(
         }
         tokio::join!(
             worker_loop!(t.invalidate_stale_dispatches(now_ms())),
+            worker_loop!(t.expire_files(now_ms())),
+            worker_loop!(send_files(&t, &g, &m, &mut file_cursor)),
             worker_loop!(route(&inbox, &t, &g, &mut route_cursor)),
             worker_loop!(send(&t, &g, &m, &mut reply_cursor)),
             worker_loop!(send_processing(&t, &g, &m, &mut processing_cursor)),
@@ -752,6 +866,21 @@ mod tests {
             }
             assert!(parse_event(&json!({"type":"m.room.message","event_id":"$notice","room_id":"!room:x","sender":"@bot:x","content":content})).is_none());
         }
+    }
+    #[test]
+    fn canonical_media_retains_caption_mentions_and_original_thread() {
+        let mut event = json!({"type":"m.room.message","event_id":"$media","room_id":"!room:x","sender":"@u:x","content":{"msgtype":"m.file","body":"Analyze this\nwith care","url":"mxc://media.test/file","m.mentions":{"user_ids":["@bot:x"]},"m.relates_to":{"rel_type":"m.thread","event_id":"$root"}}});
+        let parsed = parse_event(&event).unwrap();
+        assert_eq!(parsed.body, "Analyze this\nwith care");
+        assert!(parsed.mentioned_mxids.contains("@bot:x"));
+        assert_eq!(parsed.thread_root.as_deref(), Some("$root"));
+        event["content"]["url"] = json!("https://arbitrary.test/file");
+        assert!(parse_event(&event).is_none());
+        event["content"]["url"] = json!("mxc://media.test/file");
+        event["content"]["m.relates_to"]["rel_type"] = json!("m.replace");
+        assert!(parse_event(&event).is_none());
+        event["type"] = json!("m.room.encrypted");
+        assert!(parse_event(&event).is_none());
     }
     #[test]
     fn canonical_mentions_and_threads_only() {

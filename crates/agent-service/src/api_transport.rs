@@ -31,6 +31,7 @@ pub(crate) async fn call(
     t: &TransportStore,
     g: &Gateway,
     p: &Principal,
+    matrix: Option<&crate::matrix_client::MatrixClient>,
     req: &mut Request,
 ) -> Result<Value> {
     if req.method() != salvo::http::Method::POST {
@@ -68,6 +69,8 @@ pub(crate) async fn call(
     struct Poll {
         lease: LeaseRef,
         binding_id: String,
+        #[serde(default)]
+        accept_files: bool,
         limit: usize,
     }
     #[derive(Deserialize)]
@@ -97,7 +100,154 @@ pub(crate) async fn call(
         lease: LeaseRef,
         reply: SubmitReply,
     }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct FilePrepare {
+        lease: LeaseRef,
+        dispatch_id: String,
+        execution_id: String,
+        request_id: String,
+        file: crate::file_delivery::Manifest,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct FileWrite {
+        lease: LeaseRef,
+        target: crate::file_delivery::Target,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct FileChunk {
+        lease: LeaseRef,
+        target: crate::file_delivery::Target,
+        offset: u64,
+        data: String,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CipherPoll {
+        lease: LeaseRef,
+        binding_id: String,
+        limit: usize,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CipherRead {
+        lease: LeaseRef,
+        inbox_id: String,
+    }
     match path.as_str() {
+        "/hagency/api/v1/execution/ciphertexts/prepare" => {
+            let b: crate::transport::encrypted::Prepare = body(req).await?;
+            let h = t.ciphertext_header(p, &b.inbox_id, now_ms()).await?;
+            let s = t.binding_scope(&h.binding_id).await?;
+            let f = g
+                .delivery(
+                    &s.room_id,
+                    &s.space_id,
+                    &s.owner_mxid,
+                    &h.sender_mxid,
+                    &s.puppet_mxid,
+                )
+                .await?;
+            Ok(json!({"admission":t.prepare_ciphertext(p,&b,&f,now_ms()).await?}))
+        }
+        "/hagency/api/v1/execution/ciphertexts/ack" => {
+            let b: crate::transport::encrypted::Reference = body(req).await?;
+            encrypted_receipt(t, g, p, &b, true).await
+        }
+        "/hagency/api/v1/execution/ciphertexts/admission" => {
+            let b: crate::transport::encrypted::Reference = body(req).await?;
+            encrypted_receipt(t, g, p, &b, false).await
+        }
+        "/hagency/api/v1/execution/ciphertexts/poll" => {
+            let b: CipherPoll = body(req).await?;
+            let mut events = Vec::new();
+            for header in t
+                .ciphertext_candidates(p, &b.lease, &b.binding_id, b.limit, now_ms())
+                .await?
+            {
+                let scope = t.binding_scope(&header.binding_id).await?;
+                let f = g
+                    .delivery(
+                        &scope.room_id,
+                        &scope.space_id,
+                        &scope.owner_mxid,
+                        &header.sender_mxid,
+                        &scope.puppet_mxid,
+                    )
+                    .await?;
+                events.push(
+                    t.read_ciphertext(p, &b.lease, &header.id, &f, now_ms())
+                        .await?,
+                );
+            }
+            Ok(json!({"ciphertexts":events}))
+        }
+        "/hagency/api/v1/execution/ciphertexts/read" => {
+            let b: CipherRead = body(req).await?;
+            let header = t.ciphertext_header(p, &b.inbox_id, now_ms()).await?;
+            let scope = t.binding_scope(&header.binding_id).await?;
+            let f = g
+                .delivery(
+                    &scope.room_id,
+                    &scope.space_id,
+                    &scope.owner_mxid,
+                    &header.sender_mxid,
+                    &scope.puppet_mxid,
+                )
+                .await?;
+            Ok(json!({"ciphertext":t.read_ciphertext(p,&b.lease,&b.inbox_id,&f,now_ms()).await?}))
+        }
+
+        "/hagency/api/v1/execution/encrypted/action" => {
+            let b: crate::transport::encrypted_execution::Action = body(req).await?;
+            let f = facts(t, g, p, &b.dispatch_id).await?;
+            let (mut result, send) = t.encrypted_action(p, &b, &f, now_ms()).await?;
+            if send {
+                let matrix = matrix.ok_or(Error::Unavailable("matrix_unavailable"))?;
+                let id = result["publication"]["id"]
+                    .as_str()
+                    .ok_or(Error::Unavailable("encrypted_publication_unknown"))?
+                    .to_owned();
+                let room = result["room"].as_str().unwrap().to_owned();
+                let puppet = result["puppet"].as_str().unwrap().to_owned();
+                let payload = b.payload.as_ref().unwrap();
+                for share in payload["shares"].as_array().unwrap() {
+                    let f = facts(t, g, p, &b.dispatch_id).await?;
+                    let check = crate::transport::encrypted_execution::Action {
+                        action: "authorize".into(),
+                        payload: None,
+                        ..b.clone_for_check()
+                    };
+                    t.encrypted_action(p, &check, &f, now_ms()).await?;
+                    matrix
+                        .encrypted_share(
+                            &puppet,
+                            share["txnId"].as_str().unwrap(),
+                            share["messages"].clone(),
+                        )
+                        .await?;
+                }
+                let f = facts(t, g, p, &b.dispatch_id).await?;
+                let check = b.clone_for_check();
+                t.encrypted_action(p, &check, &f, now_ms()).await?;
+                let event = matrix
+                    .send_typed(
+                        &puppet,
+                        &room,
+                        &id,
+                        "m.room.encrypted",
+                        payload["content"].clone(),
+                    )
+                    .await?;
+                t.encrypted_sent(&id, &event).await?;
+                let status = b.status();
+                result = t.encrypted_action(p, &status, &f, now_ms()).await?.0;
+            }
+            Ok(result)
+        }
+
         "/hagency/api/v1/execution/history" => {
             let b: History = body(req).await?;
             Ok(
@@ -122,10 +272,14 @@ pub(crate) async fn call(
         "/hagency/api/v1/execution/events/poll" => {
             let b: Poll = body(req).await?;
             let mut events = Vec::new();
-            for header in t
-                .event_candidates_for_binding(p, &b.lease, &b.binding_id, b.limit, now_ms())
-                .await?
-            {
+            let candidates = if b.accept_files {
+                t.event_candidates_with_attachments(p, &b.lease, &b.binding_id, b.limit, now_ms())
+                    .await?
+            } else {
+                t.event_candidates_for_binding(p, &b.lease, &b.binding_id, b.limit, now_ms())
+                    .await?
+            };
+            for header in candidates {
                 let f = match facts(t, g, p, &header.id).await {
                     Ok(f) => f,
                     Err(Error::Unauthorized(_)) => continue,
@@ -164,6 +318,47 @@ pub(crate) async fn call(
                 json!({"processing":t.mark_processing(p,&b.lease,&b.dispatch_id,&b.execution_id,&f,now_ms()).await?}),
             )
         }
+        "/hagency/api/v1/execution/files/prepare" => {
+            let b: FilePrepare = body(req).await?;
+            let f = facts(t, g, p, &b.dispatch_id).await?;
+            Ok(
+                json!({"delivery":t.prepare_file(p,&b.lease,&b.dispatch_id,&b.execution_id,&b.request_id,b.file,&f,now_ms()).await?}),
+            )
+        }
+        "/hagency/api/v1/execution/files/chunk" => {
+            use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
+            let b: FileChunk = body(req).await?;
+            if b.data.len() > 87384 {
+                return Err(Error::Invalid("invalid_file_chunk"));
+            }
+            let data = STANDARD_NO_PAD
+                .decode(&b.data)
+                .map_err(|_| Error::Invalid("invalid_file_chunk"))?;
+            let f = facts(t, g, p, &b.target.dispatch_id).await?;
+            Ok(
+                json!({"delivery":t.stage_file_chunk(p,&b.lease,&b.target,b.offset,&data,&f,now_ms()).await?}),
+            )
+        }
+        "/hagency/api/v1/execution/files/queue" => {
+            let b: FileWrite = body(req).await?;
+            let f = facts(t, g, p, &b.target.dispatch_id).await?;
+            Ok(json!({"delivery":t.queue_file(p,&b.lease,&b.target,&f,now_ms()).await?}))
+        }
+        "/hagency/api/v1/execution/files/status" => {
+            let b: crate::file_delivery::Target = body(req).await?;
+            Ok(json!({"delivery":t.file_delivery(p,&b,now_ms()).await?}))
+        }
+        "/hagency/api/v1/execution/files/lookup" => {
+            let b: crate::file_delivery::FileLookup = body(req).await?;
+            Ok(json!({"observation":t.lookup_file(p,&b,now_ms()).await?}))
+        }
+        "/hagency/api/v1/execution/files/attachments" => {
+            let b: Start = body(req).await?;
+            let f = facts(t, g, p, &b.dispatch_id).await?;
+            Ok(
+                json!({"dispatchId":b.dispatch_id,"executionId":b.execution_id,"attachments":t.execution_attachments(p,&b.lease,&b.dispatch_id,&b.execution_id,&f,now_ms()).await?}),
+            )
+        }
         "/hagency/api/v1/execution/events/authorize-tool" => {
             let b: Start = body(req).await?;
             let f = facts(t, g, p, &b.dispatch_id).await?;
@@ -196,4 +391,25 @@ pub(crate) async fn call(
         }
         _ => Err(Error::Invalid("unsupported_operation")),
     }
+}
+
+async fn encrypted_receipt(
+    t: &TransportStore,
+    g: &Gateway,
+    p: &Principal,
+    b: &crate::transport::encrypted::Reference,
+    ack: bool,
+) -> Result<Value> {
+    let h = t.ciphertext_header(p, &b.inbox_id, now_ms()).await?;
+    let s = t.binding_scope(&h.binding_id).await?;
+    let f = g
+        .delivery(
+            &s.room_id,
+            &s.space_id,
+            &s.owner_mxid,
+            &h.sender_mxid,
+            &s.puppet_mxid,
+        )
+        .await?;
+    Ok(json!({"admission":t.ciphertext_admission(p,b,&f,ack,now_ms()).await?}))
 }

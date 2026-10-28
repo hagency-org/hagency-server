@@ -40,7 +40,7 @@ impl Gateway {
             room_id: room.into(),
             observed_at_ms: now_ms(),
             joined: joined(&state, actor),
-            can_manage_policy: level(powers, actor)? >= minimum,
+            can_manage_policy: at_least(&state, actor, minimum)?,
             is_space,
             linked_space_id: if linked {
                 space.map(str::to_owned)
@@ -88,8 +88,11 @@ impl Gateway {
             owner_in_space: joined(&space_state, owner),
             owner_in_room: joined(&room_state, owner),
             service_can_invite: joined(&room_state, &self.service_mxid)
-                && level(powers, &self.service_mxid)?
-                    >= power_integer(power_object(powers)?.and_then(|p| p.get("invite")), 0)?,
+                && at_least(
+                    &room_state,
+                    &self.service_mxid,
+                    power_integer(power_object(powers)?.and_then(|p| p.get("invite")), 0)?,
+                )?,
             puppet_mxid: puppet.map(str::to_owned),
             puppet_in_room: puppet.is_some_and(|p| joined(&room_state, p)),
             encrypted: content(&room_state, "m.room.encryption", "").is_some(),
@@ -126,10 +129,7 @@ impl Gateway {
                 room_in_space: false,
                 requester_in_room: joined(&state, requester),
                 puppet_in_room: joined(&state, puppet),
-                puppet_can_send_message: message_permission(
-                    content(&state, "m.room.power_levels", ""),
-                    puppet,
-                )?,
+                puppet_can_send_message: can_send(&state, puppet)?,
                 encrypted: content(&state, "m.room.encryption", "").is_some(),
             });
         }
@@ -146,10 +146,7 @@ impl Gateway {
             owner_in_room: joined(&room_state, owner),
             requester_in_room: joined(&room_state, requester),
             puppet_in_room: joined(&room_state, puppet),
-            puppet_can_send_message: message_permission(
-                content(&room_state, "m.room.power_levels", ""),
-                puppet,
-            )?,
+            puppet_can_send_message: can_send(&room_state, puppet)?,
             room_in_space: content(&space_state, "m.space.child", room)
                 .is_some_and(|c| c["via"].as_array().is_some_and(|via| !via.is_empty())),
             encrypted: content(&room_state, "m.room.encryption", "").is_some(),
@@ -245,6 +242,55 @@ fn level(powers: Option<&Value>, user: &str) -> Result<i64> {
         power_map(powers, "users")?.and_then(|p| p.get(user)),
         default,
     )
+}
+// Matrix v12 creators have unbounded power outside power_levels.users. Read
+// only the immutable create event from the trusted current state, never an
+// arbitrary message, unsigned field or old-version additional_creators claim.
+fn room_creator(state: &[Value], user: &str) -> Result<bool> {
+    let Some(create) = state
+        .iter()
+        .find(|e| e["type"] == "m.room.create" && e["state_key"] == "")
+    else {
+        return Ok(false);
+    };
+    if create["content"]["room_version"] != "12" {
+        return Ok(false);
+    }
+    let valid = |id: &str| {
+        id.len() <= 255
+            && id.starts_with('@')
+            && !id.chars().any(|c| c.is_control() || c.is_whitespace())
+            && id[1..]
+                .split_once(':')
+                .is_some_and(|(local, server)| !local.is_empty() && !server.is_empty())
+    };
+    let sender = create["sender"]
+        .as_str()
+        .filter(|id| valid(id))
+        .ok_or(Error::Unavailable("invalid_matrix_create"))?;
+    let additional = create["content"].get("additional_creators");
+    let mut is_creator = sender == user;
+    if let Some(additional) = additional {
+        for creator in additional
+            .as_array()
+            .ok_or(Error::Unavailable("invalid_matrix_create"))?
+        {
+            let id = creator
+                .as_str()
+                .filter(|id| valid(id))
+                .ok_or(Error::Unavailable("invalid_matrix_create"))?;
+            is_creator |= id == user;
+        }
+    }
+    Ok(is_creator)
+}
+fn at_least(state: &[Value], user: &str, required: i64) -> Result<bool> {
+    let explicit = level(content(state, "m.room.power_levels", ""), user)?;
+    Ok(room_creator(state, user)? || explicit >= required)
+}
+fn can_send(state: &[Value], user: &str) -> Result<bool> {
+    let ordinary = message_permission(content(state, "m.room.power_levels", ""), user)?;
+    Ok(room_creator(state, user)? || ordinary)
 }
 fn state_threshold(powers: Option<&Value>, event: &str) -> Result<i64> {
     let powers = power_object(powers)?;
@@ -409,5 +455,62 @@ mod power_regressions {
                     || level(Some(&invalid), "@actor:test").is_err()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod version12_tests {
+    use super::*;
+    #[tokio::test]
+    async fn version12_creators_have_current_matrix_authority_without_power_user_entries() {
+        let read: ReadState = Arc::new(|_| {
+            Box::pin(async {
+                Ok(vec![
+                    serde_json::json!({"type":"m.room.create","state_key":"","sender":"@creator:test","content":{"type":"m.space","room_version":"12","additional_creators":["@co:test"]}}),
+                    serde_json::json!({"type":"m.room.power_levels","state_key":"","content":{"users":{},"state_default":1000}}),
+                    serde_json::json!({"type":"m.room.member","state_key":"@creator:test","content":{"membership":"join"}}),
+                    serde_json::json!({"type":"m.room.member","state_key":"@co:test","content":{"membership":"join"}}),
+                    serde_json::json!({"type":"m.room.member","state_key":"@ordinary:test","content":{"membership":"join"}}),
+                ])
+            })
+        });
+        let gateway = Gateway::new(read, "@service:test".into());
+        for actor in ["@creator:test", "@co:test"] {
+            let facts = gateway.admin("!opaque", actor, None).await.unwrap();
+            assert!(facts.joined && facts.can_manage_policy);
+        }
+        assert!(
+            !gateway
+                .admin("!opaque", "@ordinary:test", None)
+                .await
+                .unwrap()
+                .can_manage_policy
+        );
+    }
+}
+
+#[cfg(test)]
+mod creator_boundary_tests {
+    use super::*;
+    #[test]
+    fn creator_power_requires_v12_valid_create_and_still_parses_actual_power_state() {
+        let mut state = vec![
+            serde_json::json!({"type":"m.room.create","state_key":"","sender":"@alice:test","content":{"room_version":"12","additional_creators":["@co:test"]}}),
+            serde_json::json!({"type":"m.room.power_levels","state_key":"","content":{"users":{},"events_default":900,"invite":900}}),
+        ];
+        for user in ["@alice:test", "@co:test"] {
+            assert!(at_least(&state, user, 900).unwrap());
+            assert!(can_send(&state, user).unwrap());
+        }
+        assert!(!can_send(&state, "@other:test").unwrap());
+        state[0]["content"]["room_version"] = serde_json::json!("11");
+        assert!(!at_least(&state, "@co:test", 900).unwrap());
+        assert!(!at_least(&state, "@alice:test", 900).unwrap());
+        state[0]["content"]["room_version"] = serde_json::json!("12");
+        state[0]["content"]["additional_creators"] = serde_json::json!([123]);
+        assert!(at_least(&state, "@alice:test", 900).is_err());
+        state[0]["content"]["additional_creators"] = serde_json::json!([]);
+        state[1]["content"]["users"] = serde_json::json!({"@alice:test":"invalid"});
+        assert!(at_least(&state, "@alice:test", 900).is_err());
     }
 }
