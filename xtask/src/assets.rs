@@ -22,6 +22,26 @@ pub struct Options {
 }
 
 pub fn prepare(root: &Path, options: &Options, stopping: &AtomicBool) -> Result<()> {
+    fs::create_dir_all(root.join(".run"))?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(".run/pasion-build.lock"))?;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                ensure!(
+                    !stopping.load(std::sync::atomic::Ordering::Relaxed),
+                    "Pasion build interrupted"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
+    }
     let source = match &options.source {
         Some(path) => path.canonicalize()?,
         None => pinned_source(root, stopping)?,
@@ -59,10 +79,11 @@ pub fn prepare(root: &Path, options: &Options, stopping: &AtomicBool) -> Result<
             ),
     )?;
     if !options.skip_frontend {
+        let frontend_source = prepare_frontend_source(root, &source, stopping)?;
         let dx = dioxus_cli(root, stopping)?;
         command::checked(
             Command::new(dx)
-                .current_dir(&source)
+                .current_dir(&frontend_source)
                 .env("CARGO_TARGET_DIR", source.join("target"))
                 .args([
                     "build",
@@ -86,6 +107,58 @@ pub fn prepare(root: &Path, options: &Options, stopping: &AtomicBool) -> Result<
     fs::write(output.join("SOURCE"), format!("{}\n", source.display()))?;
     println!("Prepared Pasion resources: {}", output.display());
     Ok(())
+}
+
+/// Apply embedding fixes in an owned build copy, preserving the selected source
+/// checkout (including a caller-supplied --source) and Cargo's pinned git cache.
+fn prepare_frontend_source(root: &Path, source: &Path, stopping: &AtomicBool) -> Result<PathBuf> {
+    let destination = root.join(".run/pasion-frontend-source");
+    let marker = destination.join(".hagency-build-copy");
+    ensure!(
+        source != destination,
+        "Pasion source must differ from the generated frontend build copy"
+    );
+    if destination.exists() {
+        ensure!(
+            marker.is_file(),
+            "Refusing to replace an unowned Pasion frontend directory"
+        );
+        fs::remove_dir_all(&destination)?;
+    }
+    fs::create_dir_all(&destination)?;
+    fs::write(&marker, "Hagency generated frontend build copy\n")?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        if [".git", "target", ".run"]
+            .iter()
+            .any(|name| entry.file_name() == *name)
+        {
+            continue;
+        }
+        let target = destination.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    let patch = root.join("xtask/patches/pasion-registration-availability.patch");
+    command::checked(
+        Command::new("git")
+            .current_dir(&destination)
+            .arg("apply")
+            .arg("--check")
+            .arg(&patch),
+        stopping,
+    )?;
+    command::checked(
+        Command::new("git")
+            .current_dir(&destination)
+            .arg("apply")
+            .arg(&patch),
+        stopping,
+    )?;
+    Ok(destination)
 }
 
 /// Embedded Pasion discovers its entry point by scanning assets rather than
@@ -159,6 +232,14 @@ fn pinned_source(root: &Path, stopping: &AtomicBool) -> Result<PathBuf> {
             .arg("-C")
             .arg(&source)
             .args(["checkout", "--detach", &revision]),
+        stopping,
+    )?;
+    // A pinned HEAD alone does not prove the cached sources are unchanged.
+    command::checked(
+        Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args(["diff", "--quiet", "HEAD", "--"]),
         stopping,
     )?;
     Ok(source)
@@ -308,6 +389,56 @@ pub(crate) fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn frontend_patch_preserves_source_and_cache_and_rejects_upstream_drift() {
+        let root = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        fs::write(source.path().join("page"), "old\n").unwrap();
+        fs::create_dir(source.path().join("target")).unwrap();
+        fs::write(source.path().join("target/cache"), "keep").unwrap();
+        let patches = root.path().join("xtask/patches");
+        fs::create_dir_all(&patches).unwrap();
+        fs::write(
+            patches.join("pasion-registration-availability.patch"),
+            "--- a/page\n+++ b/page\n@@ -1 +1 @@\n-old\n+new\n",
+        )
+        .unwrap();
+        let stopping = AtomicBool::new(false);
+        let staged = prepare_frontend_source(root.path(), source.path(), &stopping).unwrap();
+        assert_eq!(
+            fs::read_to_string(source.path().join("page")).unwrap(),
+            "old\n"
+        );
+        assert_eq!(fs::read_to_string(staged.join("page")).unwrap(), "new\n");
+        assert_eq!(
+            fs::read_to_string(source.path().join("target/cache")).unwrap(),
+            "keep"
+        );
+        assert!(!staged.join("target").exists());
+        fs::write(source.path().join("page"), "upstream changed\n").unwrap();
+        assert!(prepare_frontend_source(root.path(), source.path(), &stopping).is_err());
+        assert_eq!(
+            fs::read_to_string(source.path().join("page")).unwrap(),
+            "upstream changed\n"
+        );
+    }
+
+    #[test]
+    fn frontend_copy_refuses_unowned_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let destination = root.path().join(".run/pasion-frontend-source");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("keep"), "operator file").unwrap();
+        assert!(
+            prepare_frontend_source(root.path(), source.path(), &AtomicBool::new(false)).is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("keep")).unwrap(),
+            "operator file"
+        );
+    }
+
+    #[test]
     fn pasion_resources_use_exact_locked_commit_for_branch_or_revision_sources() {
         let root = tempfile::tempdir().unwrap();
         let repository = "https://github.com/meldry-com/pasion.git";
@@ -400,6 +531,12 @@ mod tests {
             "locked resources"
         );
         assert!(cache.join("cached").exists());
+        fs::write(source.join("resource"), "uncommitted cached source").unwrap();
+        assert!(pinned_source(root.path(), &AtomicBool::new(false)).is_err());
+        assert_eq!(
+            fs::read_to_string(source.join("resource")).unwrap(),
+            "uncommitted cached source"
+        );
     }
 
     #[test]

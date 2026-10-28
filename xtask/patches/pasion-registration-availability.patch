@@ -1,0 +1,103 @@
+--- a/crates/frontend/src/pages/register.rs
++++ b/crates/frontend/src/pages/register.rs
+@@ -33,13 +33,11 @@
+         },
+         None => rsx! {
+             Layout {
+-                RegisterPage {
+-                    providers: ProvidersResponse {
+-                        providers: vec![],
+-                        password_login_enabled: true,
+-                        password_registration_enabled: true,
+-                        account_recovery_allowed: true,
+-                    },
++                div { class: "login-page",
++                    div { class: "login-container", role: "status",
++                        LoadingSpinner {}
++                        p { "Checking registration availability…" }
++                    }
+                 }
+             }
+         },
+@@ -58,11 +56,29 @@
+     let nav = navigator();
+     let has_providers = !providers.providers.is_empty();
+     let reg_enabled = providers.password_registration_enabled;
++    let registration_closed = !reg_enabled && !has_providers;
+
+     rsx! {
+         div { class: "login-page",
+-            div { class: "login-container",
+-                h1 { class: "heading-md login-title", "Create account" }
++            div { class: if registration_closed { "login-container registration-closed" } else { "login-container" },
++                h1 { class: "heading-md login-title",
++                    if registration_closed { "Registration is closed" } else { "Create account" }
++                }
++
++                if registration_closed {
++                    div { class: "registration-unavailable", role: "status",
++                        p { class: "registration-unavailable-description",
++                            "This server is not accepting new accounts right now."
++                        }
++                        div { class: "registration-unavailable-help",
++                            p { "Already have an account? Sign in to continue." }
++                            p { "Need access? Contact your server administrator." }
++                        }
++                    }
++                    Link { class: "btn btn-primary btn-block", to: Route::Login {},
++                        "Back to sign in"
++                    }
++                }
+
+                 if let Some(ref err) = *error.read() {
+                     div { class: "alert alert-critical",
+@@ -211,10 +227,12 @@
+                     }
+                 }
+
+-                div { class: "login-register",
+-                    span { "Already have an account? " }
+-                    Link { class: "link", to: Route::Login {},
+-                        "Sign in"
++                if !registration_closed {
++                    div { class: "login-register",
++                        span { "Already have an account? " }
++                        Link { class: "link", to: Route::Login {},
++                            "Sign in"
++                        }
+                     }
+                 }
+             }
+--- a/crates/frontend/assets/main.css
++++ b/crates/frontend/assets/main.css
+@@ -1802,3 +1802,30 @@
+     transition-duration: 0.01ms !important;
+   }
+ }
++
++/* A complete account-access state when no registration method is available. */
++.registration-closed .login-title {
++    margin: 0;
++}
++.registration-unavailable-description {
++    color: var(--color-text-secondary);
++    line-height: 1.6;
++    text-align: center;
++    margin: 0 0 24px;
++}
++.registration-unavailable-help {
++    padding: 16px;
++    margin: 0;
++    border: 1px solid var(--color-border);
++    border-radius: 12px;
++    background: var(--color-bg-secondary);
++    color: var(--color-text-secondary);
++    line-height: 1.6;
++    overflow-wrap: anywhere;
++}
++.registration-unavailable-help p {
++    margin: 0;
++}
++.registration-unavailable-help p + p {
++    margin-top: 12px;
++}

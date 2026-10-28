@@ -14,6 +14,19 @@ Fleet/Hafleet、Engagement/allocation 审批与 authority import 已删除，无
 
 ## 本地开发
 
+macOS 与相邻 `hagency-client` 联调可直接执行
+`python3 scripts/local-dev.py start --pull`（或在 Client 执行 `./tools/local-dev.sh start --pull`）。
+它自动启动独立 PostgreSQL、真实 Pasion/Matrix/看板后端和原生客户端；
+地址为 `http://127.0.0.1:8088`。首次管理员密码保存在
+`.run/local-dev/admin-password`。该隔离测试环境默认开放注册，联系方式可留空；
+手动部署模板仍默认关闭注册。停止用 `python3 scripts/local-dev.py stop`，
+保留配置和数据。依赖、登录与排障见
+[完整一键启动指南](../hagency-client/docs/local-development.zh-CN.md)。
+构建使用独立产物目录和来源/文件指纹，不导入旧镜像资源；
+`python3 scripts/local-dev.py doctor` 核对源码、产物及实际返回的 HTTP 资源。
+
+以下是手动管理环境的方式；不要与一键环境同时占用相同端口。
+
 安装 Rust ≥ 1.99、[just](https://github.com/casey/just)、Docker、Git、curl
 和 `libpq`。下面的密码生成示例还需要 OpenSSL。
 首次配置时，在仓库根目录执行：

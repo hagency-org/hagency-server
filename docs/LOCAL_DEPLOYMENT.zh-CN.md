@@ -6,6 +6,16 @@
 [配置指南](guide.zh-CN.md)。这里说明后续启动与浏览器、Desktop、owner client 的连接。
 命令均在 server 仓库根目录运行。
 
+macOS 完整 Client/Server 联调优先使用 `python3 scripts/local-dev.py start --pull`，
+后续使用 `status`、`doctor`、`logs`、`stop`、`restart`。其配置在 `.run/local-dev/`，
+Compose 项目为 `hagency-full-dev`，地址为 `http://127.0.0.1:8088`。
+这运行真实 Pasion、Matrix 和看板；详见
+[一键本地开发指南](../../hagency-client/docs/local-development.zh-CN.md)。
+隔离的一键测试环境默认开放密码注册且无需填写联系方式；已有配置不会被覆盖。
+`builds/*/build-manifest.json` 记录源码与整批二进制/静态资源校验值；
+`doctor` 校验来源和实际页面资源。禁止从另一版本镜像或 checkout 拼装资源。
+下表的手动部署和历史 `hagency.local` HTTPS 环境与它独立。
+
 ## 选择一种服务运行方式
 
 | 方式 | 配置 | 服务 / 数据库 | 启动 |

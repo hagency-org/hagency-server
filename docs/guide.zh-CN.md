@@ -330,6 +330,9 @@ just dev --pasion-source /path/to/pasion --palpo-source /path/to/palpo
 `just prepare-pasion` 默认使用固定版本源码，`--source` 可指定本地仓库。
 命令会在需要时安装 Rust `wasm32-unknown-unknown` 目标。
 工具复用 `dx` 0.7.5，或下载并校验匹配版本到 `.run/tools/`，不替换全局已安装版本。
+Hagency 的注册可用性修复保存在 `xtask/patches/`，构建时应用于独立的
+`.run/pasion-frontend-source/` 副本；不改写固定版本源码、Cargo 缓存或 `--source`
+指定的仓库。上游源码不再匹配补丁时构建会明确失败。
 开发监听会重新构建修改后的 Pasion 后端/前端，复制模板、翻译和策略，再优雅替换服务器，不需要重建镜像。
 Docker 镜像构建过程会构建并打包这些资源。
 
