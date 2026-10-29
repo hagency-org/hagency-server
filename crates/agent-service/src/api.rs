@@ -168,6 +168,52 @@ impl App {
             json!({"commandState":if creation.binding.state=="active"{"active"}else{"pending"},"creation":creation,"pendingReason":null}),
         )
     }
+    /// The device holding a personal Agent's live lease receives a token for the
+    /// Agent's dedicated Matrix device, so it can decrypt and encrypt locally in
+    /// encrypted Rooms; it can also revoke that device. The device ID is derived
+    /// from the Agent and executing device generation, so reissuing rotates the
+    /// token of the same device and its crypto store stays valid.
+    async fn e2ee_device(
+        &self,
+        t: &crate::transport::TransportStore,
+        p: &crate::store::Principal,
+        path: &str,
+        req: &mut Request,
+    ) -> Result<Value> {
+        if req.method() != salvo::http::Method::POST {
+            return Err(Error::Invalid("unsupported_operation"));
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Input {
+            lease: crate::transport::LeaseRef,
+        }
+        let input: Input = req
+            .parse_json()
+            .await
+            .map_err(|_| Error::Invalid("invalid_arguments"))?;
+        let (Some(device), Some(generation)) = (p.device_id.as_deref(), p.device_generation) else {
+            return Err(Error::Unauthorized("device_authorization_required"));
+        };
+        let matrix = self
+            .matrix_client
+            .as_ref()
+            .ok_or(Error::Unavailable("matrix_unavailable"))?;
+        let puppet = t.leased_puppet(p, &input.lease, now_ms()).await?;
+        let digest = crate::hash(&format!("{}:{device}:{generation}", input.lease.agent_id));
+        let matrix_device = format!("HAGE2EE{}", digest[..16].to_ascii_uppercase());
+        match path {
+            "/hagency/api/v1/execution/e2ee-device" => {
+                let token = matrix.login_device(&puppet, &matrix_device).await?;
+                Ok(json!({"userId":puppet,"deviceId":matrix_device,"accessToken":token,"homeserver":self.public}))
+            }
+            "/hagency/api/v1/execution/e2ee-device/revoke" => {
+                matrix.logout_device(&puppet, &matrix_device).await?;
+                Ok(json!({"revoked":true,"deviceId":matrix_device}))
+            }
+            _ => Err(Error::Invalid("unsupported_operation")),
+        }
+    }
     async fn call(&self, req: &mut Request) -> Result<Value> {
         let hosts = req.headers().get_all("host").iter().collect::<Vec<_>>();
         let expected = self.public[url::Position::BeforeHost..url::Position::AfterPort].to_owned();
@@ -189,7 +235,7 @@ impl App {
         if path == "/hagency/api/v1/discovery" && method == salvo::http::Method::GET {
             return Ok(
                 json!({"product":"hagency-server","version":env!("CARGO_PKG_VERSION"),
-                "capabilities":["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","processing-reaction-v1","execution-configuration-v1","shared-durable-demand-v1","shared-thread-context-v1","managed-agent-budget-delta-v1","shared-budget-execution-v1","agent-settlement-v1"],
+                "capabilities":["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","agent-e2ee-device-v1","processing-reaction-v1","execution-configuration-v1","shared-durable-demand-v1","shared-thread-context-v1","managed-agent-budget-delta-v1","shared-budget-execution-v1","agent-settlement-v1"],
                 "managementProtocol":self.management.as_ref().map(|_|crate::management_types::PROTOCOL),
                 "protocolVersion":3,"serverName":self.server_name,"homeserver":self.public,
                 "serviceMxid":format!("@_hagency_service:{}",self.server_name),"issuer":self.issuer,"authorizationEndpoint":self.issuer.join("authorize").unwrap(),
@@ -311,6 +357,9 @@ impl App {
                 .as_ref()
                 .ok_or(Error::Unavailable("domain_unavailable"))?
                 .1;
+            if path.starts_with("/hagency/api/v1/execution/e2ee-device") {
+                return self.e2ee_device(transport, &principal, &path, req).await;
+            }
             return crate::api_transport::call(transport, gateway, &principal, req).await;
         }
         if let Some((domain, gateway)) = &self.domain

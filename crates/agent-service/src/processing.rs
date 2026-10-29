@@ -94,7 +94,7 @@ impl TransportStore {
             let content=json!({"m.relates_to":{"rel_type":"m.annotation","event_id":e.event_id,"key":"👀"}});
             let current=Self::clock(db,now).await?;
             Self::lease(db,p,lease,current).await?;
-            facts(&scope,&e.requester_mxid,f,current)?;
+            plaintext_sendable(&scope,&e.requester_mxid,f,current)?;
             sql_query("INSERT INTO hagency_agent_v1.processing_outbox(id,owner_event_id,execution_id,agent_id,binding_id,owner_user_id,room_id,event_id,puppet_mxid,binding_generation,dispatch_epoch,dispatch_device_id,content,matrix_txn_id,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15)")
                 .bind::<Text,_>(&id).bind::<Text,_>(dispatch_id).bind::<Text,_>(execution_id)
                 .bind::<Text,_>(&e.agent_id).bind::<Text,_>(&e.binding_id).bind::<Text,_>(&p.user_id)
@@ -149,7 +149,7 @@ impl TransportStore {
             if intent.delivery_blocked||!matches!(intent.state.as_str(),"pending"|"unknown"|"sending") {return Err(Error::Conflict("processing_not_sendable"));}
             if intent.worker_until_ms>current {return Err(Error::Conflict("processing_sender_busy"));}
             let scope=Self::scope(db,&intent.binding_id).await?;
-            facts(&scope,&intent.requester_mxid,f,current)?;
+            plaintext_sendable(&scope,&intent.requester_mxid,f,current)?;
             let live=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.processing_sendable WHERE id=$1) AS matched").bind::<Text,_>(id).get_result::<Flag>(db).await?;
             if !live.matched {return Err(Error::Unauthorized("processing_authority_expired"));}
             sql_query("UPDATE hagency_agent_v1.processing_outbox SET state='sending',worker_token=$1,worker_until_ms=$2 WHERE id=$3")
@@ -193,7 +193,7 @@ impl TransportStore {
             let candidate=Self::processing(db,id).await?;
             let scope=Self::scope(db,&candidate.binding_id).await?;
             observation(&scope,&candidate.requester_mxid,f,current)?;
-            if facts(&scope,&candidate.requester_mxid,f,current).is_ok() {return Ok(());}
+            if plaintext_sendable(&scope,&candidate.requester_mxid,f,current).is_ok() {return Ok(());}
             sql_query("UPDATE hagency_agent_v1.processing_outbox SET delivery_blocked=true,state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END WHERE id=$1 AND state<>'sent'")
                 .bind::<Text,_>(id).execute(db).await?;Ok(())
         }).await

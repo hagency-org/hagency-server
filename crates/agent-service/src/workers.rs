@@ -51,8 +51,12 @@ fn request_notice_content(
 }
 
 /// Only canonical plaintext text events enter the model queue. In particular,
-/// HTML-looking mentions, edits, and encrypted bodies do not create prompts.
+/// HTML-looking mentions and edits do not create prompts. Encrypted events carry
+/// only routing metadata; the executor holding the Agent's room keys reads them.
 pub(crate) fn parse_event(raw: &Value) -> Option<RoutedEvent> {
+    if raw["type"] == "m.room.encrypted" {
+        return parse_encrypted(raw);
+    }
     if raw["type"] != "m.room.message"
         || raw.get("state_key").is_some()
         || raw["content"]["msgtype"] != "m.text"
@@ -100,6 +104,47 @@ pub(crate) fn parse_event(raw: &Value) -> Option<RoutedEvent> {
         mentioned_mxids,
         thread_root,
         encrypted: false,
+        is_edit: false,
+    })
+}
+/// Matrix keeps `m.relates_to` outside the ciphertext, so the sender, Room and
+/// thread are known here; the body and mentions are not. Edits and annotations
+/// relate to earlier events and never become prompts.
+fn parse_encrypted(raw: &Value) -> Option<RoutedEvent> {
+    let c = &raw["content"];
+    let relation = &c["m.relates_to"];
+    if raw.get("state_key").is_some()
+        || c["algorithm"] != "m.megolm.v1.aes-sha2"
+        || relation["rel_type"] == "m.replace"
+        || relation["rel_type"] == "m.annotation"
+    {
+        return None;
+    }
+    let event_id = raw["event_id"].as_str()?;
+    let room = raw["room_id"].as_str()?;
+    let sender = raw["sender"].as_str()?;
+    if !event_id.starts_with('$')
+        || !room.starts_with('!')
+        || !sender.starts_with('@')
+        || event_id.len() > 255
+        || room.len() > 255
+        || sender.len() > 255
+    {
+        return None;
+    }
+    let thread_root = if relation["rel_type"] == "m.thread" {
+        Some(relation["event_id"].as_str()?.to_owned())
+    } else {
+        None
+    };
+    Some(RoutedEvent {
+        event_id: event_id.into(),
+        room_id: room.into(),
+        sender_mxid: sender.into(),
+        body: String::new(),
+        mentioned_mxids: BTreeSet::new(),
+        thread_root,
+        encrypted: true,
         is_edit: false,
     })
 }
@@ -833,6 +878,22 @@ mod tests {
         let mut encrypted = raw;
         encrypted["type"] = json!("m.room.encrypted");
         assert!(parse_event(&encrypted).is_none());
+    }
+    #[test]
+    fn encrypted_events_carry_only_cleartext_routing_metadata() {
+        let mut raw = json!({"type":"m.room.encrypted","event_id":"$e","room_id":"!r:x","sender":"@u:x",
+            "content":{"algorithm":"m.megolm.v1.aes-sha2","ciphertext":"opaque","sender_key":"k","session_id":"s","device_id":"D"}});
+        let parsed = parse_event(&raw).unwrap();
+        assert!(parsed.encrypted && parsed.body.is_empty() && parsed.mentioned_mxids.is_empty());
+        assert_eq!(parsed.thread_root, None);
+        raw["content"]["m.relates_to"] = json!({"rel_type":"m.thread","event_id":"$root"});
+        assert_eq!(parse_event(&raw).unwrap().thread_root.as_deref(), Some("$root"));
+        for ignored in ["m.replace", "m.annotation"] {
+            raw["content"]["m.relates_to"]["rel_type"] = json!(ignored);
+            assert!(parse_event(&raw).is_none(), "{ignored}");
+        }
+        raw["content"] = json!({"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":{}});
+        assert!(parse_event(&raw).is_none());
     }
 }
 

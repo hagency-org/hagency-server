@@ -52,12 +52,49 @@ impl MatrixClient {
         body: Option<Value>,
     ) -> Result<Value> {
         self.puppet(user)?;
+        self.request(method, segments, &[("user_id", user)], body).await
+    }
+    /// Appservice login for one fixed device of an owned puppet. Logging in again
+    /// with the same device ID rotates its token, so the previous holder loses
+    /// access while the device and its uploaded keys remain.
+    pub(crate) async fn login_device(&self, puppet: &str, device_id: &str) -> Result<String> {
+        self.puppet(puppet)?;
+        let local = &puppet[1..puppet.find(':').unwrap_or(puppet.len())];
+        let value = self.request(Method::POST, &["_matrix", "client", "v3", "login"], &[], Some(json!({
+            "type": "m.login.application_service",
+            "identifier": {"type": "m.id.user", "user": local},
+            "device_id": device_id,
+            "initial_device_display_name": "Hagency agent executor",
+        }))).await?;
+        if value["user_id"] != puppet || value["device_id"] != device_id {
+            return Err(Error::Unavailable("invalid_matrix_response"));
+        }
+        value["access_token"].as_str().filter(|t| !t.is_empty()).map(str::to_owned)
+            .ok_or(Error::Unavailable("invalid_matrix_response"))
+    }
+    /// Removes one puppet device and its keys through appservice masquerade,
+    /// without holding that device's token.
+    pub(crate) async fn logout_device(&self, puppet: &str, device_id: &str) -> Result<()> {
+        self.puppet(puppet)?;
+        self.request(Method::POST, &["_matrix", "client", "v3", "logout"],
+            &[("user_id", puppet), ("device_id", device_id)], Some(json!({}))).await?;
+        Ok(())
+    }
+    async fn request(
+        &self,
+        method: Method,
+        segments: &[&str],
+        query: &[(&str, &str)],
+        body: Option<Value>,
+    ) -> Result<Value> {
         let mut url = self.origin.clone();
         url.path_segments_mut()
             .map_err(|_| Error::Invalid("invalid_matrix_origin"))?
             .clear()
             .extend(segments);
-        url.query_pairs_mut().append_pair("user_id", user);
+        for (name, value) in query {
+            url.query_pairs_mut().append_pair(name, value);
+        }
         let mut request = self.http.request(method, url).bearer_auth(&self.as_token);
         if let Some(body) = body {
             request = request.json(&body);

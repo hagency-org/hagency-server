@@ -77,7 +77,7 @@ impl TransportStore {
             let needed=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.request_notice_needed WHERE owner_event_id=$1 AND kind=$2) AS matched")
                 .bind::<Text,_>(&n.owner_event_id).bind::<Text,_>(&n.kind).get_result::<Flag>(db).await?.matched;
             let authorized=if needed && scope.binding_generation==n.binding_generation {
-                match facts(&scope,&n.requester_mxid,f,now) {
+                match plaintext_sendable(&scope,&n.requester_mxid,f,now) {
                     Ok(())=>true,Err(e @ Error::Unavailable(_))=>return Err(e),Err(_)=>false
                 }
             } else {false};
