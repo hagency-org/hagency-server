@@ -217,7 +217,10 @@ def validate(doc):
             require(operation['responses']['200']['content']['application/json']['schema'] == {'type':'object','properties':{'admission':{'$ref':'#/components/schemas/EncryptedAdmission'}},'required':['admission'],'additionalProperties':False}, 'encrypted admission response drift')
         action = doc['components']['schemas']['EncryptedAction']
         require(set(action['properties']) == {'lease','dispatchId','executionId','action','requestId','kind','payload'} and action.get('additionalProperties') is False, 'encrypted action must contain metadata and sealed payload only')
-        require(len(operations) == 128, 'reviewed owner route count drift')
+        worker_health = doc['paths']['/workers-healthz']['get']
+        require(worker_health['security'] == [] and set(worker_health['responses']) == {'200', '503'}, 'worker health security/status drift')
+        require(set(doc['components']['schemas']['WorkerQueueHealth']['properties']) == {'name', 'running', 'consecutiveFailures', 'lastSuccessAgeMs', 'lastActivityAgeMs', 'error'}, 'worker health must remain aggregate and body-free')
+        require(len(operations) == 129, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -230,6 +233,10 @@ class GuardTests(unittest.TestCase):
         doc = copy.deepcopy(self.doc); mutate(doc)
         with self.assertRaises((ValueError, KeyError, TypeError)):
             validate(doc)
+    def test_worker_health_cannot_include_queue_body(self):
+        self.rejection(lambda d: d['components']['schemas']['WorkerQueueHealth']['properties'].update(body={'type':'string'}))
+    def test_worker_health_preserves_degraded_status(self):
+        self.rejection(lambda d: d['paths']['/workers-healthz']['get']['responses'].pop('503'))
     def test_encrypted_action_never_accepts_plaintext_body(self):
         self.rejection(lambda d: d['components']['schemas']['EncryptedAction']['properties'].update(body={'type':'string'}))
     def test_missing_encrypted_execution_action(self):

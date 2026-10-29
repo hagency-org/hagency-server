@@ -19,6 +19,7 @@ pub mod identity;
 pub mod matrix_client;
 pub mod store;
 pub mod transport;
+pub mod worker_runtime;
 mod workers;
 
 pub type Result<T> = std::result::Result<T, Error>;

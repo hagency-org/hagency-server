@@ -1263,3 +1263,367 @@ async fn postgres_file_lookup_recovers_lost_prepare_and_fences_final_absence() {
         assert_eq!(restored.delivery.is_some(), prepare_first);
     }
 }
+
+/// Actual PostgreSQL state and HTTP bodies cross the shutdown boundary. Each
+/// scenario owns a database because file candidates are deliberately global.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_worker_shutdown_drains_file_io_and_receipts_without_claiming_next_file() {
+    let source = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let mut control = AsyncPgConnection::establish(&source).await.unwrap();
+    for phase in ["upload", "send", "receipt", "timeout"] {
+        let name = format!("hagency_drain_{}", &crate::secret_token()[..16]);
+        control
+            .batch_execute(&format!("CREATE DATABASE {name}"))
+            .await
+            .unwrap();
+        let mut url = url::Url::parse(&source).unwrap();
+        url.set_path(&format!("/{name}"));
+        let outcome =
+            tokio::spawn(async move { file_shutdown_scenario(url.as_str(), phase).await }).await;
+        control
+            .batch_execute(&format!("DROP DATABASE {name} WITH (FORCE)"))
+            .await
+            .unwrap();
+        outcome.unwrap();
+    }
+}
+async fn file_shutdown_scenario(url: &str, phase: &str) {
+    use crate::worker_runtime::{WorkerRuntime, drain_workers};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::oneshot,
+    };
+    let f = fixture_at(url).await;
+    let lease = lease(&f).await;
+    let (target, _) = staged(&f, &lease, &format!("shutdown-{phase}")).await;
+    let second = if phase != "timeout" {
+        let d = f
+            .transport
+            .prepare_file(
+                &f.p,
+                &lease,
+                &target.dispatch_id,
+                &target.execution_id,
+                "second-file",
+                manifest(),
+                &f.facts,
+                crate::api::now_ms(),
+            )
+            .await
+            .unwrap();
+        let next = Target {
+            file_id: d.id,
+            ..target.clone()
+        };
+        f.transport
+            .stage_file_chunk(
+                &f.p,
+                &lease,
+                &next,
+                0,
+                b"hello",
+                &f.facts,
+                crate::api::now_ms(),
+            )
+            .await
+            .unwrap();
+        f.transport
+            .queue_file(&f.p, &lease, &next, &f.facts, crate::api::now_ms())
+            .await
+            .unwrap();
+        Some(next)
+    } else {
+        None
+    };
+    if phase == "send" {
+        let (matrix, _, server) = matrix(false).await;
+        crate::workers::send_files(&f.transport, &gateway(&f), &matrix, &mut String::new())
+            .await
+            .unwrap();
+        server.abort();
+        let _ = server.await;
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (seen_tx, seen_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let is_send = phase == "send";
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        let mut chunk = [0; 4096];
+        loop {
+            let n = socket.read(&mut chunk).await.unwrap();
+            assert!(n > 0);
+            bytes.extend_from_slice(&chunk[..n]);
+            if let Some(split) = bytes
+                .windows(4)
+                .position(|s| s == b"\r\n\r\n")
+                .map(|i| i + 4)
+            {
+                let headers = std::str::from_utf8(&bytes[..split]).unwrap();
+                let length = headers
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|n| n.trim().parse::<usize>().ok())
+                    })
+                    .unwrap();
+                if bytes.len() < split + length {
+                    continue;
+                }
+                if is_send {
+                    assert!(headers.contains("/send/m.room.message/"));
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&bytes[split..split + length]).unwrap()["filename"],
+                        "original.txt"
+                    );
+                } else {
+                    assert!(headers.contains("/_matrix/media/v3/upload"));
+                    assert_eq!(&bytes[split..split + length], b"hello");
+                }
+                seen_tx.send(()).unwrap();
+                break;
+            }
+        }
+        release_rx.await.ok();
+        let body = if is_send {
+            r#"{"event_id":"$drained-file:example.test"}"#
+        } else {
+            r#"{"content_uri":"mxc://example.test/drained-file"}"#
+        };
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        // A timed-out owner may already have dropped its socket.
+        let _ = socket.write_all(response.as_bytes()).await;
+    });
+    let held_matrix = crate::matrix_client::MatrixClient::new(
+        format!("http://{address}").parse().unwrap(),
+        "shutdown-fixture-as-token".into(),
+        "example.test".into(),
+    )
+    .unwrap();
+    let runtime = WorkerRuntime::default();
+    let worker_runtime = runtime.clone();
+    let transport = f.transport.clone();
+    let live_gateway = gateway(&f);
+    let worker = tokio::spawn(async move {
+        let ctx = worker_runtime.queue("files");
+        let result = crate::workers::send_files_controlled(
+            &transport,
+            &live_gateway,
+            &held_matrix,
+            &mut String::new(),
+            &ctx,
+        )
+        .await;
+        ctx.finish(&result);
+        result.unwrap();
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), seen_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    let status = f
+        .transport
+        .file_delivery(&f.p, &target, crate::api::now_ms())
+        .await
+        .unwrap();
+    assert_eq!(status.state, if is_send { "sending" } else { "uploading" });
+    let mut blocker = AsyncPgConnection::establish(url).await.unwrap();
+    if phase == "receipt" {
+        blocker
+            .batch_execute("BEGIN; SELECT pg_advisory_xact_lock(5210750088328904)")
+            .await
+            .unwrap();
+    }
+    let draining_runtime = runtime.clone();
+    let deadline = if phase == "timeout" {
+        std::time::Duration::from_millis(30)
+    } else {
+        std::time::Duration::from_secs(5)
+    };
+    let draining =
+        tokio::spawn(
+            async move { drain_workers(&draining_runtime, &mut [worker], deadline).await },
+        );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    if phase == "timeout" {
+        assert!(!draining.await.unwrap());
+        release_tx.send(()).ok();
+        server.await.unwrap();
+        f.transport
+            .expire_files(crate::api::now_ms() + 60_001)
+            .await
+            .unwrap();
+        assert_eq!(
+            f.transport
+                .file_delivery(&f.p, &target, crate::api::now_ms())
+                .await
+                .unwrap()
+                .state,
+            "unknown"
+        );
+        // A fresh worker must not reconstruct upload custody after cancellation.
+        let (matrix, wire, server) = matrix(false).await;
+        crate::workers::send_files(&f.transport, &gateway(&f), &matrix, &mut String::new())
+            .await
+            .unwrap();
+        assert!(wire.lock().unwrap().is_empty());
+        server.abort();
+        let _ = server.await;
+        return;
+    }
+    assert!(
+        !draining.is_finished(),
+        "drain must retain the in-flight HTTP future"
+    );
+    release_tx.send(()).unwrap();
+    server.await.unwrap();
+    if phase == "receipt" {
+        #[derive(diesel::QueryableByName)]
+        struct Waiting {
+            #[diesel(sql_type=diesel::sql_types::Bool)]
+            value: bool,
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2),async {
+            loop {
+                let waiting=sql_query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event='advisory') AS value").get_result::<Waiting>(&mut blocker).await.unwrap().value;
+                if waiting {break;}tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        assert!(
+            !draining.is_finished(),
+            "drain must retain receipt persistence after actual HTTP acceptance"
+        );
+        blocker.batch_execute("ROLLBACK").await.unwrap();
+    }
+    assert!(draining.await.unwrap());
+    let status = f
+        .transport
+        .file_delivery(&f.p, &target, crate::api::now_ms())
+        .await
+        .unwrap();
+    assert_eq!(status.state, if is_send { "sent" } else { "uploaded" });
+    let next = f
+        .transport
+        .file_delivery(&f.p, &second.unwrap(), crate::api::now_ms())
+        .await
+        .unwrap();
+    assert_eq!(
+        next.state,
+        if is_send { "uploaded" } else { "queued" },
+        "shutdown must not claim the next file from an already fetched batch"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_worker_health_detects_query_failure_recovers_idle_and_supervises_panic() {
+    let source = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let mut control = AsyncPgConnection::establish(&source).await.unwrap();
+    let name = format!("hagency_health_{}", &crate::secret_token()[..16]);
+    control
+        .batch_execute(&format!("CREATE DATABASE {name}"))
+        .await
+        .unwrap();
+    let mut url = url::Url::parse(&source).unwrap();
+    url.set_path(&format!("/{name}"));
+    let result = tokio::spawn(async move { worker_health_scenario(url.as_str()).await }).await;
+    control
+        .batch_execute(&format!("DROP DATABASE {name} WITH (FORCE)"))
+        .await
+        .unwrap();
+    result.unwrap();
+}
+async fn worker_health_scenario(url: &str) {
+    use crate::{
+        appservice::Inbox,
+        worker_runtime::{WorkerRuntime, drain_workers},
+    };
+    let f = fixture_at(url).await;
+    let inbox = Inbox::open(url, "health-fixture-hs-token-only-not-real-secret".into())
+        .await
+        .unwrap();
+    let (matrix, _, server) = matrix(false).await;
+    let runtime = WorkerRuntime::default();
+    let worker = crate::workers::start_controlled(
+        inbox.clone(),
+        f.transport.clone(),
+        gateway(&f),
+        matrix.clone(),
+        runtime.clone(),
+    );
+    async fn wait_health(runtime: &WorkerRuntime, healthy: bool) {
+        tokio::time::timeout(std::time::Duration::from_secs(6), async {
+            loop {
+                if runtime.health().healthy == healthy {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    wait_health(&runtime, true).await;
+    // Break an actual query dependency rather than fabricating error counters.
+    let mut db = AsyncPgConnection::establish(url).await.unwrap();
+    db.batch_execute("ALTER TABLE hagency_agent_v1.routing_jobs RENAME TO routing_jobs_fault")
+        .await
+        .unwrap();
+    wait_health(&runtime, false).await;
+    let snapshot = serde_json::to_value(runtime.health()).unwrap();
+    let routing = snapshot["queues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|q| q["name"] == "routing")
+        .unwrap();
+    assert!(routing["consecutiveFailures"].as_u64().unwrap() >= 3);
+    assert_eq!(routing["error"], "storage_unavailable");
+    db.batch_execute("ALTER TABLE hagency_agent_v1.routing_jobs_fault RENAME TO routing_jobs")
+        .await
+        .unwrap();
+    wait_health(&runtime, true).await;
+    assert!(drain_workers(&runtime, &mut [worker], std::time::Duration::from_secs(2)).await);
+    // An actual worker panic during Gateway IO must become failed health, not
+    // silently leave a healthy HTTP process with all joined queues gone.
+    let runtime = WorkerRuntime::default();
+    let panicking = crate::gateway::Gateway::new(
+        Arc::new(|_| Box::pin(async { panic!("injected Gateway worker panic") })),
+        "@_hagency_service:example.test".into(),
+    );
+    let body = json!({"events":[{"type":"m.room.message","event_id":"$health-panic:example.test","room_id":f.facts.room_id,"sender":f.facts.owner_mxid,"content":{"msgtype":"m.text","body":"health panic","m.mentions":{"user_ids":[f.facts.puppet_mxid]}}}]});
+    inbox
+        .accept("health-panic", body, crate::api::now_ms())
+        .await
+        .unwrap();
+    let worker = crate::workers::start_controlled(
+        inbox,
+        f.transport.clone(),
+        panicking,
+        matrix,
+        runtime.clone(),
+    );
+    let error = tokio::time::timeout(std::time::Duration::from_secs(3), worker)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(error.is_panic());
+    assert!(!runtime.health().healthy);
+    assert!(
+        serde_json::to_value(runtime.health()).unwrap()["queues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|q| q["running"] == false)
+    );
+    server.abort();
+    let _ = server.await;
+}

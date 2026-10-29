@@ -192,45 +192,8 @@ async fn run() -> anyhow::Result<()> {
             "_hagency_",
         )
         .await?;
-        let read: hagency_agent_service::gateway::ReadState = Arc::new(|room| {
-            Box::pin(async move {
-                let room: palpo::core::OwnedRoomId = room
-                    .try_into()
-                    .map_err(|_| hagency_agent_service::Error::Invalid("invalid_room_id"))?;
-                let frame = palpo::room::get_current_frame_id(&room)
-                    .await
-                    .map_err(|_| {
-                        hagency_agent_service::Error::Unavailable("matrix_state_unavailable")
-                    })?
-                    .ok_or(hagency_agent_service::Error::Unavailable(
-                        "matrix_state_unavailable",
-                    ))?;
-                let expected = palpo::room::state::get_full_state_ids(frame)
-                    .await
-                    .map_err(|_| {
-                        hagency_agent_service::Error::Unavailable("matrix_state_unavailable")
-                    })?
-                    .values()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>();
-                let state = palpo::room::state::get_full_state(frame)
-                    .await
-                    .map_err(|_| {
-                        hagency_agent_service::Error::Unavailable("matrix_state_unavailable")
-                    })?;
-                let events = state
-                    .values()
-                    .map(|event| {
-                        serde_json::to_value(event).map_err(|_| {
-                            hagency_agent_service::Error::Unavailable("matrix_state_unavailable")
-                        })
-                    })
-                    .collect::<hagency_agent_service::Result<Vec<_>>>()?;
-                hagency_server::agent_appservice::validate_state_completeness(&expected, &events)?;
-                Ok(events)
-            })
-        });
-        let gateway = hagency_agent_service::gateway::Gateway::new(
+        let read = hagency_server::matrix_state::shared_reader();
+        let gateway = hagency_agent_service::gateway::Gateway::new_shared(
             read,
             format!("@_hagency_service:{}", conf.matrix.server_name),
         );
@@ -278,7 +241,9 @@ async fn run() -> anyhow::Result<()> {
         router = router.push(inbox.router());
     }
     if let Some(app) = &agent_service {
-        router = router.push(app.readiness_router());
+        router = router
+            .push(app.readiness_router())
+            .push(app.worker_health_router());
     }
     let frontend = Frontend::new(&conf);
     frontend.preserve_assets().await?;
@@ -315,30 +280,34 @@ async fn run() -> anyhow::Result<()> {
     let acceptor = TcpListener::new(conf.listen).try_bind().await?;
     let server = Server::new(acceptor);
     let handle = server.handle();
-    tokio::spawn(async move {
-        let ctrl_c = tokio::signal::ctrl_c();
-        #[cfg(unix)]
-        {
-            let mut terminate =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("SIGTERM handler");
-            tokio::select! {_=ctrl_c=>(),_=terminate.recv()=>()}
-        }
-        #[cfg(not(unix))]
-        ctrl_c.await.expect("shutdown signal");
-        handle.stop_graceful(Some(Duration::from_secs(15)));
-    });
+    let runtime = agent_service.as_ref().map(|app| app.worker_runtime());
+    let mut workers = delivery_worker
+        .into_iter()
+        .chain(cleanup_worker)
+        .collect::<Vec<_>>();
     tracing::info!(listen=%conf.listen,public_origin=%conf.public_origin,"hagency-server started");
-    server.serve(service).await;
+    let serving = server.serve(service);
+    tokio::pin!(serving);
+    tokio::select! {
+        _=&mut serving=>{
+            if let Some(runtime)=&runtime {
+                hagency_agent_service::worker_runtime::drain_workers(runtime,&mut workers,Duration::from_secs(2)).await;
+            }
+        },
+        _=shutdown_signal()=>{
+            if let Some(runtime)=&runtime {runtime.begin_shutdown();}
+            // Keep serving internal Matrix upload/send calls while already claimed
+            // work records its actual outcome. No queue may claim another item.
+            let shutdown=async {
+                if let Some(runtime)=&runtime {
+                    hagency_agent_service::worker_runtime::drain_workers(runtime,&mut workers,Duration::from_secs(35)).await;
+                }
+                handle.stop_graceful(Some(Duration::from_secs(15)));
+            };
+            tokio::join!(shutdown,&mut serving);
+        }
+    }
     if let Some(worker) = identity_worker {
-        worker.abort();
-        let _ = worker.await;
-    }
-    if let Some(worker) = delivery_worker {
-        worker.abort();
-        let _ = worker.await;
-    }
-    if let Some(worker) = cleanup_worker {
         worker.abort();
         let _ = worker.await;
     }
@@ -357,4 +326,17 @@ async fn health() -> &'static str {
 async fn unknown_hagency_api(res: &mut Response) {
     res.status_code(StatusCode::NOT_FOUND);
     res.render(Json(serde_json::json!({"code":"not_found"})));
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("SIGTERM handler");
+        tokio::select! {_=ctrl_c=>(),_=terminate.recv()=>()}
+    }
+    #[cfg(not(unix))]
+    ctrl_c.await.expect("shutdown signal");
 }
