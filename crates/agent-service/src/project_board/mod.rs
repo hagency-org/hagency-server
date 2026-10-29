@@ -42,6 +42,17 @@ struct Number {
     value: i64,
 }
 #[derive(diesel::QueryableByName)]
+struct LaneCounts {
+    #[diesel(sql_type=Text)]
+    state: String,
+    #[diesel(sql_type=BigInt)]
+    total: i64,
+    #[diesel(sql_type=BigInt)]
+    active: i64,
+    #[diesel(sql_type=BigInt)]
+    matching: i64,
+}
+#[derive(diesel::QueryableByName)]
 struct Flag {
     #[diesel(sql_type=Bool)]
     value: bool,
@@ -193,7 +204,7 @@ fn state(value: &str) -> Result<()> {
         Err(Error::Invalid("invalid_board_state"))
     }
 }
-const TASK_JSON: &str = "jsonb_build_object('id',t.id,'projectId',t.project_id,'number',t.number,'title',t.title,'description',t.description,'state',t.state_key,'rank',t.rank,'priority',t.priority,'assigneeMxid',t.assignee_mxid,'labels',t.labels,'dueDate',t.due_date::text,'version',t.version,'createdBy',t.created_by,'createdAt',t.created_at,'updatedAt',t.updated_at,'archivedAt',t.archived_at,'parentId',t.parent_id,'parentNumber',(SELECT p.number FROM hagency_project_v1.tasks p WHERE p.id=t.parent_id AND p.project_id=t.project_id),'attachmentCount',(SELECT count(*) FROM hagency_project_v1.attachments f WHERE f.project_id=t.project_id AND f.task_id=t.id AND f.removed_at IS NULL),'commentCount',(SELECT count(*) FROM hagency_project_v1.comments c WHERE c.project_id=t.project_id AND c.task_id=t.id),'checklist',t.checklist,'checklistTotal',jsonb_array_length(t.checklist),'checklistDone',(SELECT count(*) FROM jsonb_array_elements(t.checklist) i WHERE (i->>'checked')::boolean),'subtaskTotal',(SELECT count(*) FROM hagency_project_v1.tasks c WHERE c.project_id=t.project_id AND c.parent_id=t.id AND c.archived_at IS NULL),'subtaskDone',(SELECT count(*) FROM hagency_project_v1.tasks c JOIN hagency_project_v1.columns col ON col.project_id=c.project_id AND col.column_key=c.state_key WHERE c.project_id=t.project_id AND c.parent_id=t.id AND c.archived_at IS NULL AND col.is_done))";
+const TASK_SUMMARY_JSON: &str = "jsonb_build_object('id',t.id,'projectId',t.project_id,'number',t.number,'title',t.title,'state',t.state_key,'rank',t.rank,'priority',t.priority,'assigneeMxid',t.assignee_mxid,'labels',t.labels,'dueDate',t.due_date::text,'version',t.version,'createdBy',t.created_by,'createdAt',t.created_at,'updatedAt',t.updated_at,'archivedAt',t.archived_at,'parentId',t.parent_id,'parentNumber',(SELECT p.number FROM hagency_project_v1.tasks p WHERE p.id=t.parent_id AND p.project_id=t.project_id),'attachmentCount',(SELECT count(*) FROM hagency_project_v1.attachments f WHERE f.project_id=t.project_id AND f.task_id=t.id AND f.removed_at IS NULL),'commentCount',(SELECT count(*) FROM hagency_project_v1.comments c WHERE c.project_id=t.project_id AND c.task_id=t.id),'checklistTotal',jsonb_array_length(t.checklist),'checklistDone',(SELECT count(*) FROM jsonb_array_elements(t.checklist) i WHERE (i->>'checked')::boolean),'subtaskTotal',(SELECT count(*) FROM hagency_project_v1.tasks c WHERE c.project_id=t.project_id AND c.parent_id=t.id AND c.archived_at IS NULL),'subtaskDone',(SELECT count(*) FROM hagency_project_v1.tasks c JOIN hagency_project_v1.columns col ON col.project_id=c.project_id AND col.column_key=c.state_key WHERE c.project_id=t.project_id AND c.parent_id=t.id AND c.archived_at IS NULL AND col.is_done))";
 const FILTER: &str = "t.project_id=$1 AND ($2::text IS NULL OR t.state_key=$2) AND ($3::text IS NULL OR t.assignee_mxid=$3) AND ($4::text IS NULL OR t.labels ? $4) AND ($5::text IS NULL OR position(lower($5) in lower(t.title))>0) AND (NOT $6 OR (t.due_date<(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date AND NOT EXISTS(SELECT 1 FROM hagency_project_v1.columns col WHERE col.project_id=t.project_id AND col.column_key=t.state_key AND col.is_done))) AND ((t.archived_at IS NOT NULL)=$7)";
 
 impl BoardStore {
@@ -210,19 +221,21 @@ impl BoardStore {
             let exists=sql_query("SELECT to_regclass('hagency_project_v1.migrations') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
             if exists {
                 let version=sql_query("SELECT coalesce(max(version),0)::bigint AS value FROM hagency_project_v1.migrations").get_result::<Number>(db).await?.value;
-                if !(1..=6).contains(&version){return Err(Error::Conflict("board_schema_incompatible"));}
+                if !(1..=7).contains(&version){return Err(Error::Conflict("board_schema_incompatible"));}
                 let complete=sql_query("SELECT to_regclass('hagency_project_v1.boards') IS NOT NULL AND to_regclass('hagency_project_v1.tasks') IS NOT NULL AND to_regclass('hagency_project_v1.comments') IS NOT NULL AND to_regclass('hagency_project_v1.changes') IS NOT NULL AND to_regclass('hagency_project_v1.receipts') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
                 if version>=2 && !sql_query("SELECT to_regclass('hagency_project_v1.columns') IS NOT NULL AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if version>=3 && !sql_query("SELECT to_regclass('hagency_project_v1.notifications') IS NOT NULL AND to_regclass('hagency_project_v1.attachments') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='changes' AND column_name='details') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if version>=4 && !sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='columns' AND column_name='archived') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if version>=5 && !sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='boards' AND column_name='owner_project_id') AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='projects' AND column_name='archived') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if version>=6 && !sql_query("SELECT to_regclass('hagency_project_v1.navigation_defaults') IS NOT NULL AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
+                if version>=7 && !sql_query("SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='attachments' AND column_name IN ('byte_size','content_sha256'))=2 AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='attachments' AND column_name='data' AND is_nullable='YES') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if !complete{return Err(Error::Conflict("board_schema_incompatible"));}
                 if version == 1 { db.batch_execute(include_str!("schema_v2.sql")).await?; }
                 if version < 3 { db.batch_execute(include_str!("schema_v3.sql")).await?; }
                 if version < 4 { db.batch_execute(include_str!("schema_v4.sql")).await?; }
                 if version < 5 { db.batch_execute(include_str!("schema_v5.sql")).await?; }
                 if version < 6 { db.batch_execute(include_str!("schema_v6.sql")).await?; }
+                if version < 7 { db.batch_execute(include_str!("schema_v7.sql")).await?; }
                 return Ok(());
             }
             db.batch_execute(include_str!("schema.sql")).await?;
@@ -231,6 +244,7 @@ impl BoardStore {
             db.batch_execute(include_str!("schema_v4.sql")).await?;
             db.batch_execute(include_str!("schema_v5.sql")).await?;
             db.batch_execute(include_str!("schema_v6.sql")).await?;
+            db.batch_execute(include_str!("schema_v7.sql")).await?;
             Ok(())
         }).await?;
         drop(db);
@@ -279,7 +293,7 @@ impl BoardStore {
         Ok(sql_query("SELECT coalesce((SELECT change_seq FROM hagency_project_v1.boards WHERE project_id=$1),0) AS value").bind::<Text,_>(project).get_result::<Number>(db).await?.value)
     }
     async fn task(db: &mut AsyncPgConnection, project: &str, id: &str) -> Result<Value> {
-        sql_query(format!("SELECT {TASK_JSON} AS value FROM hagency_project_v1.tasks t WHERE t.project_id=$1 AND t.id=$2"))
+        sql_query(format!("SELECT {TASK_SUMMARY_JSON} || jsonb_build_object('description',t.description,'checklist',t.checklist) AS value FROM hagency_project_v1.tasks t WHERE t.project_id=$1 AND t.id=$2"))
             .bind::<Text,_>(project).bind::<Text,_>(id).get_result::<Row>(db).await.map(|r|r.value).map_err(|e|match e{diesel::result::Error::NotFound=>Error::NotFound("board_task_not_found"),_=>e.into()})
     }
     fn cursor(project: &str, q: &Query, seq: i64, last: &str) -> String {
@@ -306,23 +320,33 @@ impl BoardStore {
         }
         Ok(Some(id.into()))
     }
-    async fn page(db: &mut AsyncPgConnection, project: &str, q: &Query, seq: i64) -> Result<Value> {
+    async fn page(
+        db: &mut AsyncPgConnection,
+        project: &str,
+        q: &Query,
+        seq: i64,
+        total: Option<i64>,
+    ) -> Result<Value> {
         let cursor = Self::cursor_id(project, q, seq)?;
         let limit = q.limit.unwrap_or(50);
-        let count = sql_query(format!(
-            "SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks t WHERE {FILTER}"
-        ))
-        .bind::<Text, _>(project)
-        .bind::<Nullable<Text>, _>(&q.state)
-        .bind::<Nullable<Text>, _>(&q.assignee)
-        .bind::<Nullable<Text>, _>(&q.label)
-        .bind::<Nullable<Text>, _>(&q.query)
-        .bind::<Bool, _>(q.overdue)
-        .bind::<Bool, _>(q.archived)
-        .get_result::<Number>(db)
-        .await?
-        .value;
-        let rows=sql_query(format!("SELECT {TASK_JSON}-'description'-'checklist' AS value FROM hagency_project_v1.tasks t WHERE {FILTER} AND ($8::text IS NULL OR (t.rank,t.id)>(SELECT c.rank,c.id FROM hagency_project_v1.tasks c WHERE c.project_id=$1 AND c.id=$8)) ORDER BY t.rank,t.id LIMIT $9"))
+        let count = if let Some(total) = total {
+            total
+        } else {
+            sql_query(format!(
+                "SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks t WHERE {FILTER}"
+            ))
+            .bind::<Text, _>(project)
+            .bind::<Nullable<Text>, _>(&q.state)
+            .bind::<Nullable<Text>, _>(&q.assignee)
+            .bind::<Nullable<Text>, _>(&q.label)
+            .bind::<Nullable<Text>, _>(&q.query)
+            .bind::<Bool, _>(q.overdue)
+            .bind::<Bool, _>(q.archived)
+            .get_result::<Number>(db)
+            .await?
+            .value
+        };
+        let rows=sql_query(format!("SELECT {TASK_SUMMARY_JSON} AS value FROM hagency_project_v1.tasks t WHERE {FILTER} AND ($8::text IS NULL OR (t.rank,t.id)>(SELECT c.rank,c.id FROM hagency_project_v1.tasks c WHERE c.project_id=$1 AND c.id=$8)) ORDER BY t.rank,t.id LIMIT $9"))
             .bind::<Text,_>(project).bind::<Nullable<Text>,_>(&q.state).bind::<Nullable<Text>,_>(&q.assignee).bind::<Nullable<Text>,_>(&q.label).bind::<Nullable<Text>,_>(&q.query).bind::<Bool,_>(q.overdue).bind::<Bool,_>(q.archived).bind::<Nullable<Text>,_>(cursor).bind::<BigInt,_>(limit+1).load::<Row>(db).await?;
         let more = rows.len() > limit as usize;
         let tasks: Vec<_> = rows
@@ -349,13 +373,17 @@ impl BoardStore {
         db.build_transaction().repeatable_read().run::<_,Error,_>(async |db|{
             Self::authorize(db,p,a).await?;
             let seq=Self::sequence(db,&a.project).await?;
+            // One grouped scan supplies occupancy and filtered totals for every lane.
+            let counts=sql_query(format!("SELECT t.state_key AS state,count(*)::bigint AS total,count(*) FILTER(WHERE t.archived_at IS NULL)::bigint AS active,count(*) FILTER(WHERE {FILTER})::bigint AS matching FROM hagency_project_v1.tasks t WHERE t.project_id=$1 GROUP BY t.state_key"))
+                .bind::<Text,_>(&a.project).bind::<Nullable<Text>,_>(&q.state).bind::<Nullable<Text>,_>(&q.assignee).bind::<Nullable<Text>,_>(&q.label).bind::<Nullable<Text>,_>(&q.query).bind::<Bool,_>(q.overdue).bind::<Bool,_>(q.archived).load::<LaneCounts>(db).await?;
             let mut lanes=Vec::new();
             for column in Self::columns(db,&a.project).await? {
                 let name=&column.id;
-                let count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND state_key=$2 AND archived_at IS NULL").bind::<Text,_>(&a.project).bind::<Text,_>(name).get_result::<Number>(db).await?.value;
+                let totals=counts.iter().find(|c| &c.state==name);
+                let count=totals.map(|c|c.active).unwrap_or(0);
                 let mut query=q.clone();query.state=Some(name.clone());
-                let mut page=if q.state.as_ref().is_some_and(|s| s!=name) { json!({"tasks":[],"total":0,"nextCursor":null,"sequence":seq}) } else { Self::page(db,&a.project,&query,seq).await? };
-                let all_count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND state_key=$2").bind::<Text,_>(&a.project).bind::<Text,_>(name).get_result::<Number>(db).await?.value;
+                let mut page=if q.state.as_ref().is_some_and(|s| s!=name) { json!({"tasks":[],"total":0,"nextCursor":null,"sequence":seq}) } else { Self::page(db,&a.project,&query,seq,Some(totals.map(|c|c.matching).unwrap_or(0))).await? };
+                let all_count=totals.map(|c|c.total).unwrap_or(0);
                 page["archived"]=json!(column.archived);page["state"]=json!(name);page["title"]=json!(column.title);page["wipLimit"]=json!(column.wip_limit);page["isDone"]=json!(column.is_done);page["taskCount"]=json!(count);page["allTaskCount"]=json!(all_count);lanes.push(page);
             }
             // Project-wide suggestions must not shrink with filters or task pagination.
@@ -378,7 +406,7 @@ impl BoardStore {
             .run::<_, Error, _>(async |db| {
                 Self::authorize(db, p, a).await?;
                 let seq = Self::sequence(db, &a.project).await?;
-                let result = Self::page(db, &a.project, &q, seq).await?;
+                let result = Self::page(db, &a.project, &q, seq, None).await?;
                 Self::fresh(a)?;
                 Ok(result)
             })
@@ -391,7 +419,7 @@ impl BoardStore {
             Self::authorize(db, p, a).await?;
             let task = Self::task(db, &a.project, id).await?;
             Self::fresh(a)?;
-            let children=sql_query(format!("SELECT {TASK_JSON}-'description'-'checklist' AS value FROM hagency_project_v1.tasks t WHERE t.project_id=$1 AND t.parent_id=$2 ORDER BY t.number LIMIT 100"))
+            let children=sql_query(format!("SELECT {TASK_SUMMARY_JSON} AS value FROM hagency_project_v1.tasks t WHERE t.project_id=$1 AND t.parent_id=$2 ORDER BY t.number LIMIT 100"))
                 .bind::<Text,_>(&a.project).bind::<Text,_>(id).load::<Row>(db).await?.into_iter().map(|r|r.value).collect::<Vec<_>>();
             let parent = if let Some(parent)=task["parentId"].as_str() {Self::task(db,&a.project,parent).await?} else {Value::Null};
             Self::fresh(a)?;
@@ -531,7 +559,7 @@ impl BoardStore {
                     attachment=json!(Self::add_attachment(db,p,a,task,input,now).await?); Some(task.clone())
                 }
                 Mutation::RemoveAttachment {task,input} => {
-                    let changed=sql_query("UPDATE hagency_project_v1.attachments SET removed_at=$4 WHERE project_id=$1 AND task_id=$2 AND id=$3 AND removed_at IS NULL")
+                    let changed=sql_query("UPDATE hagency_project_v1.attachments SET removed_at=$4,data=NULL WHERE project_id=$1 AND task_id=$2 AND id=$3 AND removed_at IS NULL")
                         .bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<Text,_>(&input.attachment).bind::<BigInt,_>(now).execute(db).await?;
                     if changed==0 {return Err(Error::NotFound("board_attachment_not_found"));}
                     Some(task.clone())

@@ -1,6 +1,6 @@
 use super::*;
 use crate::file_delivery::{
-    CHUNK_BYTES, Delivery, FileLookup, FileObservation, MAX_BYTES, Manifest, Target,
+    CHUNK_BYTES, Delivery, FileLookup, FileObservation, MAX_BYTES, MAX_CHUNKS, Manifest, Target,
 };
 use diesel::sql_types::{Binary, Jsonb};
 use serde_json::Value;
@@ -125,6 +125,13 @@ async fn row(db: &mut AsyncPgConnection, id: &str) -> Result<FileRow> {
             }
         })
 }
+/// Read a legacy prefix plus the immutable appended chunks once at queue/claim.
+/// Staging writes never concatenate the growing file.
+async fn file_bytes(db: &mut AsyncPgConnection, id: &str) -> Result<Vec<u8>> {
+    let blob=sql_query("SELECT o.content||coalesce((SELECT string_agg(c.content,''::bytea ORDER BY c.byte_offset) FROM hagency_agent_v1.file_chunks c WHERE c.file_id=o.id),''::bytea) AS content FROM hagency_agent_v1.file_outbox o WHERE o.id=$1")
+        .bind::<Text,_>(id).get_result::<Blob>(db).await?;
+    Ok(blob.content)
+}
 fn target_matches(r: &FileRow, p: &Principal, target: &Target) -> Result<()> {
     if r.owner_user_id != p.user_id
         || r.owner_event_id != target.dispatch_id
@@ -217,7 +224,7 @@ impl TransportStore {
             if e.state!="running"||e.execution_id.as_deref()!=Some(execution) {return Err(Error::Conflict("execution_not_running"))}
             let prior=sql_query(format!("{SELECT} WHERE owner_event_id=$1 AND request_id=$2")).bind::<Text,_>(dispatch).bind::<Text,_>(request_id).get_result::<FileRow>(db).await.optional()?;
             if let Some(prior)=prior {if prior.manifest_digest!=digest||prior.manifest!=serde_json::to_value(&file).map_err(|_|Error::Invalid("invalid_file_manifest"))?||prior.execution_id!=execution {return Err(Error::Conflict("file_request_changed"))}return prior.public();}
-            let count=sql_query("SELECT count(*) AS total FROM hagency_agent_v1.file_outbox WHERE owner_user_id=$1").bind::<Text,_>(&p.user_id).get_result::<Count>(db).await?;
+            let count=sql_query("SELECT count(*) AS total FROM hagency_agent_v1.file_outbox WHERE owner_user_id=$1 AND state NOT IN ('sent','cancelled')").bind::<Text,_>(&p.user_id).get_result::<Count>(db).await?;
             let held=sql_query("SELECT coalesce(sum((manifest->>'bytes')::bigint),0)::bigint AS total FROM hagency_agent_v1.file_outbox WHERE owner_user_id=$1 AND state NOT IN ('sent','cancelled')").bind::<Text,_>(&p.user_id).get_result::<Count>(db).await?;
             if count.total>=4096||held.total.saturating_add(file.bytes as i64)>128*1024*1024 {return Err(Error::Conflict("file_capacity_exceeded"))}
             let scope=Self::scope(db,&e.binding_id).await?;let id=format!("fil_{}",entity_id()?);
@@ -255,11 +262,17 @@ impl TransportStore {
             if offset.saturating_add(bytes.len() as u64)>manifest.bytes {return Err(Error::Invalid("file_size_mismatch"))}
             if offset<r.received_bytes as u64 {
                 if offset+bytes.len() as u64>r.received_bytes as u64 {return Err(Error::Conflict("file_chunk_changed"))}
-                let stored=sql_query("SELECT substring(content FROM $2 FOR $3) AS content FROM hagency_agent_v1.file_outbox WHERE id=$1").bind::<Text,_>(&r.id).bind::<diesel::sql_types::Integer,_>(offset as i32+1).bind::<diesel::sql_types::Integer,_>(bytes.len() as i32).get_result::<Blob>(db).await?;
-                if stored.content!=bytes {return Err(Error::Conflict("file_chunk_changed"))}return r.public();
+                let stored=file_bytes(db,&r.id).await?;
+                if stored.get(offset as usize..offset as usize+bytes.len())!=Some(bytes) {return Err(Error::Conflict("file_chunk_changed"))}return r.public();
             }
             if offset!=r.received_bytes as u64 {return Err(Error::Conflict("file_chunk_gap"))}
-            sql_query("UPDATE hagency_agent_v1.file_outbox SET content=content||$2,received_bytes=received_bytes+$3 WHERE id=$1").bind::<Text,_>(&r.id).bind::<Binary,_>(bytes).bind::<BigInt,_>(bytes.len() as i64).execute(db).await?;row(db,&r.id).await?.public()
+            let chunks=sql_query("SELECT count(*) AS total FROM hagency_agent_v1.file_chunks WHERE file_id=$1").bind::<Text,_>(&r.id).get_result::<Count>(db).await?.total as usize;
+            // Never accept a tiny chunk that leaves too few slots to complete
+            // the original manifest with legal maximum-size chunks.
+            let remaining=manifest.bytes-offset-bytes.len() as u64;
+            if chunks>=MAX_CHUNKS || remaining>(MAX_CHUNKS-chunks-1) as u64*CHUNK_BYTES as u64 {return Err(Error::Invalid("file_chunk_limit"))}
+            sql_query("INSERT INTO hagency_agent_v1.file_chunks(file_id,byte_offset,content) VALUES($1,$2,$3)").bind::<Text,_>(&r.id).bind::<diesel::sql_types::Integer,_>(offset as i32).bind::<Binary,_>(bytes).execute(db).await?;
+            sql_query("UPDATE hagency_agent_v1.file_outbox SET received_bytes=received_bytes+$2 WHERE id=$1").bind::<Text,_>(&r.id).bind::<BigInt,_>(bytes.len() as i64).execute(db).await?;row(db,&r.id).await?.public()
         }).await
     }
     pub async fn queue_file(
@@ -287,14 +300,10 @@ impl TransportStore {
                     return r.public();
                 }
                 let f = r.manifest()?;
-                let blob =
-                    sql_query("SELECT content FROM hagency_agent_v1.file_outbox WHERE id=$1")
-                        .bind::<Text, _>(&r.id)
-                        .get_result::<Blob>(db)
-                        .await?;
-                if blob.content.len() as u64 != f.bytes
+                let bytes = file_bytes(db, &r.id).await?;
+                if bytes.len() as u64 != f.bytes
                     || r.received_bytes as u64 != f.bytes
-                    || hash_bytes(&blob.content) != f.sha256
+                    || hash_bytes(&bytes) != f.sha256
                 {
                     return Err(Error::Conflict("file_bytes_mismatch"));
                 }
@@ -415,7 +424,7 @@ impl TransportStore {
                 .bind::<Text,_>(&r.agent_id).bind::<Text,_>(&r.owner_user_id).bind::<BigInt,_>(r.dispatch_epoch).bind::<Text,_>(&r.dispatch_device_id).get_result::<Flag>(db).await;
             match locked {Ok(_)=>(),Err(diesel::result::Error::NotFound)=>return Err(Error::Unauthorized("file_lease_expired")),Err(e)=>return Err(e.into())}
             let phase=if r.state=="queued" {"upload"}else{"send"};let state=if phase=="upload" {"uploading"}else{"sending"};
-            let bytes=if phase=="upload" {let blob=sql_query("SELECT content FROM hagency_agent_v1.file_outbox WHERE id=$1").bind::<Text,_>(id).get_result::<Blob>(db).await?;let manifest=r.manifest()?;if blob.content.len() as u64!=manifest.bytes||hash_bytes(&blob.content)!=manifest.sha256 {return Err(Error::Unavailable("invalid_stored_file"))}Some(blob.content)}else{None};
+            let bytes=if phase=="upload" {let bytes=file_bytes(db,id).await?;let manifest=r.manifest()?;if bytes.len() as u64!=manifest.bytes||hash_bytes(&bytes)!=manifest.sha256 {return Err(Error::Unavailable("invalid_stored_file"))}Some(bytes)}else{None};
             // Recheck after lock waits and byte hashing, using the real DB clock.
             let now=Self::clock(db,now).await?;facts(&scope,&r.requester_mxid,f,now)?;
             let live=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.file_sendable WHERE id=$1) AND EXISTS(SELECT 1 FROM hagency_agent_v1.owner_events WHERE id=$2 AND created_at_ms>$3) AS matched").bind::<Text,_>(id).bind::<Text,_>(&r.owner_event_id).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).get_result::<Flag>(db).await?;

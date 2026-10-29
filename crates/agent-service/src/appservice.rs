@@ -100,6 +100,9 @@ impl Inbox {
             // acceptance/compaction before creating this fresh schema subset.
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             db.batch_execute("CREATE TABLE IF NOT EXISTS hagency_agent_v1.inbound_transactions (id text PRIMARY KEY,digest text NOT NULL,body jsonb NOT NULL,received_at_ms bigint NOT NULL); CREATE TABLE IF NOT EXISTS hagency_agent_v1.routing_jobs (transaction_id text PRIMARY KEY REFERENCES hagency_agent_v1.inbound_transactions(id),state text NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','routed')),received_at_ms bigint NOT NULL)").await?;
+            // Routed transaction witnesses are permanent. Keep queue reads
+            // proportional to pending work rather than the lifetime history.
+            db.batch_execute("CREATE INDEX IF NOT EXISTS routing_jobs_pending_time ON hagency_agent_v1.routing_jobs(received_at_ms,transaction_id) WHERE state='pending'; CREATE INDEX IF NOT EXISTS routing_jobs_pending_id ON hagency_agent_v1.routing_jobs(transaction_id) WHERE state='pending'").await?;
             db.batch_execute("CREATE TABLE IF NOT EXISTS hagency_agent_v1.routing_rejections (transaction_id text NOT NULL REFERENCES hagency_agent_v1.inbound_transactions(id) ON DELETE CASCADE,event_id text NOT NULL,binding_id text NOT NULL,reason text NOT NULL,PRIMARY KEY(transaction_id,event_id,binding_id))").await?;
             db.batch_execute("CREATE TABLE IF NOT EXISTS hagency_agent_v1.readiness_room (singleton boolean PRIMARY KEY CHECK(singleton),room_id text NOT NULL)").await?;
             db.batch_execute("CREATE TABLE IF NOT EXISTS hagency_agent_v1.readiness_receipts (event_id text PRIMARY KEY,received_at_ms bigint NOT NULL)").await?;

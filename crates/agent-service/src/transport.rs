@@ -353,6 +353,8 @@ impl TransportStore {
             if !files_initialized.matched {db.batch_execute(include_str!("attachment_schema.sql")).await?;}
             let delivery_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !delivery_initialized.matched {db.batch_execute(include_str!("file_delivery/schema.sql")).await?;}
+            let chunks_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_chunks') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !chunks_initialized.matched {db.batch_execute(include_str!("file_delivery/chunks.sql")).await?;}
             let denial_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_delivery_denials') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !denial_initialized.matched {db.batch_execute(include_str!("file_delivery/denials.sql")).await?;}
             db.batch_execute("SELECT id FROM hagency_agent_v1.file_sendable LIMIT 0").await.map_err(|_|Error::Conflict("file_delivery_schema_incompatible"))?;
@@ -1170,7 +1172,10 @@ impl TransportStore {
             return Err(Error::Invalid("invalid_batch_limit"));
         }
         let mut db = self.db.lock().await?;
-        Ok(sql_query("SELECT t.id,t.body,t.received_at_ms FROM hagency_agent_v1.inbound_transactions t JOIN hagency_agent_v1.routing_jobs j ON j.transaction_id=t.id WHERE j.state='pending' ORDER BY (t.id<=$1),t.id LIMIT $2").bind::<Text,_>(cursor).bind::<BigInt,_>(limit as i64).load(&mut *db).await?)
+        // Bound both halves of the circular cursor before joining payloads.
+        // Sorting every pending row by a cursor-dependent boolean prevents an
+        // index from satisfying the order as the queue grows.
+        Ok(sql_query("WITH candidates AS ((SELECT transaction_id,0 AS wrap FROM hagency_agent_v1.routing_jobs WHERE state='pending' AND transaction_id>$1 ORDER BY transaction_id LIMIT $2) UNION ALL (SELECT transaction_id,1 AS wrap FROM hagency_agent_v1.routing_jobs WHERE state='pending' AND transaction_id<=$1 ORDER BY transaction_id LIMIT $2)) SELECT t.id,t.body,t.received_at_ms FROM candidates c JOIN hagency_agent_v1.inbound_transactions t ON t.id=c.transaction_id ORDER BY c.wrap,c.transaction_id LIMIT $2").bind::<Text,_>(cursor).bind::<BigInt,_>(limit as i64).load(&mut *db).await?)
     }
     /// Durable send intent before network I/O. Retrying unknown/sending uses the
     /// original sender, room, payload and Matrix transaction ID unchanged.
