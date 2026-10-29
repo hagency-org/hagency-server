@@ -19,7 +19,7 @@ services:
     restart: unless-stopped
   server:
     build: .
-    # Image healthcheck uses readyz: startup includes a real AS send/receive probe.
+    # Health requires both the startup AS roundtrip and live worker progress.
     depends_on:
       postgres:
         condition: service_healthy
@@ -28,7 +28,7 @@ services:
     volumes:
       - ./config/docker:/app/config:ro
       - server-data:/app/data
-    stop_grace_period: 40s
+    stop_grace_period: 75s
     restart: unless-stopped
 volumes:
   database:

@@ -9,12 +9,19 @@ OpenAPI drift guard and its self-tests, and a wasm32 frontend compile check.
 CI overrides the local absolute Cargo target directory. A version tag must equal
 `v` plus `workspace.package.version` in Cargo.toml, including any prerelease suffix.
 
-PRs and manual dispatch run quality checks only. Container jobs are skipped.
+In this workflow, PRs and manual dispatch run quality checks only; its publishing
+container jobs are skipped. The independent `Embedded Deployment` workflow
+builds a local amd64 image on every PR and runs real PKCE, AS delivery, worker
+health, SIGTERM drain and restart checks without publishing it. Weekly/manual
+backup drills also restore three new databases and private files from the same
+image's executable and assets. The `Dependency risk policy` workflow audits
+PRs/main and weekly, retaining full findings and rejecting unreviewed, changed,
+expired or stale risk dispositions; see [dependency security](DEPENDENCY_SECURITY.md).
 Only a push to main or a `v*` version tag can build/publish images, after quality
 succeeds. Native amd64 and arm64 runners build the complete existing
 Dockerfile, including both browser applications. Each image is smoke-tested for
-executable startup (`--help`) and packaged browser assets. This is not a running
-Matrix/Pasion/Appservice deployment or a `/readyz` integration test.
+executable startup (`--help`) and packaged browser assets. These packaging checks
+complement the separate running Matrix/Pasion/Appservice deployment gate.
 
 Main/tag image builds push by digest to
 `ghcr.io/<repository-owner>/hagency-server`, with OCI source/revision labels,

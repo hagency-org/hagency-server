@@ -14,11 +14,15 @@ pub fn spawn(command: &mut Command) -> Result<Child> {
 }
 
 pub fn stop(child: &mut Child) -> Result<()> {
+    stop_with_grace(child, Duration::from_secs(20))
+}
+
+pub fn stop_with_grace(child: &mut Child, grace: Duration) -> Result<()> {
     if child.try_wait()?.is_some() {
         return Ok(());
     }
     signal(child.id(), libc::SIGTERM);
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + grace;
     while child.try_wait()?.is_none() {
         if Instant::now() >= deadline {
             signal(child.id(), libc::SIGKILL);

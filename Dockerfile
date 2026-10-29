@@ -58,8 +58,8 @@ COPY --from=pasion-assets /pasion-resources /app/resources/pasion
 COPY --from=frontend-assets /frontend-resources /app/resources/frontend/public
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 EXPOSE 8088
-# Public healthz is listener-only; readyz requires the mandatory AS roundtrip.
+# The worker check also requires the mandatory startup AS roundtrip.
 HEALTHCHECK --interval=5s --timeout=3s --start-period=90s --retries=6 \
-    CMD curl --fail --silent --max-time 2 http://127.0.0.1:8088/readyz || exit 1
+    CMD curl --fail --silent --max-time 2 http://127.0.0.1:8088/workers-healthz || exit 1
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["--config", "/app/config/hagency.toml"]

@@ -195,11 +195,17 @@ count, refreshed while the board is active; this does not send OS/email push.
 Task detail includes attachment metadata and card summaries include comment and
 attachment counts. POST `tasks/{taskId}/attachments` accepts filename, MIME,
 base64 data and idempotency key. Only this upload route permits a 3 MiB JSON body;
-files must be 1 byte–2 MiB, with at most 20 active files and 40 MiB retained bytes
+files must be 1 byte–2 MiB, with at most 20 active files and 40 MiB active bytes
 per task. PNG/JPEG/PDF signatures are checked; other files use octet-stream.
 GET `tasks/{taskId}/attachments/{attachmentId}` reauthorizes current membership
 and returns the original bytes as base64. POST `.../attachments/remove` soft
-removes the specified attachment. Removed bytes remain counted in retained quota.
+removes the specified attachment and clears its payload in the same transaction.
+The original ID, filename, byte size, SHA-256 and immutable upload receipt remain;
+an old upload intent returns its original result without restoring the payload.
+Removed attachments no longer consume the active quota. Schema v7 backfills size
+and digest before clearing previously removed payloads. The upgrade is
+transactional and subject to the existing statement timeout; large histories
+need a maintenance window. PostgreSQL VACUUM controls physical disk reclamation.
 No public URLs are issued. Client preview has dimension/allocation limits;
 external Markdown image URLs are not fetched automatically.
 

@@ -116,8 +116,11 @@ def browser_api_paths(origin, password):
     cookies = http.cookiejar.CookieJar()
     opener = build_opener(ProxyHandler({}), HTTPCookieProcessor(cookies))
 
+    csrf = None
     def call(path, method="GET", body=None, expected=200, extra=None):
         headers = {"Content-Type": "application/json", "Origin": origin}
+        if method == "GET" and csrf:
+            headers["x-csrf-token"] = csrf
         headers.update(extra or {})
         data = None if body is None else json.dumps(body).encode()
         req = Request(origin + path, data=data, headers=headers, method=method)
@@ -132,10 +135,13 @@ def browser_api_paths(origin, password):
 
     session = call("/hagency/api/login/token", "POST", {},
                    extra={"Authorization": "Bearer " + token})
+    csrf = session["csrf"]
     assert session["userId"].startswith("@agent_smoke_owner:")
     assert any(cookie.name == "palpo_admin" and "HttpOnly" in cookie._rest for cookie in cookies)
     assert call("/hagency/api/session")["userId"] == session["userId"]
     assert isinstance(call("/hagency/api/browser/v1/agents")["agents"], list)
+    assert call("/hagency/api/browser/v1/agents", expected=403,
+                extra={"x-csrf-token": ""})["code"] == "csrf_forbidden"
     assert call("/hagency/api/browser/v1/agents", "POST", {}, 403)["code"] == "csrf_forbidden"
     assert call("/hagency/api/browser/v1/unknown", expected=404)["code"] == "not_found"
     for path in ["/api/login/token", "/api/session", "/api/logout", "/api/browser/hagency/v1/agents"]:
@@ -182,7 +188,7 @@ try:
         private(folder / "pasion.toml", pasion)
         private(folder / "hagency.toml", host)
         private(folder / "bootstrap-password", secrets.token_urlsafe(32))
-        binary = Path(os.environ.get("HAGENCY_TEST_SERVER_BINARY", "/Volumes/Data/Works/palpo-im/palpo/target/debug/hagency-server"))
+        binary = Path(os.environ.get("HAGENCY_TEST_SERVER_BINARY", str(ROOT / "target/debug/hagency-server")))
         with open(folder / "server.log", "wb") as log:
             SERVER = subprocess.Popen([str(binary), "--config", str(folder / "hagency.toml"),
                 "--bootstrap-admin", "agent_smoke_owner", "--bootstrap-password-file", str(folder / "bootstrap-password")],
@@ -544,7 +550,8 @@ try:
                 # Stop the sole fixture before all three snapshots. No parallel AS
                 # instance, no production DB, no credentials in process arguments.
                 SERVER.terminate()
-                SERVER.wait(timeout=20)
+                SERVER.wait(timeout=75)
+                assert SERVER.returncode == 0, "backup fixture did not stop gracefully"
                 SERVER=None
                 original_dbs=list(DBS)
                 before_commands=sql(DBS[0],"SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY actor_user_id,operation,key),'[]'::jsonb)::text FROM hagency_agent_v1.domain_commands c",True)
@@ -797,11 +804,14 @@ try:
             print("PASS: retirement physically left Room; a late real Matrix join was removed while permanent owner identity remained intact")
             SUCCESS = True
 finally:
+    shutdown_failed = False
     if SERVER is not None and SERVER.poll() is None:
         SERVER.terminate()
         try:
-            SERVER.wait(timeout=20)
+            SERVER.wait(timeout=75)
+            shutdown_failed = SERVER.returncode != 0
         except subprocess.TimeoutExpired:
+            shutdown_failed = True
             SERVER.kill()
             SERVER.wait()
     cleanup_failures = 0
@@ -812,9 +822,12 @@ finally:
             # Attempt every original/restored database even if one drop fails.
             cleanup_failures += 1
     for fixture_folder in reversed(FIXTURE_FOLDERS):
-        if SUCCESS and not cleanup_failures:
+        if SUCCESS and not cleanup_failures and not shutdown_failed:
             shutil.rmtree(fixture_folder)
         else:
             print("Private failure fixture retained at " + str(fixture_folder))
     if cleanup_failures:
         raise RuntimeError("isolated fixture database cleanup failed for " + str(cleanup_failures) + " databases")
+
+    if SUCCESS and shutdown_failed:
+        raise RuntimeError("isolated server did not finish its bounded graceful shutdown")

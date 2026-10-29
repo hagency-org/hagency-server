@@ -82,7 +82,8 @@ def stop_process(name):
     if os.getpgid(info["pid"]) != info["pid"]:
         raise RuntimeError(f"{name} process group changed; refusing to signal it")
     os.killpg(info["pid"], signal.SIGTERM)
-    deadline = time.monotonic() + 45
+    # The server drains claimed work before stopping HTTP and Pasion workers.
+    deadline = time.monotonic() + 75
     while process(name) and time.monotonic() < deadline:
         time.sleep(0.2)
     if process(name):

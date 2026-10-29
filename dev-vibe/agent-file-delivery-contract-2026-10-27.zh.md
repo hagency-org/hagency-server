@@ -24,6 +24,7 @@ UTF-8字节，caption1000个UTF-8字节；文件名不能包含控制字符、�
 
 每个主人保留最多4096条投递见证、128MiB未结内容预留。sent/cancelled 清除 blob，
 保留身份、声明、摘要和历史。unknown 保留见证及预留，不能自动清理成未发送。
+上述 4096 条是本报告原批次的历史合同；2026-10-30 修订见文末，改为活动件数。
 通用 HTTP 请求131072字节上限未扩大。公开 Delivery 不含 MXC、blob 或 worker token。
 `agent-file-delivery-v1` 仅在 transport 与实际 MatrixClient 同时配置时公布；它描述
 Server 协议，不证明 Client 工具、加密 Room 或端到端产品资格已经可用。
@@ -157,3 +158,20 @@ running的状态会给出preparationClosed=true。即使关闭，已有delivery�
 
 Client已提供相同严格类型/只读设备操作，主人历史界面及最终未准备证据的本地
 容量结清尚未接通，A2仍在进行。f5ac86c的CI40404302743已通过；本节新提交另行CI。
+
+## 2026年10月30日容量与分块存储修订
+
+4096 件上限改为每主人当前未结文件数，128 MiB 未结内容预留保持不变。
+sent/cancelled 永久保留原始身份、声明、摘要和去重见证，但不占活动件数；
+unknown 仍占活动件数和字节额度，不自动清理、不重新授权。
+
+新增不可改写的 file_chunks 表，正常 chunk 只追加新块并更新收到的长度，
+不再反复拼接整块 bytea。queue 和原始上传 claim 才按偏移组合旧 prefix 与新块，
+校验完整字节和 SHA-256。sent/cancelled 同事务清除块内容，unknown 保留。
+每文件最多 2048 个新块；如果过小的新块会耗尽剩余块预算、使原声明无法用合法
+最大块完成，返回 file_chunk_limit，客户端可在原偏移改用更大块继续。
+原有 1 至 65536 字节、连续偏移和精确旧字节重读规则仍适用。
+
+升级保留遗留 staging/queued/unknown 的原 bytea prefix、身份与发送见证。
+升级前必须停止旧 writer；旧二进制不理解新块，不能与新版本混跑。
+迁移在事务中完成，失败会回滚；任何历史或 schema 升级都不产生新 IO custody。
