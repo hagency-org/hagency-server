@@ -85,3 +85,5 @@ Client 插图应使用上传事务返回的 attachment ID，不能根据文件�
   已废弃，不能重新强制要求；正常 SDK 的 org.matrix.msgid 仍允许。
 
 - Room type filters must be applied before the server's count/page slice; filtering only one fetched page loses later matches and leaves incorrect pagination. Frontend RoomFilter is part of the cache key, and use_resource must read page/search/sort/filter signals inside its reactive closure. Empty encrypted-room key backup reads distinguish a valid empty sessions map from unknown/deleted/foreign backup versions; never bypass the Client SDK history-sharing preflight on an arbitrary error.
+
+- Operator preference (2026-10-29): always use current upstream Palpo main. Keep the workspace dependency as branch="main", refresh Cargo.lock deliberately, and submit Palpo bugs upstream. A dependent PR can lock the latest-main-based upstream fix for reproducible CI, but must clearly state the upstream PR dependency; do not keep a permanent rev pin or an old-base custom variant.
