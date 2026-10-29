@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "reviewed_on": "2026-10-30",
+  "expires_on": "2026-11-29",
+  "reviewed_sources": {
+    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?branch=main#881ae7a12024eb9fca65b7098d1c415a063f320d"
+  },
+  "findings": [
+    {
+      "advisory": "RUSTSEC-2026-0387",
+      "kind": "vulnerability",
+      "package": "crypto-bigint",
+      "version": "0.5.5",
+      "status": "unresolved_upstream",
+      "reason": "Pasion JOSE uses elliptic-curve 0.13 and crypto-bigint 0.5.5. The fixed 0.7.6 API is incompatible. A coordinated upstream cryptography migration is required; this is an open side-channel risk, not a non-applicability claim.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0387.html"
+    },
+    {
+      "advisory": "RUSTSEC-2023-0071",
+      "kind": "vulnerability",
+      "package": "rsa",
+      "version": "0.9.10",
+      "status": "unresolved_upstream",
+      "reason": "No patched rsa release exists. The reviewed Pasion JOSE path signs and verifies JWTs; no PKCS#1 v1.5 decryption call was found. Retain the upstream side-channel risk explicitly; re-review on any JOSE/dependency change.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2023-0071.html"
+    },
+    {
+      "advisory": "RUSTSEC-2025-0052",
+      "kind": "unmaintained",
+      "package": "async-std",
+      "version": "1.13.2",
+      "status": "reviewed_warning",
+      "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2025-0052.html"
+    },
+    {
+      "advisory": "RUSTSEC-2024-0436",
+      "kind": "unmaintained",
+      "package": "paste",
+      "version": "1.0.15",
+      "status": "reviewed_warning",
+      "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2024-0436.html"
+    },
+    {
+      "advisory": "RUSTSEC-2026-0249",
+      "kind": "unmaintained",
+      "package": "smartstring",
+      "version": "1.0.1",
+      "status": "reviewed_warning",
+      "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0249.html"
+    },
+    {
+      "advisory": "RUSTSEC-2024-0449",
+      "kind": "unmaintained",
+      "package": "unsafe-libyaml",
+      "version": "0.2.11",
+      "status": "reviewed_warning",
+      "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2024-0449.html"
+    },
+    {
+      "advisory": "RUSTSEC-2026-0097",
+      "kind": "unsound",
+      "package": "rand",
+      "version": "0.7.3",
+      "status": "reviewed_warning",
+      "reason": "Legacy rand 0.7.3 is transitive. Its custom-logger/reentrant RNG trigger was not demonstrated; retain the unsoundness warning until the dependency is replaced.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0097.html"
+    }
+  ],
+  "timezone": "Asia/Shanghai"
+}

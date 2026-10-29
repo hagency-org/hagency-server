@@ -1,7 +1,8 @@
 // Builds are separate: test only a newly built owner-agent image in private volumes.
 // No host development database, existing Compose project, model or tool runner is used.
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,execFile,spawn} from 'node:child_process';
+import {promisify} from 'node:util';
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
@@ -16,7 +17,9 @@ if(process.env.HAGENCY_TEST_IMAGE_SOURCE) assert.equal(imageInfo.Config.Labels['
 const reservation=createServer().listen(0,'127.0.0.1');await once(reservation,'listening');const port=reservation.address().port;await new Promise(r=>reservation.close(r));
 const base=`http://127.0.0.1:${port}`,name=`localhost:${port}`,password=randomBytes(24).toString('base64url');
 const dir=await mkdtemp(join(tmpdir(),'hagency-owner-compose-')),compose=join(dir,'compose.yaml'),project='hagency-owner-test-'+randomBytes(6).toString('hex');
-const run=(...args)=>execFileSync('docker',['compose','--project-name',project,'-f',compose,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:180_000});
+const composeArgs=['compose','--project-name',project,'-f',compose];
+const run=(...args)=>execFileSync('docker',[...composeArgs,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:180_000});
+const runAsync=(...args)=>promisify(execFile)('docker',[...composeArgs,...args],{encoding:'utf8',timeout:180_000});
 const configDir=join(dir,'config');await mkdir(configDir,{mode:0o700});
 const hostConfig=`listen = "0.0.0.0:8088"\npublic_origin = "${base}"\ndata_dir = "/app/data"\npublic_dir = "/app/resources/frontend/public"\ndatabase_url = "postgres://hagency:compose_test_only@postgres:5432/hagency"\npalpo_config = "palpo.toml"\npasion_config = "pasion.toml"\n[queue]\nevent_ttl_ms = 86400000\n`;
 const palpoConfig=`server_name = "${name}"\nallow_registration = false\n[db]\nurl = "postgres://hagency:compose_test_only@postgres:5432/palpo"\npool_size = 10\n[well_known]\nclient = "${base}"\nserver = "${name}"\n[storage]\nbackend = "fs"\nroot = "/app/data/media"\n`;
@@ -24,9 +27,9 @@ const pasionConfig=`[database]\nuri = "postgres://hagency:compose_test_only@post
 for(const [component,text] of [['hagency',hostConfig],['palpo',palpoConfig],['pasion',pasionConfig]]) await writeFile(join(configDir,component+'.toml'),text,{mode:0o600});
 await writeFile(join(dir,'init.sql'),await readFile(resolve('deploy/databases.sql'),'utf8'));
 await writeFile(join(dir,'admin-password'),password,{mode:0o600});
-function definition(bootstrap){return `services:\n  postgres:\n    image: postgres:18.6-alpine\n    environment:\n      POSTGRES_USER: hagency\n      POSTGRES_PASSWORD: compose_test_only\n      POSTGRES_DB: hagency\n    volumes: ["database:/var/lib/postgresql", "${dir}/init.sql:/docker-entrypoint-initdb.d/20-components.sql:ro"]\n    healthcheck:\n      test: ["CMD-SHELL", "pg_isready -U hagency -d hagency"]\n      interval: 1s\n      timeout: 3s\n      retries: 30\n  server:\n    image: ${image}\n    depends_on:\n      postgres: {condition: service_healthy}\n    ports: ["127.0.0.1:${port}:8088"]\n    volumes:\n      - "${configDir}:/app/config:ro"\n${bootstrap?`      - "${dir}/admin-password:/app/bootstrap-password:ro"\n`:''}      - "server-data:/app/data"\n    command: ${JSON.stringify(['--config','/app/config/hagency.toml',...(bootstrap?['--bootstrap-admin','admin','--bootstrap-password-file','/run/hagency/bootstrap-password']:[])])}\n    stop_grace_period: 40s\nvolumes:\n  database: {}\n  server-data: {}\n`;}
+function definition(bootstrap){return `services:\n  postgres:\n    image: postgres:18.6-alpine\n    environment:\n      POSTGRES_USER: hagency\n      POSTGRES_PASSWORD: compose_test_only\n      POSTGRES_DB: hagency\n    volumes: ["database:/var/lib/postgresql", "${dir}/init.sql:/docker-entrypoint-initdb.d/20-components.sql:ro"]\n    healthcheck:\n      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U hagency -d hagency"]\n      interval: 1s\n      timeout: 3s\n      retries: 30\n  server:\n    image: ${image}\n    depends_on:\n      postgres: {condition: service_healthy}\n    ports: ["127.0.0.1:${port}:8088"]\n    volumes:\n      - "${configDir}:/app/config:ro"\n${bootstrap?`      - "${dir}/admin-password:/app/bootstrap-password:ro"\n`:''}      - "server-data:/app/data"\n    command: ${JSON.stringify(['--config','/app/config/hagency.toml',...(bootstrap?['--bootstrap-admin','admin','--bootstrap-password-file','/run/hagency/bootstrap-password']:[])])}\n    stop_grace_period: 75s\nvolumes:\n  database: {}\n  server-data: {}\n`;}
 async function until(check,label,seconds=90){const deadline=Date.now()+seconds*1000;while(Date.now()<deadline){if(await check())return;await new Promise(r=>setTimeout(r,200));}throw new Error(label+' timed out');}
-async function ready(){await until(async()=>{try{const r=await fetch(base+'/readyz',{signal:AbortSignal.timeout(3000)});return r.status===200&&(await r.json()).startupRoundtripConfirmed===true;}catch{return false;}},'Startup AS roundtrip',180);}
+async function ready(){await until(async()=>{try{const r=await fetch(base+'/workers-healthz',{signal:AbortSignal.timeout(3000)});if(r.status!==200)return false;const health=await r.json();return health.startupRoundtripConfirmed===true&&health.workers.healthy===true;}catch{return false;}},'Startup AS roundtrip and continuous worker health',180);assert.equal((await fetch(base+'/readyz')).status,200);}
 async function api(path,{method='GET',token,body,cookie,origin,csrf,status=[200]}={}){
  const headers={};if(token)headers.Authorization='Bearer '+token;if(cookie)headers.Cookie=cookie;if(origin)headers.Origin=origin;if(csrf)headers['x-csrf-token']=csrf;if(body!==undefined)headers['content-type']='application/json';
  const r=await fetch(base+path,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15_000)});const v=await r.json();
@@ -43,7 +46,7 @@ async function adminLogin(){
  const pasionCookie=await browserLogin('admin',password);const upstream=await oauth(base,pasionCookie,true);
  const {value,response}=await api('/hagency/api/login/token',{method:'POST',origin:base,token:upstream.access_token,body:{}});assert.equal(value.isAdmin,true);assert.ok(value.csrf);
  const cookie=response.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
- assert.equal((await api('/hagency/api/session',{origin:base,cookie})).value.userId,'@admin:'+name);
+ assert.equal((await api('/hagency/api/session',{origin:base,cookie,csrf:value.csrf})).value.userId,'@admin:'+name);
  assert.equal((await fetch(base+'/_palpo/admin/v1/server_version',{headers:{Authorization:'Bearer '+upstream.access_token}})).status,200);
  return {cookie,csrf:value.csrf};
 }
@@ -77,15 +80,19 @@ async function exerciseOwner(member,create){
  const renew=async()=>api('/hagency/api/v1/sessions/current/renew',{method:'POST',token:member.session.token,body:{accessToken:member.upstream}});
  const owner=async(path,method='GET',body)=>{await renew();return api('/hagency/api/v1/'+path,{method,token:member.session.token,body,status:[200,202]});};
  const matrix=async(path,method='GET',body)=>api('/_matrix/client/v3/'+path,{method,token:member.upstream,body});
+ const device=(await owner('devices','POST',{installationId:'docker-owner-installation',name:'Docker protocol fixture'})).value;
  if(create){
-  const discovery=(await api('/hagency/api/v1/discovery')).value;assert.equal(discovery.protocolVersion,1);assert.equal(discovery.serviceMxid,'@_hagency_service:'+name);
+  const discovery=(await api('/hagency/api/v1/discovery')).value;assert.equal(discovery.protocolVersion,3);assert.equal(discovery.serviceMxid,'@_hagency_service:'+name);
   const space=(await matrix('createRoom','POST',{preset:'private_chat',name:'Docker owner project',creation_content:{type:'m.space'}})).value.room_id;
   const room=(await matrix('createRoom','POST',{preset:'private_chat',name:'Private discussion',invite:[discovery.serviceMxid]})).value.room_id;
   await matrix('rooms/'+encodeURIComponent(space)+'/state/m.space.child/'+encodeURIComponent(room),'PUT',{via:[name]});
   const project=(await owner('projects/adopt','POST',{spaceId:space})).value.project;
   await owner('projects/'+project.id+'/rooms/adopt','POST',{roomId:room});
-  const created=await owner('agents','POST',{projectId:project.id,roomId:room,displayName:'Owner Codex puppet',idempotencyKey:'docker-owner-agent'});assert.equal(created.response.status,202);assert.equal(created.value.commandState,'pending');
-  context={space,room,project,agent:created.value.creation.agent,binding:created.value.creation.binding};
+  const created=await api('/hagency/api/v1/agents',{method:'POST',token:device.token,body:{displayName:'Owner Codex puppet',idempotencyKey:'docker-owner-agent',visibility:'public'},status:[200,202]});
+  const agent=created.value.creation.agent;assert.equal(created.value.creation.binding,undefined);
+  await until(async()=>{return (await owner('agents/'+agent.id)).value.agent.state==='active';},'Permanent Agent Matrix identity');
+  const bound=await owner('agents/'+agent.id+'/bindings','POST',{projectId:project.id,roomId:room,idempotencyKey:'docker-owner-binding'});
+  context={space,room,project,agent,binding:bound.value.creation.binding};
  }
  const {agent,binding,room,project}=context;
  assert.equal(agent.ownerUserId,member.session.userId);
@@ -93,7 +100,6 @@ async function exerciseOwner(member,create){
  const current=(await owner('agents/'+agent.id)).value.agent;assert.equal(current.ownerUserId,member.session.userId);assert.equal(current.puppetMxid,agent.puppetMxid);
  assert.ok((await owner('projects/'+project.id+'/rooms')).value.rooms.some(r=>r.roomId===room));
  const roster=(await owner('projects/'+project.id+'/rooms/'+encodeURIComponent(room)+'/agents')).value.agents;assert.ok(roster.some(a=>a.agentId===agent.id&&a.ownerMxid===member.session.mxid));
- const device=(await owner('devices','POST',{installationId:'docker-owner-installation',name:'Docker protocol fixture'})).value;
  const deviceCall=(path,body,status=[200])=>api('/hagency/api/v1/execution/'+path,{method:'POST',token:device.token,body,status});
  const history=async()=>{
   const page=(await deviceCall('history',{agentId:agent.id})).value.history;
@@ -103,7 +109,7 @@ async function exerciseOwner(member,create){
   for(const known of context.executionProofs||[]){const row=rows.find(r=>r.dispatchId===known.dispatchId);assert.ok(row,'Started execution remains discoverable after restart');assert.equal(row.executionId,known.executionId);assert.equal(row.immutableDigest,known.immutableDigest);}
   return {snapshot:page.snapshot,rows};
  };
- const before=await history();assert.equal(before.snapshot.count,create?0:1);
+ const before=await history();assert.equal(before.snapshot.count,(context.executionProofs||[]).length);
  const denied=await deviceCall('leases/acquire',{agentId:agent.id,ttlMs:10000,takeover:!create,historySnapshot:{...before.snapshot,digest:'f'.repeat(64)}},[409]);assert.equal(denied.value.code,'execution_history_changed');
  const lease=(await deviceCall('leases/acquire',{agentId:agent.id,ttlMs:10000,takeover:!create,historySnapshot:before.snapshot})).value.lease;
  const reference={agentId:agent.id,epoch:lease.epoch};
@@ -125,7 +131,49 @@ async function exerciseOwner(member,create){
  await deviceCall('leases/release',{lease:reference});
  return device;
 }
+// Hold an actual upload receipt inside the disposable Hagency database, signal
+// the real container PID 1, then prove its Matrix listener and receipt survive
+// until the bounded drain completes. No mock HTTP server or model is involved.
+async function stopDuringFileReceipt(member,device){
+ const native=(path,body)=>api('/hagency/api/v1/execution/'+path,{method:'POST',token:device.token,body});
+ await api('/hagency/api/v1/sessions/current/renew',{method:'POST',token:member.session.token,body:{accessToken:member.upstream}});
+ const history=(await native('history',{agentId:context.agent.id})).value.history;
+ const lease=(await native('leases/acquire',{agentId:context.agent.id,ttlMs:60000,takeover:false,historySnapshot:history.snapshot})).value.lease;
+ const reference={agentId:context.agent.id,epoch:lease.epoch};
+ const event=(await api('/_matrix/client/v3/rooms/'+encodeURIComponent(context.room)+'/send/m.room.message/docker_shutdown_request',{method:'PUT',token:member.upstream,body:{msgtype:'m.text',body:'Shutdown protocol fixture; no model invocation','m.mentions':{user_ids:[context.agent.puppetMxid]}}})).value.event_id;
+ let dispatch;await until(async()=>{const events=(await native('events/poll',{lease:reference,bindingId:context.binding.id,limit:10})).value.events;dispatch=events.find(e=>e.eventId===event);return !!dispatch;},'Shutdown file request AS routing',20);
+ await native('events/ack',{lease:reference,dispatchId:dispatch.id});
+ const executionId='docker_exec_shutdown';await native('events/start',{lease:reference,dispatchId:dispatch.id,executionId});
+ const witnessed=(await native('history',{agentId:context.agent.id})).value.history.executions.find(e=>e.dispatchId===dispatch.id);assert.ok(witnessed);
+ context.executionProofs.push({dispatchId:dispatch.id,executionId,immutableDigest:witnessed.immutableDigest});
+ const content=Buffer.from('hello');
+ const prepared=(await native('files/prepare',{lease:reference,dispatchId:dispatch.id,executionId,requestId:'shutdown-file',file:{filename:'shutdown.txt',caption:null,bytes:content.length,sha256:createHash('sha256').update(content).digest('hex')}})).value.delivery;
+ const target={dispatchId:dispatch.id,executionId,fileId:prepared.id};
+ await native('files/chunk',{lease:reference,target,offset:0,data:content.toString('base64').replace(/=+$/,'')});
+ sql('hagency',`CREATE FUNCTION hagency_agent_v1.smoke_hold_receipt() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(7729); RETURN NEW; END $$; CREATE TRIGGER smoke_hold_receipt BEFORE UPDATE OF state ON hagency_agent_v1.file_outbox FOR EACH ROW WHEN (OLD.state='uploading' AND NEW.state='uploaded') EXECUTE FUNCTION hagency_agent_v1.smoke_hold_receipt();`);
+ const holder=spawn('docker',[...composeArgs,'exec','-T','-e','PGAPPNAME=hagency-smoke-receipt-gate','postgres','psql','-U','hagency','-d','hagency','-Atc','SELECT pg_advisory_lock(7729); SELECT pg_sleep(120)'],{stdio:'ignore'});
+ const holding=new Promise(resolve=>{holder.once('error',()=>resolve());holder.once('exit',()=>resolve());});
+ let released=false;
+ const release=async()=>{if(released)return;released=true;sql('hagency',"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='hagency-smoke-receipt-gate' AND datname=current_database()");await holding;};
+ try{
+  await until(()=>sql('hagency',"SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE a.application_name='hagency-smoke-receipt-gate' AND l.locktype='advisory' AND l.granted")==='1','Isolated receipt gate acquired',10);
+  await native('files/queue',{lease:reference,target});
+  await until(()=>sql('hagency',"SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event='advisory' AND application_name!='hagency-smoke-receipt-gate' AND query LIKE 'UPDATE hagency_agent_v1.file_outbox SET state=%' AND position('mxc_url' in query)>0")!=='0'&&sql('hagency',`SELECT state FROM hagency_agent_v1.file_outbox WHERE id=${scalar(prepared.id)}`)==='uploading','Actual upload receipt waiting after Matrix acceptance',15);
+  const container=run('ps','-q','server').trim();
+  const stop=runAsync('stop','--timeout','75','server');stop.catch(()=>{});
+  await until(async()=>{try{const r=await fetch(base+'/workers-healthz',{signal:AbortSignal.timeout(2000)});return r.status===503&&(await r.json()).workers.stopping===true;}catch{return false;}},'SIGTERM closes new worker admission',10);
+  assert.equal((await fetch(base+'/healthz')).status,200,'Internal Matrix listener must remain available during drain');
+  assert.equal((await fetch(base+'/readyz')).status,200,'Startup evidence is preserved while runtime health is stopping');
+  await release();await stop;
+  const state=JSON.parse(execFileSync('docker',['inspect','--format','{{json .State}}',container],{encoding:'utf8'}));
+  assert.equal(state.ExitCode,0,'Graceful SIGTERM must finish without SIGKILL');assert.equal(state.OOMKilled,false);
+  assert.equal(sql('hagency',`SELECT state FROM hagency_agent_v1.file_outbox WHERE id=${scalar(prepared.id)}`),'uploaded','Actual upload receipt must persist before PID 1 exits');
+  sql('hagency','DROP TRIGGER smoke_hold_receipt ON hagency_agent_v1.file_outbox; DROP FUNCTION hagency_agent_v1.smoke_hold_receipt();');
+  console.log('PASS real PID 1 SIGTERM: health becomes stopping, Matrix listener stays available, accepted upload receipt drains, exit 0');
+ }finally{await release();}
+}
 function persistedIdentity(){return run('exec','-T','server','sha256sum','/app/data/agent-appservice.json','/app/data/matrix-signing-key.json','/app/data/pasion-secrets.json').trim();}
+let success=false;
 try{
  await writeFile(compose,definition(true));run('up','-d');await ready();
  const serverContainer=run('ps','-q','server').trim();
@@ -138,7 +186,8 @@ try{
  assert.ok(Number(sql('hagency',"SELECT count(*) FROM hagency_agent_v1.readiness_receipts"))>0,'startup readiness requires a persisted real AS receipt');
  const homepage=await(await fetch(base)).text();assert.match(homepage,/<title>Hagency Server<\/title>/);assert.equal(await(await fetch(base+'/login')).text(),homepage);
  const frontend=await(await fetch(base+'/hagency/home')).text();assert.match(frontend,/<title>Hagency Server<\/title>/);assert.equal(homepage,frontend);assert.equal(await(await fetch(base+'/hagency/agents')).text(),frontend);
- const frontScript=frontend.match(/src="([^"]+\.js)"/)[1],module=await(await fetch(new URL(frontScript,base))).text(),frontWasm=module.match(/module_or_path:\s*"([^"]+\.wasm)"/)[1];
+ const bootstrap=frontend.match(/<script\b(?=[^>]*\btype=["']module["'])[^>]*\bsrc=["']([^"']+\.js)["']/i);assert.ok(bootstrap,'Packaged frontend has its module bootstrap');
+ const module=await(await fetch(new URL(bootstrap[1],base))).text(),wasm=module.match(/module_or_path:\s*"([^"]+\.wasm)"/);assert.ok(wasm,'Module bootstrap references its packaged WASM');const frontWasm=wasm[1];
  const wasmResponse=await fetch(new URL(frontWasm,base));assert.equal(wasmResponse.status,200);assert.match(wasmResponse.headers.get('content-type'),/application\/wasm/);assert.equal(Buffer.from(await wasmResponse.arrayBuffer()).subarray(0,4).toString('hex'),'0061736d');
  const runtime=await(await fetch(base+'/config.json')).json();assert.equal(runtime.pasion_enabled,true);assert.equal(runtime.oauth_enabled,true);
  assert.equal((await fetch(base+'/_matrix/client/versions')).status,200);assert.equal((await(await fetch(base+'/auth/.well-known/openid-configuration')).json()).issuer,base+'/auth/');assert.equal((await fetch(base+'/auth/login')).status,200);
@@ -148,9 +197,10 @@ try{
  console.log('PASS three databases, administrator auth, frontend, removed Fleet APIs and private non-root runtime');
  const member=await memberLogin(true);console.log('PASS ordinary member native Pasion DCR/PKCE and non-admin privileges');
  const firstDevice=await exerciseOwner(member,true),identity=persistedIdentity();console.log('PASS ordinary owner Space/Room/Agent and actual puppet Matrix reply');
- run('stop','server');await writeFile(compose,definition(false));run('up','-d','server');await ready();assert.equal((await fetch(base+'/hagency/api/session',{headers:{Cookie:admin.cookie,Origin:base}})).status,401,'In-memory browser session is not revived after restart');await adminLogin();
+ await stopDuringFileReceipt(member,firstDevice);await writeFile(compose,definition(false));run('up','-d','server');await ready();assert.equal((await fetch(base+'/hagency/api/session',{headers:{Cookie:admin.cookie,Origin:base}})).status,401,'In-memory browser session is not revived after restart');await adminLogin();
  console.log('PASS restarted mandatory appservice ready and stale browser session rejection');
  assert.equal(persistedIdentity(),identity);assert.deepEqual(await(await fetch(base+'/auth/oauth2/keys.json')).json(),keys);assert.equal(sql('palpo',"SELECT count(*) FROM appservice_registrations WHERE id='hagency_agents_v1'"),'1');
  const secondMember=await memberLogin(false);assert.equal(secondMember.session.userId,member.session.userId);const secondDevice=await exerciseOwner(secondMember,false);assert.equal(secondDevice.deviceId,firstDevice.deviceId);assert.ok(secondDevice.generation>firstDevice.generation);
+ success=true;
  console.log('PASS new owner-agent image',imageInfo.Id.slice(0,19),': isolated Compose/3DB, mandatory AS roundtrip, native Pasion PKCE, ordinary member Space+Room+Agent, durable puppet replies, non-root/private configs, removed Fleet APIs and immutable identity across restart; no model invoked');
-}catch(error){console.error(run('logs','--no-color','--tail','35','server'));throw error;}finally{try{run('down','--volumes','--remove-orphans');}finally{await rm(dir,{recursive:true,force:true});}}
+}catch(error){try{await writeFile(join(dir,'server.log'),run('logs','--no-color','server'),{mode:0o600});console.error('Private failure diagnostics retained at '+dir);}catch{}throw error;}finally{try{run('down','--volumes','--remove-orphans');}finally{if(success)await rm(dir,{recursive:true,force:true});}}

@@ -98,3 +98,14 @@ HAGENCY_TEST_BACKUP_RESTORE=1 python3 scripts/test-agent-integration.py
 内容为 `{"passed":true}`，文件权限为 0600，再继续原集成流程。
 `HAGENCY_TEST_PASION_RESOURCES` 与 `HAGENCY_TEST_FRONTEND_RESOURCES` 可指定
 本次构建的绝对资源目录，避免替换正在运行的其他部署的资源。
+
+## 依赖与部署检查
+
+`python3 -m unittest discover -s scripts -p 'test_*.py'` 检查审计规则和构建工具。
+`python3 scripts/audit-dependencies.py` 获取公告并执行有时限的风险策略；策略通过
+不等于 cargo-audit 没有命中，完整剩余记录见 `docs/DEPENDENCY_SECURITY.md`。
+
+`Embedded Deployment` 工作流在 PR 中构建不发布的 amd64 镜像，真实执行 Pasion
+PKCE、Matrix AS 往返、投递、SIGTERM 排空和重启。PR、手动选择 backup_restore 或
+每周运行时，还从同一镜像提取二进制与资源执行三库/私有文件恢复；只使用新建
+fixture 数据库、目录和容器，不接触现有部署，也不调用模型。

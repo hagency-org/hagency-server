@@ -1,6 +1,7 @@
 use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use diesel::sql_types::Binary;
+use sha2::{Digest, Sha256};
 
 const MAX_FILE: usize = 2 * 1024 * 1024;
 pub(super) fn attachment_bytes(input: &AttachmentUpload) -> Result<Vec<u8>> {
@@ -180,7 +181,7 @@ impl BoardStore {
         project: &str,
         task: &str,
     ) -> Result<Vec<Value>> {
-        Ok(sql_query("SELECT jsonb_build_object('id',id,'filename',filename,'contentType',content_type,'size',octet_length(data),'createdBy',created_by,'createdAt',created_at) AS value FROM hagency_project_v1.attachments WHERE project_id=$1 AND task_id=$2 AND removed_at IS NULL ORDER BY created_at,id LIMIT 20")
+        Ok(sql_query("SELECT jsonb_build_object('id',id,'filename',filename,'contentType',content_type,'size',byte_size,'createdBy',created_by,'createdAt',created_at) AS value FROM hagency_project_v1.attachments WHERE project_id=$1 AND task_id=$2 AND removed_at IS NULL ORDER BY created_at,id LIMIT 20")
             .bind::<Text,_>(project).bind::<Text,_>(task).load::<Row>(db).await?.into_iter().map(|r|r.value).collect())
     }
     pub(super) async fn add_attachment(
@@ -193,14 +194,16 @@ impl BoardStore {
     ) -> Result<String> {
         let bytes = attachment_bytes(input)?;
         let id = format!("att_{}", ulid::Ulid::generate());
-        let full=sql_query("SELECT count(*) FILTER (WHERE removed_at IS NULL)>=20 OR coalesce(sum(octet_length(data)),0)+$3>41943040 AS value FROM hagency_project_v1.attachments WHERE project_id=$1 AND task_id=$2")
+        let full=sql_query("SELECT count(*)>=20 OR coalesce(sum(byte_size),0)+$3>41943040 AS value FROM hagency_project_v1.attachments WHERE project_id=$1 AND task_id=$2 AND removed_at IS NULL")
             .bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<BigInt,_>(bytes.len() as i64).get_result::<Flag>(db).await?.value;
         if full {
             return Err(Error::Conflict("board_attachment_limit"));
         }
-        sql_query("INSERT INTO hagency_project_v1.attachments(id,project_id,task_id,filename,content_type,data,created_by,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+        let size = bytes.len() as i64;
+        let digest = hex::encode(Sha256::digest(&bytes));
+        sql_query("INSERT INTO hagency_project_v1.attachments(id,project_id,task_id,filename,content_type,data,created_by,created_at,byte_size,content_sha256) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
             .bind::<Text,_>(&id).bind::<Text,_>(&a.project).bind::<Text,_>(task)
-            .bind::<Text,_>(&input.filename).bind::<Text,_>(&input.content_type).bind::<Binary,_>(bytes).bind::<Text,_>(&p.mxid).bind::<BigInt,_>(now).execute(db).await?;
+            .bind::<Text,_>(&input.filename).bind::<Text,_>(&input.content_type).bind::<Binary,_>(bytes).bind::<Text,_>(&p.mxid).bind::<BigInt,_>(now).bind::<BigInt,_>(size).bind::<Text,_>(digest).execute(db).await?;
         Ok(id)
     }
     pub(crate) async fn attachment(

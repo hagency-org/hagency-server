@@ -19,13 +19,16 @@ struct Fixture {
 async fn fixture() -> Fixture {
     let url =
         std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").expect("dedicated test database required");
-    let auth = Store::open(&url, "example.test", "https://example.test/auth/")
+    fixture_at(&url).await
+}
+async fn fixture_at(url: &str) -> Fixture {
+    let auth = Store::open(url, "example.test", "https://example.test/auth/")
         .await
         .unwrap();
-    let domain = DomainStore::open(&url, "example.test", "_hagency_test_")
+    let domain = DomainStore::open(url, "example.test", "_hagency_test_")
         .await
         .unwrap();
-    let transport = TransportStore::open(&url, Limits::default()).await.unwrap();
+    let transport = TransportStore::open(url, Limits::default()).await.unwrap();
     let now = crate::api::now_ms();
     let suffix = secret_token();
     let grant = auth
@@ -3067,3 +3070,6 @@ mod file_delivery_tests;
 
 #[path = "transport_ciphertext_tests.rs"]
 mod ciphertext_tests;
+
+#[path = "transport_scaling_tests.rs"]
+mod scaling_tests;

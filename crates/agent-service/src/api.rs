@@ -20,6 +20,7 @@ pub struct App {
     issuer: Url,
     server_name: String,
     startup_ready: Arc<AtomicBool>,
+    workers: crate::worker_runtime::WorkerRuntime,
     matrix_client: Option<crate::matrix_client::MatrixClient>,
     domain: Option<(crate::domain::DomainStore, crate::gateway::Gateway)>,
     transport: Option<crate::transport::TransportStore>,
@@ -40,6 +41,7 @@ impl App {
             issuer,
             server_name,
             startup_ready: Arc::new(AtomicBool::new(true)),
+            workers: Default::default(),
             matrix_client: None,
             domain: None,
             transport: None,
@@ -72,20 +74,31 @@ impl App {
         &self,
         inbox: crate::appservice::Inbox,
     ) -> Option<tokio::task::JoinHandle<()>> {
-        Some(crate::workers::start(
+        Some(crate::workers::start_controlled(
             inbox,
             self.transport.clone()?,
             self.domain.as_ref()?.1.clone(),
             self.matrix_client.clone()?,
+            self.workers.clone(),
         ))
     }
     pub fn start_cleanup(&self) -> Option<tokio::task::JoinHandle<()>> {
         let (domain, gateway) = self.domain.as_ref()?;
-        Some(crate::workers::start_cleanup(
+        Some(crate::workers::start_cleanup_controlled(
             domain.clone(),
             gateway.clone(),
             self.matrix_client.clone()?,
+            self.workers.clone(),
         ))
+    }
+    pub fn worker_runtime(&self) -> crate::worker_runtime::WorkerRuntime {
+        self.workers.clone()
+    }
+    pub fn worker_health_router(&self) -> Router {
+        Router::with_path("workers-healthz").get(WorkerHealth {
+            startup: self.startup_ready.clone(),
+            workers: self.workers.clone(),
+        })
     }
     pub fn router(&self) -> Router {
         Router::new()
@@ -1038,5 +1051,89 @@ impl StartupReadiness {
             StatusCode::SERVICE_UNAVAILABLE
         });
         res.render(Json(json!({"startupRoundtripConfirmed":ready})));
+    }
+}
+
+#[derive(Clone)]
+struct WorkerHealth {
+    startup: Arc<AtomicBool>,
+    workers: crate::worker_runtime::WorkerRuntime,
+}
+#[handler]
+impl WorkerHealth {
+    async fn handle(&self, res: &mut Response) {
+        let health = self.workers.health();
+        let startup = self.startup.load(Ordering::Acquire);
+        res.status_code(if startup && health.healthy {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        });
+        res.add_header("cache-control", "no-store", true).ok();
+        res.render(Json(
+            json!({"startupRoundtripConfirmed":startup,"workers":health}),
+        ));
+    }
+}
+
+#[cfg(test)]
+mod worker_health_tests {
+    use super::*;
+    use salvo::{
+        Service,
+        test::{ResponseExt, TestClient},
+    };
+    #[tokio::test]
+    async fn runtime_health_http_preserves_startup_latch_and_rejects_failed_or_stopping_workers() {
+        let startup = Arc::new(AtomicBool::new(false));
+        let workers = crate::worker_runtime::WorkerRuntime::default();
+        let ctx = workers.queue("fixture");
+        let service = Service::new(Router::with_path("workers-healthz").get(WorkerHealth {
+            startup: startup.clone(),
+            workers: workers.clone(),
+        }));
+        let mut response = TestClient::get("http://localhost/workers-healthz")
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::SERVICE_UNAVAILABLE));
+        assert_eq!(
+            response.take_json::<Value>().await.unwrap()["startupRoundtripConfirmed"],
+            false
+        );
+        startup.store(true, Ordering::Release);
+        assert_eq!(
+            TestClient::get("http://localhost/workers-healthz")
+                .send(&service)
+                .await
+                .status_code,
+            Some(StatusCode::OK)
+        );
+        for _ in 0..3 {
+            ctx.finish(&Err(Error::Unavailable("fixture_outage")));
+        }
+        let mut response = TestClient::get("http://localhost/workers-healthz")
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::SERVICE_UNAVAILABLE));
+        let body = response.take_json::<Value>().await.unwrap();
+        assert_eq!(body["startupRoundtripConfirmed"], true);
+        assert_eq!(body["workers"]["queues"][0]["consecutiveFailures"], 3);
+        ctx.finish(&Ok(()));
+        assert_eq!(
+            TestClient::get("http://localhost/workers-healthz")
+                .send(&service)
+                .await
+                .status_code,
+            Some(StatusCode::OK)
+        );
+        workers.begin_shutdown();
+        assert_eq!(
+            TestClient::get("http://localhost/workers-healthz")
+                .send(&service)
+                .await
+                .status_code,
+            Some(StatusCode::SERVICE_UNAVAILABLE)
+        );
+        assert!(startup.load(Ordering::Acquire));
     }
 }

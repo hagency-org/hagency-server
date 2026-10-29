@@ -45,20 +45,7 @@ async fn pasion_fetch<T: DeserializeOwned>(
         get_pasion_url().ok_or_else(|| HttpError::message("Pasion URL is not configured"))?;
     let url = format!("{base}/api/admin/v1{path}");
 
-    let result = raw_fetch::<T, _>(&url, method, body.clone(), format_pasion_error).await;
-
-    // On any 401, try to refresh the access token and retry once. If
-    // refresh fails, the shared handler clears the stored session so
-    // AppLayout's `is_authenticated()` heartbeat redirects to /login.
-    if let Err(ref err) = result
-        && err.status == 401
-        && crate::api::auth::handle_unauthorized().await
-    {
-        return raw_fetch::<T, _>(&url, method, body, format_pasion_error).await;
-    }
-    // Pasion scopes/roles are separate from Palpo administrator rights.
-
-    result
+    raw_fetch::<T, _>(&url, method, body, format_pasion_error).await
 }
 
 // ── JSON:API envelope helpers ──────────────────────────────────────────────

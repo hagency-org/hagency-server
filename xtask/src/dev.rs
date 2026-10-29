@@ -195,7 +195,8 @@ struct Server(Option<Child>);
 impl Server {
     fn stop(&mut self) -> Result<()> {
         if let Some(child) = &mut self.0 {
-            command::stop(child)?;
+            // Match the packaged server's bounded worker/HTTP/Pasion shutdown.
+            command::stop_with_grace(child, Duration::from_secs(75))?;
         }
         self.0 = None;
         Ok(())

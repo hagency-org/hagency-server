@@ -1,15 +1,5 @@
 use crate::utils::storage;
 
-pub fn clear_config() {
-    let preferences = ["theme", "language"].map(|key| (key, storage::get_item(key)));
-    storage::clear();
-    for (key, value) in preferences {
-        if let Some(value) = value {
-            storage::set_item(key, &value);
-        }
-    }
-}
-
 /// Default OAuth client ID baked into the bundle. Used only as a last-resort
 /// fallback when neither `config.json` nor `localStorage["oauth_client_id"]`
 /// supplies one — this keeps the build self-contained for the canonical

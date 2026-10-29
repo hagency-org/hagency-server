@@ -10,26 +10,41 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 pub type ReadState =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<Vec<Value>>> + Send>> + Send + Sync>;
+pub type SharedReadState = Arc<
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<Arc<Vec<Value>>>> + Send>> + Send + Sync,
+>;
 #[derive(Clone)]
 pub struct Gateway {
-    read: ReadState,
+    read: SharedReadState,
     service_mxid: String,
 }
 impl Gateway {
     pub fn new(read: ReadState, service_mxid: String) -> Self {
+        Self::new_shared(
+            Arc::new(move |room| {
+                let read = read.clone();
+                Box::pin(async move { read(room).await.map(Arc::new) })
+            }),
+            service_mxid,
+        )
+    }
+    pub fn new_shared(read: SharedReadState, service_mxid: String) -> Self {
         Self { read, service_mxid }
     }
     pub async fn state(&self, room: &str) -> Result<Vec<Value>> {
+        self.shared_state(room).await.map(|state| (*state).clone())
+    }
+    pub async fn shared_state(&self, room: &str) -> Result<Arc<Vec<Value>>> {
         (self.read)(room.into()).await
     }
     pub async fn admin(&self, room: &str, actor: &str, space: Option<&str>) -> Result<AdminFacts> {
-        let state = self.state(room).await?;
+        let state = self.shared_state(room).await?;
         let is_space = content(&state, "m.room.create", "").is_some_and(|c| c["type"] == "m.space");
         let powers = content(&state, "m.room.power_levels", "");
         let minimum = state_threshold(powers, "im.hagency.agent.policy")?
             .max(state_threshold(powers, "m.space.child")?);
         let linked = if let Some(space) = space {
-            let parent = self.state(space).await?;
+            let parent = self.shared_state(space).await?;
             content(&parent, "m.space.child", room)
                 .is_some_and(|c| c["via"].as_array().is_some_and(|via| !via.is_empty()))
         } else {
@@ -57,7 +72,7 @@ impl Gateway {
         puppet: Option<&str>,
     ) -> Result<RoomFacts> {
         if space.is_empty() {
-            let state = self.state(room).await?;
+            let state = self.shared_state(room).await?;
             let puppet = puppet.ok_or(Error::Invalid("direct_puppet_required"))?;
             let valid = direct_private(&state, owner, puppet);
             return Ok(RoomFacts {
@@ -75,7 +90,8 @@ impl Gateway {
                 encrypted: content(&state, "m.room.encryption", "").is_some(),
             });
         }
-        let (room_state, space_state) = tokio::try_join!(self.state(room), self.state(space))?;
+        let (room_state, space_state) =
+            tokio::try_join!(self.shared_state(room), self.shared_state(space))?;
         let powers = content(&room_state, "m.room.power_levels", "");
         Ok(RoomFacts {
             owner_direct_valid: false,
@@ -100,7 +116,7 @@ impl Gateway {
     }
     pub async fn service_invited(&self, room: &str) -> Result<bool> {
         Ok(content(
-            &self.state(room).await?,
+            self.shared_state(room).await?.as_slice(),
             "m.room.member",
             &self.service_mxid,
         )
@@ -115,7 +131,7 @@ impl Gateway {
         puppet: &str,
     ) -> Result<crate::transport::DeliveryFacts> {
         if space.is_empty() {
-            let state = self.state(room).await?;
+            let state = self.shared_state(room).await?;
             return Ok(crate::transport::DeliveryFacts {
                 owner_direct_valid: direct_private(&state, owner, puppet),
                 owner_mxid: owner.into(),
@@ -133,7 +149,8 @@ impl Gateway {
                 encrypted: content(&state, "m.room.encryption", "").is_some(),
             });
         }
-        let (room_state, space_state) = tokio::try_join!(self.state(room), self.state(space))?;
+        let (room_state, space_state) =
+            tokio::try_join!(self.shared_state(room), self.shared_state(space))?;
         Ok(crate::transport::DeliveryFacts {
             owner_direct_valid: false,
             owner_mxid: owner.into(),
@@ -154,7 +171,7 @@ impl Gateway {
     }
     /// Metadata is returned only from a snapshot in which the actor is joined.
     pub async fn member_metadata(&self, room: &str, actor: &str) -> Result<Option<Value>> {
-        let state = self.state(room).await?;
+        let state = self.shared_state(room).await?;
         if !joined(&state, actor) {
             return Ok(None);
         }
@@ -182,18 +199,23 @@ impl Gateway {
         space: &str,
         actor: &str,
     ) -> Result<(bool, Option<Value>)> {
-        let (room_state, space_state) = tokio::try_join!(self.state(room), self.state(space))?;
+        let (room_state, space_state) =
+            tokio::try_join!(self.shared_state(room), self.shared_state(space))?;
         Ok((
             room_navigation_candidate(&room_state, &space_state, room),
             room_navigation_metadata(&room_state, &space_state, room, actor),
         ))
     }
     pub async fn visible(&self, space: &str, owner: &str) -> Result<bool> {
-        Ok(joined(&self.state(space).await?, owner))
+        Ok(joined(self.shared_state(space).await?.as_slice(), owner))
     }
     pub async fn puppet_invited(&self, room: &str, puppet: &str) -> Result<bool> {
-        Ok(content(&self.state(room).await?, "m.room.member", puppet)
-            .is_some_and(|c| c["membership"] == "invite"))
+        Ok(content(
+            self.shared_state(room).await?.as_slice(),
+            "m.room.member",
+            puppet,
+        )
+        .is_some_and(|c| c["membership"] == "invite"))
     }
 }
 fn direct_private(state: &[Value], owner: &str, puppet: &str) -> bool {

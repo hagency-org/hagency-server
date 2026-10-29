@@ -1,3 +1,4 @@
+use crate::worker_runtime::{QueueContext, WorkerRuntime};
 use crate::{
     Error, Result,
     api::now_ms,
@@ -112,11 +113,12 @@ fn parse_event(raw: &Value) -> Option<RoutedEvent> {
         is_edit: false,
     })
 }
-pub(crate) async fn route(
+pub(crate) async fn route_controlled(
     inbox: &Inbox,
     t: &TransportStore,
     g: &Gateway,
     cursor: &mut String,
+    ctx: &QueueContext,
 ) -> Result<()> {
     let transactions = if cursor.is_empty() {
         inbox.pending().await?
@@ -125,9 +127,15 @@ pub(crate) async fn route(
     };
     let mut unavailable_rooms = BTreeSet::new();
     for transaction in transactions {
+        if ctx.stopping() {
+            break;
+        }
         *cursor = transaction.id.clone();
         let mut retry = false;
         for raw in transaction.body["events"].as_array().into_iter().flatten() {
+            if ctx.stopping() {
+                return Ok(());
+            }
             match t.observe_file_event(raw).await {
                 Ok(true) | Err(Error::Conflict("file_message_changed")) => continue,
                 Ok(false) => {}
@@ -157,12 +165,17 @@ pub(crate) async fn route(
             let scopes = match t.routing_scopes(room_id).await {
                 Ok(scopes) => scopes,
                 Err(_) => {
+                    ctx.failure("routing_unavailable");
                     retry = true;
                     continue;
                 }
             };
             for scope in scopes {
+                if ctx.stopping() {
+                    return Ok(());
+                }
                 if unavailable_rooms.contains(&scope.room_id) {
+                    ctx.failure("routing_unavailable");
                     retry = true;
                     continue;
                 }
@@ -183,10 +196,14 @@ pub(crate) async fn route(
                         // No fresh facts were obtained, so this is not proof of
                         // definitive authorization denial. Retain routing intent.
                         unavailable_rooms.insert(scope.room_id.clone());
+                        ctx.failure("matrix_state_unavailable");
                         retry = true;
                         continue;
                     }
                 };
+                if ctx.stopping() {
+                    return Ok(());
+                }
                 let routed = if let Some(event) = &plain {
                     t.ingest_routed_attachment_received(
                         &scope.binding_id,
@@ -217,7 +234,10 @@ pub(crate) async fn route(
                             .rejected(&transaction.id, event_id, &scope.binding_id, &e.to_string())
                             .await?;
                     }
-                    Err(_) => retry = true,
+                    Err(_) => {
+                        ctx.failure("routing_unavailable");
+                        retry = true;
+                    }
                 }
             }
         }
@@ -229,14 +249,18 @@ pub(crate) async fn route(
     }
     Ok(())
 }
-async fn send(
+async fn send_controlled(
     t: &TransportStore,
     g: &Gateway,
     m: &MatrixClient,
     cursor: &mut String,
+    ctx: &QueueContext,
 ) -> Result<()> {
     let mut unavailable_rooms = BTreeSet::new();
     for candidate in t.reply_candidates_after(cursor, 20, now_ms()).await? {
+        if ctx.stopping() {
+            break;
+        }
         *cursor = candidate.id.clone();
         let scope = match t.binding_scope(&candidate.binding_id).await {
             Ok(scope) => scope,
@@ -260,12 +284,20 @@ async fn send(
         let f = match observed {
             Ok(Ok(f)) => f,
             _ => {
+                ctx.failure("matrix_state_unavailable");
                 unavailable_rooms.insert(scope.room_id.clone());
                 continue;
             }
         };
-        let intent = match t.claim_reply(&candidate.id, &f, now_ms()).await {
+        if ctx.stopping() {
+            break;
+        }
+        let intent = match t
+            .claim_reply_guarded(&candidate.id, &f, now_ms(), Some(ctx.claim_gate()))
+            .await
+        {
             Ok(intent) => intent,
+            Err(Error::Unavailable("worker_stopping")) => return Ok(()),
             Err(Error::Unauthorized(_) | Error::Conflict(_)) => {
                 t.block_reply_delivery(&candidate.id, &f, now_ms()).await?;
                 continue;
@@ -290,6 +322,12 @@ async fn send(
                 content,
             )
             .await;
+        if outcome
+            .as_ref()
+            .is_err_and(|e| !matches!(e, Error::Conflict("matrix_permission_missing")))
+        {
+            ctx.failure("matrix_send_unavailable");
+        }
         if matches!(outcome, Err(Error::Conflict("matrix_permission_missing"))) {
             t.confirm_reply_permission_denied(&intent.id, worker, now_ms())
                 .await?;
@@ -305,14 +343,18 @@ async fn send(
     }
     Ok(())
 }
-async fn send_pause_notices(
+async fn send_pause_notices_controlled(
     t: &TransportStore,
     g: &Gateway,
     m: &MatrixClient,
     cursor: &mut String,
+    ctx: &QueueContext,
 ) -> Result<()> {
     let mut unavailable_rooms = BTreeSet::new();
     for candidate in t.pause_notice_candidates(cursor, now_ms()).await? {
+        if ctx.stopping() {
+            break;
+        }
         *cursor = candidate.id.clone();
         let scope = match t.pause_notice_scope(&candidate.binding_id).await {
             Ok(scope) => scope,
@@ -336,12 +378,20 @@ async fn send_pause_notices(
         let f = match observed {
             Ok(Ok(f)) => f,
             _ => {
+                ctx.failure("matrix_state_unavailable");
                 unavailable_rooms.insert(scope.room_id.clone());
                 continue;
             }
         };
-        let notice = match t.claim_pause_notice(&candidate.id, &f, now_ms()).await {
+        if ctx.stopping() {
+            break;
+        }
+        let notice = match t
+            .claim_pause_notice_guarded(&candidate.id, &f, now_ms(), Some(ctx.claim_gate()))
+            .await
+        {
             Ok(n) => n,
+            Err(Error::Unavailable("worker_stopping")) => return Ok(()),
             Err(Error::Conflict(_) | Error::Unauthorized(_)) => continue,
             Err(e) => return Err(e),
         };
@@ -362,19 +412,29 @@ async fn send_pause_notices(
                 content,
             )
             .await;
+        if outcome
+            .as_ref()
+            .is_err_and(|e| !matches!(e, Error::Conflict("matrix_permission_missing")))
+        {
+            ctx.failure("matrix_send_unavailable");
+        }
         t.confirm_pause_notice(&notice.id, worker, &outcome, now_ms())
             .await?;
     }
     Ok(())
 }
-async fn send_request_notices(
+async fn send_request_notices_controlled(
     t: &TransportStore,
     g: &Gateway,
     m: &MatrixClient,
     cursor: &mut String,
+    ctx: &QueueContext,
 ) -> Result<()> {
     let mut unavailable_rooms = BTreeSet::new();
     for candidate in t.request_notice_candidates(cursor, now_ms()).await? {
+        if ctx.stopping() {
+            break;
+        }
         *cursor = candidate.id.clone();
         let scope = match t.binding_scope(&candidate.binding_id).await {
             Ok(scope) => scope,
@@ -398,12 +458,20 @@ async fn send_request_notices(
         let f = match observed {
             Ok(Ok(f)) => f,
             _ => {
+                ctx.failure("matrix_state_unavailable");
                 unavailable_rooms.insert(scope.room_id.clone());
                 continue;
             }
         };
-        let notice = match t.claim_request_notice(&candidate.id, &f, now_ms()).await {
+        if ctx.stopping() {
+            break;
+        }
+        let notice = match t
+            .claim_request_notice_guarded(&candidate.id, &f, now_ms(), Some(ctx.claim_gate()))
+            .await
+        {
             Ok(n) => n,
+            Err(Error::Unavailable("worker_stopping")) => return Ok(()),
             Err(Error::Conflict(_) | Error::Unauthorized(_)) => continue,
             Err(e) => return Err(e),
         };
@@ -429,19 +497,29 @@ async fn send_request_notices(
                 content,
             )
             .await;
+        if outcome
+            .as_ref()
+            .is_err_and(|e| !matches!(e, Error::Conflict("matrix_permission_missing")))
+        {
+            ctx.failure("matrix_send_unavailable");
+        }
         t.confirm_request_notice(&notice.id, worker, &outcome, now_ms())
             .await?;
     }
     Ok(())
 }
-async fn send_processing(
+async fn send_processing_controlled(
     t: &TransportStore,
     g: &Gateway,
     m: &MatrixClient,
     cursor: &mut String,
+    ctx: &QueueContext,
 ) -> Result<()> {
     let mut unavailable_rooms = BTreeSet::new();
     for candidate in t.processing_candidates(cursor, 20, now_ms()).await? {
+        if ctx.stopping() {
+            break;
+        }
         *cursor = candidate.id.clone();
         let scope = match t.binding_scope(&candidate.binding_id).await {
             Ok(scope) => scope,
@@ -465,12 +543,20 @@ async fn send_processing(
         let f = match observed {
             Ok(Ok(f)) => f,
             _ => {
+                ctx.failure("matrix_state_unavailable");
                 unavailable_rooms.insert(scope.room_id.clone());
                 continue;
             }
         };
-        let intent = match t.claim_processing(&candidate.id, &f, now_ms()).await {
+        if ctx.stopping() {
+            break;
+        }
+        let intent = match t
+            .claim_processing_guarded(&candidate.id, &f, now_ms(), Some(ctx.claim_gate()))
+            .await
+        {
             Ok(intent) => intent,
+            Err(Error::Unavailable("worker_stopping")) => return Ok(()),
             Err(Error::Unauthorized(_) | Error::Conflict(_)) => {
                 t.block_processing(&candidate.id, &f, now_ms()).await?;
                 continue;
@@ -489,6 +575,12 @@ async fn send_processing(
                 intent.content.clone(),
             )
             .await;
+        if outcome
+            .as_ref()
+            .is_err_and(|e| !matches!(e, Error::Conflict("matrix_permission_missing")))
+        {
+            ctx.failure("matrix_send_unavailable");
+        }
         let denied = matches!(outcome, Err(Error::Conflict("matrix_permission_missing")));
         t.confirm_processing(
             &intent.id,
@@ -501,14 +593,18 @@ async fn send_processing(
     }
     Ok(())
 }
-pub(crate) async fn send_files(
+pub(crate) async fn send_files_controlled(
     t: &TransportStore,
     g: &Gateway,
     m: &MatrixClient,
     cursor: &mut String,
+    ctx: &QueueContext,
 ) -> Result<()> {
     let mut unavailable_rooms = BTreeSet::new();
     for candidate in t.file_candidates(cursor).await? {
+        if ctx.stopping() {
+            break;
+        }
         *cursor = candidate.id.clone();
         if unavailable_rooms.contains(&candidate.room_id) {
             continue;
@@ -532,18 +628,29 @@ pub(crate) async fn send_files(
         {
             Ok(Ok(f)) => f,
             _ => {
+                ctx.failure("matrix_state_unavailable");
                 unavailable_rooms.insert(candidate.room_id.clone());
                 continue;
             }
         };
-        let claim = match t.claim_file(&candidate.id, &facts, now_ms()).await {
+        if ctx.stopping() {
+            break;
+        }
+        let claim = match t
+            .claim_file_guarded(&candidate.id, &facts, now_ms(), Some(ctx.claim_gate()))
+            .await
+        {
             Ok(c) => c,
+            Err(Error::Unavailable("worker_stopping")) => return Ok(()),
             Err(Error::Unauthorized(_) | Error::Conflict(_)) => continue,
             Err(e) => return Err(e),
         };
         if let Some(bytes) = claim.bytes {
             let name = claim.row.upload_filename()?;
             let uploaded = m.upload_file(&claim.row.puppet_mxid, &name, bytes).await;
+            if uploaded.is_err() {
+                ctx.failure("matrix_upload_unavailable");
+            }
             t.confirm_file_upload(
                 &claim.row.id,
                 &claim.token,
@@ -561,6 +668,9 @@ pub(crate) async fn send_files(
                     content,
                 )
                 .await;
+            if sent.is_err() {
+                ctx.failure("matrix_send_unavailable");
+            }
             t.confirm_file_sent(
                 &claim.row.id,
                 &claim.token,
@@ -571,11 +681,86 @@ pub(crate) async fn send_files(
     }
     Ok(())
 }
+#[cfg(test)]
+pub(crate) async fn route(
+    inbox: &Inbox,
+    t: &TransportStore,
+    g: &Gateway,
+    cursor: &mut String,
+) -> Result<()> {
+    let runtime = WorkerRuntime::default();
+    let ctx = runtime.queue("test");
+    let result = route_controlled(inbox, t, g, cursor, &ctx).await;
+    runtime.begin_shutdown();
+    result
+}
+#[cfg(test)]
+pub(crate) async fn send(
+    t: &TransportStore,
+    g: &Gateway,
+    m: &MatrixClient,
+    cursor: &mut String,
+) -> Result<()> {
+    let runtime = WorkerRuntime::default();
+    let ctx = runtime.queue("test");
+    let result = send_controlled(t, g, m, cursor, &ctx).await;
+    runtime.begin_shutdown();
+    result
+}
+#[cfg(test)]
+pub(crate) async fn send_request_notices(
+    t: &TransportStore,
+    g: &Gateway,
+    m: &MatrixClient,
+    cursor: &mut String,
+) -> Result<()> {
+    let runtime = WorkerRuntime::default();
+    let ctx = runtime.queue("test");
+    let result = send_request_notices_controlled(t, g, m, cursor, &ctx).await;
+    runtime.begin_shutdown();
+    result
+}
+#[cfg(test)]
+pub(crate) async fn send_processing(
+    t: &TransportStore,
+    g: &Gateway,
+    m: &MatrixClient,
+    cursor: &mut String,
+) -> Result<()> {
+    let runtime = WorkerRuntime::default();
+    let ctx = runtime.queue("test");
+    let result = send_processing_controlled(t, g, m, cursor, &ctx).await;
+    runtime.begin_shutdown();
+    result
+}
+#[cfg(test)]
+pub(crate) async fn send_files(
+    t: &TransportStore,
+    g: &Gateway,
+    m: &MatrixClient,
+    cursor: &mut String,
+) -> Result<()> {
+    let runtime = WorkerRuntime::default();
+    let ctx = runtime.queue("test");
+    let result = send_files_controlled(t, g, m, cursor, &ctx).await;
+    runtime.begin_shutdown();
+    result
+}
+#[cfg(test)]
 pub(crate) fn start(
     inbox: Inbox,
     t: TransportStore,
     g: Gateway,
     m: MatrixClient,
+) -> tokio::task::JoinHandle<()> {
+    start_controlled(inbox, t, g, m, WorkerRuntime::default())
+}
+pub(crate) fn start_controlled(
+    inbox: Inbox,
+    t: TransportStore,
+    g: Gateway,
+    m: MatrixClient,
+    control: WorkerRuntime,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut route_cursor = String::new();
@@ -589,59 +774,122 @@ pub(crate) fn start(
         // These futures are owned by the parent task, so aborting it drops all
         // in-flight work together rather than leaking detached workers.
         macro_rules! worker_loop {
-            ($pass:expr) => {
+            ($name:literal, $ctx:ident, $pass:expr) => {
                 async {
+                    let $ctx = control.queue($name);
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     loop {
-                        interval.tick().await;
-                        let _ = $pass.await;
+                        tokio::select! { biased; _=control.stopped()=>break, _=interval.tick()=>{} }
+                        if $ctx.stopping() {
+                            break;
+                        }
+                        let result = $pass.await;
+                        $ctx.finish(&result);
                     }
                 }
             };
         }
         tokio::join!(
-            worker_loop!(t.invalidate_stale_dispatches(now_ms())),
-            worker_loop!(t.expire_files(now_ms())),
-            worker_loop!(send_files(&t, &g, &m, &mut file_cursor)),
-            worker_loop!(route(&inbox, &t, &g, &mut route_cursor)),
-            worker_loop!(send(&t, &g, &m, &mut reply_cursor)),
-            worker_loop!(send_processing(&t, &g, &m, &mut processing_cursor)),
-            worker_loop!(send_pause_notices(&t, &g, &m, &mut pause_cursor)),
-            worker_loop!(send_request_notices(&t, &g, &m, &mut request_cursor))
+            worker_loop!("dispatch_expiry", ctx, async {
+                t.invalidate_stale_dispatches(now_ms()).await.map(|_| ())
+            }),
+            worker_loop!("file_expiry", ctx, t.expire_files(now_ms())),
+            worker_loop!(
+                "files",
+                ctx,
+                send_files_controlled(&t, &g, &m, &mut file_cursor, &ctx)
+            ),
+            worker_loop!(
+                "routing",
+                ctx,
+                route_controlled(&inbox, &t, &g, &mut route_cursor, &ctx)
+            ),
+            worker_loop!(
+                "replies",
+                ctx,
+                send_controlled(&t, &g, &m, &mut reply_cursor, &ctx)
+            ),
+            worker_loop!(
+                "processing",
+                ctx,
+                send_processing_controlled(&t, &g, &m, &mut processing_cursor, &ctx)
+            ),
+            worker_loop!(
+                "pause_notices",
+                ctx,
+                send_pause_notices_controlled(&t, &g, &m, &mut pause_cursor, &ctx)
+            ),
+            worker_loop!(
+                "request_notices",
+                ctx,
+                send_request_notices_controlled(&t, &g, &m, &mut request_cursor, &ctx)
+            )
         );
     })
 }
+#[cfg(test)]
 pub(crate) fn start_cleanup(
     domain: crate::domain::DomainStore,
     g: Gateway,
     m: MatrixClient,
 ) -> tokio::task::JoinHandle<()> {
+    start_cleanup_controlled(domain, g, m, WorkerRuntime::default())
+}
+pub(crate) fn start_cleanup_controlled(
+    domain: crate::domain::DomainStore,
+    g: Gateway,
+    m: MatrixClient,
+    control: WorkerRuntime,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let ctx = control.queue("membership");
         let mut cursor = String::new();
         let mut cleanup_cursor = (String::new(), String::new());
         let mut identity_cursor = String::new();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            interval.tick().await;
+            tokio::select! {biased; _=control.stopped()=>break,_=interval.tick()=>{}}
+            if ctx.stopping() {
+                break;
+            }
             // A cancelled transaction can replace the DomainStore connection
             // and release its session lock. Never cache leadership across ticks.
-            if !domain.try_membership_controller().await.unwrap_or(false) {
-                continue;
+            match domain.try_membership_controller().await {
+                Ok(true) => {}
+                Ok(false) => {
+                    ctx.finish(&Ok(()));
+                    continue;
+                }
+                Err(error) => {
+                    ctx.finish(&Err(error));
+                    continue;
+                }
             }
-            if let Ok(agents) = domain
+            let agents = domain
                 .identity_provisioning_candidates(&identity_cursor, 20)
-                .await
-            {
+                .await;
+            if let Ok(agents) = agents {
                 for agent in agents {
                     identity_cursor = agent.id.clone();
-                    if m.provision_identity(&agent).await.is_ok() {
-                        let _ = domain
+                    if ctx.stopping() {
+                        return;
+                    }
+                    let result = async {
+                        m.provision_identity(&agent).await?;
+                        domain
                             .confirm_identity_provisioned(&agent.id, agent.generation)
-                            .await;
+                            .await
+                            .inspect_err(|error| ctx.observe_error(error))
+                    }
+                    .await;
+                    if result.is_err() {
+                        ctx.failure("identity_provision_unavailable");
                     }
                 }
+            } else {
+                ctx.failure("identity_candidates_unavailable");
             }
             // Fair full cursor sweep includes already-left bindings. Matrix can
             // finish a timed-out join after retirement was locally confirmed.
@@ -650,6 +898,9 @@ pub(crate) fn start_cleanup(
                     cursor.clear();
                 }
                 for scope in scopes {
+                    if ctx.stopping() {
+                        return;
+                    }
                     let (Some(binding), Some(room), Some(space), Some(generation)) = (
                         scope.binding_id.as_deref(),
                         scope.room_id.as_deref(),
@@ -669,6 +920,7 @@ pub(crate) fn start_cleanup(
                         )
                         .await
                         else {
+                            ctx.failure("matrix_state_unavailable");
                             continue;
                         };
                         // Revocation precedes Matrix departure and survives logout
@@ -676,6 +928,7 @@ pub(crate) fn start_cleanup(
                         if domain
                             .retire_membership_loss_trusted(binding, generation, &facts, now_ms())
                             .await
+                            .inspect_err(|error| ctx.observe_error(error))
                             .is_err()
                         {
                             continue;
@@ -690,6 +943,7 @@ pub(crate) fn start_cleanup(
                         if !domain
                             .departure_desired_trusted(binding, generation)
                             .await
+                            .inspect_err(|error| ctx.observe_error(error))
                             .unwrap_or(false)
                         {
                             continue;
@@ -697,7 +951,9 @@ pub(crate) fn start_cleanup(
                         let Ok(facts) = g
                             .room(room, space, &scope.owner_mxid, Some(&scope.puppet_mxid))
                             .await
+                            .inspect_err(|error| ctx.observe_error(error))
                         else {
+                            ctx.failure("matrix_state_unavailable");
                             continue;
                         };
                         // Recheck after the Matrix GET; an owner may have rebound
@@ -705,50 +961,75 @@ pub(crate) fn start_cleanup(
                         if !domain
                             .departure_desired_trusted(binding, generation)
                             .await
+                            .inspect_err(|error| ctx.observe_error(error))
                             .unwrap_or(false)
                         {
                             continue;
                         }
-                        if facts.puppet_in_room && m.leave(&scope.puppet_mxid, room).await.is_err()
+                        if facts.puppet_in_room
+                            && m.leave(&scope.puppet_mxid, room)
+                                .await
+                                .inspect_err(|error| ctx.observe_error(error))
+                                .is_err()
                         {
                             continue;
                         }
                         if let Ok(observed) = g
                             .room(room, space, &scope.owner_mxid, Some(&scope.puppet_mxid))
                             .await
+                            .inspect_err(|error| ctx.observe_error(error))
                         {
                             let _ = domain
                                 .confirm_left_trusted(binding, generation, &observed, now_ms())
-                                .await;
+                                .await
+                                .inspect_err(|error| ctx.observe_error(error));
                         }
                         continue;
                     }
-                    if g.service_invited(room).await.unwrap_or(false) {
-                        let _ = m.join_invited_service(room).await;
+                    if g.service_invited(room)
+                        .await
+                        .inspect_err(|error| ctx.observe_error(error))
+                        .unwrap_or(false)
+                    {
+                        let _ = m
+                            .join_invited_service(room)
+                            .await
+                            .inspect_err(|error| ctx.observe_error(error));
                     }
                     let Ok(facts) = g
                         .room(room, space, &scope.owner_mxid, Some(&scope.puppet_mxid))
                         .await
+                        .inspect_err(|error| ctx.observe_error(error))
                     else {
                         continue;
                     };
                     let Ok(agent) = domain
                         .verify_provisioning_trusted(binding, generation, &facts, false, now_ms())
                         .await
+                        .inspect_err(|error| ctx.observe_error(error))
                     else {
                         continue;
                     };
                     if !facts.puppet_in_room {
-                        let Ok(invited) = g.puppet_invited(room, &scope.puppet_mxid).await else {
+                        let Ok(invited) = g
+                            .puppet_invited(room, &scope.puppet_mxid)
+                            .await
+                            .inspect_err(|error| ctx.observe_error(error))
+                        else {
                             continue;
                         };
-                        if m.provision(&agent, room, !invited).await.is_err() {
+                        if m.provision(&agent, room, !invited)
+                            .await
+                            .inspect_err(|error| ctx.observe_error(error))
+                            .is_err()
+                        {
                             continue;
                         }
                     }
                     if let Ok(observed) = g
                         .room(room, space, &scope.owner_mxid, Some(&scope.puppet_mxid))
                         .await
+                        .inspect_err(|error| ctx.observe_error(error))
                     {
                         let _ = domain
                             .verify_provisioning_trusted(
@@ -758,20 +1039,27 @@ pub(crate) fn start_cleanup(
                                 true,
                                 now_ms(),
                             )
-                            .await;
+                            .await
+                            .inspect_err(|error| ctx.observe_error(error));
                     }
                 }
+            } else {
+                ctx.failure("membership_scopes_unavailable");
             }
             let Ok(scopes) = domain
                 .cleanup_scopes_after(&cleanup_cursor.0, &cleanup_cursor.1, 20)
                 .await
             else {
+                ctx.finish(&Err(Error::Unavailable("cleanup_scopes_unavailable")));
                 continue;
             };
             if scopes.is_empty() {
                 cleanup_cursor = (String::new(), String::new());
             }
             for scope in scopes {
+                if ctx.stopping() {
+                    return;
+                }
                 cleanup_cursor = (
                     scope.agent_id.clone(),
                     scope.binding_id.clone().unwrap_or_default(),
@@ -779,7 +1067,8 @@ pub(crate) fn start_cleanup(
                 let Some(binding) = scope.binding_id.as_deref() else {
                     let _ = domain
                         .confirm_retired_trusted(&scope.agent_id, scope.agent_generation, now_ms())
-                        .await;
+                        .await
+                        .inspect_err(|error| ctx.observe_error(error));
                     continue;
                 };
                 let (Some(room), Some(space), Some(generation)) = (
@@ -792,23 +1081,30 @@ pub(crate) fn start_cleanup(
                 let Ok(mut facts) = g
                     .room(room, space, &scope.owner_mxid, Some(&scope.puppet_mxid))
                     .await
+                    .inspect_err(|error| ctx.observe_error(error))
                 else {
                     continue;
                 };
                 if !domain
                     .departure_desired_trusted(binding, generation)
                     .await
+                    .inspect_err(|error| ctx.observe_error(error))
                     .unwrap_or(false)
                 {
                     continue;
                 }
                 if facts.puppet_in_room {
-                    if m.leave(&scope.puppet_mxid, room).await.is_err() {
+                    if m.leave(&scope.puppet_mxid, room)
+                        .await
+                        .inspect_err(|error| ctx.observe_error(error))
+                        .is_err()
+                    {
                         continue;
                     }
                     let Ok(observed) = g
                         .room(room, space, &scope.owner_mxid, Some(&scope.puppet_mxid))
                         .await
+                        .inspect_err(|error| ctx.observe_error(error))
                     else {
                         continue;
                     };
@@ -816,8 +1112,10 @@ pub(crate) fn start_cleanup(
                 }
                 let _ = domain
                     .confirm_left_trusted(binding, generation, &facts, now_ms())
-                    .await;
+                    .await
+                    .inspect_err(|error| ctx.observe_error(error));
             }
+            ctx.finish(&Ok(()));
         }
     })
 }

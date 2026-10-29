@@ -19,8 +19,8 @@ pub fn generate_request_id() -> String {
 /// latency tracking, and JSON parsing. The caller supplies `format_error`,
 /// which is invoked on any `status >= 400` to produce a (message, body)
 /// tuple matching that backend's error envelope (Matrix errcode vs. Pasion
-/// JSON:API text). 401 retry is the caller's responsibility — layer it on
-/// top of this primitive.
+/// JSON:API text). Session fencing and a single 401 refresh/retry are shared
+/// by Matrix, Pasion and the browser authentication bridge.
 pub async fn raw_fetch<T, F>(
     url: &str,
     method: &str,
@@ -31,10 +31,32 @@ where
     T: DeserializeOwned,
     F: Fn(u16, &str) -> (String, Option<MatrixError>),
 {
+    crate::api::auth::authenticated_request(|snapshot| {
+        raw_fetch_once(
+            url,
+            method,
+            body.clone(),
+            &format_error,
+            snapshot.access_token,
+        )
+    })
+    .await
+}
+
+async fn raw_fetch_once<T, F>(
+    url: &str,
+    method: &str,
+    body: Option<String>,
+    format_error: F,
+    token: Option<String>,
+) -> Result<T, HttpError>
+where
+    T: DeserializeOwned,
+    F: Fn(u16, &str) -> (String, Option<MatrixError>),
+{
     let start_time = js_sys::Date::now();
 
     let rid = Some(generate_request_id());
-    let token = storage::get_item("access_token");
 
     let mut builder: RequestBuilder = match method {
         "POST" => Request::post(url),
@@ -132,20 +154,10 @@ pub async fn api_client<T: DeserializeOwned>(
     method: &str,
     body: Option<String>,
 ) -> Result<T, HttpError> {
-    let result = raw_fetch::<T, _>(url, method, body.clone(), format_matrix_error).await;
+    let result = raw_fetch::<T, _>(url, method, body, format_matrix_error).await;
 
-    // Any 401 means "this token isn't valid" — the specific errcode
-    // varies by backend (palpo uses `M_UNKNOWN_TOKEN`, pasion uses a
-    // JSON:API envelope). Try to refresh and retry once; if that
-    // fails, the shared handler clears session state and AppLayout's
-    // heartbeat redirects to the login page on its next tick.
-    if let Err(ref err) = result {
-        if err.status == 401 && crate::api::auth::handle_unauthorized().await {
-            return raw_fetch::<T, _>(url, method, body, format_matrix_error).await;
-        }
-        if err.status == 403 {
-            crate::api::auth::handle_forbidden();
-        }
+    if matches!(&result, Err(error) if error.status == 403) {
+        crate::api::auth::handle_forbidden();
     }
 
     result

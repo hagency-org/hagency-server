@@ -7,6 +7,8 @@ pub const CAPABILITY: &str = "agent-file-delivery-v1";
 pub const HISTORY_CAPABILITY: &str = "agent-file-history-v1";
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 pub const CHUNK_BYTES: usize = 64 * 1024;
+/// Bound row overhead even when a client submits very small chunks.
+pub const MAX_CHUNKS: usize = 2048;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Manifest {

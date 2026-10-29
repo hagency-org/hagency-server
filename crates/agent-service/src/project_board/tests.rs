@@ -1827,3 +1827,6 @@ async fn postgres_room_default_repair_handles_zero_unlinked_and_new_children_wit
         new
     );
 }
+
+#[path = "quality_tests.rs"]
+mod quality_tests;

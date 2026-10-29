@@ -118,3 +118,41 @@ Fleet validation records do not imply current support or compatibility.
 
 
 Configure unstarted offline request age with `queue.event_ttl_ms`: 24 hours by default, bounded to one second through thirty days, measured from trusted AS receipt time. Routing retries do not reset it. Expired requests cannot be polled, acknowledged or start new model/tool actions; known original results of started work still require current authority for settlement and delivery. Unknown work and usage holds are not released automatically. Device poll requires `bindingId` for the explicitly started Room. Observed owner membership/link loss or removal of the puppet moves the binding through leaving to confirmed left, advances generation and revokes old dispatches. Suspended bindings are also reconciled. Matrix observation failures retain pending state; confirmed loss triggers durable departure, not automatic rejoin. Restore real authorization and explicitly rebind/re-adopt after confirmed left. Ordinary service pause remains separately resumable. Sending also checks the puppet's current `m.room.message` power level; replies blocked by observed revocation do not automatically send after permission restoration.
+
+## Worker health and shutdown
+
+`/readyz` remains the startup AS-roundtrip latch. Containers use
+`/workers-healthz`, which also requires live queues. Three consecutive failed
+passes, unexpected queue exit or 60 seconds without activity return 503;
+successful idle passes remain healthy. This measures queue operation and observed
+failures, not active probes of every external dependency. Aggregate responses
+contain queue names, fixed error codes and ages, without identities or content.
+
+SIGTERM stops new work admission, keeps the internal Matrix listener alive for
+up to 35 seconds while claimed uploads/sends save their receipts, then stops
+HTTP and Pasion. Compose allows 75 seconds. Timed-out work remains unknown and
+is never automatically retried. Stop old writers before the chunk-storage and
+Board v7 upgrades; mixed old/new writers are unsupported. Large histories need
+a maintenance window for the transactional migration.
+Final send-claim admission is checked after database and identity row-lock waits.
+An admission minted before shutdown belongs to the drain even if its transaction
+commits later; a waiter that has not passed this point cannot acquire send custody.
+
+File capacity counts at most 4096 unsettled deliveries and 128 MiB per owner;
+sent/cancelled records retain permanent witnesses without consuming active quota.
+Unknown records still consume both quotas. Removing a Board attachment retains
+its identity, original size, SHA-256 and receipt, clears its payload and frees
+the active 20-file/40-MiB allowance. Physical reclamation follows normal VACUUM.
+
+Browser login budgets use the direct socket IP, ignoring untrusted forwarding
+headers. Users behind one reverse proxy share that peer's budget; configure
+appropriate proxy-side admission for the deployment. Do not trust arbitrary
+client-supplied IP headers. See [dependency security](DEPENDENCY_SECURITY.md)
+for the remaining upstream risks and the expiring CI review policy.
+
+BFF reads and writes both require the original CSRF token; `/session` remains
+the Cookie restoration endpoint. Hagency logout revokes the original session
+and token, without issuing an unbound Pasion Cookie SSO logout. SSO can be ended
+separately on the Pasion account page. A revoked HttpOnly session ID may remain
+until expiry or the next binding, but the server immediately refuses it; a late
+logout response does not overwrite a newer login Cookie.

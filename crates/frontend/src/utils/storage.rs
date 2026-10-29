@@ -1,10 +1,33 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-
 use gloo_storage::{LocalStorage, SessionStorage, Storage};
 
+#[path = "session_state.rs"]
+mod session_state;
+pub use session_state::{ActorCheck, Recovery, SessionState, Snapshot, Tokens};
+
 thread_local! {
-    static SESSION_SECRETS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static SESSION_SECRETS: SessionState = SessionState::default();
+}
+
+pub fn session_state() -> SessionState {
+    SESSION_SECRETS.with(Clone::clone)
+}
+pub fn session_generation() -> u64 {
+    session_state().generation()
+}
+
+fn session_changed() {
+    crate::utils::cache::clear_cache();
+    crate::api::browser_auth::clear_session();
+    for key in [
+        "user_id",
+        "user_display_name",
+        "user_avatar_url",
+        "is_admin",
+    ] {
+        LocalStorage::delete(key);
+        SessionStorage::delete(key);
+    }
+    crate::router::reset_admin_cache();
 }
 
 fn session_only(key: &str) -> bool {
@@ -18,18 +41,17 @@ pub fn get_item(key: &str) -> Option<String> {
     if session_only(key) {
         LocalStorage::delete(key);
         SessionStorage::delete(key);
-        return SESSION_SECRETS.with(|values| values.borrow().get(key).cloned());
+        return session_state().get(key);
     }
     LocalStorage::get::<String>(key).ok()
 }
 
 pub fn set_item(key: &str, value: &str) {
     if session_only(key) {
-        SESSION_SECRETS.with(|values| {
-            values
-                .borrow_mut()
-                .insert(key.to_string(), value.to_string());
-        });
+        session_state().set(key, value);
+        if key == "access_token" {
+            session_changed();
+        }
         LocalStorage::delete(key);
         SessionStorage::delete(key);
     } else {
@@ -40,15 +62,19 @@ pub fn set_item(key: &str, value: &str) {
 pub fn remove_item(key: &str) {
     LocalStorage::delete(key);
     SessionStorage::delete(key);
-    SESSION_SECRETS.with(|values| {
-        values.borrow_mut().remove(key);
-    });
+    session_state().remove(key);
+    if key == "access_token" {
+        session_changed();
+    }
 }
 
-pub fn clear() {
-    LocalStorage::clear();
-    SessionStorage::clear();
-    SESSION_SECRETS.with(|values| values.borrow_mut().clear());
+/// Retire in-flight refreshes before awaiting any logout network operation.
+pub fn retire_session() {
+    session_state().clear();
+    // Logout in this tab must not erase another tab's shared account metadata.
+    crate::utils::cache::clear_cache();
+    crate::api::browser_auth::clear_session();
+    crate::router::reset_admin_cache();
 }
 
 // Nonsecret operation references are kept per tab for idempotent retries.

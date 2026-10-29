@@ -8320,7 +8320,7 @@
       "post": {
         "operationId": "prepareExecutionFile",
         "summary": "Prepare bounded original-execution file delivery",
-        "description": "Prepare only for the exact running execution, current leased execution device and fresh Gateway facts. Durable requestId binds the original immutable manifest; exact duplicates return existing state, changed duplicates conflict. Owner capacity is 4096 retained rows and 128MiB held declared bytes. This has no Matrix IO.",
+        "description": "Prepare only for the exact running execution, current leased execution device and fresh Gateway facts. Durable requestId binds the original immutable manifest; exact duplicates return existing state, changed duplicates conflict. Owner capacity is 4096 unsettled files (sent/cancelled retain permanent witnesses without consuming active count) and 128MiB held declared bytes. This has no Matrix IO.",
         "security": [
           {
             "deviceBearer": []
@@ -8424,7 +8424,7 @@
       "post": {
         "operationId": "stageExecutionFileChunk",
         "summary": "Stage exact contiguous file bytes",
-        "description": "Append 1..65536 bytes under the original current lease/execution and fresh Gateway facts. Exact prior chunk retries compare actual bytes; changed, overlapping, gap or overrun writes fail. Generic 131072-byte HTTP limit remains. This has no Matrix IO.",
+        "description": "Append 1..65536 bytes under the original current lease/execution and fresh Gateway facts. Exact prior chunk retries compare actual bytes; changed, overlapping, gap or overrun writes fail. Generic 131072-byte HTTP limit remains. This has no Matrix IO. New data is stored in immutable append-only chunks. Each file has a 2048-new-chunk budget; file_chunk_limit rejects a chunk that would leave insufficient slots to complete the original manifest, and the caller may submit a larger chunk at that same offset. Exact old-byte retries read only the requested range, including legacy-prefix and chunk boundaries.",
         "security": [
           {
             "deviceBearer": []
@@ -14993,6 +14993,43 @@
           }
         }
       }
+    },
+    "/workers-healthz": {
+      "get": {
+        "operationId": "workerHealth",
+        "summary": "Current startup and background queue health",
+        "description": "Requires the startup AS roundtrip and live queues. Returns 503 during shutdown, after three consecutive pass failures, after unexpected queue exit, or after 60 seconds without queue activity. Idle successful passes stay healthy. Public aggregate codes and ages contain no owner identities, credentials or queued content.",
+        "security": [],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Startup and queues are healthy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerHealth"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Startup unconfirmed, shutdown in progress or queues unhealthy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerHealth"
+                }
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api.rs",
+          "anchors": [
+            "Router::with_path(\"workers-healthz\").get(WorkerHealth"
+          ]
+        }
+      }
     }
   },
   "components": {
@@ -20994,6 +21031,84 @@
           "targetId",
           "expectedRevision"
         ]
+      },
+      "WorkerQueueHealth": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "running",
+          "consecutiveFailures",
+          "lastSuccessAgeMs",
+          "lastActivityAgeMs",
+          "error"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "consecutiveFailures": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lastSuccessAgeMs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "lastActivityAgeMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Fixed queue error code only; never SQL, credentials or message content."
+          }
+        }
+      },
+      "WorkerHealth": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "startupRoundtripConfirmed",
+          "workers"
+        ],
+        "properties": {
+          "startupRoundtripConfirmed": {
+            "type": "boolean"
+          },
+          "workers": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "healthy",
+              "stopping",
+              "queues"
+            ],
+            "properties": {
+              "healthy": {
+                "type": "boolean"
+              },
+              "stopping": {
+                "type": "boolean"
+              },
+              "queues": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WorkerQueueHealth"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "securitySchemes": {
@@ -21012,7 +21127,7 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "f0a9d866d0c443ebfff668389b15bce579606b4e8b6e3ff4380320f826e25258",
+    "crates/agent-service/src/api.rs": "12f3725fced2696edc32d290e72fd8043f4f61582df070661f02af6acbe925dc",
     "crates/agent-service/src/api_transport.rs": "2d6c562882c7c35d10e716bbc771f70310752db69263d0378eafab60e0c3f5d4",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
@@ -21022,15 +21137,16 @@
     "crates/agent-service/src/agent_crypto_receive.rs": "20e437890a3cca872e810bfbcb1f5dc696567caff53a8bdb684b34e9c142566a",
     "crates/agent-service/src/transport_ciphertexts.rs": "4a1fe84564151dbb1ffe2791569d8e7a441a1f3d2c30b343ddf51b6f73c80116",
     "crates/agent-service/src/ciphertext_schema.sql": "ea43c360e60a316d3cd15e16494bee1b5c60f5482b4d0ad9bbe0883c2f07ad29",
-    "crates/agent-service/src/workers.rs": "3c4ea90ebf863b8bc88d9e06839fb399bc1fec07e311b74ed4983ff38c95b361",
+    "crates/agent-service/src/workers.rs": "3d0cd43f9ba5d6460b527812ab47f03d34fee8a79f0d58fc023d20fd8fc26456",
     "crates/agent-service/src/encrypted_dispatches.rs": "f172a4fd602b7302199c297348df20e7b35b59796724521708d93df59e7390d8",
     "crates/agent-service/src/encrypted_dispatches_schema.sql": "73c338d99a17eb64e2173c6fdb7246962039d5e7229e03345bad14237852427d",
-    "crates/agent-service/src/transport.rs": "0e6bc47db89d1a602e34c4d2b0a8cc71094b51ca4d8175be7218e3b937b5211a",
+    "crates/agent-service/src/transport.rs": "db8463205097cfd6ed38b73f1fb4b6602847938ada60fc690b6e730be4e6aec4",
     "crates/agent-service/src/encrypted_execution.rs": "a495dd49337b462a97bb95c7edd8d7cf48373768b5a4dba72b01c1495d6f1950",
     "crates/agent-service/src/encrypted_execution_schema.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "8ca02b365672bf575fa170395a24cb100e40e2db7ccc64e4b9e05c891263755c",
     "crates/agent-service/src/domain.rs": "8601964e73faf44425e1a7f463aa5682796c0cfa3b7bb16a4b8c773ca1e27b95",
-    "crates/agent-service/src/matrix_client.rs": "0e5514d6af19b74e58b6ac6fd7dfcd17c7f667f97677dc2a364d533c04584664"
+    "crates/agent-service/src/matrix_client.rs": "0e5514d6af19b74e58b6ac6fd7dfcd17c7f667f97677dc2a364d533c04584664",
+    "crates/agent-service/src/worker_runtime.rs": "7e1de44fa9d7635bfb24a68659a687345573698799f85e418c77eb6c9e1abebe"
   },
   "x-not-implemented": [
     "POST /hagency/api/v1/projects (create Matrix Space)",
