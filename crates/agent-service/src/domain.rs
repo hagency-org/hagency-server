@@ -1858,9 +1858,17 @@ mod tests;
 pub(crate) use tests::CreateBoundAgent;
 
 impl DomainStore {
-    pub(crate) async fn archive_project(&self,p:&Principal,id:&str,expected:i64,archived:bool,facts:&AdminFacts,now:i64)->Result<Project> {
+    pub(crate) async fn archive_project(
+        &self,
+        p: &Principal,
+        id: &str,
+        expected: i64,
+        archived: bool,
+        facts: &AdminFacts,
+        now: i64,
+    ) -> Result<Project> {
         key(id)?;
-        let mut db=self.db.lock().await?;
+        let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let project=sql_query("SELECT id,space_id,active,archived,creation_policy,revision FROM hagency_agent_v1.projects WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<Project>(db).await.map_err(hidden)?;
