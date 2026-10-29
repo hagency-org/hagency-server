@@ -284,6 +284,21 @@ try:
             else:
                 raise RuntimeError("real Matrix event did not reach durable Appservice inbox")
             print("PASS: embedded Pasion/Palpo startup, mandatory AS identity, private room, stable Matrix send and durable AS roundtrip")
+            # CLI bootstrap commits a durable provisioning job; AS readiness is
+            # independent of that job creating the human Matrix identity/role.
+            provisioning_started = time.monotonic()
+            for _ in range(120):
+                provisioned = sql(DBS[1],
+                    "SELECT count(*) FROM users WHERE id='@agent_smoke_owner:" + server_name
+                    + "' AND is_admin=true AND is_guest=false"
+                    + " AND deactivated_at IS NULL AND suspended_at IS NULL", True)
+                if provisioned == "1":
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError("durable bootstrap job did not provision the Matrix administrator")
+            print("PASS: durable Pasion bootstrap provisioned the actual Matrix administrator (waited "
+                  + format(time.monotonic() - provisioning_started, ".1f") + "s)")
             if os.environ.get("HAGENCY_TEST_HOLD_BROWSER") == "1":
                 private(folder / "browser-fixture.json", json.dumps({"base": origin, "username": "agent_smoke_owner", "password": (folder / "bootstrap-password").read_text()}))
                 print("BROWSER fixture ready: " + origin + " ; private directory: " + str(folder), flush=True)
