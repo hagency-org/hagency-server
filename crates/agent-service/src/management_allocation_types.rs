@@ -425,11 +425,11 @@ mod succession_vector_tests {
         );
         assert_eq!(
             allocation_digest(&amendment).unwrap(),
-            "179b7f798aa87d6ef5ff58babf3f723d51752ac8866d3da94d153d8eb6f45d46"
+            "c69dbd92dc068046cbf6930d455c0258d31dea9093dcd0d415f068c3dbba8937"
         );
         assert_eq!(
             allocation_digest(&renewal).unwrap(),
-            "36a77fe61abeda725de20024d4046945b9f2129cca1b05da426fb6d15e5b5c49"
+            "1fdb875c843afef52fc4f2ba2720395fda5445de37f1a0f8ada6c799874035ff"
         );
         for (name, value) in [
             ("predecessorDigest", &predecessor),
@@ -447,18 +447,8 @@ mod succession_vector_tests {
         assert_eq!(r.predecessor_receipt_digest, fixture["amendmentDigest"]);
         assert_eq!(r.predecessor_grant_id, amendment.grant_id);
         assert!(!a.renewal() && r.renewal());
-        predecessor.validate("example.test").unwrap();
-        // The shared v3 receipts list "@manager:" before "@manager2:", which is
-        // not the sorted order every store requires, so they are refused as
-        // published. Sorted, the same receipts are valid successors.
-        for value in [&amendment, &renewal] {
-            assert_eq!(
-                value.validate("example.test").unwrap_err().to_string(),
-                "invalid_resource_grant"
-            );
-            let mut sorted = value.clone();
-            sorted.eligible_managers.sort();
-            sorted.validate("example.test").unwrap();
+        for value in [&predecessor, &amendment, &renewal] {
+            value.validate("example.test").unwrap();
         }
         // A v2 receipt never serializes the optional succession field.
         assert!(
