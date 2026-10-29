@@ -34,7 +34,7 @@ js-sys = "0.3.95"
 libc = "0.2"
 log = "0.4.29"
 opentelemetry = { version = "0.32", features = ["trace"] }
-palpo = { git = "https://github.com/palpo-im/palpo.git", branch = "main" }
+palpo = { git = "https://github.com/palpo-im/palpo.git", rev = "dc6dd20dbe558550129ec3009acfd9a9512b41e9" }
 pasion-backend = { git = "https://github.com/meldry-com/pasion.git", branch = "main", features = ["cedar"] }
 pasion-config = { git = "https://github.com/meldry-com/pasion.git", branch = "main" }
 pasion-data = { git = "https://github.com/meldry-com/pasion.git", branch = "main" }

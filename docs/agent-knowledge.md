@@ -83,3 +83,5 @@ Client 插图应使用上传事务返回的 attachment ID，不能根据文件�
   消耗永久 possible 发布见证。用真实 PG 断言 status 仍无 publication、原任务
   仍 running，随后原 request 合法载荷仍有首次 custody。device_id/sender_key
   已废弃，不能重新强制要求；正常 SDK 的 org.matrix.msgid 仍允许。
+
+- Room type filters must be applied before the server's count/page slice; filtering only one fetched page loses later matches and leaves incorrect pagination. Frontend RoomFilter is part of the cache key, and use_resource must read page/search/sort/filter signals inside its reactive closure. Empty encrypted-room key backup reads distinguish a valid empty sessions map from unknown/deleted/foreign backup versions; never bypass the Client SDK history-sharing preflight on an arbitrary error.
