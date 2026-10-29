@@ -1223,3 +1223,93 @@ async fn postgres_atomic_status_save_and_archived_column_restore_preserve_cards(
         ack["task"]
     );
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_label_suggestions_ignore_filters_pages_and_archive_and_stay_bounded() {
+    let (_auth, domain, alice, _bob, access) = fixture().await;
+    let board = &domain.board;
+    let mut first = None;
+    for page in 0..18 {
+        let result = board.mutate(&alice, &access, Mutation::Create(Create {
+            idempotency_key: format!("labels-{page}"), state: "todo".into(),
+            fields: Fields { title: format!("catalog task {page}"),
+                labels: (page*12..(page+1)*12).map(|i| format!("catalog-{i:03}")).collect(),
+                ..Default::default() },
+        })).await.unwrap();
+        if page == 0 { first = result["task"]["id"].as_str().map(str::to_owned); }
+    }
+    board.mutate(&alice, &access, Mutation::Archive { task: first.unwrap(),
+        input: Versioned { idempotency_key:"archive-labels".into(), expected_version:1 }
+    }).await.unwrap();
+    let snapshot = board.board(&alice, &access, Query { label:Some("no-matches".into()), limit:Some(1), ..Default::default() }).await.unwrap();
+    assert!(snapshot["lanes"].as_array().unwrap().iter().all(|l| l["tasks"].as_array().unwrap().is_empty()));
+    assert_eq!(snapshot["labelSuggestions"].as_array().unwrap().len(), 200);
+    assert_eq!(snapshot["labelSuggestions"][0], "catalog-000");
+    assert_eq!(snapshot["labelSuggestions"][199], "catalog-199");
+    assert_eq!(snapshot["hasMoreLabels"], true);
+    assert_eq!(snapshot["lanes"][0]["taskCount"], 17);
+    assert_eq!(snapshot["lanes"][0]["allTaskCount"], 18);
+    let archived = board.board(&alice, &access, Query { archived:true, label:Some("catalog-000".into()), ..Default::default() }).await.unwrap();
+    assert_eq!(archived["lanes"][0]["total"], 1);
+    assert_eq!(archived["labelSuggestions"], snapshot["labelSuggestions"]);
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_multiple_boards_keep_tasks_receipts_and_cursors_isolated() {
+    use super::catalog::NewBoard;
+    let (_auth,domain,alice,_bob,access)=fixture().await;
+    let board=&domain.board;
+    let original=board.mutate(&alice,&access,create("same-intent","Original board task")).await.unwrap();
+    let catalog=board.catalog(&alice,&access,None).await.unwrap();
+    assert_eq!(catalog["boards"].as_array().unwrap().len(),1);
+    assert_eq!(catalog["boards"][0]["name"],"Main Board");
+    let input=||Some(NewBoard {idempotency_key:"new-board".into(),name:"Planning".into()});
+    let created=board.catalog(&alice,&access,input()).await.unwrap();
+    let repeated=board.catalog(&alice,&access,input()).await.unwrap();
+    assert_eq!(created,repeated);
+    assert_eq!(created["boards"].as_array().unwrap().len(),2);
+    assert!(matches!(board.catalog(&alice,&access,Some(NewBoard {idempotency_key:"new-board".into(),name:"Changed intent".into()})).await,Err(Error::Conflict("board_intent_conflict"))));
+    let scope=created["boards"][1]["id"].as_str().unwrap();
+    board.resolve_board(&access.project,scope).await.unwrap();
+    assert!(board.resolve_board("another-project",scope).await.is_err());
+    let other=Access {project:scope.into(),space:access.space.clone(),actor:access.actor.clone(),members:access.members.clone(),member_names:access.member_names.clone(),observed:crate::api::now_ms()};
+    let task=board.mutate(&alice,&other,create("same-intent","Second board task")).await.unwrap();
+    assert_eq!(task["task"]["number"],1);
+    assert_eq!(original["task"]["number"],1);
+    assert_ne!(task["task"]["id"],original["task"]["id"]);
+    assert!(board.detail(&alice,&other,original["task"]["id"].as_str().unwrap()).await.is_err());
+    assert!(board.detail(&alice,&access,task["task"]["id"].as_str().unwrap()).await.is_err());
+    let summary=board.overview(&alice,&access).await.unwrap();
+    assert_eq!(summary["stats"]["tasks"],2);
+    assert_eq!(summary["activity"].as_array().unwrap().len(),2);
+    let reopened=BoardStore::open(&std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap()).await.unwrap();
+    assert_eq!(reopened.catalog(&alice,&access,None).await.unwrap()["boards"],created["boards"]);
+    assert_eq!(reopened.board(&alice,&other,Query::default()).await.unwrap()["lanes"][0]["tasks"][0]["title"],"Second board task");
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_project_archive_requires_fresh_admin_and_restores_original_boards() {
+    use crate::domain::AdminFacts;
+    let (_auth,domain,alice,bob,access)=fixture().await;
+    let original=domain.board.mutate(&alice,&access,create("before-archive","Keep this task")).await.unwrap();
+    let revision=domain.project(&alice,&access.project,crate::api::now_ms()).await.unwrap().revision;
+    let mut facts=AdminFacts {actor_mxid:bob.mxid.clone(),room_id:access.space.clone(),observed_at_ms:crate::api::now_ms(),joined:true,can_manage_policy:false,is_space:true,linked_space_id:None};
+    assert!(domain.archive_project(&bob,&access.project,revision,true,&facts,crate::api::now_ms()).await.is_err());
+    facts.actor_mxid=alice.mxid.clone();facts.can_manage_policy=true;
+    let archived=domain.archive_project(&alice,&access.project,revision,true,&facts,crate::api::now_ms()).await.unwrap();
+    assert!(archived.archived);
+    assert!(domain.projects(&alice,crate::api::now_ms()).await.unwrap().iter().any(|p|p.id==access.project && p.archived));
+    assert_eq!(domain.board.board(&alice,&access,Query::default()).await.unwrap()["readOnly"],true);
+    assert_eq!(domain.board.history(&alice,&access,None,0,10,false).await.unwrap()["readOnly"],true);
+    assert!(matches!(domain.board.mutate(&alice,&access,create("after-archive","Refused")).await,Err(Error::Conflict("project_archived"))));
+    assert!(domain.archive_project(&alice,&access.project,revision,false,&facts,crate::api::now_ms()).await.is_err());
+    let stale=AdminFacts {observed_at_ms:crate::api::now_ms()-31_000,..facts.clone()};
+    assert!(domain.archive_project(&alice,&access.project,archived.revision,false,&stale,crate::api::now_ms()).await.is_err());
+    let restored=domain.archive_project(&alice,&access.project,archived.revision,false,&facts,crate::api::now_ms()).await.unwrap();
+    assert!(!restored.archived);
+    assert_eq!(domain.board.detail(&alice,&access,original["task"]["id"].as_str().unwrap()).await.unwrap()["task"],original["task"]);
+    domain.board.mutate(&alice,&access,create("after-restore","Allowed")).await.unwrap();
+}

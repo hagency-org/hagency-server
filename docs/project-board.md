@@ -1,14 +1,14 @@
 # Shared native Project board
 
 The Server is authoritative for human Project work items. Client's Project
-**Board** tab starts with five columns and supports 2–12 custom columns,
+**Boards** tab starts with five columns and supports 2–12 custom columns,
 WIP limits, one-level subtasks and versioned checklists. This is separate from the historical local operator/runner task projection.
 It does not execute an Agent, import local tasks or read private Room messages.
 Cloud product code is unchanged; self-hosted servers work independently.
 
 ## Availability and identity
 
-`project-board-v4` appears in native discovery only after the domain (including
+`project-board-v5` appears in native discovery only after the domain (including
 board storage) is initialized. The optional host TOML `project_board_enabled =
 false` removes that capability and closes board endpoints while retaining data.
 It defaults to true, so existing hosting configurations need no new input. This
@@ -38,8 +38,8 @@ Pool checkout is bounded by eight seconds, SQL lock waits by five seconds and
 each statement by eight seconds. Cancelled transactions are discarded by the
 Diesel pool's broken-transaction recycling check.
 
-There is one logical board per Project; its physical board row is created on the
-first successful board mutation. Every mutation locks that row, checks the task
+Each Project starts with Main Board and can own multiple independent boards (v5
+below). Its default physical board row is created on the first successful board mutation. Every mutation locks that row, checks the task
 version and commits task changes, activity, sequence and original idempotency
 receipt together. Different boards can proceed independently. Receipts are scoped
 by Project, actor and intent key and remain retained. Same canonical input
@@ -138,7 +138,7 @@ Cloud self-service recovery implementation is required by this feature.
 
 ## Custom columns, WIP, subtasks and checklists (v2)
 
-Upgrade Server and Client together. Discovery advertises only `project-board-v4`:
+Upgrade Server and Client together. Discovery advertises only `project-board-v5`:
 a fixed-five-column v1 Client must explicitly refuse the incompatible board.
 The additive `schema_v2.sql` seeds every existing board's five columns, replaces
 the fixed-state constraint with a project/column foreign key, and retains task
@@ -229,3 +229,42 @@ column reorder and current Space display names. See the sibling Client report
 [双用户问题修复与看板列验收](../../hagency-client/dev-vibe/two-user-board-fixes-and-lists-validation-2026-10-28.zh.md).
 Runtime credentials, SQL/API readbacks and screenshots stay in the ignored local
 `.run/local-dev/collaboration-20261028/` directory; they are not repository inputs.
+
+
+## Multiple boards and Project lifecycle (v5)
+
+A Project owns up to 64 independent named boards. Existing work remains in
+`Main Board`; the default board keeps its original storage key and all existing
+task IDs, numbers, versions, comments, attachments and receipts. New boards use
+independent scope keys. The database's legacy `project_id` field inside board
+storage is this board scope key; `boards.owner_project_id` is the immutable real
+Project relationship. Authorization resolves that relationship and the original
+Project's live Space membership before every read/write. It never treats another
+Project ID or a board path as a membership grant.
+
+`GET /hagency/api/v1/projects/{projectId}/boards` lists the catalog;
+`POST` creates a board using `idempotencyKey` and `name`. Retrying that key returns
+the same board; a changed name conflicts. Creation is serialized per Project.
+Selected-board operations use `/boards/{boardId}/board` and
+`/boards/{boardId}/tasks/...` beneath the original Project route. Legacy default
+board routes still resolve the original board. Cross-board task IDs, paging,
+versions, WIP limits and receipts remain isolated.
+
+`GET .../board/overview` returns aggregate task/completion/overdue/member counts,
+the board catalog and ten latest task/column changes; it does not read private
+Room messages. `PUT .../board/project-archive` accepts `archived` and
+`expectedRevision`. Only freshly observed Space policy administrators may change
+it. Project discovery retains archived records for joined members. Archived boards
+remain readable and report `readOnly`; new boards and work-item mutations are
+refused. Restore preserves all prior data and revisions. Archive does not leave
+Matrix Rooms or change Agent service policy.
+
+## Project Room invitations in navigation
+
+Project Rooms discovery returns `membership: join|invite` only when the actor is
+currently joined to the owning Space, the Room is linked as its child, and the
+actor is joined or invited to that Room. This lets Clients place pending private
+Room invitations beneath the correct Project. It grants no joined-Room execution,
+Agent, message-history or board authority. Leave, ban, knock, unrelated Rooms and
+outsiders remain excluded. The native client keeps Space invitations in Projects
+and direct invitations in Contacts, outside Group Chats.

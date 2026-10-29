@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub const STATES: [&str; 5] = ["todo", "in_progress", "blocked", "in_review", "done"];
 pub const PRIORITIES: [&str; 4] = ["low", "normal", "high", "urgent"];
-pub const CAPABILITY: &str = "project-board-v4";
+pub const CAPABILITY: &str = "project-board-v5";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -1,4 +1,5 @@
 //! Shared human work items. A separate pool never queues behind Agent storage.
+mod catalog;
 mod collaboration;
 mod columns;
 mod types;
@@ -208,21 +209,24 @@ impl BoardStore {
             let exists=sql_query("SELECT to_regclass('hagency_project_v1.migrations') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
             if exists {
                 let version=sql_query("SELECT coalesce(max(version),0)::bigint AS value FROM hagency_project_v1.migrations").get_result::<Number>(db).await?.value;
-                if !(1..=4).contains(&version){return Err(Error::Conflict("board_schema_incompatible"));}
+                if !(1..=5).contains(&version){return Err(Error::Conflict("board_schema_incompatible"));}
                 let complete=sql_query("SELECT to_regclass('hagency_project_v1.boards') IS NOT NULL AND to_regclass('hagency_project_v1.tasks') IS NOT NULL AND to_regclass('hagency_project_v1.comments') IS NOT NULL AND to_regclass('hagency_project_v1.changes') IS NOT NULL AND to_regclass('hagency_project_v1.receipts') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
                 if version>=2 && !sql_query("SELECT to_regclass('hagency_project_v1.columns') IS NOT NULL AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if version>=3 && !sql_query("SELECT to_regclass('hagency_project_v1.notifications') IS NOT NULL AND to_regclass('hagency_project_v1.attachments') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='changes' AND column_name='details') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if version>=4 && !sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='columns' AND column_name='archived') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
+                if version>=5 && !sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='boards' AND column_name='owner_project_id') AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='projects' AND column_name='archived') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if !complete{return Err(Error::Conflict("board_schema_incompatible"));}
                 if version == 1 { db.batch_execute(include_str!("schema_v2.sql")).await?; }
                 if version < 3 { db.batch_execute(include_str!("schema_v3.sql")).await?; }
                 if version < 4 { db.batch_execute(include_str!("schema_v4.sql")).await?; }
+                if version < 5 { db.batch_execute(include_str!("schema_v5.sql")).await?; }
                 return Ok(());
             }
             db.batch_execute(include_str!("schema.sql")).await?;
             db.batch_execute(include_str!("schema_v2.sql")).await?;
             db.batch_execute(include_str!("schema_v3.sql")).await?;
             db.batch_execute(include_str!("schema_v4.sql")).await?;
+            db.batch_execute(include_str!("schema_v5.sql")).await?;
             Ok(())
         }).await?;
         drop(db);
@@ -240,7 +244,7 @@ impl BoardStore {
         db.batch_execute("SET LOCAL lock_timeout='5s'; SET LOCAL statement_timeout='8s'")
             .await?;
         DomainStore::authorize_identity(db, p, crate::api::now_ms()).await?;
-        let project=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.projects WHERE id=$1 AND space_id=$2 AND active FOR SHARE) AS value")
+        let project=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.projects p WHERE (p.id=$1 OR EXISTS(SELECT 1 FROM hagency_project_v1.boards b WHERE b.project_id=$1 AND b.owner_project_id=p.id)) AND p.space_id=$2 AND p.active FOR SHARE) AS value")
             .bind::<Text,_>(&a.project).bind::<Text,_>(&a.space).get_result::<Flag>(db).await?.value;
         if !project || a.actor != p.mxid || !a.members.contains(&p.mxid) {
             return Err(Error::Unauthorized("project_membership_required"));
@@ -347,11 +351,19 @@ impl BoardStore {
                 let count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND state_key=$2 AND archived_at IS NULL").bind::<Text,_>(&a.project).bind::<Text,_>(name).get_result::<Number>(db).await?.value;
                 let mut query=q.clone();query.state=Some(name.clone());
                 let mut page=if q.state.as_ref().is_some_and(|s| s!=name) { json!({"tasks":[],"total":0,"nextCursor":null,"sequence":seq}) } else { Self::page(db,&a.project,&query,seq).await? };
-                page["archived"]=json!(column.archived);page["state"]=json!(name);page["title"]=json!(column.title);page["wipLimit"]=json!(column.wip_limit);page["isDone"]=json!(column.is_done);page["taskCount"]=json!(count);lanes.push(page);
+                let all_count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND state_key=$2").bind::<Text,_>(&a.project).bind::<Text,_>(name).get_result::<Number>(db).await?.value;
+                page["archived"]=json!(column.archived);page["state"]=json!(name);page["title"]=json!(column.title);page["wipLimit"]=json!(column.wip_limit);page["isDone"]=json!(column.is_done);page["taskCount"]=json!(count);page["allTaskCount"]=json!(all_count);lanes.push(page);
             }
+            // Project-wide suggestions must not shrink with filters or task pagination.
+            // Bound the response; arbitrary existing/new labels remain usable by name.
+            let rows=sql_query("SELECT to_jsonb(label) AS value FROM (SELECT DISTINCT jsonb_array_elements_text(labels) AS label FROM hagency_project_v1.tasks WHERE project_id=$1) names ORDER BY label LIMIT 201")
+                .bind::<Text,_>(&a.project).load::<Row>(db).await?;
+            let more_labels=rows.len()>200;
+            let labels:Vec<_>=rows.into_iter().take(200).map(|r|r.value).collect();
             let members:Vec<_>=a.members.iter().filter(|m|!m.starts_with("@_hagency_")).take(1000).collect();
             Self::fresh(a)?;
-            Ok(json!({"projectId":a.project,"sequence":seq,"lanes":lanes,"members":members,"memberNames":a.member_names,"capability":CAPABILITY}))
+            let archived=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.projects p WHERE p.archived AND (p.id=$1 OR EXISTS(SELECT 1 FROM hagency_project_v1.boards b WHERE b.project_id=$1 AND b.owner_project_id=p.id))) AS value").bind::<Text,_>(&a.project).get_result::<Flag>(db).await?.value;
+            Ok(json!({"readOnly":archived,"projectId":a.project,"sequence":seq,"lanes":lanes,"members":members,"memberNames":a.member_names,"labelSuggestions":labels,"hasMoreLabels":more_labels,"capability":CAPABILITY}))
         }).await
     }
     pub(crate) async fn tasks(&self, p: &Principal, a: &Access, q: Query) -> Result<Value> {
@@ -415,7 +427,8 @@ impl BoardStore {
             let items:Vec<_>=rows.into_iter().take(limit as usize).map(|r|r.value).collect();
             let next=items.last().and_then(|v|v[if comments{"cursor"}else{"sequence"}].as_i64()).unwrap_or(after);
             Self::fresh(a)?;
-            Ok(json!({"items":items,"next":next,"hasMore":more,"sequence":seq}))
+            let archived=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.projects p WHERE p.archived AND (p.id=$1 OR EXISTS(SELECT 1 FROM hagency_project_v1.boards b WHERE b.project_id=$1 AND b.owner_project_id=p.id))) AS value").bind::<Text,_>(&a.project).get_result::<Flag>(db).await?.value;
+            Ok(json!({"readOnly":archived,"items":items,"next":next,"hasMore":more,"sequence":seq}))
         }).await
     }
     async fn rank(
@@ -486,7 +499,7 @@ impl BoardStore {
         let mut db = self.connection().await?;
         db.transaction::<_,Error,_>(async |db|{
             Self::authorize(db,p,a).await?;
-            sql_query("INSERT INTO hagency_project_v1.boards(project_id) VALUES($1) ON CONFLICT DO NOTHING").bind::<Text,_>(&a.project).execute(db).await?;
+            sql_query("INSERT INTO hagency_project_v1.boards(project_id,owner_project_id) VALUES($1,$1) ON CONFLICT DO NOTHING").bind::<Text,_>(&a.project).execute(db).await?;
             let seq=sql_query("SELECT change_seq AS value FROM hagency_project_v1.boards WHERE project_id=$1 FOR UPDATE").bind::<Text,_>(&a.project).get_result::<Number>(db).await?.value;
             DomainStore::authorize_identity(db,p,crate::api::now_ms()).await?;Self::fresh(a)?;
             let replay=sql_query("SELECT jsonb_build_object('digest',digest,'result',result) AS value FROM hagency_project_v1.receipts WHERE project_id=$1 AND actor=$2 AND intent_key=$3")
@@ -495,6 +508,8 @@ impl BoardStore {
                 Ok(row)=>{if row.value["digest"]!=digest{return Err(Error::Conflict("board_idempotency_conflict"));}let mut result=row.value["result"].clone();result["replayed"]=json!(true);return Ok(result);}
                 Err(diesel::result::Error::NotFound)=>(),Err(e)=>return Err(e.into())
             }
+            let archived=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.projects p JOIN hagency_project_v1.boards b ON b.owner_project_id=p.id WHERE b.project_id=$1 AND p.archived) AS value").bind::<Text,_>(&a.project).get_result::<Flag>(db).await?.value;
+            if archived {return Err(Error::Conflict("project_archived"));}
             Self::ensure_columns(db,&a.project).await?;
             let task=if let Some(id)=mutation.task(){Some(Self::task(db,&a.project,id).await?)}else{None};
             if let Some(expected)=mutation.expected() && task.as_ref().and_then(|t|t["version"].as_i64())!=Some(expected){return Err(Error::Conflict("board_version_conflict"));}

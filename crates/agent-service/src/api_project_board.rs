@@ -77,7 +77,7 @@ pub(crate) async fn call(
 ) -> Result<Option<Value>> {
     let path = req.uri().path().to_owned();
     let parts = path.split('/').collect::<Vec<_>>();
-    if parts.len() < 7 || parts[4] != "projects" || !["board", "tasks"].contains(&parts[6]) {
+    if parts.len() < 7 || parts[4] != "projects" || !["board", "tasks", "boards"].contains(&parts[6]) {
         return Ok(None);
     }
     crate::key(parts[5])?;
@@ -117,17 +117,46 @@ pub(crate) async fn call(
                 && !name.chars().any(char::is_control)
         })
         .collect();
-    let access = Access {
+    let mut access = Access {
         member_names,
-        project: project.id,
+        project: project.id.clone(),
         space: project.space_id,
         actor: principal.mxid.clone(),
         members,
         observed: crate::api::now_ms(),
     };
-    let tail = &parts[6..];
     let board = &domain.board;
+    if parts.len()==7 && parts[6]=="boards" {
+        return Ok(Some(match req.method().clone() {
+            salvo::http::Method::GET => board.catalog(&principal,&access,None).await?,
+            salvo::http::Method::POST => board.catalog(&principal,&access,Some(body(req).await?)).await?,
+            _ => return Err(Error::Invalid("invalid_board_operation")),
+        }));
+    }
+    let tail = if parts[6]=="boards" {
+        if parts.len()<9 {return Err(Error::Invalid("invalid_board_operation"));}
+        board.resolve_board(&project.id,parts[7]).await?;
+        access.project=parts[7].into();
+        &parts[8..]
+    } else {&parts[6..]};
     let result = match (req.method().clone(), tail) {
+        (salvo::http::Method::GET,["board","overview"]) if access.project==project.id => {
+            let facts=gateway.admin(&access.space,&principal.mxid,None).await?;
+            let mut result=board.overview(&principal,&access).await?;
+            result["canManagePolicy"]=serde_json::json!(facts.joined && facts.is_space && facts.can_manage_policy);
+            result["canCreateRoom"]=serde_json::json!(crate::gateway::can_create_room(&state,&principal.mxid)?);
+            result["archived"]=serde_json::json!(project.archived);
+            result["revision"]=serde_json::json!(project.revision);
+            result
+        }
+        (salvo::http::Method::PUT,["board","project-archive"]) if access.project==project.id => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all="camelCase",deny_unknown_fields)]
+            struct Archive {archived:bool,expected_revision:i64}
+            let input:Archive=body(req).await?;
+            let facts=gateway.admin(&access.space,&principal.mxid,None).await?;
+            serde_json::json!({"project":domain.archive_project(&principal,&project.id,input.expected_revision,input.archived,&facts,crate::api::now_ms()).await?})
+        }
         (salvo::http::Method::GET, ["board", "notifications"]) => {
             let (before, _) = history_query(req)?;
             board.notifications(&principal, &access, before).await?
@@ -231,5 +260,5 @@ pub(crate) async fn call(
 
 pub(crate) fn matches(path: &str) -> bool {
     let p = path.split('/').collect::<Vec<_>>();
-    p.len() >= 7 && p[4] == "projects" && ["board", "tasks"].contains(&p[6])
+    p.len() >= 7 && p[4] == "projects" && ["board", "tasks", "boards"].contains(&p[6])
 }

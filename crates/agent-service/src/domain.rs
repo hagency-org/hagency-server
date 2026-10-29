@@ -246,6 +246,8 @@ fn creating(
 #[derive(Clone, Debug, Serialize, diesel::QueryableByName)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
+    #[diesel(sql_type=Bool)]
+    pub archived: bool,
     #[diesel(sql_type=Text)]
     pub id: String,
     #[diesel(sql_type=Text)]
@@ -580,7 +582,7 @@ impl DomainStore {
     }
 
     async fn project_db(db: &mut AsyncPgConnection, id: &str) -> Result<Project> {
-        sql_query("SELECT id,space_id,active,creation_policy,revision FROM hagency_agent_v1.projects WHERE id=$1").bind::<Text,_>(id).get_result(db).await.map_err(hidden)
+        sql_query("SELECT id,space_id,active,archived,creation_policy,revision FROM hagency_agent_v1.projects WHERE id=$1").bind::<Text,_>(id).get_result(db).await.map_err(hidden)
     }
 
     async fn room_db(db: &mut AsyncPgConnection, id: &str, project: &str) -> Result<Room> {
@@ -659,7 +661,7 @@ impl DomainStore {
             Self::authorize(db, p, now).await?;
             administer(p, f, space, now)?;
 
-            let project=sql_query("INSERT INTO hagency_agent_v1.projects(id,space_id,creation_policy) VALUES($1,$2,$3) ON CONFLICT(space_id) DO UPDATE SET space_id=EXCLUDED.space_id RETURNING id,space_id,active,creation_policy,revision").bind::<Text,_>(format!("prj_{}",entity_id()?)).bind::<Text,_>(space).bind::<Text,_>(encode(&CreationPolicy::default())?).get_result::<Project>(db).await?;
+            let project=sql_query("INSERT INTO hagency_agent_v1.projects(id,space_id,creation_policy) VALUES($1,$2,$3) ON CONFLICT(space_id) DO UPDATE SET space_id=EXCLUDED.space_id RETURNING id,space_id,active,archived,creation_policy,revision").bind::<Text,_>(format!("prj_{}",entity_id()?)).bind::<Text,_>(space).bind::<Text,_>(encode(&CreationPolicy::default())?).get_result::<Project>(db).await?;
 
             Self::audit(db, p, "project.register", &project.id, now).await?;
             Ok(project)
@@ -729,7 +731,7 @@ impl DomainStore {
             let project = Self::project_db(db, id).await?;
             administer(p, f, &project.space_id, now)?;
 
-            let updated=sql_query("UPDATE hagency_agent_v1.projects SET creation_policy=$1,revision=revision+1 WHERE id=$2 AND revision=$3 RETURNING id,space_id,active,creation_policy,revision").bind::<Text,_>(encoded).bind::<Text,_>(id).bind::<BigInt,_>(expected).get_result(db).await.map_err(revision)?;
+            let updated=sql_query("UPDATE hagency_agent_v1.projects SET creation_policy=$1,revision=revision+1 WHERE id=$2 AND revision=$3 RETURNING id,space_id,active,archived,creation_policy,revision").bind::<Text,_>(encoded).bind::<Text,_>(id).bind::<BigInt,_>(expected).get_result(db).await.map_err(revision)?;
             Self::audit(db, p, "project.creation_policy", id, now).await?;
             Ok(updated)
         }
@@ -1366,7 +1368,7 @@ impl DomainStore {
         (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
 
             Self::authorize(db, p, now).await?;
-            Ok(sql_query("SELECT id,space_id,active,creation_policy,revision FROM hagency_agent_v1.projects WHERE active ORDER BY id").load(db).await?)
+            Ok(sql_query("SELECT id,space_id,active,archived,creation_policy,revision FROM hagency_agent_v1.projects WHERE active ORDER BY id").load(db).await?)
         }
 ).await
     }
@@ -1854,3 +1856,19 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) use tests::CreateBoundAgent;
+
+impl DomainStore {
+    pub(crate) async fn archive_project(&self,p:&Principal,id:&str,expected:i64,archived:bool,facts:&AdminFacts,now:i64)->Result<Project> {
+        key(id)?;
+        let mut db=self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db| {
+            Self::authorize(db,p,crate::api::now_ms()).await?;
+            let project=sql_query("SELECT id,space_id,active,archived,creation_policy,revision FROM hagency_agent_v1.projects WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<Project>(db).await.map_err(hidden)?;
+            administer(p,facts,&project.space_id,now)?;
+            if !facts.is_space {return Err(Error::Unauthorized("project_administration_required"));}
+            // Live membership/permission observations expire while waiting for storage too.
+            administer(p,facts,&project.space_id,crate::api::now_ms())?;
+            sql_query("UPDATE hagency_agent_v1.projects SET archived=$1,revision=revision+1 WHERE id=$2 AND revision=$3 RETURNING id,space_id,active,archived,creation_policy,revision").bind::<Bool,_>(archived).bind::<Text,_>(id).bind::<BigInt,_>(expected).get_result(db).await.map_err(revision)
+        }).await
+    }
+}

@@ -217,7 +217,7 @@ def validate(doc):
             require(operation['responses']['200']['content']['application/json']['schema'] == {'type':'object','properties':{'admission':{'$ref':'#/components/schemas/EncryptedAdmission'}},'required':['admission'],'additionalProperties':False}, 'encrypted admission response drift')
         action = doc['components']['schemas']['EncryptedAction']
         require(set(action['properties']) == {'lease','dispatchId','executionId','action','requestId','kind','payload'} and action.get('additionalProperties') is False, 'encrypted action must contain metadata and sealed payload only')
-        require(len(operations) == 105, 'reviewed owner route count drift')
+        require(len(operations) == 127, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)

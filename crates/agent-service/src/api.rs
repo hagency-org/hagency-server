@@ -581,32 +581,18 @@ impl App {
                         let actor = principal.mxid.clone();
                         let space = project.space_id.clone();
                         checks.spawn(async move {
-                            let facts = tokio::time::timeout(
-                                std::time::Duration::from_secs(8),
-                                gateway.room(&room.room_id, &space, &actor, None),
-                            )
-                            .await
-                            .map_err(|_| Error::Unavailable("matrix_state_timeout"))??;
-                            Ok::<_, Error>((
-                                room,
-                                facts.owner_in_space && facts.owner_in_room && facts.room_in_space,
-                            ))
+                            let metadata=tokio::time::timeout(std::time::Duration::from_secs(8),gateway.room_navigation_metadata(&room.room_id,&space,&actor))
+                                .await.map_err(|_|Error::Unavailable("matrix_state_timeout"))??;
+                            Ok::<_,Error>((room,metadata))
                         });
                     }
                     let Some(checked) = checks.join_next().await else {
                         break;
                     };
-                    let (room, visible) =
-                        checked.map_err(|_| Error::Unavailable("matrix_state_unavailable"))??;
-                    if visible
-                        && let Some(metadata) = gateway
-                            .member_metadata(&room.room_id, &principal.mxid)
-                            .await?
-                    {
-                        let mut value = serde_json::to_value(room)
-                            .map_err(|_| Error::Unavailable("invalid_room_response"))?;
-                        value["name"] = metadata["name"].clone();
-                        value["topic"] = metadata["topic"].clone();
+                    let (room,metadata)=checked.map_err(|_|Error::Unavailable("matrix_state_unavailable"))??;
+                    if let Some(metadata)=metadata {
+                        let mut value=serde_json::to_value(room).map_err(|_|Error::Unavailable("invalid_room_response"))?;
+                        value["name"]=metadata["name"].clone();value["topic"]=metadata["topic"].clone();value["membership"]=metadata["membership"].clone();
                         rooms.push(value);
                     }
                 }

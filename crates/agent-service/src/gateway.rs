@@ -166,6 +166,12 @@ impl Gateway {
             .and_then(Value::as_str);
         Ok(Some(serde_json::json!({"name":name,"topic":topic})))
     }
+    /// Navigation may reveal an invited room to its invitee. This is deliberately
+    /// separate from execution/board/Agent authority, which still requires join.
+    pub async fn room_navigation_metadata(&self,room:&str,space:&str,actor:&str)->Result<Option<Value>> {
+        let (room_state,space_state)=tokio::try_join!(self.state(room),self.state(space))?;
+        Ok(room_navigation_metadata(&room_state,&space_state,room,actor))
+    }
     pub async fn visible(&self, space: &str, owner: &str) -> Result<bool> {
         Ok(joined(&self.state(space).await?, owner))
     }
@@ -203,6 +209,15 @@ fn content<'a>(state: &'a [Value], kind: &str, key: &str) -> Option<&'a Value> {
         .find(|event| event["type"] == kind && event["state_key"] == key)
         .and_then(|e| e.get("content"))
 }
+fn room_navigation_metadata(room_state:&[Value],space_state:&[Value],room:&str,actor:&str)->Option<Value> {
+    if !joined(space_state,actor) || !content(space_state,"m.space.child",room).is_some_and(|c|c["via"].as_array().is_some_and(|v|!v.is_empty())) {return None;}
+    let membership=content(room_state,"m.room.member",actor)?["membership"].as_str()?;
+    if !matches!(membership,"join"|"invite") {return None;}
+    let name=content(room_state,"m.room.name","").and_then(|c|c.get("name")).and_then(Value::as_str);
+    let topic=content(room_state,"m.room.topic","").and_then(|c|c.get("topic")).and_then(Value::as_str);
+    Some(serde_json::json!({"name":name,"topic":topic,"membership":membership}))
+}
+
 fn joined(state: &[Value], user: &str) -> bool {
     content(state, "m.room.member", user).is_some_and(|c| c["membership"] == "join")
 }
@@ -292,6 +307,12 @@ fn can_send(state: &[Value], user: &str) -> Result<bool> {
     let ordinary = message_permission(content(state, "m.room.power_levels", ""), user)?;
     Ok(room_creator(state, user)? || ordinary)
 }
+/// Linking Rooms and managing Agent policy may have different Matrix thresholds.
+pub(crate) fn can_create_room(state:&[Value],actor:&str)->Result<bool> {
+    Ok(joined(state,actor) && content(state,"m.room.create","").is_some_and(|c|c["type"]=="m.space")
+        && at_least(state,actor,state_threshold(content(state,"m.room.power_levels",""),"m.space.child")?)?)
+}
+
 fn state_threshold(powers: Option<&Value>, event: &str) -> Result<i64> {
     let powers = power_object(powers)?;
     let default = power_integer(powers.and_then(|p| p.get("state_default")), 50)?;
@@ -331,6 +352,13 @@ mod tests {
             .unwrap();
         assert!(facts.joined && facts.is_space);
         assert!(!facts.can_manage_policy);
+    }
+    #[test]
+    fn room_creation_does_not_inherit_the_agent_policy_threshold() {
+        let state=vec![serde_json::json!({"type":"m.room.create","state_key":"","content":{"type":"m.space"}}),serde_json::json!({"type":"m.room.member","state_key":"@alice:test","content":{"membership":"join"}}),serde_json::json!({"type":"m.room.power_levels","state_key":"","content":{"users":{"@alice:test":50},"events":{"m.space.child":50,"im.hagency.agent.policy":100}}})];
+        assert!(can_create_room(&state,"@alice:test").unwrap());
+        assert!(!at_least(&state,"@alice:test",100).unwrap());
+        assert!(!can_create_room(&state,"@outside:test").unwrap());
     }
     #[test]
     fn message_power_uses_non_state_threshold_and_fails_closed_on_bad_state() {
@@ -512,5 +540,23 @@ mod creator_boundary_tests {
         state[0]["content"]["additional_creators"] = serde_json::json!([]);
         state[1]["content"]["users"] = serde_json::json!({"@alice:test":"invalid"});
         assert!(at_least(&state, "@alice:test", 900).is_err());
+    }
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn project_room_invitation_is_discoverable_without_granting_joined_authority() {
+        let space=vec![json!({"type":"m.room.member","state_key":"@bob:test","content":{"membership":"join"}}),json!({"type":"m.space.child","state_key":"!room:test","content":{"via":["test"]}})];
+        let mut room=vec![json!({"type":"m.room.member","state_key":"@bob:test","content":{"membership":"invite"}}),json!({"type":"m.room.name","state_key":"","content":{"name":"Planning"}})];
+        let metadata=room_navigation_metadata(&room,&space,"!room:test","@bob:test").unwrap();
+        assert_eq!(metadata["membership"],"invite");assert_eq!(metadata["name"],"Planning");assert!(!joined(&room,"@bob:test"));
+        for state in ["leave","ban","knock"] {room[0]["content"]["membership"]=json!(state);assert!(room_navigation_metadata(&room,&space,"!room:test","@bob:test").is_none());}
+        room[0]["content"]["membership"]=json!("join");assert!(room_navigation_metadata(&room,&space,"!room:test","@bob:test").is_some());
+        assert!(room_navigation_metadata(&room,&[],"!room:test","@bob:test").is_none());
+        assert!(room_navigation_metadata(&room,&space,"!unlinked:test","@bob:test").is_none());
+        assert!(room_navigation_metadata(&room,&space,"!room:test","@outsider:test").is_none());
     }
 }

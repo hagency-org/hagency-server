@@ -99,7 +99,7 @@ def ready():
     try:
         get("/readyz")
         discovery = json.loads(get("/hagency/api/v1/discovery"))
-        return discovery["product"] == "hagency-server" and "project-board-v4" in discovery["capabilities"]
+        return discovery["product"] == "hagency-server" and "project-board-v5" in discovery["capabilities"]
     except (OSError, ValueError, KeyError):
         return False
 
@@ -233,7 +233,7 @@ def status():
     for name in ("server", "client"):
         info = process(name)
         print(f"{name}: " + (f"running (PID {info['pid']})" if info else "stopped"))
-    print(f"Backend ready (including project-board-v4): {ready()}\nLogs and private config: {STATE}")
+    print(f"Backend ready (including project-board-v5): {ready()}\nLogs and private config: {STATE}")
 
 
 def verify_runtime(runtime, manifest):
