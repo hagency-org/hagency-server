@@ -8320,7 +8320,7 @@
       "post": {
         "operationId": "prepareExecutionFile",
         "summary": "Prepare bounded original-execution file delivery",
-        "description": "Prepare only for the exact running execution, current leased execution device and fresh Gateway facts. Durable requestId binds the original immutable manifest; exact duplicates return existing state, changed duplicates conflict. Owner capacity is 4096 retained rows and 128MiB held declared bytes. This has no Matrix IO.",
+        "description": "Prepare only for the exact running execution, current leased execution device and fresh Gateway facts. Durable requestId binds the original immutable manifest; exact duplicates return existing state, changed duplicates conflict. Owner capacity is 4096 unsettled files (sent/cancelled retain permanent witnesses without consuming active count) and 128MiB held declared bytes. This has no Matrix IO.",
         "security": [
           {
             "deviceBearer": []
@@ -8424,7 +8424,7 @@
       "post": {
         "operationId": "stageExecutionFileChunk",
         "summary": "Stage exact contiguous file bytes",
-        "description": "Append 1..65536 bytes under the original current lease/execution and fresh Gateway facts. Exact prior chunk retries compare actual bytes; changed, overlapping, gap or overrun writes fail. Generic 131072-byte HTTP limit remains. This has no Matrix IO.",
+        "description": "Append 1..65536 bytes under the original current lease/execution and fresh Gateway facts. Exact prior chunk retries compare actual bytes; changed, overlapping, gap or overrun writes fail. Generic 131072-byte HTTP limit remains. This has no Matrix IO. New data is stored in immutable append-only chunks. Each file has a 2048-new-chunk budget; file_chunk_limit rejects a chunk that would leave insufficient slots to complete the original manifest, and the caller may submit a larger chunk at that same offset. Exact old-byte retries read only the requested range, including legacy-prefix and chunk boundaries.",
         "security": [
           {
             "deviceBearer": []
