@@ -35,6 +35,7 @@ libc = "0.2"
 log = "0.4.29"
 opentelemetry = { version = "0.32", features = ["trace"] }
 palpo = { git = "https://github.com/palpo-im/palpo.git", branch = "main" }
+palpo-core = { git = "https://github.com/palpo-im/palpo.git", branch = "main", features = ["markdown", "html"] }
 pasion-backend = { git = "https://github.com/meldry-com/pasion.git", branch = "main", features = ["cedar"] }
 pasion-config = { git = "https://github.com/meldry-com/pasion.git", branch = "main" }
 pasion-data = { git = "https://github.com/meldry-com/pasion.git", branch = "main" }

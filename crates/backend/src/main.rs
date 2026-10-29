@@ -257,7 +257,30 @@ async fn run() -> anyhow::Result<()> {
             },
         )
         .await?;
-        agent_service = Some(app.with_domain(domain, gateway).with_transport(transport));
+        let mut app = app.with_domain(domain, gateway).with_transport(transport);
+        if let Some(management) = &conf.management {
+            app = app.with_management(
+                hagency_agent_service::management_types::ManagementPolicy::new(
+                    management.administrator.clone(),
+                    conf.matrix.server_name.as_str(),
+                )?
+                .with_project_reservations(management.enable_project_reservations)
+                .with_parent_settlement(management.enable_parent_settlement)
+                .with_project_setup(management.enable_project_setup)
+                .with_agent_admission(management.enable_agent_admission)
+                .with_agent_executor(management.enable_agent_executor)
+                .with_agent_matrix_provisioning(management.enable_agent_matrix_provisioning)
+                .with_agent_runtime_provisioning(management.enable_agent_runtime_provisioning)
+                .with_shared_execution(management.enable_shared_execution)
+                .with_shared_successors(management.enable_shared_successors)
+                .with_shared_durable_intake(management.enable_shared_durable_intake)
+                .with_shared_demands(management.enable_shared_demands)
+                .with_shared_thread_context(management.enable_shared_thread_context)
+                .with_agent_budget_deltas(management.enable_agent_budget_deltas)
+                .with_shared_budget_execution(management.enable_shared_budget_execution),
+            );
+        }
+        agent_service = Some(app);
     }
     let browser_auth = BrowserAuth::new(&conf).await?;
     let mut matrix_router = Router::new();

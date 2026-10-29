@@ -1,0 +1,48 @@
+{
+  "creationDefinition": {
+    "version": 1,
+    "setupId": "mps_fixture",
+    "projectId": "mpj_fixture",
+    "projectRevision": 2,
+    "allocationId": "mal_original",
+    "allocationReceiptDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "managerMxid": "@manager:example.test",
+    "administratorMxid": "@first_admin:example.test",
+    "authorityRevision": 1,
+    "name": "Recovery fixture",
+    "mode": "create"
+  },
+  "creationDefinitionDigest": "f60f9aa7a8ea95eb94144d6f14a195f8e1c68dac3ae00fada92f4c5204624fde",
+  "originalRoomMarker": {
+    "version": 1,
+    "setupId": "mps_fixture",
+    "projectId": "mpj_fixture",
+    "definitionDigest": "f60f9aa7a8ea95eb94144d6f14a195f8e1c68dac3ae00fada92f4c5204624fde",
+    "commandId": "mps_fixture_room",
+    "owner": "@manager:example.test",
+    "kind": "room",
+    "spaceId": "!original:example.test"
+  },
+  "currentBinding": {
+    "revision": 2,
+    "allocationId": "mal_replacement",
+    "allocationReceiptDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "projectRevision": 2,
+    "authorityRevision": 2,
+    "administratorMxid": "@replacement_admin:example.test"
+  },
+  "cancel": {
+    "commandId": "cancel_fixture",
+    "expectedRevision": 2
+  },
+  "cancelDigest": "6748b01ecd0054975b5c6121fe500e9652df564f99488b33ecf1dd0568fdb03f",
+  "rebase": {
+    "commandId": "rebase_fixture",
+    "expectedRevision": 3,
+    "allocationId": "mal_replacement",
+    "expectedProjectRevision": 2,
+    "expectedAllocationRevision": 3,
+    "expectedAuthorityRevision": 2
+  },
+  "rebaseDigest": "5e76f013783bb5d21c2ea02cfa10a4eb568c019a44870574e82125c1e2e81179"
+}

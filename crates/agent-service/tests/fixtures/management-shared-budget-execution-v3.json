@@ -1,0 +1,270 @@
+{
+  "status": "proposed_wire_review_not_callable",
+  "executionBudget": {
+    "version": 1,
+    "originalReserveReceiptDigest": "babced513abd7a23660207d55dc8176418bb2ff6157685d50c966efd8796ee77",
+    "budgetRevision": 2,
+    "budgetDigest": "faccd06c79d7d1922267f457bd0df993153de2cf709c3d6cb43edfa74f9636df",
+    "effectiveCeilingTokens": 1256,
+    "appliedCommandId": "mab_fixture",
+    "appliedCommandDigest": "a283fe17d9b165fb34d8de6b5456a668a79feb3ff86b2d4cfaa68f0d8591a0d6",
+    "appliedReceiptDigest": "f667bd94bcd63a2b0a22ecf79a121c62b602874520af96fc68383a9249cb3217"
+  },
+  "executionBudgetDigest": "ebca78bbe70bc1eabf00b19cc06ef05ffb6990bd7c119d6236c0bcd0b5280c23",
+  "originalStoppedReceipt": {
+    "version": 1,
+    "observationId": "shared_stopped_fixture",
+    "commandId": "sex_fixture",
+    "commandDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78",
+    "assignmentId": "mas_fixture",
+    "agentReservationId": "native_agent_fixture",
+    "ledgerRevision": 205,
+    "processDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "state": "stopped",
+    "policyDigest": null
+  },
+  "originalStoppedReceiptDigest": "37406ac76be7c0fd42c0fbaf9e86c6f996a271ee58be7a071ecbfdfe88c983c1",
+  "start": {
+    "startIntentId": "budget_start_fixture",
+    "assignmentId": "mas_fixture",
+    "predecessor": {
+      "commandId": "sex_fixture",
+      "commandDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78",
+      "processAttempt": 1,
+      "stoppedReceiptDigest": "37406ac76be7c0fd42c0fbaf9e86c6f996a271ee58be7a071ecbfdfe88c983c1",
+      "processDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "executionBudget": {
+      "version": 1,
+      "originalReserveReceiptDigest": "babced513abd7a23660207d55dc8176418bb2ff6157685d50c966efd8796ee77",
+      "budgetRevision": 2,
+      "budgetDigest": "faccd06c79d7d1922267f457bd0df993153de2cf709c3d6cb43edfa74f9636df",
+      "effectiveCeilingTokens": 1256,
+      "appliedCommandId": "mab_fixture",
+      "appliedCommandDigest": "a283fe17d9b165fb34d8de6b5456a668a79feb3ff86b2d4cfaa68f0d8591a0d6",
+      "appliedReceiptDigest": "f667bd94bcd63a2b0a22ecf79a121c62b602874520af96fc68383a9249cb3217"
+    },
+    "budgetObservation": {
+      "observedLedgerRevision": 304,
+      "allocatedTokens": 1256,
+      "knownConsumedTokens": 1040,
+      "retainedTokens": 1060,
+      "remainingTokens": 196,
+      "usageComplete": false,
+      "liabilityDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  },
+  "startDigest": "141d096094c23ef8cb363cfe4d322505d595aea2742b72c93b72aec51c917ae9",
+  "command": {
+    "version": 3,
+    "capability": "hagency.managed_agents.execution.v3",
+    "operation": "agent.execution.provision",
+    "commandId": "sat_budget_fixture",
+    "assignmentId": "mas_fixture",
+    "assignmentGeneration": 1,
+    "agentReservationId": "native_agent_fixture",
+    "processAttempt": 2,
+    "originalRuntimeCommand": {
+      "version": 1,
+      "capability": "hagency.managed_agents.execution.v1",
+      "operation": "agent.execution.provision",
+      "commandId": "sex_fixture",
+      "assignmentId": "mas_fixture",
+      "assignmentGeneration": 1,
+      "agentReservationId": "native_agent_fixture",
+      "reserveCommand": {
+        "version": 1,
+        "capability": "hagency.managed_agents.v1",
+        "operation": "agent.reserve",
+        "commandId": "mae_fixture",
+        "requestId": "mar_fixture",
+        "requestRevision": 2,
+        "proposedAgentId": "agt_fixture",
+        "managerMxid": "@manager:example.test",
+        "projectId": "mpr_fixture",
+        "projectRevision": 2,
+        "setupId": "mps_fixture",
+        "setupBindingRevision": 3,
+        "domainProjectId": "prj_fixture",
+        "roomId": "!discussion:example.test",
+        "authorityRevision": 2,
+        "decisionActorMxid": "@project_admin:example.test",
+        "decisionDigest": "a10244cdd6ee0d2bb23d606f6384ef2bd74eb057d9badb5c6a61ac4839af4609",
+        "allocationId": "mal_fixture",
+        "allocationReceiptDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "grantReceiptDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "enrollmentId": "native_enrollment_fixture",
+        "executorDeviceId": "device_fixture",
+        "executorGeneration": 4,
+        "resourceId": "resource_fixture",
+        "resourceRevision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "definition": {
+          "name": "Documentation helper",
+          "capability": "documentation",
+          "description": "Text-only first execution",
+          "toolMode": "none"
+        },
+        "definitionDigest": "58c55f506c67aa484d45918774cd28fa56f9d7cbb4b7204d158a1cb967b0005d",
+        "requestedTokens": 1000,
+        "periodKey": "2026-10",
+        "issuedAtMs": 1792108800000,
+        "expiresAtMs": 1792195200000
+      },
+      "reserveCommandDigest": "b24b300c1be02ae99f0638d0def4d9d0bd5975e2f0c818198814725fae3699f0",
+      "reserveReceiptDigest": "babced513abd7a23660207d55dc8176418bb2ff6157685d50c966efd8796ee77",
+      "policy": "codex_text_v1",
+      "issuedAtMs": 1792108802000,
+      "expiresAtMs": 1792108832000
+    },
+    "originalRuntimeDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78",
+    "predecessor": {
+      "commandId": "sex_fixture",
+      "commandDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78",
+      "processAttempt": 1,
+      "stoppedReceiptDigest": "37406ac76be7c0fd42c0fbaf9e86c6f996a271ee58be7a071ecbfdfe88c983c1",
+      "processDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "budgetObservation": {
+      "observedLedgerRevision": 304,
+      "allocatedTokens": 1256,
+      "knownConsumedTokens": 1040,
+      "retainedTokens": 1060,
+      "remainingTokens": 196,
+      "usageComplete": false,
+      "liabilityDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "startIntentId": "budget_start_fixture",
+    "issuedAtMs": 1792108833000,
+    "expiresAtMs": 1792108863000,
+    "executionBudget": {
+      "version": 1,
+      "originalReserveReceiptDigest": "babced513abd7a23660207d55dc8176418bb2ff6157685d50c966efd8796ee77",
+      "budgetRevision": 2,
+      "budgetDigest": "faccd06c79d7d1922267f457bd0df993153de2cf709c3d6cb43edfa74f9636df",
+      "effectiveCeilingTokens": 1256,
+      "appliedCommandId": "mab_fixture",
+      "appliedCommandDigest": "a283fe17d9b165fb34d8de6b5456a668a79feb3ff86b2d4cfaa68f0d8591a0d6",
+      "appliedReceiptDigest": "f667bd94bcd63a2b0a22ecf79a121c62b602874520af96fc68383a9249cb3217"
+    }
+  },
+  "commandDigest": "1763ac228bb7398902b054d808984a3c30212c976f80278795e71a021687ba1b",
+  "receipt": {
+    "version": 3,
+    "observationId": "budget_qualified_fixture",
+    "commandId": "sat_budget_fixture",
+    "commandDigest": "1763ac228bb7398902b054d808984a3c30212c976f80278795e71a021687ba1b",
+    "assignmentId": "mas_fixture",
+    "agentReservationId": "native_agent_fixture",
+    "processAttempt": 2,
+    "originalRuntimeDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78",
+    "ledgerRevision": 305,
+    "processDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "state": "qualified",
+    "policyDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "budgetRevision": 2,
+    "budgetDigest": "faccd06c79d7d1922267f457bd0df993153de2cf709c3d6cb43edfa74f9636df"
+  },
+  "receiptDigest": "3f2e073eb0ca4234f2f80dc8716eb76a1344b69f43652045c4ba32bcc59d251e",
+  "offer": {
+    "version": 1,
+    "demandId": "sdm_fixture",
+    "assignmentId": "mas_fixture",
+    "eventId": "$demand_fixture",
+    "eventDigest": "a323d41e37f9031031fd6062ae652c04265af6289ed74968ab7849d88b279d10",
+    "controlRevision": 2,
+    "receivedAtMs": 1792108805000,
+    "predecessorCommandId": "sex_fixture",
+    "predecessorCommandDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78"
+  },
+  "demandDigest": "6ea2ab645922b8aa4c63037cef201c5f6b1c2b105247cada785e4e87d1c4102a",
+  "originalBlockPayload": "known_consumption_exhausted",
+  "originalBlock": {
+    "reason": "budget_blocked",
+    "payloadDigest": "f126982eb21b3d067c1ab40ff02e8412d373b49f2e3f50d536efa8d3b200fdfd"
+  },
+  "demandStart": {
+    "demandDigest": "6ea2ab645922b8aa4c63037cef201c5f6b1c2b105247cada785e4e87d1c4102a",
+    "expectedControlRevision": 2,
+    "originalBlock": {
+      "reason": "budget_blocked",
+      "payloadDigest": "f126982eb21b3d067c1ab40ff02e8412d373b49f2e3f50d536efa8d3b200fdfd"
+    },
+    "start": {
+      "startIntentId": "budget_start_fixture",
+      "assignmentId": "mas_fixture",
+      "predecessor": {
+        "commandId": "sex_fixture",
+        "commandDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78",
+        "processAttempt": 1,
+        "stoppedReceiptDigest": "37406ac76be7c0fd42c0fbaf9e86c6f996a271ee58be7a071ecbfdfe88c983c1",
+        "processDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "executionBudget": {
+        "version": 1,
+        "originalReserveReceiptDigest": "babced513abd7a23660207d55dc8176418bb2ff6157685d50c966efd8796ee77",
+        "budgetRevision": 2,
+        "budgetDigest": "faccd06c79d7d1922267f457bd0df993153de2cf709c3d6cb43edfa74f9636df",
+        "effectiveCeilingTokens": 1256,
+        "appliedCommandId": "mab_fixture",
+        "appliedCommandDigest": "a283fe17d9b165fb34d8de6b5456a668a79feb3ff86b2d4cfaa68f0d8591a0d6",
+        "appliedReceiptDigest": "f667bd94bcd63a2b0a22ecf79a121c62b602874520af96fc68383a9249cb3217"
+      },
+      "budgetObservation": {
+        "observedLedgerRevision": 304,
+        "allocatedTokens": 1256,
+        "knownConsumedTokens": 1040,
+        "retainedTokens": 1060,
+        "remainingTokens": 196,
+        "usageComplete": false,
+        "liabilityDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  "demandStartDigest": "688ba65b03eeb8a0e1f5b22c6f3fa5291b634209dba8a7d09db5f3fbc6c31ee6",
+  "promotedWork": {
+    "id": "swork_demand_fixture",
+    "assignmentId": "mas_fixture",
+    "runtimeCommandDigest": "1763ac228bb7398902b054d808984a3c30212c976f80278795e71a021687ba1b",
+    "eventId": "$demand_fixture",
+    "roomId": "!discussion:example.test",
+    "requesterMxid": "@manager:example.test",
+    "threadRoot": "$demand_fixture",
+    "body": "Reply with hello. 你好。",
+    "bodyDigest": "83af04d5012845d82352add660a304d7e5dc00f8ba36dce597f3ae9686d0a8f1",
+    "executionId": "sx_demand_fixture",
+    "createdAtMs": 1792108805000
+  },
+  "workDigest": "aa5664ccc766b37d1a5e4844315fa642283384a06c4b55b003839fc446dde4c9",
+  "newerHeadForRefusal": {
+    "version": 1,
+    "previousBudgetDigest": "faccd06c79d7d1922267f457bd0df993153de2cf709c3d6cb43edfa74f9636df",
+    "commandDigest": "f744b5f960f6222494395c09fb8676f6c24e1e92034759fffe6f1b90cf1407c4",
+    "budgetRevision": 3,
+    "effectiveCeilingTokens": 1320,
+    "ledgerRevision": 400
+  },
+  "refusal": {
+    "version": 1,
+    "refusalId": "sbr_swork_demand_fixture",
+    "workId": "swork_demand_fixture",
+    "workDigest": "aa5664ccc766b37d1a5e4844315fa642283384a06c4b55b003839fc446dde4c9",
+    "runtimeCommandId": "sat_budget_fixture",
+    "runtimeCommandDigest": "1763ac228bb7398902b054d808984a3c30212c976f80278795e71a021687ba1b",
+    "inputDigest": "83af04d5012845d82352add660a304d7e5dc00f8ba36dce597f3ae9686d0a8f1",
+    "executionBudget": {
+      "version": 1,
+      "originalReserveReceiptDigest": "babced513abd7a23660207d55dc8176418bb2ff6157685d50c966efd8796ee77",
+      "budgetRevision": 2,
+      "budgetDigest": "faccd06c79d7d1922267f457bd0df993153de2cf709c3d6cb43edfa74f9636df",
+      "effectiveCeilingTokens": 1256,
+      "appliedCommandId": "mab_fixture",
+      "appliedCommandDigest": "a283fe17d9b165fb34d8de6b5456a668a79feb3ff86b2d4cfaa68f0d8591a0d6",
+      "appliedReceiptDigest": "f667bd94bcd63a2b0a22ecf79a121c62b602874520af96fc68383a9249cb3217"
+    },
+    "currentBudgetDigest": "99df59d2d1956cb1e064bd1b64de068e545659afc360e806ac5b92acb0bb3d8a",
+    "state": "not_started",
+    "reason": "budget_head_changed",
+    "refusedAtMs": 1792108835000
+  },
+  "refusalDigest": "490c9723ce5e2abe8a066fca05830a812421c394c42cc24fc68f4e78fae8acc0"
+}

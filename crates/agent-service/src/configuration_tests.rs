@@ -255,6 +255,37 @@ fn strict_non_secret_dto_rejects_provider_and_profile_injection() {
     policy["policy"]["policy"]["budget"]["secret"] = json!("no");
     assert!(validate_result(&ConfigurationOperation::AgentModel, &json!({}), "a", policy).is_err());
 }
+#[test]
+fn model_configuration_digest_preserves_old_requests_and_checked_preconditions() {
+    let legacy = json!({"profile": {
+        "model": "gpt-6.1-sol", "credential_ref": "codex-managed:account",
+        "workspace_root": "/workspace", "reasoning_effort": "low", "web_search": false
+    }});
+    let op = ConfigurationOperation::SaveAgentModel;
+    assert_eq!(validate_input(&op, legacy.clone()).unwrap(), legacy);
+
+    let mut checked = legacy.clone();
+    checked["expectedProfileDigest"] = json!("ab12".repeat(16));
+    assert_eq!(validate_input(&op, checked.clone()).unwrap(), checked);
+
+    for invalid in [
+        Value::Null,
+        json!(42),
+        json!(""),
+        json!("a".repeat(63)),
+        json!("a".repeat(65)),
+        json!("A".repeat(64)),
+        json!("g".repeat(64)),
+    ] {
+        let mut input = legacy.clone();
+        input["expectedProfileDigest"] = invalid;
+        assert!(validate_input(&op, input).is_err());
+    }
+    let mut wrong_name = legacy;
+    wrong_name["expected_profile_digest"] = json!("ab12".repeat(16));
+    assert!(validate_input(&op, wrong_name).is_err());
+}
+
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_configuration_http_two_devices_claim_and_complete_are_idempotent() {

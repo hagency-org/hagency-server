@@ -26,6 +26,53 @@ pub struct HostConfig {
     #[serde(default)]
     pub pasion_config: Option<PathBuf>,
     pub palpo_config: PathBuf,
+    #[serde(default)]
+    pub management: Option<ManagementConfig>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagementConfig {
+    /// One designated administrator; Room power does not confer this authority.
+    pub administrator: String,
+    /// Off until the native shared ledger and reservation capability are ready.
+    #[serde(default)]
+    pub enable_project_reservations: bool,
+    /// Host-private only until the native parent settlement adapter is proven.
+    #[serde(default)]
+    pub enable_parent_settlement: bool,
+    /// Off until owner Matrix creation and recovery are integrated.
+    #[serde(default)]
+    pub enable_project_setup: bool,
+    /// Admission-only, unadvertised until complete native managed execution.
+    #[serde(default)]
+    pub enable_agent_admission: bool,
+    /// Host-private delivery only; does not enable shared model execution.
+    #[serde(default)]
+    pub enable_agent_executor: bool,
+    /// Matrix membership only; never enables provider/runtime/work support.
+    #[serde(default)]
+    pub enable_agent_matrix_provisioning: bool,
+    /// Finite no-prompts runtime qualification only; never shared work.
+    #[serde(default)]
+    pub enable_agent_runtime_provisioning: bool,
+    /// Default off until paired shared execution is accepted.
+    #[serde(default)]
+    pub enable_shared_execution: bool,
+    /// Append-only successor process issuance; separate from original v1.
+    #[serde(default)]
+    pub enable_shared_successors: bool,
+    /// Retention-only until the paired demand consumer is qualified.
+    #[serde(default)]
+    pub enable_shared_durable_intake: bool,
+    #[serde(default)]
+    pub enable_shared_demands: bool,
+    /// Immutable bounded same-thread context; paired input contract required.
+    #[serde(default)]
+    pub enable_shared_thread_context: bool,
+    #[serde(default)]
+    pub enable_agent_budget_deltas: bool,
+    #[serde(default)]
+    pub enable_shared_budget_execution: bool,
 }
 /// Fully loaded runtime configuration; files stay owned by their components.
 #[derive(Clone)]
@@ -174,6 +221,13 @@ impl Config {
         Ok(())
     }
     pub fn validate(&self) -> anyhow::Result<()> {
+        if let Some(management) = &self.management {
+            hagency_agent_service::management_types::ManagementPolicy::new(
+                management.administrator.clone(),
+                self.matrix.server_name.as_str(),
+            )?;
+        }
+
         origin(&self.public_origin, true)?;
         anyhow::ensure!(
             self.queue.max_pending > 0

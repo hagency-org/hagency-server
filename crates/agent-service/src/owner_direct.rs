@@ -12,7 +12,9 @@ impl DomainStore {
         matrix_id(room, '!')?;
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::authorize(db,p,now).await?;let a=Self::agent_db(db,p,agent).await?;
+            Self::authorize(db,p,now).await?;
+            Self::require_unmanaged_binding(db,None,room).await?;
+            let a=Self::agent_db(db,p,agent).await?;
             if a.state!="active" {return Err(Error::Conflict("agent_identity_not_active"));}
             membership(p,f,room,"",now)?;
             if f.puppet_mxid.as_deref()!=Some(a.puppet_mxid.as_str())||f.encrypted||!f.owner_direct_valid {return Err(Error::Unauthorized("owner_direct_room_required"));}

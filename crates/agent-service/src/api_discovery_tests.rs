@@ -997,7 +997,12 @@ async fn postgres_public_discovery_identifies_hagency_without_granting_authority
             "execution-device-v1",
             "owner-direct-v1",
             "processing-reaction-v1",
-            "execution-configuration-v1"
+            "execution-configuration-v1",
+            "shared-durable-demand-v1",
+            "shared-thread-context-v1",
+            "managed-agent-budget-delta-v1",
+            "shared-budget-execution-v1",
+            "agent-settlement-v1"
         ])
     );
     assert!(value.get("token").is_none());

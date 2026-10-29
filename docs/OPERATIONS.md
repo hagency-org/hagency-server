@@ -1,5 +1,21 @@
 # Hagency Agent ownership and message processing
 
+## Resource-pool Agents (schema 24)
+
+Desktop discovers this workflow through `resource-pool-agents-v1`. New Agents use a selected resource pool directly: no project, intermediate project reservation, or Matrix Space is created. Historical projects and immutable receipts remain available for recovery and cleanup; new management project requests are disabled.
+
+1. The resource owner connects the executor, configures a resource, and obtains resource admission. The owner reviews and publishes a native capacity grant naming the Matrix accounts allowed to request Agents.
+2. An applicant opens **Hagency → Resource pools**, browses pools from multiple owners, selects an eligible pool, and requests an Agent with a name, instructions, capability, and token ceiling.
+3. Desktop creates an independent private Matrix conversation using the applicant's current account and invites the appservice. Room creation and Agent submission have durable command journals; uncertain responses recover the original operation.
+4. Only the selected resource owner approves or rejects. Global administrators cannot approve on the owner's behalf. The original device then verifies and reserves capacity in its native ledger; approval alone does not mean a successful hold.
+5. The server verifies the conversation and joins the Agent identity; the executor qualifies its runtime. The applicant can view progress, control automatic replies, and use the named conversation.
+6. The applicant may remove the Agent; the resource owner may stop supply. Both stop new work and initiate cleanup. Consumed and unresolved usage remains retained until original evidence establishes its disposition.
+
+Each Agent uses one pool. Published capacity is not a live free-balance claim. The former self-project-approval option is absent from new grants.
+
+Validate with isolated accounts/devices/ledgers: two owners' pool visibility, selected-owner-only decisions, exact retries, insufficient balance, first and subsequent work, applicant removal, owner withdrawal, restart recovery, and populated schema upgrades. Do not publish real resource capacity merely to run a test.
+
+
 [中文](OPERATIONS.zh-CN.md) · [Documentation](README.md)
 
 The current architecture uses the required integrated Appservice, permanent
@@ -24,6 +40,46 @@ owned by those components. Hagency uses `hagency_agent_v1` in its separate datab
 The former `hagency_admin_state` document is no longer loaded or migrated.
 
 ## Identity and creation rights
+
+Managed projects use one **project manager** role as of management schema 22.
+Approval of a project automatically establishes its manager as its project
+authority. That same person sets up and verifies the Matrix workspace, requests
+agents, confirms their admission and budget increases, and removes agents.
+Confirmation remains explicit; no separate project administrator account or
+assignment is required. The resource owner also coordinates capacity. Global server administration
+retains its admission responsibilities.
+
+Upgrades merge any separate project authority into the existing manager while
+retaining the previous authority and immutable command/decision history.
+Changed-authority setups require the manager to update their requirements and
+verify membership in the original Matrix rooms. Dependent execution is fenced,
+and unresolved capacity holds remain until cleanup completes. Legacy API fields
+named `administrator` identify the manager; assigning a different person is
+rejected. Session discovery advertises `project-manager-authority-v1`.
+
+Management schema 23 automatically makes each resource owner its capacity
+coordinator. Resource registration and native capacity review have no separate
+coordinator selector. The owner approves project reservations under the existing
+grant; the project manager approves agents within that reservation. Owners who
+also manage a project remain subject to the grant's explicit self-approval setting.
+
+Upgrades retain original grant receipts, accepted executor commands and usage
+history. Current contribution authority and allocation reviewers become the
+owner, with previous values retained in an immutable migration audit. Pending
+notifications move to that owner. Old delegated receipts remain usable by the
+owner without rewriting their digest or resetting capacity. Session discovery
+advertises `resource-owner-coordinator-v1`. No separate coordinator account is
+needed; legacy wire fields keep their names for saved-command compatibility.
+
+When project reservations are enabled, session discovery advertises
+`admission-bound-grants-v2` before the first capacity grant exists. Desktop uses
+this capability to review and publish a version 2 native receipt bound to the
+contribution's approved `admissionRequestId`. The enrolled owner device must
+publish it; a different admission or executor is rejected. A grant cannot be
+replaced for the same admission after revocation; exact retries recover the
+existing result. Version 1 receipts retain their original serialization and
+digests for compatibility. Publishing the first eligible grant creates capacity
+approval requests for already-approved projects in the owner's inbox.
 
 Users sign in with their own Matrix account through Pasion Authorization Code +
 PKCE. Pasion introspection and real Matrix whoami establish issuer, subject,

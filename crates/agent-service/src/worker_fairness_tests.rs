@@ -633,6 +633,7 @@ async fn exercise(url: &str) {
         transport.clone(),
         slow_gateway,
         status_matrix.clone(),
+        None,
     );
     tokio::time::timeout(std::time::Duration::from_secs(2), slow_seen.notified())
         .await

@@ -12,12 +12,13 @@ use std::collections::BTreeSet;
 /// The durable context root fixes reply shape for the lifetime of the intent.
 /// Only newly routed top-level owner DMs store their exact Room ID here; old
 /// event-root intents retain their original thread content and transaction ID.
-fn reply_content(owner_direct: bool, room: &str, root: &str, body: &str) -> Value {
+pub(crate) fn reply_content(owner_direct: bool, room: &str, root: &str, body: &str) -> Value {
     let mut content = json!({"msgtype":"m.text","body":body});
     if !owner_direct || root != room {
         content["m.relates_to"] = json!({"rel_type":"m.thread","event_id":root,
             "is_falling_back":true,"m.in_reply_to":{"event_id":root}});
     }
+    crate::reply_format::add_markdown(&mut content);
     content
 }
 
@@ -51,7 +52,7 @@ fn request_notice_content(
 
 /// Only canonical plaintext text events enter the model queue. In particular,
 /// HTML-looking mentions, edits, and encrypted bodies do not create prompts.
-fn parse_event(raw: &Value) -> Option<RoutedEvent> {
+pub(crate) fn parse_event(raw: &Value) -> Option<RoutedEvent> {
     if raw["type"] != "m.room.message"
         || raw.get("state_key").is_some()
         || raw["content"]["msgtype"] != "m.text"
@@ -102,7 +103,20 @@ fn parse_event(raw: &Value) -> Option<RoutedEvent> {
         is_edit: false,
     })
 }
+#[cfg(test)]
 async fn route(inbox: &Inbox, t: &TransportStore, g: &Gateway, cursor: &mut String) -> Result<()> {
+    route_with_shared(inbox, t, g, cursor, None).await
+}
+pub(crate) async fn route_with_shared(
+    inbox: &Inbox,
+    t: &TransportStore,
+    g: &Gateway,
+    cursor: &mut String,
+    shared: Option<&(
+        crate::domain::DomainStore,
+        crate::management_types::ManagementPolicy,
+    )>,
+) -> Result<()> {
     let transactions = if cursor.is_empty() {
         inbox.pending().await?
     } else {
@@ -116,6 +130,20 @@ async fn route(inbox: &Inbox, t: &TransportStore, g: &Gateway, cursor: &mut Stri
             let Some(event) = parse_event(raw) else {
                 continue;
             };
+            if let Some((domain, policy)) = shared {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    domain.route_shared_event(policy, &event, transaction.received_at_ms, g),
+                )
+                .await
+                {
+                    Ok(
+                        Ok(())
+                        | Err(Error::Unauthorized(_) | Error::Invalid(_) | Error::Conflict(_)),
+                    ) => (),
+                    _ => retry = true,
+                }
+            }
             let scopes = match t.routing_scopes(&event.room_id).await {
                 Ok(scopes) => scopes,
                 Err(_) => {
@@ -458,6 +486,10 @@ pub(crate) fn start(
     t: TransportStore,
     g: Gateway,
     m: MatrixClient,
+    shared: Option<(
+        crate::domain::DomainStore,
+        crate::management_types::ManagementPolicy,
+    )>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut route_cursor = String::new();
@@ -465,6 +497,7 @@ pub(crate) fn start(
         let mut processing_cursor = String::new();
         let mut pause_cursor = String::new();
         let mut request_cursor = String::new();
+        let mut shared_reply_cursor = String::new();
         // Each durable queue advances on its own clock. A slow Matrix lookup
         // or retry in one queue must not stall intake or another queue's replies.
         // These futures are owned by the parent task, so aborting it drops all
@@ -483,11 +516,30 @@ pub(crate) fn start(
         }
         tokio::join!(
             worker_loop!(t.invalidate_stale_dispatches(now_ms())),
-            worker_loop!(route(&inbox, &t, &g, &mut route_cursor)),
+            worker_loop!(route_with_shared(
+                &inbox,
+                &t,
+                &g,
+                &mut route_cursor,
+                shared.as_ref()
+            )),
             worker_loop!(send(&t, &g, &m, &mut reply_cursor)),
             worker_loop!(send_processing(&t, &g, &m, &mut processing_cursor)),
             worker_loop!(send_pause_notices(&t, &g, &m, &mut pause_cursor)),
-            worker_loop!(send_request_notices(&t, &g, &m, &mut request_cursor))
+            worker_loop!(send_request_notices(&t, &g, &m, &mut request_cursor)),
+            async {
+                if let Some((domain, policy)) = &shared {
+                    worker_loop!(domain.send_shared_replies(
+                        policy,
+                        &g,
+                        &m,
+                        &mut shared_reply_cursor
+                    ))
+                    .await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            }
         );
     })
 }
@@ -495,11 +547,13 @@ pub(crate) fn start_cleanup(
     domain: crate::domain::DomainStore,
     g: Gateway,
     m: MatrixClient,
+    management: Option<crate::management_types::ManagementPolicy>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut cursor = String::new();
         let mut cleanup_cursor = (String::new(), String::new());
         let mut identity_cursor = String::new();
+        let mut managed_matrix_cursor = String::new();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -508,6 +562,21 @@ pub(crate) fn start_cleanup(
             // and release its session lock. Never cache leadership across ticks.
             if !domain.try_membership_controller().await.unwrap_or(false) {
                 continue;
+            }
+            let _ = domain.sweep_managed_runtime().await;
+            if let Ok(ids) = domain
+                .managed_matrix_candidates(&managed_matrix_cursor, 20)
+                .await
+            {
+                if ids.is_empty() {
+                    managed_matrix_cursor.clear();
+                }
+                for id in ids {
+                    managed_matrix_cursor = id.clone();
+                    let _ = domain
+                        .reconcile_managed_agent_matrix(&id, &g, &m, management.as_ref())
+                        .await;
+                }
             }
             if let Ok(agents) = domain
                 .identity_provisioning_candidates(&identity_cursor, 20)

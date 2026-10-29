@@ -25,6 +25,7 @@ subtle.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 salvo.workspace = true
+palpo-core.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

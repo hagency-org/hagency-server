@@ -12,6 +12,9 @@ pub struct MatrixClient {
     server: String,
 }
 impl MatrixClient {
+    pub(crate) fn service_mxid(&self) -> &str {
+        &self.service
+    }
     pub fn new(origin: Url, as_token: String, server: String) -> Result<Self> {
         let http = Client::builder()
             .no_proxy()
@@ -173,6 +176,19 @@ impl MatrixClient {
         )
         .await?;
         Ok(())
+    }
+    pub(crate) async fn managed_verify_identity(&self,agent:&Agent)->Result<()> {
+        let who=self.call(Method::GET,&["_matrix","client","v3","account","whoami"],&agent.puppet_mxid,None).await?;
+        if who["user_id"]!=agent.puppet_mxid {return Err(Error::Conflict("matrix_identity_mismatch"));} Ok(())
+    }
+    pub(crate) async fn managed_set_display_name(&self,agent:&Agent)->Result<()> {
+        self.call(Method::PUT,&["_matrix","client","v3","profile",&agent.puppet_mxid,"displayname"],&agent.puppet_mxid,Some(json!({"displayname":agent.display_name}))).await?;Ok(())
+    }
+    pub(crate) async fn managed_invite(&self,agent:&Agent,room:&str)->Result<()> {
+        self.call(Method::POST,&["_matrix","client","v3","rooms",room,"invite"],&self.service,Some(json!({"user_id":agent.puppet_mxid}))).await?;Ok(())
+    }
+    pub(crate) async fn managed_join(&self,agent:&Agent,room:&str)->Result<()> {
+        self.call(Method::POST,&["_matrix","client","v3","join",room],&agent.puppet_mxid,Some(json!({}))).await?;Ok(())
     }
     pub async fn send(
         &self,

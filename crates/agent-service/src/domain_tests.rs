@@ -2125,7 +2125,7 @@ async fn exercise_membership_controller(url: &str) {
         "example.test".into(),
     )
     .unwrap();
-    let worker = crate::workers::start_cleanup(domain.clone(), gateway, matrix);
+    let worker = crate::workers::start_cleanup(domain.clone(), gateway, matrix, None);
     let result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
             let mut complete = true;

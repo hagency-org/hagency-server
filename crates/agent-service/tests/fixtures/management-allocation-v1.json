@@ -1,0 +1,92 @@
+{
+  "grant": {
+    "version": 1,
+    "capability": "hagency.project_reservations.v1",
+    "enrollmentId": "men_fixture",
+    "grantId": "mgr_fixture",
+    "grantRevision": 1,
+    "contributionId": "con_fixture",
+    "resourceId": "res_fixture",
+    "resourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "executorDeviceId": "dev_fixture",
+    "executorGeneration": 1,
+    "ownerMxid": "@owner:example.test",
+    "coordinatorMxid": "@coordinator:example.test",
+    "delegationRevision": 1,
+    "delegationExpiresAtMs": 1793491200000,
+    "allowSelfApproval": false,
+    "eligibleManagers": [
+      "@manager:example.test"
+    ],
+    "allocatedTokens": 1000000,
+    "periodKey": "2026-10",
+    "periodStartMs": 1790812800000,
+    "periodEndMs": 1793491200000,
+    "ledgerRevision": 10
+  },
+  "grantDigest": "e809ba98b2ae11b67466995dc6931232b876a10e4655efff5042cfe9bde2933a",
+  "projectDefinition": {
+    "projectId": "mpr_fixture",
+    "projectRevision": 2,
+    "managerMxid": "@manager:example.test",
+    "name": "开发 λ 🚀",
+    "purpose": "A \"quoted\" purpose\nwith a new line",
+    "requestedTokens": 100000
+  },
+  "projectDefinitionDigest": "adaf58300ebc1dc22ebae884cbbfaef9c4c2617e33165b2a73635db358bc6976",
+  "command": {
+    "version": 1,
+    "commandId": "mex_fixture",
+    "operation": "project.reserve",
+    "allocationId": "mal_fixture",
+    "projectId": "mpr_fixture",
+    "projectRevision": 2,
+    "requestId": "req_fixture",
+    "requestRevision": 2,
+    "decisionActor": "@coordinator:example.test",
+    "managerMxid": "@manager:example.test",
+    "projectDefinitionDigest": "adaf58300ebc1dc22ebae884cbbfaef9c4c2617e33165b2a73635db358bc6976",
+    "grantReceipt": {
+      "version": 1,
+      "capability": "hagency.project_reservations.v1",
+      "enrollmentId": "men_fixture",
+      "grantId": "mgr_fixture",
+      "grantRevision": 1,
+      "contributionId": "con_fixture",
+      "resourceId": "res_fixture",
+      "resourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "executorDeviceId": "dev_fixture",
+      "executorGeneration": 1,
+      "ownerMxid": "@owner:example.test",
+      "coordinatorMxid": "@coordinator:example.test",
+      "delegationRevision": 1,
+      "delegationExpiresAtMs": 1793491200000,
+      "allowSelfApproval": false,
+      "eligibleManagers": [
+        "@manager:example.test"
+      ],
+      "allocatedTokens": 1000000,
+      "periodKey": "2026-10",
+      "periodStartMs": 1790812800000,
+      "periodEndMs": 1793491200000,
+      "ledgerRevision": 10
+    },
+    "requestedTokens": 100000,
+    "reserveCommandId": null,
+    "issuedAtMs": 1792108800000,
+    "expiresAtMs": 1792713600000
+  },
+  "commandDigest": "038748b9d8f5043e4cd1da9041a5cfcbd2bb94283b396b3399a7664125060659",
+  "receipt": {
+    "version": 1,
+    "commandId": "mex_fixture",
+    "allocationId": "mal_fixture",
+    "state": "reserved",
+    "ledgerRevision": 11,
+    "reservedTokens": 100000,
+    "retainedTokens": 100000,
+    "periodKey": "2026-10",
+    "reason": null
+  },
+  "receiptDigest": "80b35d2adf40e378309ec61d23e01186c8a7e6761b5b92dbe8fd8d4ab930f9fc"
+}

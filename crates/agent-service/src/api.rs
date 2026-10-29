@@ -23,6 +23,7 @@ pub struct App {
     matrix_client: Option<crate::matrix_client::MatrixClient>,
     domain: Option<(crate::domain::DomainStore, crate::gateway::Gateway)>,
     transport: Option<crate::transport::TransportStore>,
+    management: Option<crate::management_types::ManagementPolicy>,
 }
 impl App {
     pub fn new(
@@ -42,7 +43,12 @@ impl App {
             matrix_client: None,
             domain: None,
             transport: None,
+            management: None,
         }
+    }
+    pub fn with_management(mut self, policy: crate::management_types::ManagementPolicy) -> Self {
+        self.management = Some(policy);
+        self
     }
     pub fn with_matrix_client(mut self, matrix: crate::matrix_client::MatrixClient) -> Self {
         self.startup_ready.store(false, Ordering::Release);
@@ -70,6 +76,10 @@ impl App {
             self.transport.clone()?,
             self.domain.as_ref()?.1.clone(),
             self.matrix_client.clone()?,
+            self.management
+                .clone()
+                .filter(|p| p.shared_execution())
+                .map(|p| (self.domain.as_ref().unwrap().0.clone(), p)),
         ))
     }
     pub fn start_cleanup(&self) -> Option<tokio::task::JoinHandle<()>> {
@@ -78,6 +88,7 @@ impl App {
             domain.clone(),
             gateway.clone(),
             self.matrix_client.clone()?,
+            self.management.clone(),
         ))
     }
     pub fn router(&self) -> Router {
@@ -178,7 +189,8 @@ impl App {
         if path == "/hagency/api/v1/discovery" && method == salvo::http::Method::GET {
             return Ok(
                 json!({"product":"hagency-server","version":env!("CARGO_PKG_VERSION"),
-                "capabilities":["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","processing-reaction-v1","execution-configuration-v1"],
+                "capabilities":["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","processing-reaction-v1","execution-configuration-v1","shared-durable-demand-v1","shared-thread-context-v1","managed-agent-budget-delta-v1","shared-budget-execution-v1","agent-settlement-v1"],
+                "managementProtocol":self.management.as_ref().map(|_|crate::management_types::PROTOCOL),
                 "protocolVersion":3,"serverName":self.server_name,"homeserver":self.public,
                 "serviceMxid":format!("@_hagency_service:{}",self.server_name),"issuer":self.issuer,"authorizationEndpoint":self.issuer.join("authorize").unwrap(),
                 "tokenEndpoint":self.issuer.join("oauth2/token").unwrap(),
@@ -248,6 +260,28 @@ impl App {
                 json!({"userId":p.user_id,"mxid":p.mxid,"subject":p.subject,"clientId":p.client_id,"validUntilMs":p.valid_until_ms,"issuer":self.issuer}),
             );
         }
+        if path == "/hagency/api/v1/devices/current" && method == salvo::http::Method::GET {
+            if req.uri().query().is_some() {
+                return Err(Error::Invalid("invalid_arguments"));
+            }
+            let before = self.store.authenticate(&credential, now_ms(), true).await?;
+            // Loading a saved credential is not proof of its current generation.
+            // Recheck the original device immediately before returning its
+            // finite, observation-only identity. No registration or mutation.
+            let current = self.store.authenticate(&credential, now_ms(), true).await?;
+            if before.user_id != current.user_id
+                || before.session_id != current.session_id
+                || before.device_id != current.device_id
+                || before.device_generation != current.device_generation
+            {
+                return Err(Error::Unauthorized("authorization_expired"));
+            }
+            let device_id = current.device_id.ok_or(Error::Unauthorized("device_required"))?;
+            let generation = current.device_generation.ok_or(Error::Unauthorized("device_required"))?;
+            return Ok(json!({"userId":current.user_id,"mxid":current.mxid,"subject":current.subject,
+                "clientId":current.client_id,"issuer":self.issuer,"deviceId":device_id,
+                "generation":generation,"validUntilMs":current.valid_until_ms}));
+        }
         if path == "/hagency/api/v1/devices" && method == salvo::http::Method::POST {
             let body: RegisterDevice = req
                 .parse_json()
@@ -278,6 +312,20 @@ impl App {
                 .ok_or(Error::Unavailable("domain_unavailable"))?
                 .1;
             return crate::api_transport::call(transport, gateway, &principal, req).await;
+        }
+        if let Some((domain, gateway)) = &self.domain
+            && let Some(value) = Box::pin(crate::api_management::call(
+                req,
+                &self.store,
+                domain,
+                self.management.as_ref(),
+                &credential,
+                gateway,
+                self.matrix_client.as_ref(),
+            ))
+            .await?
+        {
+            return Ok(value);
         }
         if let Some((domain, _)) = &self.domain
             && let Some(value) =

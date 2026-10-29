@@ -1,0 +1,80 @@
+{
+  "status": "proposed_not_callable",
+  "canonicalEvent": {
+    "event_id": "$demand_fixture",
+    "room_id": "!discussion:example.test",
+    "sender_mxid": "@manager:example.test",
+    "body": "Reply with hello. 你好。",
+    "mentioned_mxids": [
+      "@_hagency_fixture:example.test"
+    ],
+    "thread_root": null,
+    "encrypted": false,
+    "is_edit": false
+  },
+  "offer": {
+    "version": 1,
+    "demandId": "sdm_fixture",
+    "assignmentId": "mas_fixture",
+    "eventId": "$demand_fixture",
+    "eventDigest": "a323d41e37f9031031fd6062ae652c04265af6289ed74968ab7849d88b279d10",
+    "controlRevision": 2,
+    "receivedAtMs": 1792108805000,
+    "predecessorCommandId": "sex_fixture",
+    "predecessorCommandDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78"
+  },
+  "demandDigest": "6ea2ab645922b8aa4c63037cef201c5f6b1c2b105247cada785e4e87d1c4102a",
+  "start": {
+    "demandDigest": "6ea2ab645922b8aa4c63037cef201c5f6b1c2b105247cada785e4e87d1c4102a",
+    "expectedControlRevision": 2,
+    "start": {
+      "startIntentId": "start_intent_fixture",
+      "assignmentId": "mas_fixture",
+      "predecessor": {
+        "commandId": "sex_fixture",
+        "commandDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78",
+        "processAttempt": 1,
+        "stoppedReceiptDigest": "37406ac76be7c0fd42c0fbaf9e86c6f996a271ee58be7a071ecbfdfe88c983c1",
+        "processDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "budgetObservation": {
+        "observedLedgerRevision": 207,
+        "allocatedTokens": 1000,
+        "knownConsumedTokens": 40,
+        "retainedTokens": 60,
+        "remainingTokens": 940,
+        "usageComplete": false,
+        "liabilityDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  },
+  "startDigest": "772e5ef67025b814c0e3d7334194e1e6dc4931f5e41c273dc2eaf85dff71c3dd",
+  "promotedWork": {
+    "id": "swork_demand_fixture",
+    "assignmentId": "mas_fixture",
+    "runtimeCommandDigest": "9d9f7477ccb8a267b63b741a944a17a924c789f95b0d896215d59d4e501a1286",
+    "eventId": "$demand_fixture",
+    "roomId": "!discussion:example.test",
+    "requesterMxid": "@manager:example.test",
+    "threadRoot": "$demand_fixture",
+    "body": "Reply with hello. 你好。",
+    "bodyDigest": "83af04d5012845d82352add660a304d7e5dc00f8ba36dce597f3ae9686d0a8f1",
+    "executionId": "sx_demand_fixture",
+    "createdAtMs": 1792108805000
+  },
+  "workDigest": "1093d387389dcdb025f3d318607c188429be04c7c656c5775c897cf37e8b2862",
+  "binding": {
+    "version": 1,
+    "demandId": "sdm_fixture",
+    "demandDigest": "6ea2ab645922b8aa4c63037cef201c5f6b1c2b105247cada785e4e87d1c4102a",
+    "controlRevision": 2,
+    "assignmentId": "mas_fixture",
+    "eventId": "$demand_fixture",
+    "receivedAtMs": 1792108805000,
+    "runtimeCommandId": "sat_fixture",
+    "runtimeCommandDigest": "9d9f7477ccb8a267b63b741a944a17a924c789f95b0d896215d59d4e501a1286",
+    "workId": "swork_demand_fixture",
+    "workDigest": "1093d387389dcdb025f3d318607c188429be04c7c656c5775c897cf37e8b2862"
+  },
+  "bindingDigest": "0f4d60d472a05faa2ddab05246f3ce750be437eb6ae6a316235fe99115758e8f"
+}

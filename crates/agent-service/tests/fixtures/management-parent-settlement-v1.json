@@ -1,0 +1,31 @@
+{
+  "command": {
+    "version": 1,
+    "commandId": "mpc_fixture",
+    "operation": "grant.close",
+    "grantId": "mgr_fixture",
+    "grantReceiptDigest": "e809ba98b2ae11b67466995dc6931232b876a10e4655efff5042cfe9bde2933a",
+    "previousSettlementDigest": null,
+    "reason": "owner_withdrawal",
+    "requestedAtMs": 1792108800000
+  },
+  "commandDigest": "a4006d393d9b0c3a675e049c5efb29bd54663eba2f76e7af2c8950209dbc989a",
+  "receipt": {
+    "version": 1,
+    "commandId": "mpc_fixture",
+    "commandDigest": "a4006d393d9b0c3a675e049c5efb29bd54663eba2f76e7af2c8950209dbc989a",
+    "grantId": "mgr_fixture",
+    "grantReceiptDigest": "e809ba98b2ae11b67466995dc6931232b876a10e4655efff5042cfe9bde2933a",
+    "enrollmentId": "men_fixture",
+    "periodKey": "2026-10",
+    "fenceRevision": 12,
+    "ledgerRevision": 12,
+    "state": "closed",
+    "retainedTokens": 123,
+    "knownConsumedTokens": 123,
+    "unresolvedTokens": 0,
+    "liabilityCount": 1,
+    "liabilityDigest": "471d3d3bd09f6f8be9cd939d167f8c242227ffa55acffe6def09badda1ac2e4a"
+  },
+  "receiptDigest": "9e73cd4ea714c4957c219d99a2412be7f0b15f26d8c7906f726101e3a1d719a7"
+}
