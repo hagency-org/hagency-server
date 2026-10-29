@@ -1021,7 +1021,7 @@ async fn v5_setup_migration_is_atomic_and_preserves_grants_parent_receipts_and_p
             let _ = (&domain,&policy);
             assert!(sql_query("SELECT receipt=$2 AS matched FROM hagency_agent_v1.management_parent_settlements WHERE grant_id=$1").bind::<Text,_>(&native.grant_id).bind::<Text,_>(&parent_bytes).get_result::<State>(&mut db).await.unwrap().matched);
             assert!(sql_query("SELECT owner_user_id=$1 AND execution_device_id=$2 AND state='active' AS matched FROM hagency_agent_v1.agents WHERE id='legacy_agent'").bind::<Text,_>(&owner.p.user_id).bind::<Text,_>(&native.executor_device_id).get_result::<State>(&mut db).await.unwrap().matched);
-            assert!(sql_query("SELECT version=27 AS matched FROM hagency_agent_v1.management_deployment").get_result::<State>(&mut db).await.unwrap().matched);
+            assert!(sql_query("SELECT version=28 AS matched FROM hagency_agent_v1.management_deployment").get_result::<State>(&mut db).await.unwrap().matched);
             assert!(sql_query("SELECT receipt=$2 AND receipt_digest=$3 AS matched FROM hagency_agent_v1.management_resource_grants WHERE id=$1").bind::<Text,_>(&native.grant_id).bind::<Text,_>(&bytes).bind::<Text,_>(&digest).get_result::<State>(&mut db).await.unwrap().matched);
         }
     }).await;

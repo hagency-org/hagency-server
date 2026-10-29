@@ -578,7 +578,7 @@ async fn shared_attempt_schema13_upgrade_rolls_back_and_preserves_v1_bytes() {
         d.command_digest
     );
     assert!(
-        sql_query("SELECT version=27 AS matched FROM hagency_agent_v1.management_deployment")
+        sql_query("SELECT version=28 AS matched FROM hagency_agent_v1.management_deployment")
             .get_result::<Check>(&mut db)
             .await
             .unwrap()

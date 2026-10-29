@@ -740,7 +740,7 @@ async fn v4_parent_migration_is_atomic_and_preserves_native_grant_evidence() {
             assert_eq!(parent.held_tokens, native.allocated_tokens);
             assert_eq!(parent.known_unused_released_tokens, 0);
             assert!(parent.receipt.is_none());
-            assert!(sql_query("SELECT version=27 AS matched FROM hagency_agent_v1.management_deployment").get_result::<State>(&mut db).await.unwrap().matched);
+            assert!(sql_query("SELECT version=28 AS matched FROM hagency_agent_v1.management_deployment").get_result::<State>(&mut db).await.unwrap().matched);
             assert!(sql_query("SELECT receipt=$2 AND receipt_digest=$3 AS matched FROM hagency_agent_v1.management_resource_grants WHERE id=$1").bind::<Text,_>(&native.grant_id).bind::<Text,_>(&bytes).bind::<Text,_>(&digest).get_result::<State>(&mut db).await.unwrap().matched);
         }
     }).await;

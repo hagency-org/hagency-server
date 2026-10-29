@@ -641,7 +641,7 @@ async fn v6_recovery_migration_is_atomic_and_preserves_ready_setup_and_old_recei
             let reopened=DomainStore::open(&f.url,"example.test","_hagency_test_").await.unwrap();let current=reopened.management_project_setup(&f.outsider.p,&f.policy,&p.id).await.unwrap();same_identity(&original,current.setup.as_ref().unwrap());let binding=current.setup.unwrap().current_binding.unwrap();assert_eq!(binding.revision,1);assert_eq!(binding.allocation_id,original.allocation_id);assert_eq!(binding.administrator_mxid,original.administrator_mxid);
             let bytes=sql_query("SELECT result AS value FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND operation='project.setup.confirm'").bind::<Text,_>(&f.outsider.p.user_id).get_result::<Stored>(&mut db).await.unwrap().value;assert_eq!(bytes,old);
             let recovered=reopened.recover_management_setup_command(&f.outsider.p,&f.policy,"confirm_project_setup",RecoverCommandInput{operation:"project.setup.confirm".into()}).await.unwrap();assert_eq!(recovered["recorded"],true);assert_eq!(recovered["readiness"]["setup"]["currentBinding"]["revision"],1);
-            assert!(sql_query("SELECT version=27 AS matched FROM hagency_agent_v1.management_deployment").get_result::<Matched>(&mut db).await.unwrap().matched);
+            assert!(sql_query("SELECT version=28 AS matched FROM hagency_agent_v1.management_deployment").get_result::<Matched>(&mut db).await.unwrap().matched);
         }
     }).await;
     control
