@@ -3945,7 +3945,6 @@ dependencies = [
  "percent-encoding",
  "rand 0.10.3",
  "rand_chacha 0.3.1",
- "rand_core 0.10.1",
  "regex",
  "reqwest 0.13.5",
  "rustls",

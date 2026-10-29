@@ -17,7 +17,6 @@ zeroize.workspace = true
 figment.workspace = true
 camino.workspace = true
 rand_chacha.workspace = true
-rand_core.workspace = true
 tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
 rustls.workspace = true

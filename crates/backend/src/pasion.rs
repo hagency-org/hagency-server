@@ -3,7 +3,7 @@ use crate::config::Config;
 use anyhow::Context;
 use figment::{Figment, providers::Serialized};
 use pasion_config::{AppConfig, ConfigurationSection, HttpResource};
-use rand_core::SeedableRng;
+use rand_chacha::rand_core::SeedableRng;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
