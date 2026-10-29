@@ -14702,7 +14702,7 @@
         "x-source": {
           "file": "crates/agent-service/src/api_project_board.rs",
           "anchors": [
-            "salvo::http::Method::POST => board.catalog"
+            "salvo::http::Method::POST => { board .catalog(&principal, &access, Some(body(req).await?)) .await? }"
           ]
         },
         "responses": {
@@ -14764,7 +14764,7 @@
         "x-source": {
           "file": "crates/agent-service/src/api_project_board.rs",
           "anchors": [
-            "salvo::http::Method::GET,[\"board\",\"overview\"]"
+            "(salvo::http::Method::GET, [\"board\", \"overview\"]) if access.project == project.id =>"
           ]
         },
         "responses": {
@@ -14864,7 +14864,7 @@
         "x-source": {
           "file": "crates/agent-service/src/api_project_board.rs",
           "anchors": [
-            "salvo::http::Method::PUT,[\"board\",\"project-archive\"]"
+            "(salvo::http::Method::PUT, [\"board\", \"project-archive\"]) if access.project == project.id =>"
           ]
         },
         "responses": {
@@ -14931,7 +14931,7 @@
         "x-source": {
           "file": "crates/agent-service/src/api_project_board.rs",
           "anchors": [
-            "salvo::http::Method::PUT,[\"board\",\"navigation-default\"]"
+            "(salvo::http::Method::PUT, [\"board\", \"navigation-default\"]) if access.project == project.id =>"
           ]
         },
         "responses": {
@@ -21012,11 +21012,11 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "2a6f5442e61fd285471738d4ef39b0be067151da342afaca2bde44923fb69e28",
+    "crates/agent-service/src/api.rs": "f0a9d866d0c443ebfff668389b15bce579606b4e8b6e3ff4380320f826e25258",
     "crates/agent-service/src/api_transport.rs": "2d6c562882c7c35d10e716bbc771f70310752db69263d0378eafab60e0c3f5d4",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
-    "crates/agent-service/src/api_project_board.rs": "a6d4ee69418a15d09b1f9cdec780ee85f71af645758aaa9892d360d41a766554",
+    "crates/agent-service/src/api_project_board.rs": "315e3c9359438a28c04694b68d9619f281c1b3fcdabc557d4a6971373110cc47",
     "crates/agent-service/src/agent_crypto.rs": "0c65f525954e86856bfe60b6e198fcf701fa414163a03f9dac474141ee8e87e5",
     "crates/agent-service/src/matrix_crypto.rs": "efeb19edada56af0866c7716f84bbf74e1d701db7a0c9319572b2f5d9fd59043",
     "crates/agent-service/src/agent_crypto_receive.rs": "20e437890a3cca872e810bfbcb1f5dc696567caff53a8bdb684b34e9c142566a",
@@ -21029,7 +21029,7 @@
     "crates/agent-service/src/encrypted_execution.rs": "a495dd49337b462a97bb95c7edd8d7cf48373768b5a4dba72b01c1495d6f1950",
     "crates/agent-service/src/encrypted_execution_schema.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "8ca02b365672bf575fa170395a24cb100e40e2db7ccc64e4b9e05c891263755c",
-    "crates/agent-service/src/domain.rs": "5db0269d79e80c77fa1477d9e3770a3c584e855b056a87817bcc945f529d905f",
+    "crates/agent-service/src/domain.rs": "8601964e73faf44425e1a7f463aa5682796c0cfa3b7bb16a4b8c773ca1e27b95",
     "crates/agent-service/src/matrix_client.rs": "0e5514d6af19b74e58b6ac6fd7dfcd17c7f667f97677dc2a364d533c04584664"
   },
   "x-not-implemented": [
