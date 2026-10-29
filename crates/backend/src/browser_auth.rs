@@ -4,7 +4,7 @@ use salvo::{http::header, prelude::*};
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use subtle::ConstantTimeEq;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use url::Url;
 
 #[derive(Debug)]
@@ -47,6 +47,7 @@ pub struct BrowserAuth {
     sessions: Arc<Mutex<HashMap<String, Session>>>,
     rates: Arc<Mutex<HashMap<String, (u32, i64)>>>,
     handover: Arc<Mutex<()>>,
+    login_admission: Arc<Semaphore>,
     session_ttl: i64,
     read_timeout: Duration,
     oauth_revocation: Option<(Url, String)>,
@@ -74,6 +75,7 @@ impl BrowserAuth {
             sessions: Default::default(),
             rates: Default::default(),
             handover: Default::default(),
+            login_admission: Arc::new(Semaphore::new(16)),
             session_ttl: ttl as i64,
             read_timeout: Duration::from_millis(conf.read_timeout_ms.unwrap_or(8_000)),
             oauth_revocation: Some((
@@ -163,7 +165,7 @@ impl BrowserAuth {
             return Err(err(429, "rate_limit", "Too many authorization requests."));
         }
         let rate = rates.entry(key).or_insert((0, millis() + window));
-        rate.0 += 1;
+        rate.0 = rate.0.saturating_add(1);
         if rate.0 > max {
             Err(err(
                 429,
@@ -174,7 +176,7 @@ impl BrowserAuth {
             Ok(())
         }
     }
-    fn cookie(&self, id: &str, clear: bool) -> String {
+    fn cookie(&self, id: &str) -> String {
         format!(
             "palpo_admin={id}; Path=/; HttpOnly; SameSite=Strict{}; Max-Age={}",
             if self.public_origin.scheme() == "https" {
@@ -182,7 +184,7 @@ impl BrowserAuth {
             } else {
                 ""
             },
-            if clear { 0 } else { self.session_ttl / 1000 }
+            self.session_ttl / 1000
         )
     }
     async fn browser_session(
@@ -263,7 +265,7 @@ impl BrowserAuth {
             },
         );
         drop(sessions);
-        res.add_header(header::SET_COOKIE, self.cookie(&id, false), true)
+        res.add_header(header::SET_COOKIE, self.cookie(&id), true)
             .unwrap();
         Ok(json!({"userId":user,"csrf":csrf,"isAdmin":is_admin,"serverName":self.server_name}))
     }
@@ -322,15 +324,15 @@ impl BrowserAuth {
         if !allowed_operation(req.method().as_str(), relative) || req.uri().query().is_some() {
             return Err(err(404, "not_found", "Unknown browser operation."));
         }
-        if req.method() != salvo::http::Method::GET
-            && !same(
-                req.headers()
-                    .get("x-csrf-token")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or(""),
-                &session.csrf,
-            )
-        {
+        // The per-tab CSRF value also pins reads to their original session.
+        // Another tab can replace the shared cookie with a different account.
+        if !same(
+            req.headers()
+                .get("x-csrf-token")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or(""),
+            &session.csrf,
+        ) {
             return Err(err(403, "csrf_forbidden", "Refresh your browser session."));
         }
         let path = format!("/hagency/api/v1/{relative}");
@@ -522,8 +524,25 @@ impl BrowserAuth {
             ));
         }
         if path == "/hagency/api/login/token" && req.method() == salvo::http::Method::POST {
-            self.rate(format!("login:{}", req.remote_addr()), 120, 900_000)
-                .await?;
+            // Only the direct socket peer is trusted. In particular, source
+            // ports and unverified Forwarded/X-Forwarded-For cannot mint budgets.
+            // Non-IP transports share one fail-closed bucket.
+            let peer = req
+                .remote_addr()
+                .ip()
+                .map(|ip| ip.to_canonical().to_string())
+                .unwrap_or_else(|| "non-ip".into());
+            self.rate(format!("login:{peer}"), 120, 900_000).await?;
+            // Bound waiters before reading bodies or taking the handover lock.
+            // Keep that lock through validation/replacement/logout so a token
+            // cannot be accepted after a competing logout has revoked it.
+            let _admission = self.login_admission.try_acquire().map_err(|_| {
+                err(
+                    429,
+                    "authorization_busy",
+                    "Too many concurrent sign-in requests.",
+                )
+            })?;
             Self::body(req).await?;
             let token = req
                 .headers()
@@ -577,8 +596,9 @@ impl BrowserAuth {
                 .matrix("/_matrix/client/v3/logout", &session.token, true)
                 .await;
             self.sessions.lock().await.remove(&sid);
-            res.add_header(header::SET_COOKIE, self.cookie("", true), true)
-                .unwrap();
+            // Server-side removal invalidates this exact sid immediately. A
+            // delayed Set-Cookie deletion could erase a later login from another
+            // tab, so leave the dead cookie to expire or be replaced by login.
             match result {
                 Ok(_) => {}
                 Err(e) if e.status == 401 => {}
@@ -830,11 +850,13 @@ mod tests {
                         }
                     }
                     let request = String::from_utf8_lossy(&raw);
+                    let mxid = if request.contains("other-personal-token") {
+                        "@other:example.test"
+                    } else {
+                        "@owner:example.test"
+                    };
                     let (status, body) = if request.contains("/_matrix/client/v3/account/whoami") {
-                        (
-                            200,
-                            json!({"user_id":"@owner:example.test","is_guest":false}),
-                        )
+                        (200, json!({"user_id":mxid,"is_guest":false}))
                     } else if request.contains("/_palpo/admin/v1/appservices") {
                         if admin.load(std::sync::atomic::Ordering::SeqCst) {
                             (200, json!([]))
@@ -844,10 +866,7 @@ mod tests {
                     } else if request.contains("/sessions/pasion") {
                         assert!(!request.to_ascii_lowercase().contains("cookie:"));
                         assert!(!request.to_ascii_lowercase().contains("origin:"));
-                        (
-                            200,
-                            json!({"token":"a".repeat(64),"mxid":"@owner:example.test"}),
-                        )
+                        (200, json!({"token":"a".repeat(64),"mxid":mxid}))
                     } else if request.contains("/hagency/api/v1/agents") {
                         assert!(request.contains("Bearer "));
                         (200, json!({"agents":[]}))
@@ -875,12 +894,95 @@ mod tests {
             sessions: Default::default(),
             rates: Default::default(),
             handover: Default::default(),
+            login_admission: Arc::new(Semaphore::new(16)),
             session_ttl: 60_000,
             read_timeout: Duration::from_secs(3),
             oauth_revocation: None,
         };
         (auth, admin, worker)
     }
+    #[tokio::test]
+    async fn login_rate_uses_socket_ip_and_ignores_forwarded_addresses() {
+        use salvo::test::TestClient;
+        let (auth, _, worker) = fixture().await;
+        let rates = auth.rates.clone();
+        let service = Service::new(auth.router());
+        for n in 0..121 {
+            let mut request = TestClient::post("http://example.test/hagency/api/login/token")
+                .add_header("host", "example.test", true)
+                .add_header("x-forwarded-for", format!("203.0.113.{}", n), true)
+                .add_header("forwarded", format!("for=203.0.113.{n}"), true)
+                .build();
+            *request.remote_addr_mut() = format!("198.51.100.5:{}", 30000 + n)
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+                .into();
+            let response = service.handle(request).await;
+            assert_eq!(
+                response.status_code,
+                Some(if n < 120 {
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE
+                } else {
+                    StatusCode::TOO_MANY_REQUESTS
+                }),
+                "attempt {n}"
+            );
+        }
+        assert_eq!(
+            rates.lock().await.len(),
+            1,
+            "source ports must not allocate buckets"
+        );
+        let mut mapped = TestClient::post("http://example.test/hagency/api/login/token")
+            .add_header("host", "example.test", true)
+            .build();
+        *mapped.remote_addr_mut() = "[::ffff:198.51.100.5]:32000"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
+        assert_eq!(
+            service.handle(mapped).await.status_code,
+            Some(StatusCode::TOO_MANY_REQUESTS)
+        );
+        let mut other = TestClient::post("http://example.test/hagency/api/login/token")
+            .add_header("host", "example.test", true)
+            .build();
+        *other.remote_addr_mut() = "198.51.100.6:30000"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
+        assert_eq!(
+            service.handle(other).await.status_code,
+            Some(StatusCode::UNSUPPORTED_MEDIA_TYPE)
+        );
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn login_concurrency_rejects_before_waiting_and_recovers_when_permits_release() {
+        use salvo::test::TestClient;
+        let (auth, _, worker) = fixture().await;
+        let permits = auth
+            .login_admission
+            .clone()
+            .acquire_many_owned(16)
+            .await
+            .unwrap();
+        let service = Service::new(auth.router());
+        let reply = TestClient::post("http://example.test/hagency/api/login/token")
+            .add_header("host", "example.test", true)
+            .send(&service)
+            .await;
+        assert_eq!(reply.status_code, Some(StatusCode::TOO_MANY_REQUESTS));
+        drop(permits);
+        let reply = TestClient::post("http://example.test/hagency/api/login/token")
+            .add_header("host", "example.test", true)
+            .send(&service)
+            .await;
+        assert_eq!(reply.status_code, Some(StatusCode::UNSUPPORTED_MEDIA_TYPE));
+        worker.abort();
+    }
+
     #[tokio::test]
     async fn forwarded_headers_do_not_replace_browser_host_or_origin() {
         use salvo::test::TestClient;
@@ -913,6 +1015,158 @@ mod tests {
         }
         worker.abort();
     }
+    #[tokio::test]
+    async fn bff_get_pins_the_tab_session_when_shared_cookie_switches_accounts() {
+        use salvo::test::{ResponseExt, TestClient};
+        let (auth, _, worker) = fixture().await;
+        let service = Service::new(auth.router());
+        let mut login_a = TestClient::post("http://example.test/hagency/api/login/token")
+            .add_header("host", "example.test", true)
+            .bearer_auth("personal-token")
+            .json(&json!({}))
+            .send(&service)
+            .await;
+        assert_eq!(login_a.status_code, Some(StatusCode::OK));
+        let cookie_a = login_a.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let session_a: Value = login_a.take_json().await.unwrap();
+        assert_eq!(session_a["userId"], "@owner:example.test");
+        let response = TestClient::get("http://example.test/hagency/api/browser/v1/agents")
+            .add_header("host", "example.test", true)
+            .add_header("cookie", &cookie_a, true)
+            .add_header("x-csrf-token", session_a["csrf"].as_str().unwrap(), true)
+            .send(&service)
+            .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK));
+
+        // A second tab replaces the browser-wide HttpOnly cookie. The first
+        // tab still holds only A's in-memory session/CSRF value.
+        let mut login_b = TestClient::post("http://example.test/hagency/api/login/token")
+            .add_header("host", "example.test", true)
+            .add_header("cookie", &cookie_a, true)
+            .bearer_auth("other-personal-token")
+            .json(&json!({}))
+            .send(&service)
+            .await;
+        assert_eq!(login_b.status_code, Some(StatusCode::OK));
+        let cookie_b = login_b.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let session_b: Value = login_b.take_json().await.unwrap();
+        assert_eq!(session_b["userId"], "@other:example.test");
+        assert_ne!(session_a["csrf"], session_b["csrf"]);
+        let mut stale_tab = TestClient::get("http://example.test/hagency/api/browser/v1/agents")
+            .add_header("host", "example.test", true)
+            .add_header("cookie", &cookie_b, true)
+            .add_header("x-csrf-token", session_a["csrf"].as_str().unwrap(), true)
+            .send(&service)
+            .await;
+        assert_eq!(stale_tab.status_code, Some(StatusCode::FORBIDDEN));
+        assert_eq!(
+            stale_tab.take_json::<Value>().await.unwrap()["code"],
+            "csrf_forbidden"
+        );
+        let missing_pin = TestClient::get("http://example.test/hagency/api/browser/v1/agents")
+            .add_header("host", "example.test", true)
+            .add_header("cookie", &cookie_b, true)
+            .send(&service)
+            .await;
+        assert_eq!(missing_pin.status_code, Some(StatusCode::FORBIDDEN));
+        let own_tab = TestClient::get("http://example.test/hagency/api/browser/v1/agents")
+            .add_header("host", "example.test", true)
+            .add_header("cookie", &cookie_b, true)
+            .add_header("x-csrf-token", session_b["csrf"].as_str().unwrap(), true)
+            .send(&service)
+            .await;
+        assert_eq!(own_tab.status_code, Some(StatusCode::OK));
+        // Cookie restoration is deliberately separate from BFF actor authority.
+        let mut restored = TestClient::get("http://example.test/hagency/api/session")
+            .add_header("host", "example.test", true)
+            .add_header("cookie", &cookie_b, true)
+            .send(&service)
+            .await;
+        assert_eq!(restored.status_code, Some(StatusCode::OK));
+        assert_eq!(
+            restored.take_json::<Value>().await.unwrap()["userId"],
+            "@other:example.test"
+        );
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn a_delayed_logout_response_cannot_overwrite_a_newer_login_cookie() {
+        use salvo::test::{ResponseExt, TestClient};
+        let (auth, _, worker) = fixture().await;
+        let service = Service::new(auth.router());
+        let cookie = |reply: &Response| {
+            reply.headers()[header::SET_COOKIE]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .to_owned()
+        };
+        let mut login_a = TestClient::post("http://example.test/hagency/api/login/token")
+            .add_header("host", "example.test", true)
+            .bearer_auth("personal-token")
+            .json(&json!({}))
+            .send(&service)
+            .await;
+        assert_eq!(login_a.status_code, Some(StatusCode::OK));
+        let cookie_a = cookie(&login_a);
+        let session_a: Value = login_a.take_json().await.unwrap();
+        // Hold this prepared HTTP response until after the next login response
+        // would have installed B's browser-wide cookie.
+        let delayed_logout = TestClient::post("http://example.test/hagency/api/logout")
+            .add_header("host", "example.test", true)
+            .add_header("cookie", &cookie_a, true)
+            .add_header("x-csrf-token", session_a["csrf"].as_str().unwrap(), true)
+            .json(&json!({}))
+            .send(&service)
+            .await;
+        assert_eq!(delayed_logout.status_code, Some(StatusCode::OK));
+        let login_b = TestClient::post("http://example.test/hagency/api/login/token")
+            .add_header("host", "example.test", true)
+            .add_header("cookie", &cookie_a, true)
+            .bearer_auth("other-personal-token")
+            .json(&json!({}))
+            .send(&service)
+            .await;
+        assert_eq!(login_b.status_code, Some(StatusCode::OK));
+        let cookie_b = cookie(&login_b);
+        assert!(
+            !delayed_logout.headers().contains_key(header::SET_COOKIE),
+            "late logout must not clear a newer login's cookie"
+        );
+        let stale = TestClient::get("http://example.test/hagency/api/session")
+            .add_header("host", "example.test", true)
+            .add_header("cookie", &cookie_a, true)
+            .send(&service)
+            .await;
+        assert_eq!(stale.status_code, Some(StatusCode::UNAUTHORIZED));
+        let mut current = TestClient::get("http://example.test/hagency/api/session")
+            .add_header("host", "example.test", true)
+            .add_header("cookie", &cookie_b, true)
+            .send(&service)
+            .await;
+        assert_eq!(current.status_code, Some(StatusCode::OK));
+        assert_eq!(
+            current.take_json::<Value>().await.unwrap()["userId"],
+            "@other:example.test"
+        );
+        worker.abort();
+    }
+
     #[tokio::test]
     async fn cookie_identity_live_role_and_closed_routes() {
         use salvo::test::{ResponseExt, TestClient};
@@ -976,6 +1230,7 @@ mod tests {
         let mut listing = TestClient::get("http://example.test/hagency/api/browser/v1/agents")
             .add_header("host", "example.test", true)
             .add_header("cookie", &cookie, true)
+            .add_header("x-csrf-token", session["csrf"].as_str().unwrap(), true)
             .send(&service)
             .await;
         let listing_body = listing.take_json::<Value>().await.unwrap();
@@ -1010,6 +1265,7 @@ mod tests {
             .send(&service)
             .await;
         assert_eq!(logout.status_code, Some(StatusCode::OK));
+        assert!(!logout.headers().contains_key(header::SET_COOKIE));
         let stale = TestClient::get("http://example.test/hagency/api/session")
             .add_header("host", "example.test", true)
             .add_header("cookie", &cookie, true)

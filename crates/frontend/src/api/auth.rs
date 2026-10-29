@@ -407,7 +407,11 @@ pub async fn handle_oauth_callback(
         urlencoding::encode(&verifier),
     );
 
+    let prior_generation = storage::session_generation();
     let response = send_oauth_form_request("/oauth2/token", &form_body).await?;
+    if storage::session_generation() != prior_generation {
+        return Err(make_err("The session changed during sign-in.".into()));
+    }
 
     if response.status >= 400 {
         return Err(make_http_error("Token exchange failed", &response));
@@ -422,6 +426,7 @@ pub async fn handle_oauth_callback(
         storage::set_item("refresh_token", rt);
     }
 
+    let generation = storage::session_generation();
     // Resolve the Matrix identity directly from the delegated access token.
     // This keeps the admin dashboard login flow aligned with the tested
     // device-code helper and avoids depending on OIDC userinfo / id_token.
@@ -430,6 +435,9 @@ pub async fn handle_oauth_callback(
         &token_resp.access_token,
     )
     .await?;
+    if storage::session_generation() != generation {
+        return Err(make_err("The session changed during sign-in.".into()));
+    }
     if whoami.status >= 400 {
         return Err(make_http_error("Matrix whoami failed", &whoami));
     }
@@ -437,6 +445,9 @@ pub async fn handle_oauth_callback(
     let whoami: WhoamiResponse =
         serde_json::from_str(&whoami.text).map_err(|e| make_err(e.to_string()))?;
     let viewer = pasion_viewer().await?;
+    if storage::session_generation() != generation {
+        return Err(make_err("The session changed during sign-in.".into()));
+    }
     if account_needs_admin_scope(
         &viewer,
         &whoami.user_id,
@@ -474,6 +485,9 @@ pub async fn handle_oauth_callback(
     }
 
     if let Some((_, displayname, avatar)) = get_identity().await {
+        if storage::session_generation() != generation {
+            return Err(make_err("The session changed during sign-in.".into()));
+        }
         if let Some(name) = displayname {
             storage::set_item("user_display_name", &name);
         }
@@ -496,68 +510,82 @@ struct TokenResponse {
 
 // ── OAuth2 token refresh ────────────────────────────────────────────────────
 
-/// Shared 401 handler for API clients.
-///
-/// When any backend (palpo or pasion) returns 401, we first try to
-/// refresh the OAuth2 access token. If refresh succeeds, the caller
-/// should retry the original request. Otherwise, we clear the cached
-/// session state — the `AppLayout` heartbeat polls `is_authenticated()`
-/// every 2s and redirects to `/login` once the token is gone, so this
-/// function doesn't need to navigate directly.
-///
-/// Returns `true` if the caller should retry, `false` if the session
-/// is gone and the redirect will happen on the next tick.
-pub async fn handle_unauthorized() -> bool {
-    if refresh_oauth_token().await {
-        return true;
-    }
-    // Refresh failed: clear everything that implies an active session.
-    storage::remove_item("access_token");
-    storage::remove_item("refresh_token");
-    storage::remove_item("is_admin");
-    // Drop the session-scoped admin verdict so the next authenticated mount
-    // re-probes instead of trusting a now-stale cache.
-    crate::router::reset_admin_cache();
-    false
+/// All authenticated transports share the same session generation and refresh flight.
+pub async fn authenticated_request<T, Send, Sent>(send: Send) -> Result<T, HttpError>
+where
+    Send: FnMut(storage::Snapshot) -> Sent,
+    Sent: std::future::Future<Output = Result<T, HttpError>>,
+{
+    storage::session_state()
+        .request(
+            send,
+            refresh_tokens,
+            |error| error.status == 401,
+            || HttpError::from_status(401, "The session changed. Please retry after signing in."),
+            session_expired,
+        )
+        .await
 }
 
-/// Attempt to refresh the OAuth2 access token using the stored refresh_token.
-/// Returns `true` if the token was refreshed successfully.
-pub async fn refresh_oauth_token() -> bool {
-    let refresh_token = match storage::get_item("refresh_token") {
-        Some(rt) => rt,
-        None => return false,
-    };
-
+async fn refresh_tokens(refresh_token: String) -> Result<storage::Tokens, ()> {
     let client_id = crate::utils::config::get_oauth_client_id();
     let form_body = format!(
-        "grant_type=refresh_token\
-         &refresh_token={}\
-         &client_id={}",
+        "grant_type=refresh_token&refresh_token={}&client_id={}",
         urlencoding::encode(&refresh_token),
         urlencoding::encode(&client_id),
     );
-
-    let response = match send_oauth_form_request("/oauth2/token", &form_body).await {
-        Ok(response) => response,
-        Err(_) => return false,
-    };
-
+    let response = send_oauth_form_request("/oauth2/token", &form_body)
+        .await
+        .map_err(|_| ())?;
     if response.status >= 400 {
-        return false;
+        return Err(());
     }
+    let tokens: TokenResponse = serde_json::from_str(&response.text).map_err(|_| ())?;
+    Ok(storage::Tokens {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+    })
+}
 
-    let token_resp: TokenResponse = match serde_json::from_str(&response.text) {
-        Ok(t) => t,
-        Err(_) => return false,
-    };
-
-    storage::set_item("access_token", &token_resp.access_token);
-    if let Some(ref rt) = token_resp.refresh_token {
-        storage::set_item("refresh_token", rt);
+fn session_expired(generation: u64) {
+    if storage::session_generation() != generation {
+        return;
     }
+    crate::api::browser_auth::clear_session();
+    crate::utils::cache::clear_cache();
+    crate::router::reset_admin_cache();
+    // Tokens are memory-only: a localStorage event cannot signal this tab.
+    if let Some(window) = web_sys::window() {
+        let _ = window.location().replace("/login");
+    }
+}
 
-    true
+pub fn reject_session(snapshot: &storage::Snapshot) {
+    if let storage::Recovery::Expired(generation) = storage::session_state().expire(snapshot) {
+        session_expired(generation);
+    }
+}
+
+pub fn accept_session_actor(generation: u64, observed: &str) -> bool {
+    match storage::session_state().observe_actor(generation, observed) {
+        storage::ActorCheck::Current => true,
+        storage::ActorCheck::Changed(generation) => {
+            session_expired(generation);
+            false
+        }
+        storage::ActorCheck::Superseded => false,
+    }
+}
+
+pub fn check_session_actor(generation: u64, original: &str, observed: &str) -> bool {
+    match storage::session_state().check_actor(generation, original, observed) {
+        storage::ActorCheck::Current => true,
+        storage::ActorCheck::Changed(generation) => {
+            session_expired(generation);
+            false
+        }
+        storage::ActorCheck::Superseded => false,
+    }
 }
 
 // ── Admin verification ───────────────────────────────────────────────────────
@@ -565,12 +593,7 @@ pub async fn refresh_oauth_token() -> bool {
 /// Verify the Matrix identity and live administrator role through the host.
 /// Pasion administrative scopes are checked separately by its own API.
 async fn verify_session() -> Result<crate::api::browser_auth::Session, HttpError> {
-    match crate::api::browser_auth::ensure_session().await {
-        Err(e) if e.status == 401 && handle_unauthorized().await => {
-            crate::api::browser_auth::ensure_session().await
-        }
-        result => result,
-    }
+    crate::api::browser_auth::ensure_session().await
 }
 
 pub async fn verify_admin() -> Result<bool, HttpError> {
@@ -585,9 +608,16 @@ pub async fn verify_admin() -> Result<bool, HttpError> {
 /// prove a newly assigned admin role, so request the missing authorization for
 /// that exact account before rendering management pages. None means redirecting.
 pub async fn verify_access_on_load() -> Result<Option<bool>, HttpError> {
+    let generation = storage::session_generation();
     let session = verify_session().await?;
     if !session.is_admin {
         let viewer = pasion_viewer().await?;
+        if storage::session_generation() != generation {
+            return Err(HttpError::from_status(
+                401,
+                "The session changed. Sign in again.",
+            ));
+        }
         if account_can_request_admin(&viewer, &session.user_id) {
             remember_return_route();
             start_oauth_login(true).await?;
@@ -618,10 +648,15 @@ pub fn handle_forbidden() {
     }
     // Spawned on the root scope so it survives the page that got the 403 and
     // runs inside the Dioxus runtime (it writes a GlobalSignal).
-    dioxus::dioxus_core::spawn_forever(async {
+    let generation = storage::session_generation();
+    dioxus::dioxus_core::spawn_forever(async move {
         loop {
             REVERIFY_AGAIN.with(|flag| flag.set(false));
-            match verify_admin().await {
+            let result = verify_admin().await;
+            if storage::session_generation() != generation {
+                break;
+            }
+            match result {
                 Ok(flag) => crate::router::set_admin_verdict(flag),
                 Err(error) => {
                     crate::router::set_access_error(error.message);
@@ -638,34 +673,58 @@ pub fn handle_forbidden() {
 
 // ── Logout ───────────────────────────────────────────────────────────────────
 
+#[derive(Debug, PartialEq, Eq)]
+enum LogoutRequest {
+    Browser { csrf: String },
+    OAuthRevocation { body: String },
+}
+
+fn logout_plan(
+    token: Option<&str>,
+    oauth: bool,
+    client_id: &str,
+    csrf: Option<&str>,
+) -> Vec<LogoutRequest> {
+    let mut requests = Vec::new();
+    if let Some(csrf) = csrf.filter(|value| !value.is_empty()) {
+        requests.push(LogoutRequest::Browser { csrf: csrf.into() });
+    }
+    if oauth && let Some(token) = token {
+        requests.push(LogoutRequest::OAuthRevocation {
+            body: format!(
+                "token={}&client_id={}",
+                urlencoding::encode(token),
+                urlencoding::encode(client_id)
+            ),
+        });
+    }
+    requests
+}
+
 pub async fn logout() -> Result<(), HttpError> {
-    crate::api::browser_auth::logout().await;
-    // Step 1: revoke the OAuth access token so it can no longer be used
-    // against palpo's admin API.
-    if let Some(token) = storage::get_item("access_token")
-        && storage::get_item("auth_kind").as_deref() == Some("oauth2")
-    {
-        let client_id = crate::utils::config::get_oauth_client_id();
-        let body = format!(
-            "token={}&client_id={}",
-            urlencoding::encode(&token),
-            urlencoding::encode(&client_id),
-        );
-        let _ = send_oauth_form_request("/oauth2/revoke", &body).await;
+    let token = storage::get_item("access_token");
+    let oauth = storage::get_item("auth_kind").as_deref() == Some("oauth2");
+    let browser_session = crate::api::browser_auth::take_session();
+    let plan = logout_plan(
+        token.as_deref(),
+        oauth,
+        &crate::utils::config::get_oauth_client_id(),
+        browser_session
+            .as_ref()
+            .map(|session| session.csrf.as_str()),
+    );
+    storage::retire_session();
+    let generation = storage::session_generation();
+    for request in plan {
+        match request {
+            LogoutRequest::Browser { csrf } => {
+                crate::api::browser_auth::logout_session(&csrf, generation).await
+            }
+            LogoutRequest::OAuthRevocation { body } => {
+                let _ = send_oauth_form_request("/oauth2/revoke", &body).await;
+            }
+        }
     }
-
-    // End the Pasion browser session only when it supplied this login.
-    if storage::get_item("auth_kind").as_deref() == Some("oauth2") {
-        let _ = Request::post("/auth/api/v1/auth/logout")
-            .header("Accept", "application/json")
-            .send()
-            .await;
-    }
-
-    // Clear cached identity / admin verdict so the next login starts fresh.
-    storage::remove_item("is_admin");
-    crate::router::reset_admin_cache();
-    crate::utils::config::clear_config();
     Ok(())
 }
 
@@ -680,6 +739,7 @@ pub fn is_authenticated() -> bool {
 }
 
 pub async fn get_identity() -> Option<(String, Option<String>, Option<String>)> {
+    let generation = storage::session_generation();
     let access_token = storage::get_item("access_token")?;
     let user_id = storage::get_item("user_id")?;
 
@@ -695,11 +755,17 @@ pub async fn get_identity() -> Option<(String, Option<String>, Option<String>)> 
         .await
         .ok()?;
 
+    if storage::session_generation() != generation {
+        return None;
+    }
     if response.status() >= 400 {
         return Some((user_id, None, None));
     }
 
     let profile: ProfileResponse = response.json().await.ok()?;
+    if storage::session_generation() != generation {
+        return None;
+    }
     Some((user_id, profile.displayname, profile.avatar_url))
 }
 
@@ -750,7 +816,31 @@ pub async fn get_oidc_discovery(issuer_url: &str) -> Result<serde_json::Value, H
 
 #[cfg(test)]
 mod tests {
-    use super::{account_needs_admin_scope, build_oauth_scope};
+    use super::{LogoutRequest, account_needs_admin_scope, build_oauth_scope, logout_plan};
+    #[test]
+    fn logout_plan_contains_only_original_csrf_and_explicit_token_revocation() {
+        assert!(logout_plan(None, false, "client", None).is_empty());
+        assert_eq!(
+            logout_plan(Some("alice+token"), true, "client", None),
+            vec![LogoutRequest::OAuthRevocation {
+                body: "token=alice%2Btoken&client_id=client".into()
+            }]
+        );
+        assert_eq!(
+            logout_plan(Some("alice"), true, "client", Some("alice-csrf")),
+            vec![
+                LogoutRequest::Browser {
+                    csrf: "alice-csrf".into()
+                },
+                LogoutRequest::OAuthRevocation {
+                    body: "token=alice&client_id=client".into()
+                }
+            ]
+        );
+        // No CSRF means no cookie-authenticated logout, even when the browser
+        // cookie now belongs to another account. SSO is managed by Pasion itself.
+        assert!(logout_plan(None, true, "client", Some("")).is_empty());
+    }
     #[test]
     fn automatic_admin_authorization_is_bound_to_same_pasion_identity() {
         let admin = serde_json::json!({"viewer":{"can_request_admin":true,"matrix":{"mxid":"@admin:server"}}});

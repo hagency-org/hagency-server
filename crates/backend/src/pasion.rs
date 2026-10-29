@@ -338,13 +338,26 @@ impl salvo::Handler for DelegatedAdminGuard {
         res: &mut salvo::Response,
         ctrl: &mut salvo::FlowCtrl,
     ) {
-        let path = req.uri().path();
-        if !["/_palpo/admin", "/_synapse/admin"]
-            .iter()
-            .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
-        {
+        // Use the router's parser itself: it decodes each segment once and
+        // ignores repeated/trailing separators. Raw URI prefix checks disagree.
+        let mut path = salvo::routing::PathState::from_borrowed_path(req.uri().path());
+        let namespace = match path.pick() {
+            Some("_palpo") => "_palpo",
+            Some("_synapse") => "_synapse",
+            _ => return,
+        };
+        path.forward(namespace.len());
+        if path.pick() != Some("admin") {
             return;
         }
+        path.forward("admin".len());
+        let mut decoded = vec![namespace.to_owned(), "admin".into()];
+        while let Some(part) = path.pick() {
+            let width = part.len();
+            decoded.push(part.to_owned());
+            path.forward(width);
+        }
+        let parts = decoded.iter().map(String::as_str).collect::<Vec<_>>();
         let token = match req.headers().get("authorization") {
             Some(header) => header
                 .to_str()
@@ -377,23 +390,21 @@ impl salvo::Handler for DelegatedAdminGuard {
             Some(value) if allows_palpo_admin(&value) => {
                 // Human credentials and account creation must not bypass the
                 // identity provider through the copied Matrix admin screens.
-                let user_write =
-                    regex::Regex::new(r"^/(?:_palpo|_synapse)/admin/v2/users/([^/]+)$").unwrap();
-                let path = req.uri().path().to_owned();
+                let user_write = match parts.as_slice() {
+                    [_, "admin", "v2", "users", user]
+                        if req.method() == salvo::http::Method::PUT =>
+                    {
+                        Some(*user)
+                    }
+                    _ => None,
+                };
                 let password_reset = req.method() == salvo::http::Method::POST
-                    && path.contains("/admin/v1/reset_password/");
-                let blocked = if let Some(captures) = user_write
-                    .captures(&path)
-                    .filter(|_| req.method() == salvo::http::Method::PUT)
-                {
+                    && matches!(parts.as_slice(), [_, "admin", "v1", "reset_password", _]);
+                let blocked = if let Some(user) = user_write {
                     match req.parse_json::<Value>().await {
                         Ok(input) => {
-                            let user = percent_encoding::percent_decode_str(&captures[1])
-                                .decode_utf8()
-                                .ok()
-                                .and_then(|id| {
-                                    palpo::core::OwnedUserId::try_from(id.as_ref()).ok()
-                                });
+                            // PathState already decoded this exact routing segment.
+                            let user = palpo::core::OwnedUserId::try_from(user).ok();
                             match user {
                                 Some(user) => {
                                     !input["password"].is_null()
@@ -471,6 +482,139 @@ fn write_private_once(path: &Path, value: &Value) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[salvo::handler]
+    async fn guarded_route_reached(res: &mut salvo::Response) {
+        res.status_code(salvo::http::StatusCode::NO_CONTENT);
+    }
+
+    async fn admin_guard_fixture() -> (salvo::Service, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint =
+            url::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let worker = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut raw = Vec::new();
+                    loop {
+                        let mut chunk = [0; 4096];
+                        let n = stream.read(&mut chunk).await.unwrap();
+                        assert!(n > 0);
+                        raw.extend_from_slice(&chunk[..n]);
+                        assert!(raw.len() < 16384);
+                        if let Some(end) = raw.windows(4).position(|v| v == b"\r\n\r\n") {
+                            let headers = String::from_utf8_lossy(&raw[..end]);
+                            let length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    line.to_ascii_lowercase()
+                                        .strip_prefix("content-length:")
+                                        .map(|v| v.trim().parse::<usize>().unwrap())
+                                })
+                                .unwrap();
+                            if raw.len() >= end + 4 + length {
+                                break;
+                            }
+                        }
+                    }
+                    let high_scope = String::from_utf8_lossy(&raw).contains("token=admin-token");
+                    let body = json!({"active":true,"scope":if high_scope {
+                        "urn:matrix:client:api:* urn:palpo:admin:*"
+                    } else { "urn:matrix:client:api:*" }})
+                    .to_string();
+                    stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+                });
+            }
+        });
+        let guard = DelegatedAdminGuard {
+            endpoint,
+            secret: "fixture-secret".into(),
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap(),
+        };
+        let mut router = salvo::Router::new().hoop(guard);
+        for namespace in ["_palpo", "_synapse"] {
+            router = router.push(
+                salvo::Router::with_path(format!("{namespace}/admin"))
+                    .push(salvo::Router::with_path("v1/appservices").get(guarded_route_reached))
+                    .push(
+                        salvo::Router::with_path("v1/reset_password/{user}")
+                            .post(guarded_route_reached),
+                    )
+                    .push(salvo::Router::with_path("v2/users/{user}").put(guarded_route_reached)),
+            );
+        }
+        (salvo::Service::new(router), worker)
+    }
+
+    #[tokio::test]
+    async fn admin_guard_uses_the_same_path_segments_as_salvo() {
+        use salvo::{http::StatusCode, test::TestClient};
+        let (service, worker) = admin_guard_fixture().await;
+        for path in [
+            "/_palpo/admin/v1/appservices",
+            "/_%70alpo/admin/v1/appservices",
+            "/_palpo/%61dmin/v1/appservices",
+            "/_palpo//admin/v1/appservices",
+            "//_palpo/admin/v1/appservices",
+            "/_palpo/admin/v1/appservices/",
+            "/_synapse/admin/v1/appservices",
+            "/_%73ynapse/admin/v1/appservices",
+            "/_synapse//admin/v1/appservices",
+        ] {
+            for (token, expected) in [
+                (None, StatusCode::UNAUTHORIZED),
+                (Some("low-scope"), StatusCode::FORBIDDEN),
+                (Some("admin-token"), StatusCode::NO_CONTENT),
+            ] {
+                let mut request = TestClient::get(format!("http://example.test{path}"));
+                if let Some(token) = token {
+                    request = request.bearer_auth(token);
+                }
+                let reply = request.send(&service).await;
+                assert_eq!(reply.status_code, Some(expected), "{path} {token:?}");
+            }
+        }
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn account_password_writes_cannot_bypass_pasion_with_path_variants() {
+        use salvo::{http::StatusCode, test::TestClient};
+        let (service, worker) = admin_guard_fixture().await;
+        for namespace in ["_palpo", "_synapse"] {
+            for path in [
+                format!("/{namespace}/admin/v2/users/%40alice%3Aexample.test"),
+                format!("/{namespace}/admin/v%32/u%73ers/%40alice%3Aexample.test/"),
+                format!("/{namespace}//admin/v2/users/%40alice%3Aexample.test"),
+            ] {
+                let reply = TestClient::put(format!("http://example.test{path}"))
+                    .bearer_auth("admin-token")
+                    .json(&json!({"password":"fixture-only"}))
+                    .send(&service)
+                    .await;
+                assert_eq!(reply.status_code, Some(StatusCode::FORBIDDEN), "{path}");
+            }
+            for path in [
+                format!("/{namespace}/admin/v1/reset_password/%40alice%3Aexample.test"),
+                format!("/{namespace}/%61dmin/v1/reset%5fpassword/%40alice%3Aexample.test/"),
+                format!("/{namespace}//admin/v1/reset_password/%40alice%3Aexample.test"),
+            ] {
+                let reply = TestClient::post(format!("http://example.test{path}"))
+                    .bearer_auth("admin-token")
+                    .json(&json!({"new_password":"fixture-only"}))
+                    .send(&service)
+                    .await;
+                assert_eq!(reply.status_code, Some(StatusCode::FORBIDDEN), "{path}");
+            }
+        }
+        worker.abort();
+    }
+
     #[test]
     fn delegated_administration_requires_live_exact_scope() {
         assert!(allows_palpo_admin(
