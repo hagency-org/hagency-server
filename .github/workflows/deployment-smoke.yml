@@ -89,11 +89,12 @@ jobs:
           docker run -d --name "$backup_database" \
             -e POSTGRES_USER=hagency_backup -e POSTGRES_DB=postgres -e POSTGRES_PASSWORD \
             -p 127.0.0.1::5432 postgres:18.6-alpine >/dev/null
+          # The initdb server is socket-only; require the final TCP listener.
           for _attempt in $(seq 1 60); do
-            if docker exec "$backup_database" pg_isready -U hagency_backup -d postgres >/dev/null; then break; fi
+            if docker exec "$backup_database" pg_isready -h 127.0.0.1 -U hagency_backup -d postgres >/dev/null; then break; fi
             sleep 1
           done
-          docker exec "$backup_database" pg_isready -U hagency_backup -d postgres
+          docker exec "$backup_database" pg_isready -h 127.0.0.1 -U hagency_backup -d postgres
           database_port=$(docker port "$backup_database" 5432/tcp | sed 's/.*://')
           {
             echo "HAGENCY_TEST_POSTGRES_CONTAINER=$backup_database"
