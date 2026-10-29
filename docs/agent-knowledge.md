@@ -88,3 +88,12 @@ with the manager: `management_shared_approvals.requester_mxid` stores the manage
 `payload.requesterMxid` keeps the actual sender. Chat status still shows each sender only
 their own intake. The native executor no longer requires work requester == manager.
 Updated PostgreSQL cases in shared intake/execution tests were not run (no Docker).
+The database trigger validate_shared_work also required requesterMxid == manager; a
+member's work insert raised shared_work_binding_changed and budget-work/poll returned
+503. Schema 28 (management_shared_room_members_schema.sql) redefines only that function
+without the condition; demand triggers still require requester == retained sender. It
+was applied to a restored scratch copy of River (up and down to 27) before deployment.
+River release 20261029T015402Z runs schema 28; admin's mention was answered in thread.
+Deploy gotcha: a locally built hagency-server links libpq at .run/libpq; rewrite it with
+install_name_tool -change ... @executable_path/../lib/libpq.5.dylib and ad-hoc codesign,
+or launchd fails with OS_REASON_DYLD (cost 2-3 min of River downtime once).
