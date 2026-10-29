@@ -8,6 +8,7 @@ use crate::{
 use serde_json::{Value, json};
 #[path = "management_agent_budget.rs"]
 mod budget;
+pub(in crate::domain::management) use budget::chain_reserved_total;
 #[path = "management_agent_cleanup.rs"]
 mod cleanup;
 #[path = "management_agent_settlement.rs"]

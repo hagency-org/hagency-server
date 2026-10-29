@@ -147,7 +147,8 @@ async fn fresh_base(
     now: i64,
 ) -> Result<BudgetContext> {
     let cx=if r.pool_contribution_id.is_some() {
-        let g=pool::current_grant(db,r,now).await?;
+        // Top-ups follow the pool's chain: the effective grant sets the limit.
+        let g=pool::effective_grant(db,r,now).await?;
         if !pool::command_live(db,r,c,now).await? || r.administrator_user_id!=b.owner_user_id {
             return Err(Error::Conflict("agent_budget_authority_changed"));
         }
@@ -234,6 +235,48 @@ async fn head(
 async fn pending(db: &mut AsyncPgConnection, id: &str) -> Result<bool> {
     Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_topups t LEFT JOIN hagency_agent_v1.management_agent_budget_commands c ON c.topup_id=t.id LEFT JOIN hagency_agent_v1.management_agent_budget_results r ON r.command_id=c.id WHERE t.request_id=$1 AND (t.state='pending' AND t.expires_at_ms>(extract(epoch from clock_timestamp())*1000)::bigint OR t.state IN('approved','cancellation_requested') AND r.command_id IS NULL)) AS matched").bind::<Text,_>(id).get_result::<Flag>(db).await?.matched)
 }
+/// What the server knows the pool Agents of one capacity chain hold: each
+/// live reserved Agent's budget floor, and the requested amount of every
+/// approved reserve whose native outcome is not yet known. A successor grant
+/// may not be smaller (the native ledger independently checks its own floor).
+pub(in crate::domain::management) async fn chain_reserved_total(
+    db: &mut AsyncPgConnection,
+    root: &str,
+    server: &str,
+) -> Result<i64> {
+    #[derive(QueryableByName)]
+    struct Live {
+        #[diesel(sql_type=Text)]
+        id: String,
+        #[diesel(sql_type=BigInt)]
+        requested_tokens: i64,
+        #[diesel(sql_type=Bool)]
+        assigned: bool,
+        #[diesel(sql_type=Text)]
+        reserve_state: String,
+    }
+    let rows=sql_query("SELECT q.id,q.requested_tokens,EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a WHERE a.request_id=q.id) AS assigned,coalesce(w.receipt::jsonb->>'state','unknown') AS reserve_state FROM hagency_agent_v1.management_agent_requests q JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=q.id JOIN hagency_agent_v1.management_agent_executor_commands w ON w.intent_id=i.id AND w.operation='agent.reserve' WHERE q.pool_grant_id IN (SELECT id FROM hagency_agent_v1.management_resource_grants WHERE chain_root_id=$1) AND i.state<>'fenced' ORDER BY q.id LIMIT 1001")
+        .bind::<Text,_>(root).load::<Live>(db).await?;
+    if rows.len() > 1000 {
+        return Err(Error::Unavailable("agent_budget_history_capacity"));
+    }
+    let mut held: i64 = 0;
+    for row in rows {
+        let value = if row.assigned {
+            let (b, _, receipt) = base(db, &row.id, server).await?;
+            head(db, &row.id, &b, &receipt, server).await?.floor
+        } else if row.reserve_state != "refused" {
+            row.requested_tokens
+        } else {
+            0
+        };
+        held = held
+            .checked_add(value)
+            .filter(|n| *n <= MAX_EXACT)
+            .ok_or(Error::Unavailable("shared_usage_overflow"))?;
+    }
+    Ok(held)
+}
 /// A missing top-up result may already have increased the native hold. Cleanup
 /// reads must retain that possibility even after admission/budget issuance stops.
 /// A complete native fence remains the separate authority for a lower balance.
@@ -261,13 +304,15 @@ async fn fits_parent(
     add: i64,
     server: &str,
 ) -> Result<()> {
-    let rows=sql_query("SELECT q.id FROM hagency_agent_v1.management_agent_requests q JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=q.id WHERE (($2::text IS NULL AND q.pool_grant_id IS NULL AND q.allocation_id=$1) OR q.pool_grant_id=$2) ORDER BY q.id LIMIT 1001").bind::<Text,_>(&r.allocation_id).bind::<Nullable<Text>,_>(&r.pool_grant_id).load::<Key>(db).await?;
+    // A pool Agent's parent is its whole capacity chain (renewals and
+    // amendments carry Agents), bounded by the effective grant's amount.
+    let rows=sql_query("SELECT q.id FROM hagency_agent_v1.management_agent_requests q JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=q.id WHERE (($2::text IS NULL AND q.pool_grant_id IS NULL AND q.allocation_id=$1) OR q.pool_grant_id IN (SELECT id FROM hagency_agent_v1.management_resource_grants WHERE chain_root_id=(SELECT chain_root_id FROM hagency_agent_v1.management_resource_grants WHERE id=$2))) ORDER BY q.id LIMIT 1001").bind::<Text,_>(&r.allocation_id).bind::<Nullable<Text>,_>(&r.pool_grant_id).load::<Key>(db).await?;
     if rows.len() > 1000 {
         return Err(Error::Unavailable("agent_budget_history_capacity"));
     }
     // An approved reserve with no acknowledged child may already have applied.
     // Keep that original commitment until an exact refusal/absence receipt exists.
-    let unresolved=sql_query("SELECT LEAST(coalesce(sum(q.requested_tokens),0),9007199254740992)::bigint AS now FROM hagency_agent_v1.management_agent_requests q JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=q.id JOIN hagency_agent_v1.management_agent_executor_commands w ON w.intent_id=i.id AND w.operation='agent.reserve' WHERE (($2::text IS NULL AND q.pool_grant_id IS NULL AND q.allocation_id=$1) OR q.pool_grant_id=$2) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a WHERE a.request_id=q.id) AND coalesce(w.receipt::jsonb->>'state','unknown')<>'refused' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands f WHERE f.intent_id=i.id AND f.operation='agent.fence' AND f.receipt::jsonb->>'state'='absent_fenced')").bind::<Text,_>(&r.allocation_id).bind::<Nullable<Text>,_>(&r.pool_grant_id).get_result::<Clock>(db).await?.now;
+    let unresolved=sql_query("SELECT LEAST(coalesce(sum(q.requested_tokens),0),9007199254740992)::bigint AS now FROM hagency_agent_v1.management_agent_requests q JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=q.id JOIN hagency_agent_v1.management_agent_executor_commands w ON w.intent_id=i.id AND w.operation='agent.reserve' WHERE (($2::text IS NULL AND q.pool_grant_id IS NULL AND q.allocation_id=$1) OR q.pool_grant_id IN (SELECT id FROM hagency_agent_v1.management_resource_grants WHERE chain_root_id=(SELECT chain_root_id FROM hagency_agent_v1.management_resource_grants WHERE id=$2))) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a WHERE a.request_id=q.id) AND coalesce(w.receipt::jsonb->>'state','unknown')<>'refused' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands f WHERE f.intent_id=i.id AND f.operation='agent.fence' AND f.receipt::jsonb->>'state'='absent_fenced')").bind::<Text,_>(&r.allocation_id).bind::<Nullable<Text>,_>(&r.pool_grant_id).get_result::<Clock>(db).await?.now;
     if unresolved > MAX_EXACT {
         return Err(Error::Unavailable("shared_usage_overflow"));
     }

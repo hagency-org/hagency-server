@@ -11,6 +11,8 @@ struct GrantRow {
     #[diesel(sql_type=Text)]
     id: String,
     #[diesel(sql_type=Text)]
+    contribution_id: String,
+    #[diesel(sql_type=Text)]
     owner_user_id: String,
     #[diesel(sql_type=Text)]
     executor_device_id: String,
@@ -28,6 +30,8 @@ struct GrantRow {
     expires_at_ms: i64,
     #[diesel(sql_type=BigInt)]
     observed_at_ms: i64,
+    #[diesel(sql_type=Text)]
+    chain_root_id: String,
     #[diesel(sql_type=BigInt)]
     period_start_ms: i64,
 }
@@ -407,6 +411,15 @@ pub(super) async fn live_grant_for_pool(
     }
     Ok(current)
 }
+/// `ancestor` is `grant` itself or one of its predecessors.
+pub(super) async fn chain_contains(
+    db: &mut AsyncPgConnection,
+    ancestor: &str,
+    grant: &str,
+) -> Result<bool> {
+    Ok(sql_query("WITH RECURSIVE up(id,predecessor,depth) AS (SELECT id,predecessor_grant_id,0 FROM hagency_agent_v1.management_resource_grants WHERE id=$2 UNION ALL SELECT g.id,g.predecessor_grant_id,up.depth+1 FROM hagency_agent_v1.management_resource_grants g JOIN up ON g.id=up.predecessor WHERE up.depth<4096) SELECT EXISTS(SELECT 1 FROM up WHERE id=$1) AS matched")
+        .bind::<Text,_>(ancestor).bind::<Text,_>(grant).get_result::<Flag>(db).await?.matched)
+}
 
 pub(super) async fn seed_for_project(
     db: &mut AsyncPgConnection,
@@ -578,6 +591,34 @@ pub(super) async fn retire_grant(
     }
     Ok(())
 }
+/// Withdraw `id` and every still-active grant that succeeds it. Returns the
+/// successors withdrawn with it.
+pub(super) async fn retire_chain_from(
+    db: &mut AsyncPgConnection,
+    p: &Principal,
+    policy: &ManagementPolicy,
+    id: &str,
+    now: i64,
+) -> Result<Vec<String>> {
+    let successors = active_descendants(db, id).await?;
+    retire_grant(db, p, policy, id, now).await?;
+    for successor in &successors {
+        retire_grant(db, p, policy, successor, now).await?;
+    }
+    Ok(successors)
+}
+/// Every still-active grant that succeeds `id` in its chain. A successor
+/// depends on its predecessor's receipt, so withdrawing the predecessor also
+/// withdraws them (in particular a scheduled renewal).
+pub(super) async fn active_descendants(db: &mut AsyncPgConnection, id: &str) -> Result<Vec<String>> {
+    #[derive(QueryableByName)]
+    struct Id {
+        #[diesel(sql_type=Text)]
+        id: String,
+    }
+    Ok(sql_query("WITH RECURSIVE down(id,state,depth) AS (SELECT id,state,0 FROM hagency_agent_v1.management_resource_grants WHERE predecessor_grant_id=$1 UNION ALL SELECT g.id,g.state,down.depth+1 FROM hagency_agent_v1.management_resource_grants g JOIN down ON g.predecessor_grant_id=down.id WHERE down.depth<4096) SELECT id FROM down WHERE state='active' ORDER BY id")
+        .bind::<Text,_>(id).load::<Id>(db).await?.into_iter().map(|row| row.id).collect())
+}
 pub(super) async fn revoke_for_contribution(
     db: &mut AsyncPgConnection,
     p: &Principal,
@@ -652,7 +693,11 @@ impl DomainStore {
         let (executor, _) = device(p)?;
         if !matches!(
             input.operation.as_str(),
-            "grant.publish" | "grant.revoke" | "allocation.decide" | "allocation.release"
+            "grant.publish"
+                | "grant.succeed"
+                | "grant.revoke"
+                | "allocation.decide"
+                | "allocation.release"
         ) {
             return Err(Error::Invalid("invalid_management_operation"));
         }
@@ -727,6 +772,111 @@ impl DomainStore {
             for m in rows {seed_for_project(db,policy,&m.id,now).await?;}
             let result=grant_view(&grant(db,&r.grant_id).await?,now)?;
             Self::audit(db,p,"grant.publish",&r.grant_id,now).await?;receipt(db,p,&input.command_id,"grant.publish",&payload_digest,&result).await?;Ok(result)
+        }).await
+    }
+
+    /// Publish an owner-confirmed v3 successor of the pool's effective grant.
+    /// An amendment supersedes its predecessor in this same transaction, so
+    /// exactly one grant of the chain is effective before and after (N1, N2).
+    /// A renewal is scheduled for the next UTC month during the last days of
+    /// the current one. Native custody already holds the successor's capacity.
+    pub async fn publish_management_grant_successor(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        id: &str,
+        input: SucceedGrantInput,
+    ) -> Result<ResourceGrantView> {
+        enabled(policy)?;
+        if !policy.pool_grant_succession() {
+            return Err(Error::Unavailable("pool_grant_succession_unavailable"));
+        }
+        key(id)?;
+        key(&input.command_id)?;
+        input.receipt.validate(&self.server)?;
+        let succession = input
+            .receipt
+            .succession
+            .clone()
+            .filter(|s| input.receipt.version == 3 && s.predecessor_grant_id == id)
+            .ok_or(Error::Invalid("invalid_grant_succession"))?;
+        let (executor, generation) = device(p)?;
+        if input.expected_contribution_revision <= 0 || input.expected_predecessor_revision <= 0 {
+            return Err(Error::Invalid("invalid_management_revision"));
+        }
+        let payload_digest = digest(id, &input)?;
+        let receipt_digest = allocation_digest(&input.receipt)?;
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
+            let pred=sql_query("SELECT * FROM hagency_agent_v1.management_resource_grants WHERE id=$1").bind::<Text,_>(id).get_result::<GrantRow>(db).await.optional()?
+                .filter(|g| g.owner_user_id==p.user_id).ok_or(Error::NotFound("resource_grant_not_found"))?;
+            let pr:NativeGrantReceipt=decode(&pred.receipt)?;
+            let (owner,c)=contribution(db,&pred.contribution_id).await?;
+            if owner!=p.user_id || executor!=c.executor_device_id || generation!=c.executor_generation{return Err(Error::Unauthorized("contribution_executor_required"));}
+            if let Some(saved)=replay::<ResourceGrantView>(db,p,&input.command_id,"grant.succeed",&payload_digest).await? {return grant_view(&grant(db,&saved.id).await?,now);}
+            let r=&input.receipt;
+            if c.state!="admitted" {return Err(Error::Conflict("contribution_not_admitted"));}
+            if c.revision!=input.expected_contribution_revision || pred.revision!=input.expected_predecessor_revision {return Err(Error::Conflict("management_revision_changed"));}
+            // Same pool, executor, owner, admission and policy as the predecessor.
+            if r.contribution_id!=pred.contribution_id || r.contribution_id!=c.id || r.capability!=pr.capability
+                || r.owner_mxid!=p.mxid || r.owner_mxid!=pr.owner_mxid
+                || r.executor_device_id!=executor || r.executor_device_id!=pr.executor_device_id
+                || r.executor_generation!=generation || r.executor_generation!=pr.executor_generation
+                || r.resource_id!=c.resource_id || r.resource_id!=pr.resource_id
+                || r.resource_revision!=c.resource_revision || r.resource_revision!=pr.resource_revision
+                || r.coordinator_mxid!=p.mxid || c.coordinator_mxid!=p.mxid || r.coordinator_mxid!=pr.coordinator_mxid
+                || r.enrollment_id!=pr.enrollment_id || r.allow_self_approval!=pr.allow_self_approval
+                || r.admission_request_id.is_none() || r.admission_request_id!=pr.admission_request_id
+                || r.admission_request_id.as_deref()!=Some(c.request_id.as_str())
+            {return Err(Error::Invalid("resource_grant_binding_mismatch"));}
+            // Managers may be added, never removed: removal would silently stop
+            // that manager's carried Agents.
+            if !pr.eligible_managers.iter().all(|m| r.eligible_managers.contains(m))
+                || r.grant_revision!=pr.grant_revision+1
+                || succession.predecessor_receipt_digest!=pred.receipt_digest
+                || r.delegation_expires_at_ms<=now.max(r.period_start_ms)
+                || r.delegation_expires_at_ms>now+366*86400000
+                || r.ledger_revision<=pr.ledger_revision
+            {return Err(Error::Invalid("invalid_grant_succession"));}
+            executor_live(db,&owner,&c,now).await?;
+            let existing=sql_query("SELECT * FROM hagency_agent_v1.management_resource_grants WHERE id=$1").bind::<Text,_>(&r.grant_id).get_result::<GrantRow>(db).await.optional()?;
+            if let Some(existing)=existing {
+                if existing.owner_user_id!=p.user_id || existing.receipt_digest!=receipt_digest {return Err(Error::Conflict("resource_grant_conflict"));}
+                let result=grant_view(&existing,now)?;receipt(db,p,&input.command_id,"grant.succeed",&payload_digest,&result).await?;return Ok(result);
+            }
+            if pred.state!="active" || !grant_live(db,&pred,now).await? {return Err(Error::Conflict("grant_predecessor_not_effective"));}
+            // One live successor per grant. While a renewal is scheduled the
+            // owner cancels (revokes) it before amending this month (Q7).
+            if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE predecessor_grant_id=$1 AND state<>'revoked') AS matched").bind::<Text,_>(id).get_result::<Flag>(db).await?.matched
+            {return Err(Error::Conflict("grant_successor_exists"));}
+            if succession.renewal() {
+                let next=sql_query("SELECT to_char(to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC','YYYY-MM') AS key,(extract(epoch FROM (date_trunc('month',to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))*1000)::bigint AS start_ms,(extract(epoch FROM ((date_trunc('month',to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'))*1000)::bigint AS end_ms").bind::<BigInt,_>(pr.period_end_ms).get_result::<PeriodRow>(db).await?;
+                if r.period_start_ms!=pr.period_end_ms || r.period_key!=next.key || r.period_start_ms!=next.start_ms || r.period_end_ms!=next.end_ms {return Err(Error::Invalid("invalid_grant_period"));}
+                if now<pr.period_end_ms-RENEWAL_WINDOW_MS || now>=pr.period_end_ms {return Err(Error::Conflict("grant_succession_window_closed"));}
+            } else if r.period_key!=pr.period_key || r.period_start_ms!=pr.period_start_ms || r.period_end_ms!=pr.period_end_ms {
+                return Err(Error::Invalid("invalid_grant_period"));
+            }
+            if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND period_key=$2 AND state='active' AND id<>$3) AS matched").bind::<Text,_>(&pred.contribution_id).bind::<Text,_>(&r.period_key).bind::<Text,_>(id).get_result::<Flag>(db).await?.matched
+            {return Err(Error::Conflict("resource_grant_already_exists"));}
+            // The native ledger is the authority for the floor; the server
+            // still refuses to publish below what it knows the chain holds.
+            let reserved=super::agents::chain_reserved_total(db,&pred.chain_root_id,&self.server).await?;
+            if r.allocated_tokens<reserved {return Err(Error::Conflict("grant_successor_below_reserved"));}
+            if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(r.ledger_revision).get_result::<Flag>(db).await?.matched
+            {return Err(Error::Conflict("agent_executor_ledger_revision_changed"));}
+            super::agents::executor::validate_external_ledger_receipt(db,&p.user_id,executor,r.ledger_revision,r.ledger_revision).await?;
+            if !succession.renewal() {
+                // Supersede first: the (contribution, month) active index admits one.
+                let changed=sql_query("UPDATE hagency_agent_v1.management_resource_grants SET state='superseded',revision=revision+1 WHERE id=$1 AND state='active'").bind::<Text,_>(id).execute(db).await?;
+                if changed!=1 {return Err(Error::Conflict("grant_predecessor_not_effective"));}
+            }
+            sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms,chain_root_id,predecessor_grant_id,succession,period_start_ms) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$11,$12,$13,$14)")
+                .bind::<Text,_>(&r.grant_id).bind::<Text,_>(&pred.contribution_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(generation)
+                .bind::<Text,_>(wire(r)?).bind::<Text,_>(&receipt_digest).bind::<Text,_>(&r.period_key).bind::<BigInt,_>(r.delegation_expires_at_ms.min(r.period_end_ms)).bind::<BigInt,_>(now)
+                .bind::<Text,_>(&pred.chain_root_id).bind::<Text,_>(id).bind::<Text,_>(&succession.kind).bind::<BigInt,_>(r.period_start_ms).execute(db).await?;
+            let result=grant_view(&grant(db,&r.grant_id).await?,now)?;
+            Self::audit(db,p,"grant.succeed",&r.grant_id,now).await?;receipt(db,p,&input.command_id,"grant.succeed",&payload_digest,&result).await?;Ok(result)
         }).await
     }
 
@@ -883,7 +1033,9 @@ impl DomainStore {
                 if g.revision != input.expected_revision {
                     return Err(Error::Conflict("management_revision_changed"));
                 }
-                retire_grant(db, p, policy, id, now).await?;
+                for successor in retire_chain_from(db, p, policy, id, now).await? {
+                    super::parents::enqueue_close(db, p, policy, &successor, "owner_withdrawal", now).await?;
+                }
                 super::parents::enqueue_close(db, p, policy, id, "owner_withdrawal", now).await?;
                 let result = grant_view(&grant(db, id).await?, now)?;
                 Self::audit(db, p, "grant.revoke", id, now).await?;

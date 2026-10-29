@@ -302,7 +302,8 @@ pub(super) async fn close_for_contribution(
     if !policy.parent_settlement() {
         return Ok(());
     }
-    let grants=sql_query("SELECT * FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 ORDER BY id").bind::<Text,_>(id).load::<Grant>(db).await?;
+    // A superseded grant's capacity moved to its successor, which is closed.
+    let grants=sql_query("SELECT * FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND state<>'superseded' ORDER BY id").bind::<Text,_>(id).load::<Grant>(db).await?;
     for g in grants {
         enqueue_close(db, p, policy, &g.id, "contribution_revoked", now).await?;
     }
@@ -359,7 +360,14 @@ impl DomainStore {
                 if g.revision != input.expected_grant_revision {
                     return Err(Error::Conflict("management_revision_changed"));
                 }
-                super::allocations::retire_grant(db, p, policy, id, now).await?;
+                let reason = if p.user_id == g.owner_user_id {
+                    "owner_withdrawal"
+                } else {
+                    "administrator_withdrawal"
+                };
+                for successor in super::allocations::retire_chain_from(db, p, policy, id, now).await? {
+                    enqueue_close(db, p, policy, &successor, reason, now).await?;
+                }
                 enqueue_close(
                     db,
                     p,

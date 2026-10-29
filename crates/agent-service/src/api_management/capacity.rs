@@ -80,6 +80,9 @@ pub(super) async fn call(
         (&Method::GET, ["grants", id]) => {
             json!({"grant":domain.management_resource_grant(p,policy,id).await?})
         }
+        (&Method::POST, ["grants", id, "successors"]) => {
+            json!({"grant":domain.publish_management_grant_successor(p,policy,id,body(req).await?).await?})
+        }
         (&Method::POST, ["grants", id, "revoke"]) => {
             json!({"grant":domain.revoke_management_grant(p,policy,id,body(req).await?).await?})
         }
