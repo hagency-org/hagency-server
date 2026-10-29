@@ -566,12 +566,10 @@ impl App {
                 if !gateway.visible(&project.space_id, &principal.mxid).await? {
                     return Err(Error::Unauthorized("project_membership_required"));
                 }
-                let mut pending = domain
-                    .registered_rooms(&principal, &project.id, now_ms())
-                    .await?
-                    .into_iter();
+                let registered=domain.registered_rooms(&principal,&project.id,now_ms()).await?;
+                let mut pending=registered.into_iter();
                 let mut checks = tokio::task::JoinSet::new();
-                let mut rooms = Vec::new();
+                let mut rooms = Vec::new();let mut children=Vec::new();
                 loop {
                     while checks.len() < 8 {
                         let Some(room) = pending.next() else {
@@ -581,15 +579,16 @@ impl App {
                         let actor = principal.mxid.clone();
                         let space = project.space_id.clone();
                         checks.spawn(async move {
-                            let metadata=tokio::time::timeout(std::time::Duration::from_secs(8),gateway.room_navigation_metadata(&room.room_id,&space,&actor))
+                            let (candidate,metadata)=tokio::time::timeout(std::time::Duration::from_secs(8),gateway.room_navigation_facts(&room.room_id,&space,&actor))
                                 .await.map_err(|_|Error::Unavailable("matrix_state_timeout"))??;
-                            Ok::<_,Error>((room,metadata))
+                            Ok::<_,Error>((room,metadata,candidate))
                         });
                     }
                     let Some(checked) = checks.join_next().await else {
                         break;
                     };
-                    let (room,metadata)=checked.map_err(|_|Error::Unavailable("matrix_state_unavailable"))??;
+                    let (room,metadata,candidate)=checked.map_err(|_|Error::Unavailable("matrix_state_unavailable"))??;
+                    if candidate {children.push(room.room_id.clone());}
                     if let Some(metadata)=metadata {
                         let mut value=serde_json::to_value(room).map_err(|_|Error::Unavailable("invalid_room_response"))?;
                         value["name"]=metadata["name"].clone();value["topic"]=metadata["topic"].clone();value["membership"]=metadata["membership"].clone();
@@ -599,8 +598,10 @@ impl App {
                 self.store
                     .authenticate(&credential, now_ms(), false)
                     .await?;
-                rooms.sort_by(|a, b| a["roomId"].as_str().cmp(&b["roomId"].as_str()));
-                return Ok(json!({"rooms":rooms}));
+                let navigation=domain.board.reconcile_room_default(&project.id,children).await?;
+                for room in &mut rooms {room["isDefault"]=json!(room["roomId"]==navigation["roomId"]);}
+                rooms.sort_by_key(|r|(r["isDefault"]!=true,r["name"].as_str().unwrap_or("").to_lowercase(),r["roomId"].as_str().unwrap_or("").to_owned()));
+                return Ok(json!({"rooms":rooms,"navigationRevision":navigation["revision"],"hasRegisteredRooms":navigation["roomId"].is_string()}));
             }
             if parts.len() == 7 && parts[4] == "commands" && method == salvo::http::Method::GET {
                 let creation = domain

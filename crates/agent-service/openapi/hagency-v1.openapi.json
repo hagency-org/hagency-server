@@ -4481,7 +4481,7 @@
       "get": {
         "operationId": "listVisibleProjectRooms",
         "summary": "listVisibleProjectRooms",
-        "description": "Returns registered active Rooms linked to this Project for a current Space member who is joined or invited to that Room. Invited Room metadata supports navigation only; all Room operations retain their own membership and permission checks.",
+        "description": "Returns registered active Rooms linked to this Project for a current Space member who is joined or invited to that Room. Invited Room metadata supports navigation only; all Room operations retain their own membership and permission checks. Rooms are ordered default first; each visible Room has isDefault. navigationRevision pins shared-default writes. Inaccessible default Room identities are not disclosed.",
         "security": [
           {
             "userBearer": []
@@ -14904,6 +14904,95 @@
           }
         }
       }
+    },
+    "/hagency/api/v1/projects/{projectId}/board/navigation-default": {
+      "put": {
+        "operationId": "setProjectNavigationDefault",
+        "summary": "Set the shared default Board or Room",
+        "description": "Requires current Project Space management permission. Versioned shared defaults are scoped to this Project; archived Projects and inactive/unlinked/invisible Rooms are rejected. Concurrent changes return 409.",
+        "tags": [
+          "Projects"
+        ],
+        "security": [
+          {
+            "userBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "x-source": {
+          "file": "crates/agent-service/src/api_project_board.rs",
+          "anchors": [
+            "salvo::http::Method::PUT,[\"board\",\"navigation-default\"]"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Confirmed shared default and new navigationRevision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "projectId": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "board",
+                        "room"
+                      ]
+                    },
+                    "targetId": {
+                      "type": "string"
+                    },
+                    "navigationRevision": {
+                      "type": "integer",
+                      "format": "int64"
+                    }
+                  },
+                  "required": [
+                    "projectId",
+                    "kind",
+                    "targetId",
+                    "navigationRevision"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Membership or authorization required"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "404": {
+            "description": "Target is not an active visible child of this Project"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetNavigationDefault"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -20820,6 +20909,9 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "isDefault": {
+                  "type": "boolean"
                 }
               },
               "required": [
@@ -20827,6 +20919,11 @@
                 "name"
               ]
             }
+          },
+          "navigationRevision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         },
         "required": [
@@ -20871,6 +20968,32 @@
           "archived",
           "expectedRevision"
         ]
+      },
+      "SetNavigationDefault": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "board",
+              "room"
+            ]
+          },
+          "targetId": {
+            "type": "string"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "kind",
+          "targetId",
+          "expectedRevision"
+        ]
       }
     },
     "securitySchemes": {
@@ -20889,11 +21012,11 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "833ab216a824834d79f8f538c8dddd4737390aa4ab1871fbd75d52491d1f7150",
+    "crates/agent-service/src/api.rs": "2a6f5442e61fd285471738d4ef39b0be067151da342afaca2bde44923fb69e28",
     "crates/agent-service/src/api_transport.rs": "2d6c562882c7c35d10e716bbc771f70310752db69263d0378eafab60e0c3f5d4",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
-    "crates/agent-service/src/api_project_board.rs": "40342800dc0a2dfc66c06bdda21e2d4160cb57a13efcddee52124f444e8ebd80",
+    "crates/agent-service/src/api_project_board.rs": "a6d4ee69418a15d09b1f9cdec780ee85f71af645758aaa9892d360d41a766554",
     "crates/agent-service/src/agent_crypto.rs": "0c65f525954e86856bfe60b6e198fcf701fa414163a03f9dac474141ee8e87e5",
     "crates/agent-service/src/matrix_crypto.rs": "efeb19edada56af0866c7716f84bbf74e1d701db7a0c9319572b2f5d9fd59043",
     "crates/agent-service/src/agent_crypto_receive.rs": "20e437890a3cca872e810bfbcb1f5dc696567caff53a8bdb684b34e9c142566a",

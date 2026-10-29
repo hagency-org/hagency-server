@@ -2,7 +2,7 @@
 
 本目录描述实际实现，不是需求草案。仓库中的 Palpo/Matrix、Pasion/OIDC、浏览器代理及 hagency-client 本机 Console API 不在这两份 OpenAPI 的范围内。
 
-- `hagency-v1.openapi.json`：OpenAPI 3.1，契约版本 1.0.0；105 个操作，包含用户会话、设备、Project/Room 登记与权限、永久归属 Agent、Binding、命令查询、租约与执行、工具前远端事实核验、已知回复恢复及 `/readyz`。
+- `hagency-v1.openapi.json`：OpenAPI 3.1，契约版本 1.0.0；128 个操作，包含用户会话、设备、Project/Room 登记与权限、永久归属 Agent、Binding、命令查询、租约与执行、工具前远端事实核验、已知回复恢复及 `/readyz`。
 - `appservice-v1.openapi.json`：独立的 homeserver → 必装 Appservice 信任边界；4 个操作，包含事务、ping、用户和 Room alias 查询。
 - `scripts/validate-agent-openapi.py`：Python 标准库验证，不增加生产依赖。从仓库根目录执行 `python3 scripts/validate-agent-openapi.py --self-test`。
 
@@ -119,3 +119,7 @@ Olm 密钥分享；发布前提交 possible，重复元数据提交只返回原�
 实际 HTTP 原事件回执才记 sent；未知不能变成新的发送权限。Receive broker 仅
 增加当前永久主人的 signed_curve25519 key claim，不接受任意 peer/to-device/
 Room/media 写入。共享 Project 的加密请求者执行和跨主机恢复仍未实现。
+
+## 项目默认导航
+
+`PUT /projects/{projectId}/board/navigation-default` 以 `kind`（board/room）、`targetId` 和 `expectedRevision` 设置项目共享默认项。需要当前 Space 管理权限；归档项目、其他项目目标和失效 Room 被拒绝。并发旧版本返回 409，读取目录后再明确提交。Board 目录和项目 Rooms 列表带 `isDefault`，默认项始终置顶，`navigationRevision` 提供下一次修改的版本。Rooms 仍先执行真实成员及父子关联过滤，不返回隐藏默认 Room 的 ID。未配置时使用 Main Board 和首个有效已登记 Room；重启会保留已设置的默认项。

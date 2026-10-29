@@ -169,8 +169,11 @@ impl Gateway {
     /// Navigation may reveal an invited room to its invitee. This is deliberately
     /// separate from execution/board/Agent authority, which still requires join.
     pub async fn room_navigation_metadata(&self,room:&str,space:&str,actor:&str)->Result<Option<Value>> {
+        Ok(self.room_navigation_facts(room,space,actor).await?.1)
+    }
+    pub(crate) async fn room_navigation_facts(&self,room:&str,space:&str,actor:&str)->Result<(bool,Option<Value>)> {
         let (room_state,space_state)=tokio::try_join!(self.state(room),self.state(space))?;
-        Ok(room_navigation_metadata(&room_state,&space_state,room,actor))
+        Ok((room_navigation_candidate(&room_state,&space_state,room),room_navigation_metadata(&room_state,&space_state,room,actor)))
     }
     pub async fn visible(&self, space: &str, owner: &str) -> Result<bool> {
         Ok(joined(&self.state(space).await?, owner))
@@ -209,8 +212,13 @@ fn content<'a>(state: &'a [Value], kind: &str, key: &str) -> Option<&'a Value> {
         .find(|event| event["type"] == kind && event["state_key"] == key)
         .and_then(|e| e.get("content"))
 }
+fn room_navigation_candidate(room_state:&[Value],space_state:&[Value],room:&str)->bool {
+    content(room_state,"m.room.tombstone","").is_none()
+        && content(room_state,"m.room.create","").is_none_or(|c|c["type"]!="m.space")
+        && content(space_state,"m.space.child",room).is_some_and(|c|c["via"].as_array().is_some_and(|v|!v.is_empty()))
+}
 fn room_navigation_metadata(room_state:&[Value],space_state:&[Value],room:&str,actor:&str)->Option<Value> {
-    if !joined(space_state,actor) || !content(space_state,"m.space.child",room).is_some_and(|c|c["via"].as_array().is_some_and(|v|!v.is_empty())) {return None;}
+    if !joined(space_state,actor) || !room_navigation_candidate(room_state,space_state,room) {return None;}
     let membership=content(room_state,"m.room.member",actor)?["membership"].as_str()?;
     if !matches!(membership,"join"|"invite") {return None;}
     let name=content(room_state,"m.room.name","").and_then(|c|c.get("name")).and_then(Value::as_str);
@@ -558,5 +566,8 @@ mod navigation_tests {
         assert!(room_navigation_metadata(&room,&[],"!room:test","@bob:test").is_none());
         assert!(room_navigation_metadata(&room,&space,"!unlinked:test","@bob:test").is_none());
         assert!(room_navigation_metadata(&room,&space,"!room:test","@outsider:test").is_none());
+        assert!(room_navigation_candidate(&room,&space,"!room:test"));
+        room.push(json!({"type":"m.room.tombstone","state_key":"","content":{"replacement_room":"!replacement:test"}}));
+        assert!(!room_navigation_candidate(&room,&space,"!room:test"));assert!(room_navigation_metadata(&room,&space,"!room:test","@bob:test").is_none());
     }
 }

@@ -157,6 +157,14 @@ pub(crate) async fn call(
             let facts=gateway.admin(&access.space,&principal.mxid,None).await?;
             serde_json::json!({"project":domain.archive_project(&principal,&project.id,input.expected_revision,input.archived,&facts,crate::api::now_ms()).await?})
         }
+        (salvo::http::Method::PUT,["board","navigation-default"]) if access.project==project.id => {
+            let input:crate::project_board::SetNavigationDefault=body(req).await?;
+            let facts=gateway.admin(&access.space,&principal.mxid,None).await?;
+            if input.kind=="room" && gateway.room_navigation_metadata(&input.target_id,&access.space,&principal.mxid).await?.is_none() {
+                return Err(Error::NotFound("navigation_target_not_found"));
+            }
+            board.set_navigation_default(&principal,&access,input,&facts).await?
+        }
         (salvo::http::Method::GET, ["board", "notifications"]) => {
             let (before, _) = history_query(req)?;
             board.notifications(&principal, &access, before).await?
