@@ -129,9 +129,15 @@ def browser_api_paths(origin, password):
         except HTTPError as error:
             reply = error
         with reply:
-            assert reply.code == expected, "browser API status mismatch at " + path
-            assert reply.headers.get_content_type() == "application/json", "API returned SPA HTML"
-            return json.load(reply)
+            content_type = reply.headers.get_content_type()
+            payload = json.load(reply) if content_type == "application/json" else None
+            code = payload.get("code") if isinstance(payload, dict) else None
+            code = code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code) else "unavailable"
+            assert reply.code == expected, (
+                "browser API status mismatch at " + path + ": expected " + str(expected)
+                + ", got " + str(reply.code) + ", code=" + code)
+            assert content_type == "application/json", "API returned SPA HTML"
+            return payload
 
     session = call("/hagency/api/login/token", "POST", {},
                    extra={"Authorization": "Bearer " + token})
