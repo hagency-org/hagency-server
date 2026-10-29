@@ -41,15 +41,15 @@ pin，换号后不自动以新 Cookie 重试旧请求。Logout 撤销原服务�
 
 ## 提交前验证
 
-- Rust 全量：Agent 新建独立 PostgreSQL 18.6 完整套件146通过、0失败、0忽略；
-  backend23、配置8、frontend33、xtask12通过，共222项。原普通 Agent 的 ignored
+- Rust 全量：Agent 新建独立 PostgreSQL 18.6 完整套件147通过、0失败、0忽略；
+  backend23、配置8、frontend33、xtask12通过，共223项。原普通 Agent 的 ignored
   测试不重复计数。CI 另用 PostgreSQL17 验证，不把本地18.6结果混用。
-- Python 工具24项；OpenAPI129个 owner/native/health操作加4个AS操作、36项守卫自测；
+- Python 工具25项；OpenAPI129个 owner/native/health操作加4个AS操作、36项守卫自测；
   全库格式、同CI版本的typos1.48拼写、WASM与native严格Clippy。
 - R1/R4/R7及跨标签页两项回归保留原实现失败证据；存储升级、活动上限、分块不可改写、
   unknown不重领、终态清理、真实SQL故障恢复和HTTP回执锁等待均有真实数据库回归。
 - CI 新增不发布的完整镜像门禁：实际PKCE、Matrix/AS、文件回执SIGTERM排空和重启。
-  每周或手动追加同镜像二进制/资源的停机三库及私有文件恢复。
+  PR、每周或手动追加同镜像二进制/资源的停机三库及私有文件恢复。
 
 这里记录提交前验证范围。最终镜像、GitHub CI 与合并结果以 PR 的最终提交和实际
 检查记录为准。没有进行生产压测、大 Space 的 p95 实测、真实浏览器多 tab OAuth

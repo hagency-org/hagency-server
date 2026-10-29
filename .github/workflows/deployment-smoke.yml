@@ -55,16 +55,16 @@ jobs:
           HAGENCY_TEST_IMAGE_SOURCE: ${{ github.sha }}
         run: node tests/docker-smoke.mjs
 
-      # The PR gate above always exercises the complete packaged deployment.
-      # The longer stopped backup/restore drill runs weekly or on explicit demand.
+      # Every PR also validates the longer stopped backup/restore drill against
+      # this exact image. Main pushes run smoke; weekly/manual runs add the drill.
       # It uses the same freshly built executable/assets, three new databases and
       # private directories; no production service or external model is contacted.
       - uses: actions/setup-python@v7
-        if: github.event_name == 'schedule' || inputs.backup_restore == true
+        if: github.event_name == 'pull_request' || github.event_name == 'schedule' || inputs.backup_restore == true
         with:
           python-version: '3.13'
       - name: Extract image resources and create an independent restore fixture
-        if: github.event_name == 'schedule' || inputs.backup_restore == true
+        if: github.event_name == 'pull_request' || github.event_name == 'schedule' || inputs.backup_restore == true
         shell: bash
         run: |
           set -euo pipefail
@@ -103,13 +103,13 @@ jobs:
             echo "HAGENCY_TEST_FRONTEND_RESOURCES=$fixture_root/frontend"
           } >> "$GITHUB_ENV"
       - name: Restore all three databases, private identities and actual Matrix media
-        if: github.event_name == 'schedule' || inputs.backup_restore == true
+        if: github.event_name == 'pull_request' || github.event_name == 'schedule' || inputs.backup_restore == true
         timeout-minutes: 20
         env:
           HAGENCY_TEST_BACKUP_RESTORE: '1'
         run: python3 scripts/test-agent-integration.py
       - name: Remove only this job's restore containers
-        if: always() && (github.event_name == 'schedule' || inputs.backup_restore == true)
+        if: always() && (github.event_name == 'pull_request' || github.event_name == 'schedule' || inputs.backup_restore == true)
         shell: bash
         run: |
           if [ -n "${BACKUP_EXPORT_CONTAINER:-}" ]; then docker rm -f "$BACKUP_EXPORT_CONTAINER" >/dev/null 2>&1 || true; fi

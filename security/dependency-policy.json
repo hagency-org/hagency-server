@@ -69,5 +69,6 @@
       "reason": "Legacy rand 0.7.3 is transitive. Its custom-logger/reentrant RNG trigger was not demonstrated; retain the unsoundness warning until the dependency is replaced.",
       "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0097.html"
     }
-  ]
+  ],
+  "timezone": "Asia/Shanghai"
 }

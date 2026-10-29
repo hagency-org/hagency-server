@@ -1180,6 +1180,15 @@ impl TransportStore {
     /// Durable send intent before network I/O. Retrying unknown/sending uses the
     /// original sender, room, payload and Matrix transaction ID unchanged.
     pub async fn claim_reply(&self, id: &str, f: &DeliveryFacts, now: i64) -> Result<ReplyIntent> {
+        self.claim_reply_guarded(id, f, now, None).await
+    }
+    pub(crate) async fn claim_reply_guarded(
+        &self,
+        id: &str,
+        f: &DeliveryFacts,
+        now: i64,
+        gate: Option<&crate::worker_runtime::ClaimGate>,
+    ) -> Result<ReplyIntent> {
         let candidate = {
             let mut guard = self.db.lock().await?;
             Self::reply(&mut guard, id).await?
@@ -1196,7 +1205,9 @@ impl TransportStore {
         let mut guard = self.db.lock().await?;
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?;let now=Self::clock(db,now).await?;let intent=Self::reply(db,id).await?;
+            Self::lock(db).await?;
+            sql_query("SELECT true AS matched FROM hagency_agent_v1.reply_outbox WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<Flag>(db).await?;
+            let now=Self::clock(db,now).await?;let intent=Self::reply(db,id).await?;
             if intent.delivery_blocked||intent.state=="sent"||intent.state=="cancelled" {return Err(Error::Conflict("reply_not_sendable"));}
             if intent.worker_until_ms>now {return Err(Error::Conflict("reply_sender_busy"));}
             let scope=Self::scope(db,&intent.binding_id).await?;
@@ -1210,6 +1221,7 @@ impl TransportStore {
             let deadline=sql_query("SELECT (l.expires_at_ms>greatest($2,(extract(epoch from clock_timestamp())*1000)::bigint) AND s.valid_until_ms>greatest($2,(extract(epoch from clock_timestamp())*1000)::bigint)) AS matched FROM hagency_agent_v1.execution_leases l JOIN hagency_agent_v1.devices d ON d.id=l.device_id JOIN hagency_agent_v1.sessions s ON s.id=d.session_id WHERE l.agent_id=$1").bind::<Text,_>(&intent.agent_id).bind::<BigInt,_>(now).get_result::<Flag>(db).await?;
             if !deadline.matched {return Err(Error::Unauthorized("reply_lease_expired"));}
             facts(&scope,&requester.id,f,Self::clock(db,now).await?)?;
+            let _admission=gate.map(crate::worker_runtime::ClaimGate::admit).transpose()?;
             let worker=secret_token();
             sql_query("UPDATE hagency_agent_v1.reply_outbox SET state='sending',worker_token=$1,worker_until_ms=$2 WHERE id=$3").bind::<Text,_>(worker).bind::<BigInt,_>(now+self.limits.worker_lease_ms).bind::<Text,_>(id).execute(db).await?;Self::reply(db,id).await
         }).await

@@ -5,14 +5,20 @@ Reviewed unresolved findings stay visible. A successful policy check is not
 a clean cargo-audit result. No RustSec advisory is hidden with --ignore.
 """
 import argparse
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import json
 from pathlib import Path
 import re
 import subprocess
 import sys
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def review_date(policy, now):
+    """Review dates use the declared calendar, independent of runner timezone."""
+    return now.astimezone(ZoneInfo(policy["timezone"])).date()
 
 
 def findings(report):
@@ -76,7 +82,7 @@ def main():
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n")
     policy = json.loads((ROOT / "security/dependency-policy.json").read_text())
-    errors = check(report, policy, (ROOT / "Cargo.lock").read_text(), date.today())
+    errors = check(report, policy, (ROOT / "Cargo.lock").read_text(), review_date(policy, datetime.now().astimezone()))
     print("Audit: {} unresolved vulnerability records; {} informational warnings.".format(
         report["vulnerabilities"]["count"], sum(len(rows) for rows in report["warnings"].values())))
     for row in policy["findings"]:

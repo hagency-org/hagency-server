@@ -88,7 +88,7 @@ async function exerciseOwner(member,create){
   await matrix('rooms/'+encodeURIComponent(space)+'/state/m.space.child/'+encodeURIComponent(room),'PUT',{via:[name]});
   const project=(await owner('projects/adopt','POST',{spaceId:space})).value.project;
   await owner('projects/'+project.id+'/rooms/adopt','POST',{roomId:room});
-  const created=await api('/hagency/api/v1/agents',{method:'POST',token:device.token,body:{displayName:'Owner Codex puppet',idempotencyKey:'docker-owner-agent'},status:[200,202]});
+  const created=await api('/hagency/api/v1/agents',{method:'POST',token:device.token,body:{displayName:'Owner Codex puppet',idempotencyKey:'docker-owner-agent',visibility:'public'},status:[200,202]});
   const agent=created.value.creation.agent;assert.equal(created.value.creation.binding,undefined);
   await until(async()=>{return (await owner('agents/'+agent.id)).value.agent.state==='active';},'Permanent Agent Matrix identity');
   const bound=await owner('agents/'+agent.id+'/bindings','POST',{projectId:project.id,roomId:room,idempotencyKey:'docker-owner-binding'});

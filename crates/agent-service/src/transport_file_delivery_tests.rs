@@ -1627,3 +1627,249 @@ async fn worker_health_scenario(url: &str) {
     server.abort();
     let _ = server.await;
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_worker_shutdown_closes_final_admission_after_actual_claim_lock_waits() {
+    let source = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let mut admin = AsyncPgConnection::establish(&source).await.unwrap();
+    for (kind, lock) in [
+        ("reply", "target"),
+        ("file", "target"),
+        ("processing", "target"),
+        ("pause", "target"),
+        ("request", "target"),
+        ("reply", "device"),
+        ("file", "device"),
+    ] {
+        let name = format!("hagency_admission_{}", &crate::secret_token()[..16]);
+        admin
+            .batch_execute(&format!("CREATE DATABASE {name}"))
+            .await
+            .unwrap();
+        let mut url = url::Url::parse(&source).unwrap();
+        url.set_path(&format!("/{name}"));
+        let outcome =
+            tokio::spawn(async move { admission_lock_scenario(url.as_str(), kind, lock).await })
+                .await;
+        admin
+            .batch_execute(&format!("DROP DATABASE {name} WITH (FORCE)"))
+            .await
+            .unwrap();
+        outcome.unwrap();
+    }
+}
+async fn admission_lock_scenario(url: &str, kind: &str, lock: &str) {
+    use crate::{
+        appservice::Inbox,
+        worker_runtime::{WorkerRuntime, drain_workers},
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    let f = fixture_at(url).await;
+    let lease = lease(&f).await;
+    let now = crate::api::now_ms();
+    let (table, id, initial) = if kind == "pause" {
+        f.domain
+            .suspend_binding(&f.p, &f.binding, now)
+            .await
+            .unwrap();
+        f.transport
+            .ingest_routed(
+                &f.binding,
+                event(&f, "admission-paused", true, None),
+                &f.facts,
+                now,
+            )
+            .await
+            .unwrap();
+        let rows = f.transport.pause_notice_candidates("", now).await.unwrap();
+        (
+            "pause_notice_outbox",
+            rows.into_iter()
+                .find(|r| r.binding_id == f.binding)
+                .unwrap()
+                .id,
+            "pending",
+        )
+    } else if kind == "file" {
+        let (target, _) = staged(&f, &lease, "admission-file").await;
+        ("file_outbox", target.file_id, "queued")
+    } else {
+        let dispatch = enqueue(&f, "admission-request").await;
+        running(&f, &lease, &dispatch, "admission-execution").await;
+        match kind {
+            "reply" => {
+                let reply = f
+                    .transport
+                    .submit_reply(
+                        &f.p,
+                        &lease,
+                        SubmitReply {
+                            dispatch_id: dispatch,
+                            execution_id: "admission-execution".into(),
+                            body: "Admission fixture reply".into(),
+                        },
+                        &f.facts,
+                        now,
+                    )
+                    .await
+                    .unwrap();
+                ("reply_outbox", reply.id, "pending")
+            }
+            "processing" => {
+                let receipt = f
+                    .transport
+                    .mark_processing(
+                        &f.p,
+                        &lease,
+                        &dispatch,
+                        "admission-execution",
+                        &f.facts,
+                        now,
+                    )
+                    .await
+                    .unwrap();
+                ("processing_outbox", receipt.id, "pending")
+            }
+            "request" => {
+                f.transport
+                    .finish_without_reply(
+                        &f.p,
+                        &lease,
+                        &dispatch,
+                        "admission-execution",
+                        "failed",
+                        now,
+                    )
+                    .await
+                    .unwrap();
+                let rows = f
+                    .transport
+                    .request_notice_candidates("", now)
+                    .await
+                    .unwrap();
+                (
+                    "request_notice_outbox",
+                    rows.into_iter()
+                        .find(|r| r.owner_event_id == dispatch)
+                        .unwrap()
+                        .id,
+                    "pending",
+                )
+            }
+            _ => unreachable!(),
+        }
+    };
+    let inbox = Inbox::open(
+        url,
+        "admission-fixture-hs-token-only-not-real-secret".into(),
+    )
+    .await
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let captured = requests.clone();
+    let upstream = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            captured.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut bytes = [0; 8192];
+                let _ = socket.read(&mut bytes).await;
+                let body = r#"{"event_id":"$unexpected-admission:example.test","content_uri":"mxc://example.test/unexpected-admission"}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    let matrix = crate::matrix_client::MatrixClient::new(
+        format!("http://{address}").parse().unwrap(),
+        "admission-fixture-as-token".into(),
+        "example.test".into(),
+    )
+    .unwrap();
+    let mut blocker = AsyncPgConnection::establish(url).await.unwrap();
+    // pg_stat_activity snapshots are cached inside a transaction. Observe from
+    // an independent autocommit connection while blocker retains the real lock.
+    let mut observer = AsyncPgConnection::establish(url).await.unwrap();
+    crate::key(&id).unwrap();
+    if lock == "device" {
+        let device = f.p.device_id.as_deref().unwrap();
+        crate::key(device).unwrap();
+        blocker
+            .batch_execute(&format!(
+                "BEGIN; SELECT id FROM hagency_agent_v1.devices WHERE id='{device}' FOR UPDATE"
+            ))
+            .await
+            .unwrap();
+    } else {
+        blocker
+            .batch_execute(&format!(
+                "BEGIN; SELECT id FROM hagency_agent_v1.{table} WHERE id='{id}' FOR UPDATE"
+            ))
+            .await
+            .unwrap();
+    }
+    let runtime = WorkerRuntime::default();
+    let worker = crate::workers::start_controlled(
+        inbox,
+        f.transport.clone(),
+        gateway(&f),
+        matrix,
+        runtime.clone(),
+    );
+    #[derive(diesel::QueryableByName)]
+    struct Waiting {
+        #[diesel(sql_type=diesel::sql_types::Bool)]
+        value: bool,
+    }
+    let pattern = if lock == "device" {
+        "%hagency_agent_v1.devices%FOR SHARE%".to_owned()
+    } else {
+        format!("SELECT true AS matched FROM hagency_agent_v1.{table}%FOR UPDATE")
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5),async {
+        loop {
+            let blocked=sql_query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE $1) AS value").bind::<Text,_>(&pattern).get_result::<Waiting>(&mut observer).await.unwrap().value;
+            if blocked {break;}tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.unwrap_or_else(|_|panic!("{kind} did not reach its actual {lock} claim lock"));
+    // The actual production worker has already passed its outer stopping check
+    // and is suspended inside claim SQL. Only the final transactional gate can
+    // prevent first custody after this point; cancelling the future is forbidden.
+    runtime.begin_shutdown();
+    blocker.batch_execute("ROLLBACK").await.unwrap();
+    assert!(drain_workers(&runtime, &mut [worker], std::time::Duration::from_secs(5)).await);
+    let record=sql_query(format!("SELECT state AS id,coalesce(worker_token,'') AS digest FROM hagency_agent_v1.{table} WHERE id=$1")).bind::<Text,_>(&id).get_result::<Existing>(&mut blocker).await.unwrap();
+    assert_eq!(
+        record.id, initial,
+        "{kind}/{lock} must not commit first send/upload custody after shutdown"
+    );
+    assert!(
+        record.digest.is_empty(),
+        "{kind}/{lock} must retain its unclaimed worker token"
+    );
+    assert_eq!(
+        requests.as_ref().load(Ordering::SeqCst),
+        0,
+        "{kind}/{lock} must not emit a new HTTP request"
+    );
+    assert!(
+        serde_json::to_value(runtime.health()).unwrap()["queues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|q| q["consecutiveFailures"] == 0),
+        "normal shutdown admission refusal is not a dependency failure"
+    );
+    upstream.abort();
+    let _ = upstream.await;
+}

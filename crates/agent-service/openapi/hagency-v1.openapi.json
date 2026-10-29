@@ -21137,16 +21137,16 @@
     "crates/agent-service/src/agent_crypto_receive.rs": "20e437890a3cca872e810bfbcb1f5dc696567caff53a8bdb684b34e9c142566a",
     "crates/agent-service/src/transport_ciphertexts.rs": "4a1fe84564151dbb1ffe2791569d8e7a441a1f3d2c30b343ddf51b6f73c80116",
     "crates/agent-service/src/ciphertext_schema.sql": "ea43c360e60a316d3cd15e16494bee1b5c60f5482b4d0ad9bbe0883c2f07ad29",
-    "crates/agent-service/src/workers.rs": "b2dc3f330673a62c5c7de2810b1d2e2e5bdaa3a1dfb83c9bbeddf0617f576c58",
+    "crates/agent-service/src/workers.rs": "3d0cd43f9ba5d6460b527812ab47f03d34fee8a79f0d58fc023d20fd8fc26456",
     "crates/agent-service/src/encrypted_dispatches.rs": "f172a4fd602b7302199c297348df20e7b35b59796724521708d93df59e7390d8",
     "crates/agent-service/src/encrypted_dispatches_schema.sql": "73c338d99a17eb64e2173c6fdb7246962039d5e7229e03345bad14237852427d",
-    "crates/agent-service/src/transport.rs": "869a8030a24921482ea70e265ab9d8bd40256c73a99b9478559c26aa88138a08",
+    "crates/agent-service/src/transport.rs": "db8463205097cfd6ed38b73f1fb4b6602847938ada60fc690b6e730be4e6aec4",
     "crates/agent-service/src/encrypted_execution.rs": "a495dd49337b462a97bb95c7edd8d7cf48373768b5a4dba72b01c1495d6f1950",
     "crates/agent-service/src/encrypted_execution_schema.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "8ca02b365672bf575fa170395a24cb100e40e2db7ccc64e4b9e05c891263755c",
     "crates/agent-service/src/domain.rs": "8601964e73faf44425e1a7f463aa5682796c0cfa3b7bb16a4b8c773ca1e27b95",
     "crates/agent-service/src/matrix_client.rs": "0e5514d6af19b74e58b6ac6fd7dfcd17c7f667f97677dc2a364d533c04584664",
-    "crates/agent-service/src/worker_runtime.rs": "faeae027cbd2a9e685cfb1c6ee4b3b8f6f1e987194d623212fe8852be6106b31"
+    "crates/agent-service/src/worker_runtime.rs": "7e1de44fa9d7635bfb24a68659a687345573698799f85e418c77eb6c9e1abebe"
   },
   "x-not-implemented": [
     "POST /hagency/api/v1/projects (create Matrix Space)",

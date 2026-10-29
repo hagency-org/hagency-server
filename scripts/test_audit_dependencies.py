@@ -1,5 +1,5 @@
 import copy
-from datetime import date
+from datetime import date, datetime, timezone
 import importlib.util
 from pathlib import Path
 import unittest
@@ -20,6 +20,11 @@ class DependencyPolicyTests(unittest.TestCase):
 
     def test_exact_reviewed_risk_remains_explicit(self):
         self.assertEqual(self.check(), [])
+
+    def test_review_date_does_not_depend_on_utc_runner_calendar(self):
+        now = datetime(2026, 10, 29, 16, 21, tzinfo=timezone.utc)
+        self.assertEqual(audit.review_date({"timezone": "Asia/Shanghai"}, now), date(2026, 10, 30))
+        self.assertEqual(audit.review_date({"timezone": "UTC"}, now), date(2026, 10, 29))
 
     def test_new_advisory_or_warning_is_not_covered(self):
         report = copy.deepcopy(self.report)

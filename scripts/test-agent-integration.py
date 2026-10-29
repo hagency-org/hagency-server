@@ -332,7 +332,7 @@ try:
             device = request(origin, "POST", "/hagency/api/v1/devices", {"installationId": "smoke_device", "name": "disposable integration device"}, user_token)
             request(origin, "POST", "/hagency/api/v1/sessions/current/renew", {"accessToken": matrix_token}, user_token)
             device_token = device["token"]
-            create_body = {"displayName": "Smoke Agent", "idempotencyKey": "smoke_create"}
+            create_body = {"displayName": "Smoke Agent", "idempotencyKey": "smoke_create", "visibility": "public"}
             assert request(origin,"GET","/hagency/api/v1/commands/agent.create/smoke_create",token=user_token,expected_status=404)["code"]=="command_not_found"
             creation = request(origin, "POST", "/hagency/api/v1/agents", create_body, device_token)
             for _ in range(60):

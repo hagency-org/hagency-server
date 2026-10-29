@@ -292,8 +292,12 @@ async fn send_controlled(
         if ctx.stopping() {
             break;
         }
-        let intent = match t.claim_reply(&candidate.id, &f, now_ms()).await {
+        let intent = match t
+            .claim_reply_guarded(&candidate.id, &f, now_ms(), Some(ctx.claim_gate()))
+            .await
+        {
             Ok(intent) => intent,
+            Err(Error::Unavailable("worker_stopping")) => return Ok(()),
             Err(Error::Unauthorized(_) | Error::Conflict(_)) => {
                 t.block_reply_delivery(&candidate.id, &f, now_ms()).await?;
                 continue;
@@ -382,8 +386,12 @@ async fn send_pause_notices_controlled(
         if ctx.stopping() {
             break;
         }
-        let notice = match t.claim_pause_notice(&candidate.id, &f, now_ms()).await {
+        let notice = match t
+            .claim_pause_notice_guarded(&candidate.id, &f, now_ms(), Some(ctx.claim_gate()))
+            .await
+        {
             Ok(n) => n,
+            Err(Error::Unavailable("worker_stopping")) => return Ok(()),
             Err(Error::Conflict(_) | Error::Unauthorized(_)) => continue,
             Err(e) => return Err(e),
         };
@@ -458,8 +466,12 @@ async fn send_request_notices_controlled(
         if ctx.stopping() {
             break;
         }
-        let notice = match t.claim_request_notice(&candidate.id, &f, now_ms()).await {
+        let notice = match t
+            .claim_request_notice_guarded(&candidate.id, &f, now_ms(), Some(ctx.claim_gate()))
+            .await
+        {
             Ok(n) => n,
+            Err(Error::Unavailable("worker_stopping")) => return Ok(()),
             Err(Error::Conflict(_) | Error::Unauthorized(_)) => continue,
             Err(e) => return Err(e),
         };
@@ -539,8 +551,12 @@ async fn send_processing_controlled(
         if ctx.stopping() {
             break;
         }
-        let intent = match t.claim_processing(&candidate.id, &f, now_ms()).await {
+        let intent = match t
+            .claim_processing_guarded(&candidate.id, &f, now_ms(), Some(ctx.claim_gate()))
+            .await
+        {
             Ok(intent) => intent,
+            Err(Error::Unavailable("worker_stopping")) => return Ok(()),
             Err(Error::Unauthorized(_) | Error::Conflict(_)) => {
                 t.block_processing(&candidate.id, &f, now_ms()).await?;
                 continue;
@@ -620,8 +636,12 @@ pub(crate) async fn send_files_controlled(
         if ctx.stopping() {
             break;
         }
-        let claim = match t.claim_file(&candidate.id, &facts, now_ms()).await {
+        let claim = match t
+            .claim_file_guarded(&candidate.id, &facts, now_ms(), Some(ctx.claim_gate()))
+            .await
+        {
             Ok(c) => c,
+            Err(Error::Unavailable("worker_stopping")) => return Ok(()),
             Err(Error::Unauthorized(_) | Error::Conflict(_)) => continue,
             Err(e) => return Err(e),
         };

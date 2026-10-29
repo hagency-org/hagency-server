@@ -122,11 +122,21 @@ impl TransportStore {
                 .bind::<BigInt,_>(now).bind::<Text,_>(cursor).bind::<BigInt,_>(limit as i64).load(db).await?)
         }).await
     }
+    #[cfg(test)]
     pub(crate) async fn claim_processing(
         &self,
         id: &str,
         f: &DeliveryFacts,
         now: i64,
+    ) -> Result<ProcessingIntent> {
+        self.claim_processing_guarded(id, f, now, None).await
+    }
+    pub(crate) async fn claim_processing_guarded(
+        &self,
+        id: &str,
+        f: &DeliveryFacts,
+        now: i64,
+        gate: Option<&crate::worker_runtime::ClaimGate>,
     ) -> Result<ProcessingIntent> {
         let candidate = {
             let mut db = self.db.lock().await?;
@@ -144,6 +154,7 @@ impl TransportStore {
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
+            sql_query("SELECT true AS matched FROM hagency_agent_v1.processing_outbox WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<Flag>(db).await?;
             let current=Self::clock(db,now).await?;
             let intent=Self::processing(db,id).await?;
             if intent.delivery_blocked||!matches!(intent.state.as_str(),"pending"|"unknown"|"sending") {return Err(Error::Conflict("processing_not_sendable"));}
@@ -152,6 +163,7 @@ impl TransportStore {
             facts(&scope,&intent.requester_mxid,f,current)?;
             let live=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.processing_sendable WHERE id=$1) AS matched").bind::<Text,_>(id).get_result::<Flag>(db).await?;
             if !live.matched {return Err(Error::Unauthorized("processing_authority_expired"));}
+            let _admission=gate.map(crate::worker_runtime::ClaimGate::admit).transpose()?;
             sql_query("UPDATE hagency_agent_v1.processing_outbox SET state='sending',worker_token=$1,worker_until_ms=$2 WHERE id=$3")
                 .bind::<Text,_>(secret_token()).bind::<BigInt,_>(current+self.limits.worker_lease_ms).bind::<Text,_>(id).execute(db).await?;
             Self::processing(db,id).await

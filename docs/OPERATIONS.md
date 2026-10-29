@@ -134,6 +134,9 @@ HTTP and Pasion. Compose allows 75 seconds. Timed-out work remains unknown and
 is never automatically retried. Stop old writers before the chunk-storage and
 Board v7 upgrades; mixed old/new writers are unsupported. Large histories need
 a maintenance window for the transactional migration.
+Final send-claim admission is checked after database and identity row-lock waits.
+An admission minted before shutdown belongs to the drain even if its transaction
+commits later; a waiter that has not passed this point cannot acquire send custody.
 
 File capacity counts at most 4096 unsettled deliveries and 128 MiB per owner;
 sent/cancelled records retain permanent witnesses without consuming active quota.

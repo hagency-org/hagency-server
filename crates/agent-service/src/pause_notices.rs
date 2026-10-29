@@ -129,15 +129,27 @@ impl TransportStore {
         }
         Ok(scope)
     }
+    #[cfg(test)]
     pub(crate) async fn claim_pause_notice(
         &self,
         id: &str,
         f: &DeliveryFacts,
         now: i64,
     ) -> Result<PauseNotice> {
+        self.claim_pause_notice_guarded(id, f, now, None).await
+    }
+    pub(crate) async fn claim_pause_notice_guarded(
+        &self,
+        id: &str,
+        f: &DeliveryFacts,
+        now: i64,
+        gate: Option<&crate::worker_runtime::ClaimGate>,
+    ) -> Result<PauseNotice> {
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?; let now = Self::clock(db,now).await?;
+            Self::lock(db).await?;
+            sql_query("SELECT true AS matched FROM hagency_agent_v1.pause_notice_outbox WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<Flag>(db).await?;
+            let now = Self::clock(db,now).await?;
             let n = sql_query(format!("{SELECT} WHERE id=$1"))
                 .bind::<Text,_>(id).get_result::<PauseNotice>(db).await?;
             let scope = Self::scope(db,&n.binding_id).await?;
@@ -155,6 +167,7 @@ impl TransportStore {
                 return Ok(None);
             }
             if !matches!(n.state.as_str(),"pending"|"unknown"|"sending") {return Ok(None);}
+            let _admission=gate.map(crate::worker_runtime::ClaimGate::admit).transpose()?;
             let worker = secret_token();
             Ok(sql_query(format!("UPDATE hagency_agent_v1.pause_notice_outbox SET state='sending',worker_token=$2,worker_until_ms=$3 WHERE id=$1 AND worker_until_ms<=$4 RETURNING {}",SELECT.strip_prefix("SELECT ").unwrap().split(" FROM ").next().unwrap()))
                 .bind::<Text,_>(id).bind::<Text,_>(worker).bind::<BigInt,_>(now+self.limits.worker_lease_ms).bind::<BigInt,_>(now)

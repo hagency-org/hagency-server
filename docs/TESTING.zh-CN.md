@@ -106,6 +106,6 @@ HAGENCY_TEST_BACKUP_RESTORE=1 python3 scripts/test-agent-integration.py
 不等于 cargo-audit 没有命中，完整剩余记录见 `docs/DEPENDENCY_SECURITY.md`。
 
 `Embedded Deployment` 工作流在 PR 中构建不发布的 amd64 镜像，真实执行 Pasion
-PKCE、Matrix AS 往返、投递、SIGTERM 排空和重启。手动选择 backup_restore 或
+PKCE、Matrix AS 往返、投递、SIGTERM 排空和重启。PR、手动选择 backup_restore 或
 每周运行时，还从同一镜像提取二进制与资源执行三库/私有文件恢复；只使用新建
 fixture 数据库、目录和容器，不接触现有部署，也不调用模型。

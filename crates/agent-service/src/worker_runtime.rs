@@ -1,8 +1,11 @@
-//! Shared shutdown and health state; no authority, queue bodies or credentials.
+//! Local worker admission, shutdown and health; no queue bodies or credentials.
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
@@ -12,8 +15,24 @@ pub struct WorkerRuntime {
     inner: Arc<Inner>,
 }
 struct Inner {
+    admission: ClaimGate,
     stop: watch::Sender<bool>,
     queues: Mutex<BTreeMap<&'static str, QueueState>>,
+}
+/// The SeqCst load that mints an admission and shutdown's SeqCst store share a
+/// single order. A transaction that passed this final gate belongs to the drain,
+/// even if its possible-IO write commits after shutdown. Beginning shutdown does
+/// not cancel it; only the bounded drain deadline can force cancellation.
+pub(crate) struct ClaimGate(AtomicBool);
+pub(crate) struct ClaimAdmission(());
+impl ClaimGate {
+    pub(crate) fn admit(&self) -> crate::Result<ClaimAdmission> {
+        if self.0.load(Ordering::SeqCst) {
+            Err(crate::Error::Unavailable("worker_stopping"))
+        } else {
+            Ok(ClaimAdmission(()))
+        }
+    }
 }
 struct QueueState {
     failures: u64,
@@ -44,6 +63,7 @@ impl Default for WorkerRuntime {
     fn default() -> Self {
         Self {
             inner: Arc::new(Inner {
+                admission: ClaimGate(AtomicBool::new(false)),
                 stop: watch::channel(false).0,
                 queues: Mutex::new(BTreeMap::new()),
             }),
@@ -52,10 +72,14 @@ impl Default for WorkerRuntime {
 }
 impl WorkerRuntime {
     pub fn begin_shutdown(&self) {
+        self.inner.admission.0.store(true, Ordering::SeqCst);
         self.inner.stop.send_replace(true);
     }
     pub fn is_stopping(&self) -> bool {
-        *self.inner.stop.borrow()
+        self.inner.admission.0.load(Ordering::SeqCst)
+    }
+    pub(crate) fn claim_gate(&self) -> &ClaimGate {
+        &self.inner.admission
     }
     pub(crate) async fn stopped(&self) {
         let mut receiver = self.inner.stop.subscribe();
@@ -118,6 +142,9 @@ pub(crate) struct QueueContext {
     pass_error: Mutex<Option<&'static str>>,
 }
 impl QueueContext {
+    pub(crate) fn claim_gate(&self) -> &ClaimGate {
+        self.runtime.claim_gate()
+    }
     /// Recheck immediately before each new claim. Current claimed IO is drained.
     pub(crate) fn stopping(&self) -> bool {
         self.progress();

@@ -132,6 +132,18 @@ async fn file_bytes(db: &mut AsyncPgConnection, id: &str) -> Result<Vec<u8>> {
         .bind::<Text,_>(id).get_result::<Blob>(db).await?;
     Ok(blob.content)
 }
+/// Replay compares only the requested range, including ranges crossing a legacy
+/// prefix or chunk boundary. Never transfer the entire staged file for a retry.
+async fn file_range(
+    db: &mut AsyncPgConnection,
+    id: &str,
+    offset: u64,
+    len: usize,
+) -> Result<Vec<u8>> {
+    let blob=sql_query("SELECT substring(o.content FROM $2+1 FOR $3)||coalesce((SELECT string_agg(substring(c.content FROM greatest($2-c.byte_offset,0)+1 FOR least(c.byte_offset+octet_length(c.content),$2+$3)-greatest(c.byte_offset,$2)),''::bytea ORDER BY c.byte_offset) FROM hagency_agent_v1.file_chunks c WHERE c.file_id=o.id AND c.byte_offset>$2-65536 AND c.byte_offset<$2+$3 AND c.byte_offset+octet_length(c.content)>$2),''::bytea) AS content FROM hagency_agent_v1.file_outbox o WHERE o.id=$1")
+        .bind::<Text,_>(id).bind::<diesel::sql_types::Integer,_>(offset as i32).bind::<diesel::sql_types::Integer,_>(len as i32).get_result::<Blob>(db).await?;
+    Ok(blob.content)
+}
 fn target_matches(r: &FileRow, p: &Principal, target: &Target) -> Result<()> {
     if r.owner_user_id != p.user_id
         || r.owner_event_id != target.dispatch_id
@@ -262,8 +274,8 @@ impl TransportStore {
             if offset.saturating_add(bytes.len() as u64)>manifest.bytes {return Err(Error::Invalid("file_size_mismatch"))}
             if offset<r.received_bytes as u64 {
                 if offset+bytes.len() as u64>r.received_bytes as u64 {return Err(Error::Conflict("file_chunk_changed"))}
-                let stored=file_bytes(db,&r.id).await?;
-                if stored.get(offset as usize..offset as usize+bytes.len())!=Some(bytes) {return Err(Error::Conflict("file_chunk_changed"))}return r.public();
+                let stored=file_range(db,&r.id,offset,bytes.len()).await?;
+                if stored!=bytes {return Err(Error::Conflict("file_chunk_changed"))}return r.public();
             }
             if offset!=r.received_bytes as u64 {return Err(Error::Conflict("file_chunk_gap"))}
             let chunks=sql_query("SELECT count(*) AS total FROM hagency_agent_v1.file_chunks WHERE file_id=$1").bind::<Text,_>(&r.id).get_result::<Count>(db).await?.total as usize;
@@ -388,11 +400,21 @@ impl TransportStore {
         .load(&mut *db)
         .await?)
     }
+    #[cfg(test)]
     pub(crate) async fn claim_file(
         &self,
         id: &str,
         f: &DeliveryFacts,
         now: i64,
+    ) -> Result<FileClaim> {
+        self.claim_file_guarded(id, f, now, None).await
+    }
+    pub(crate) async fn claim_file_guarded(
+        &self,
+        id: &str,
+        f: &DeliveryFacts,
+        now: i64,
+        gate: Option<&crate::worker_runtime::ClaimGate>,
     ) -> Result<FileClaim> {
         let original = {
             let mut db = self.db.lock().await?;
@@ -414,7 +436,9 @@ impl TransportStore {
         }
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?;let now=Self::clock(db,now).await?;let r=row(db,id).await?;
+            Self::lock(db).await?;
+            sql_query("SELECT true AS matched FROM hagency_agent_v1.file_outbox WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<Flag>(db).await?;
+            let now=Self::clock(db,now).await?;let r=row(db,id).await?;
             if !matches!(r.state.as_str(),"queued"|"uploaded") {return Err(Error::Conflict("file_not_sendable"))}
             let scope=Self::scope(db,&r.binding_id).await?;facts(&scope,&r.requester_mxid,f,now)?;Self::file_allowed(db,&r.owner_event_id).await?;
             if scope.binding_generation!=r.binding_generation||scope.owner_user_id!=r.owner_user_id||scope.agent_id!=r.agent_id||scope.puppet_mxid!=r.puppet_mxid {return Err(Error::Unauthorized("file_scope_revoked"))}
@@ -429,6 +453,7 @@ impl TransportStore {
             let now=Self::clock(db,now).await?;facts(&scope,&r.requester_mxid,f,now)?;
             let live=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.file_sendable WHERE id=$1) AND EXISTS(SELECT 1 FROM hagency_agent_v1.owner_events WHERE id=$2 AND created_at_ms>$3) AS matched").bind::<Text,_>(id).bind::<Text,_>(&r.owner_event_id).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).get_result::<Flag>(db).await?;
             if !live.matched {return Err(Error::Unauthorized("file_lease_expired"))}
+            let _admission=gate.map(crate::worker_runtime::ClaimGate::admit).transpose()?;
             let token=secret_token();sql_query("UPDATE hagency_agent_v1.file_outbox SET state=$2,worker_phase=$3,worker_token=$4,worker_until_ms=$5 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(state).bind::<Text,_>(phase).bind::<Text,_>(&token).bind::<BigInt,_>(now+60_000).execute(db).await?;
             Ok(FileClaim{row:row(db,id).await?,token,bytes})
         }).await

@@ -171,19 +171,28 @@ async fn postgres_file_chunks_are_append_only_and_unknown_retains_original_bytes
             prefix.total, 0,
             "normal staging must not rewrite a growing bytea"
         );
-        let cross = crate::file_delivery::CHUNK_BYTES - 8;
-        f.transport
-            .stage_file_chunk(
-                &f.p,
-                &lease,
-                &target,
-                cross as u64,
-                &bytes[cross..cross + 32],
-                &f.facts,
-                crate::api::now_ms(),
-            )
-            .await
-            .unwrap();
+        let chunk = crate::file_delivery::CHUNK_BYTES;
+        for (offset, len) in [
+            (0, 1),
+            (0, chunk),
+            (chunk - 8, 32),
+            (chunk, 1),
+            (chunk * 2 - 1, 8),
+            (chunk * 2, 7),
+        ] {
+            f.transport
+                .stage_file_chunk(
+                    &f.p,
+                    &lease,
+                    &target,
+                    offset as u64,
+                    &bytes[offset..offset + len],
+                    &f.facts,
+                    crate::api::now_ms(),
+                )
+                .await
+                .unwrap();
+        }
         for statement in [
             "UPDATE hagency_agent_v1.file_chunks SET content='bad'::bytea WHERE file_id=$1",
             "DELETE FROM hagency_agent_v1.file_chunks WHERE file_id=$1",

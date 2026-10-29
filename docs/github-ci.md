@@ -12,7 +12,7 @@ CI overrides the local absolute Cargo target directory. A version tag must equal
 In this workflow, PRs and manual dispatch run quality checks only; its publishing
 container jobs are skipped. The independent `Embedded Deployment` workflow
 builds a local amd64 image on every PR and runs real PKCE, AS delivery, worker
-health, SIGTERM drain and restart checks without publishing it. Weekly/manual
+health, SIGTERM drain and restart checks without publishing it. PR/weekly/manual
 backup drills also restore three new databases and private files from the same
 image's executable and assets. The `Dependency risk policy` workflow audits
 PRs/main and weekly, retaining full findings and rejecting unreviewed, changed,

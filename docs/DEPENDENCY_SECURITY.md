@@ -38,6 +38,7 @@ It does not use `cargo audit --ignore`. Existing unresolved findings and warning
 are printed on every run. The current review expires on **2026-11-29**. Updating
 that date requires rechecking the call paths, affected operations, upstream fixes
 and source revisions; it is not an automatic renewal.
+Review dates explicitly use Asia/Shanghai, including on UTC GitHub runners.
 
 The `Dependency risk policy` workflow runs on PRs, main pushes, weekly and manual
 dispatch. Cargo Dependabot updates run weekly. Local offline reproduction may use
