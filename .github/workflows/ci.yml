@@ -44,7 +44,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check spelling
-        uses: crate-ci/typos@v1.48.0
+        uses: crate-ci/typos@v1.51.1
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.0
