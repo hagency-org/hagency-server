@@ -281,7 +281,7 @@ async fn seed_earlier_month(
     let mut receipt = for_month(v2_input(f, a).await, &m).receipt;
     receipt.ledger_revision = ledger_revision;
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
-    sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
+    sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms,chain_root_id,period_start_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$1,$11)")
         .bind::<Text, _>(&receipt.grant_id)
         .bind::<Text, _>(&a.contribution.id)
         .bind::<Text, _>(&f.owner.p.user_id)

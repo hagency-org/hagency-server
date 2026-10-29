@@ -23,6 +23,9 @@ pub(super) async fn call(
             if policy.project_reservations() {
                 features.push(crate::management_allocation_types::ADMISSION_BOUND_GRANTS_FEATURE);
                 features.push(crate::management_allocation_types::POOL_MONTHLY_REGRANT_FEATURE);
+                if policy.pool_grant_succession() {
+                    features.push(crate::management_allocation_types::POOL_GRANT_SUCCESSION_FEATURE);
+                }
             }
             if domain.management_allocation_supported(p, policy).await? {
                 features.push(crate::management_allocation_types::ALLOCATION_FEATURE);

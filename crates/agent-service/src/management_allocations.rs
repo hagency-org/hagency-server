@@ -28,6 +28,8 @@ struct GrantRow {
     expires_at_ms: i64,
     #[diesel(sql_type=BigInt)]
     observed_at_ms: i64,
+    #[diesel(sql_type=BigInt)]
+    period_start_ms: i64,
 }
 #[derive(QueryableByName)]
 struct AllocationRow {
@@ -169,8 +171,11 @@ fn grant_view(row: &GrantRow, now: i64) -> Result<ResourceGrantView> {
 async fn grant_live(db: &mut AsyncPgConnection, g: &GrantRow, now: i64) -> Result<bool> {
     let receipt: NativeGrantReceipt = decode(&g.receipt)?;
     let (owner, c) = contribution(db, &receipt.contribution_id).await?;
+    // A scheduled renewal authorizes nothing before its UTC month starts.
     if g.state != "active"
         || g.expires_at_ms <= now
+        || g.period_start_ms > now
+        || receipt.period_start_ms > now
         || receipt.period_end_ms <= now
         || c.state != "admitted"
         || owner != g.owner_user_id
@@ -382,18 +387,20 @@ async fn view(
     })
 }
 
+/// The pool's effective grant at `now`: the one active receipt of the
+/// contribution whose window covers `now` (a v2 root or a v3 successor).
 pub(super) async fn live_grant_for_pool(
     db: &mut AsyncPgConnection,
     contribution: &str,
     now: i64,
 ) -> Result<Option<ResourceGrantView>> {
-    let rows = sql_query("SELECT * FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND state='active' AND expires_at_ms>$2 ORDER BY id DESC LIMIT 2")
+    let rows = sql_query("SELECT * FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND state='active' AND period_start_ms<=$2 AND expires_at_ms>$2 ORDER BY id DESC LIMIT 2")
         .bind::<Text,_>(contribution).bind::<BigInt,_>(now).load::<GrantRow>(db).await?;
     let mut current = None;
     for row in rows {
         if grant_live(db, &row, now).await? {
             let view = grant_view(&row, now)?;
-            if view.receipt.version != 2 { continue; }
+            if !matches!(view.receipt.version, 2 | 3) { continue; }
             if current.is_some() { return Err(Error::Conflict("resource_grant_conflict")); }
             current = Some(view);
         }
@@ -675,6 +682,10 @@ impl DomainStore {
         key(id)?;
         key(&input.command_id)?;
         input.receipt.validate(&self.server)?;
+        // A successor names its predecessor and is published only through it.
+        if input.receipt.succession.is_some() {
+            return Err(Error::Invalid("invalid_grant_succession"));
+        }
         let (executor, generation) = device(p)?;
         if input.expected_contribution_revision <= 0 {
             return Err(Error::Invalid("invalid_management_revision"));
@@ -710,8 +721,8 @@ impl DomainStore {
                 && sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND receipt::jsonb->>'admissionRequestId'=$2 AND receipt::jsonb->>'periodKey'=$3) AS matched").bind::<Text,_>(id).bind::<Text,_>(request).bind::<Text,_>(&r.period_key).get_result::<Flag>(db).await?.matched
             {return Err(Error::Conflict("resource_grant_already_exists"));}
             super::agents::executor::validate_external_ledger_receipt(db,&p.user_id,executor,r.ledger_revision,r.ledger_revision).await?;
-            sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10)")
-                .bind::<Text,_>(&r.grant_id).bind::<Text,_>(id).bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(generation).bind::<Text,_>(wire(r)?).bind::<Text,_>(&receipt_digest).bind::<Text,_>(&r.period_key).bind::<BigInt,_>(r.delegation_expires_at_ms.min(r.period_end_ms)).bind::<BigInt,_>(now).execute(db).await?;
+            sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms,chain_root_id,period_start_ms) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$1,$11)")
+                .bind::<Text,_>(&r.grant_id).bind::<Text,_>(id).bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(generation).bind::<Text,_>(wire(r)?).bind::<Text,_>(&receipt_digest).bind::<Text,_>(&r.period_key).bind::<BigInt,_>(r.delegation_expires_at_ms.min(r.period_end_ms)).bind::<BigInt,_>(now).bind::<BigInt,_>(r.period_start_ms).execute(db).await?;
             let rows=sql_query("SELECT m.id,m.contribution_id,m.manager_user_id,u.mxid AS manager_mxid,m.state,m.revision,m.requested_tokens,m.name,m.purpose FROM hagency_agent_v1.management_projects m JOIN hagency_agent_v1.users u ON u.id=m.manager_user_id WHERE m.contribution_id=$1 AND m.state='approved' ORDER BY m.id").bind::<Text,_>(id).load::<PlanRow>(db).await?;
             for m in rows {seed_for_project(db,policy,&m.id,now).await?;}
             let result=grant_view(&grant(db,&r.grant_id).await?,now)?;

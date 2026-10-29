@@ -25,6 +25,7 @@ pub struct ManagementPolicy {
     shared_thread_context: bool,
     agent_budget_deltas: bool,
     shared_budget_execution: bool,
+    pool_grant_succession: bool,
 }
 impl ManagementPolicy {
     pub fn new(administrator: String, server: &str) -> Result<Self> {
@@ -45,7 +46,17 @@ impl ManagementPolicy {
             shared_thread_context: false,
             agent_budget_deltas: false,
             shared_budget_execution: false,
+            pool_grant_succession: false,
         })
+    }
+    /// Renewal and amendment of pool grants, and Agent lifetime following the
+    /// pool's capacity chain. Off: chains stay one grant long, as before.
+    pub fn with_pool_grant_succession(mut self, enabled: bool) -> Self {
+        self.pool_grant_succession = enabled;
+        self
+    }
+    pub fn pool_grant_succession(&self) -> bool {
+        self.pool_grant_succession
     }
     pub fn with_shared_budget_execution(mut self, enabled: bool) -> Self {
         self.shared_budget_execution = enabled;

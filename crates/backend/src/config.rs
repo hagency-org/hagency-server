@@ -73,6 +73,10 @@ pub struct ManagementConfig {
     pub enable_agent_budget_deltas: bool,
     #[serde(default)]
     pub enable_shared_budget_execution: bool,
+    /// Pool grant renewal/amendment and chain-long pool Agent lifetime. Off
+    /// until the owners' desktops support succession.
+    #[serde(default)]
+    pub enable_pool_grant_succession: bool,
 }
 /// Fully loaded runtime configuration; files stay owned by their components.
 #[derive(Clone)]

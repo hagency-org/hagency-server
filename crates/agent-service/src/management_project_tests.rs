@@ -792,7 +792,7 @@ async fn project_creation_is_removed_while_historical_access_remains() {
         matched: bool,
     }
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
-    assert!(sql_query("SELECT version=28 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Schema>(&mut db).await.unwrap().matched);
+    assert!(sql_query("SELECT version=29 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Schema>(&mut db).await.unwrap().matched);
 }
 
 #[tokio::test]

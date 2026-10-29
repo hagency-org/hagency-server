@@ -1,3 +1,6 @@
+-- Schema 29 objects that an older schema never had.
+DROP TRIGGER IF EXISTS retain_resource_grant_chain ON hagency_agent_v1.management_resource_grants;
+DROP FUNCTION IF EXISTS hagency_agent_v1.retain_resource_grant_chain();
 DROP FUNCTION IF EXISTS hagency_agent_v1.canonical_shared_block_json(jsonb);
 DROP TABLE IF EXISTS hagency_agent_v1.management_shared_approvals;
 -- Test-only removal of schema 24, with legacy constraints restored.

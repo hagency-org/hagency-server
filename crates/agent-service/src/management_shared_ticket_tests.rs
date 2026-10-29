@@ -255,7 +255,7 @@ async fn shared_ticket_schema14_atomic_upgrade_preserves_pending_original_ticket
     assert!(ack.activity.is_some());
     assert_eq!(history(&f, &d).await.command_digest, d.command_digest);
     assert!(
-        sql_query("SELECT version=28 AS matched FROM hagency_agent_v1.management_deployment")
+        sql_query("SELECT version=29 AS matched FROM hagency_agent_v1.management_deployment")
             .get_result::<Check>(&mut db)
             .await
             .unwrap()
