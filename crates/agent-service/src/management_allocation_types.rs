@@ -12,8 +12,34 @@ pub const ADMISSION_BOUND_GRANTS_FEATURE: &str = "admission-bound-grants-v2";
 /// A v2 admission accepts one grant per UTC month, so its owner can grant the
 /// same pool again once the previous grant's month has ended.
 pub const POOL_MONTHLY_REGRANT_FEATURE: &str = "pool-monthly-regrant-v1";
+/// A pool's capacity is a chain of receipts on one admission: a v3 successor
+/// amends the current month or renews the next one, carrying reserved Agents.
+pub const POOL_GRANT_SUCCESSION_FEATURE: &str = "pool-grant-succession-v1";
+/// Earliest renewal: this long before the predecessor's UTC month ends.
+pub const RENEWAL_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 pub const MAX_NATIVE_GRANT_BYTES: usize = 12 * 1024;
 pub const MAX_EXACT: i64 = 9_007_199_254_740_991;
+
+/// Native successor link of a v3 receipt. It names the exact predecessor
+/// receipt and the reserved Agents' hold the successor must cover.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GrantSuccession {
+    /// "renewal" (the next UTC month) or "amendment" (the same month).
+    pub kind: String,
+    pub predecessor_grant_id: String,
+    /// Canonical digest of the predecessor receipt.
+    pub predecessor_receipt_digest: String,
+    /// Reserved Agents the successor carries when native created it.
+    pub carried_children: i64,
+    /// Their native hold, the successor's floor.
+    pub carried_retained_tokens: i64,
+}
+impl GrantSuccession {
+    pub fn renewal(&self) -> bool {
+        self.kind == "renewal"
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -41,6 +67,9 @@ pub struct NativeGrantReceipt {
     pub period_start_ms: i64,
     pub period_end_ms: i64,
     pub ledger_revision: i64,
+    /// Present exactly on v3 successors; omitted so v1/v2 digests are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub succession: Option<GrantSuccession>,
 }
 impl NativeGrantReceipt {
     pub(crate) fn validate(&self, server: &str) -> Result<()> {
@@ -83,8 +112,12 @@ impl NativeGrantReceipt {
             crate::management_types::local_user(mxid, server)?;
         }
         if !matches!(
-            (self.version, self.admission_request_id.as_ref()),
-            (1, None) | (2, Some(_))
+            (
+                self.version,
+                self.admission_request_id.as_ref(),
+                self.succession.as_ref()
+            ),
+            (1, None, None) | (2, Some(_), None) | (3, Some(_), Some(_))
         )
             || self.capability != ALLOCATION_CAPABILITY
         {
@@ -92,6 +125,19 @@ impl NativeGrantReceipt {
         }
         if let Some(request) = &self.admission_request_id {
             key(request)?;
+        }
+        if let Some(s) = &self.succession {
+            key(&s.predecessor_grant_id)?;
+            if !matches!(s.kind.as_str(), "renewal" | "amendment")
+                || s.predecessor_grant_id == self.grant_id
+                || !valid_digest(&s.predecessor_receipt_digest)
+                || !(0..=MAX_EXACT).contains(&s.carried_children)
+                || !(0..=MAX_EXACT).contains(&s.carried_retained_tokens)
+                || s.carried_retained_tokens > self.allocated_tokens
+                || self.grant_revision < 2
+            {
+                return Err(Error::Invalid("invalid_grant_succession"));
+            }
         }
         if self.eligible_managers.is_empty()
             || self.eligible_managers.len() > 64
@@ -115,6 +161,15 @@ impl NativeGrantReceipt {
 pub struct PublishGrantInput {
     pub command_id: String,
     pub expected_contribution_revision: i64,
+    pub receipt: NativeGrantReceipt,
+}
+/// Publication of an owner-confirmed v3 successor of one exact grant.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SucceedGrantInput {
+    pub command_id: String,
+    pub expected_contribution_revision: i64,
+    pub expected_predecessor_revision: i64,
     pub receipt: NativeGrantReceipt,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -346,4 +401,114 @@ pub struct ProjectAllocationsQuery {
 pub struct ProjectAllocationPage {
     pub items: Vec<ProjectAllocationDetail>,
     pub next_after: Option<String>,
+}
+
+#[cfg(test)]
+mod succession_vector_tests {
+    use super::*;
+    /// The same file and digests are asserted by hagency-client: both stores
+    /// must hash v2 and v3 receipts to identical bytes.
+    #[test]
+    fn shared_v3_vector_matches_the_native_store_digests() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/pool-grant-succession-v3.json"))
+                .unwrap();
+        let receipt = |name: &str| -> NativeGrantReceipt {
+            serde_json::from_value(fixture[name].clone()).unwrap()
+        };
+        let predecessor = receipt("predecessor");
+        let amendment = receipt("amendment");
+        let renewal = receipt("renewal");
+        assert_eq!(
+            allocation_digest(&predecessor).unwrap(),
+            "e75ea704484fca4a40db8387b855e0b2c2d438ec273d61e6dfd7c4543c8d3616"
+        );
+        assert_eq!(
+            allocation_digest(&amendment).unwrap(),
+            "179b7f798aa87d6ef5ff58babf3f723d51752ac8866d3da94d153d8eb6f45d46"
+        );
+        assert_eq!(
+            allocation_digest(&renewal).unwrap(),
+            "36a77fe61abeda725de20024d4046945b9f2129cca1b05da426fb6d15e5b5c49"
+        );
+        for (name, value) in [
+            ("predecessorDigest", &predecessor),
+            ("amendmentDigest", &amendment),
+            ("renewalDigest", &renewal),
+        ] {
+            assert_eq!(fixture[name], allocation_digest(value).unwrap(), "{name}");
+            // The fixture bytes and the typed round trip hash identically.
+            assert_eq!(allocation_digest(&fixture[name.trim_end_matches("Digest")]).unwrap(), fixture[name]);
+        }
+        let a = amendment.succession.as_ref().unwrap();
+        let r = renewal.succession.as_ref().unwrap();
+        assert_eq!(a.predecessor_receipt_digest, fixture["predecessorDigest"]);
+        assert_eq!(a.predecessor_grant_id, predecessor.grant_id);
+        assert_eq!(r.predecessor_receipt_digest, fixture["amendmentDigest"]);
+        assert_eq!(r.predecessor_grant_id, amendment.grant_id);
+        assert!(!a.renewal() && r.renewal());
+        predecessor.validate("example.test").unwrap();
+        // The shared v3 receipts list "@manager:" before "@manager2:", which is
+        // not the sorted order every store requires, so they are refused as
+        // published. Sorted, the same receipts are valid successors.
+        for value in [&amendment, &renewal] {
+            assert_eq!(
+                value.validate("example.test").unwrap_err().to_string(),
+                "invalid_resource_grant"
+            );
+            let mut sorted = value.clone();
+            sorted.eligible_managers.sort();
+            sorted.validate("example.test").unwrap();
+        }
+        // A v2 receipt never serializes the optional succession field.
+        assert!(
+            serde_json::to_value(&predecessor)
+                .unwrap()
+                .get("succession")
+                .is_none()
+        );
+    }
+    #[test]
+    fn receipt_version_admission_and_succession_are_one_closed_matrix() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/pool-grant-succession-v3.json"))
+                .unwrap();
+        let amendment: NativeGrantReceipt =
+            serde_json::from_value(fixture["amendment"].clone()).unwrap();
+        let predecessor: NativeGrantReceipt =
+            serde_json::from_value(fixture["predecessor"].clone()).unwrap();
+        let rejects = |r: NativeGrantReceipt| assert!(r.validate("example.test").is_err());
+        // v2 cannot carry a succession, and v3 must.
+        let mut v = predecessor.clone();
+        v.succession = amendment.succession.clone();
+        rejects(v);
+        let mut v = amendment.clone();
+        v.succession = None;
+        rejects(v);
+        let mut v = amendment.clone();
+        v.admission_request_id = None;
+        rejects(v);
+        let mut v = amendment.clone();
+        v.version = 2;
+        rejects(v);
+        let changes: [fn(&mut GrantSuccession); 5] = [
+            |s: &mut GrantSuccession| s.kind = "transfer".into(),
+            |s: &mut GrantSuccession| s.predecessor_grant_id = "grant_pool_amendment_2".into(),
+            |s: &mut GrantSuccession| s.predecessor_receipt_digest = "A".repeat(64),
+            |s: &mut GrantSuccession| s.carried_children = -1,
+            |s: &mut GrantSuccession| s.carried_retained_tokens = 800_001,
+        ];
+        for change in changes {
+            let mut v = amendment.clone();
+            change(v.succession.as_mut().unwrap());
+            rejects(v);
+        }
+        let mut v = amendment.clone();
+        v.grant_revision = 1;
+        rejects(v);
+        // Unknown succession fields are refused like every other closed DTO.
+        let mut raw = fixture["amendment"].clone();
+        raw["succession"]["note"] = serde_json::json!("x");
+        assert!(serde_json::from_value::<NativeGrantReceipt>(raw).is_err());
+    }
 }

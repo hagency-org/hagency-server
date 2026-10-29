@@ -1,0 +1,100 @@
+{
+ "comment": "Shared pool grant succession vector. hagency-server and hagency-client assert the same digests.",
+ "predecessor": {
+  "version": 2,
+  "capability": "hagency.project_reservations.v1",
+  "admissionRequestId": "mrq_pool_admission_1",
+  "enrollmentId": "men_pool_enrollment_1",
+  "grantId": "grant_pool_root_1",
+  "grantRevision": 1,
+  "contributionId": "mco_pool_1",
+  "resourceId": "resource_pool_1",
+  "resourceRevision": "c5315a239be32f7d5e62583a7bf855c6faaeeafd507bf4f6349751fe0ee977af",
+  "executorDeviceId": "DEVICE1",
+  "executorGeneration": 1,
+  "ownerMxid": "@owner:example.test",
+  "coordinatorMxid": "@owner:example.test",
+  "delegationRevision": 1,
+  "delegationExpiresAtMs": 1796083200000,
+  "allowSelfApproval": false,
+  "eligibleManagers": [
+   "@manager:example.test"
+  ],
+  "allocatedTokens": 1000000,
+  "periodKey": "2026-11",
+  "periodStartMs": 1793491200000,
+  "periodEndMs": 1796083200000,
+  "ledgerRevision": 40
+ },
+ "predecessorDigest": "e75ea704484fca4a40db8387b855e0b2c2d438ec273d61e6dfd7c4543c8d3616",
+ "amendment": {
+  "version": 3,
+  "capability": "hagency.project_reservations.v1",
+  "admissionRequestId": "mrq_pool_admission_1",
+  "enrollmentId": "men_pool_enrollment_1",
+  "grantId": "grant_pool_amendment_2",
+  "grantRevision": 2,
+  "contributionId": "mco_pool_1",
+  "resourceId": "resource_pool_1",
+  "resourceRevision": "c5315a239be32f7d5e62583a7bf855c6faaeeafd507bf4f6349751fe0ee977af",
+  "executorDeviceId": "DEVICE1",
+  "executorGeneration": 1,
+  "ownerMxid": "@owner:example.test",
+  "coordinatorMxid": "@owner:example.test",
+  "delegationRevision": 1,
+  "delegationExpiresAtMs": 1796083200000,
+  "allowSelfApproval": false,
+  "eligibleManagers": [
+   "@manager:example.test",
+   "@manager2:example.test"
+  ],
+  "allocatedTokens": 800000,
+  "periodKey": "2026-11",
+  "periodStartMs": 1793491200000,
+  "periodEndMs": 1796083200000,
+  "ledgerRevision": 52,
+  "succession": {
+   "kind": "amendment",
+   "predecessorGrantId": "grant_pool_root_1",
+   "predecessorReceiptDigest": "e75ea704484fca4a40db8387b855e0b2c2d438ec273d61e6dfd7c4543c8d3616",
+   "carriedChildren": 2,
+   "carriedRetainedTokens": 600000
+  }
+ },
+ "amendmentDigest": "179b7f798aa87d6ef5ff58babf3f723d51752ac8866d3da94d153d8eb6f45d46",
+ "renewal": {
+  "version": 3,
+  "capability": "hagency.project_reservations.v1",
+  "admissionRequestId": "mrq_pool_admission_1",
+  "enrollmentId": "men_pool_enrollment_1",
+  "grantId": "grant_pool_renewal_3",
+  "grantRevision": 3,
+  "contributionId": "mco_pool_1",
+  "resourceId": "resource_pool_1",
+  "resourceRevision": "c5315a239be32f7d5e62583a7bf855c6faaeeafd507bf4f6349751fe0ee977af",
+  "executorDeviceId": "DEVICE1",
+  "executorGeneration": 1,
+  "ownerMxid": "@owner:example.test",
+  "coordinatorMxid": "@owner:example.test",
+  "delegationRevision": 1,
+  "delegationExpiresAtMs": 1798761600000,
+  "allowSelfApproval": false,
+  "eligibleManagers": [
+   "@manager:example.test",
+   "@manager2:example.test"
+  ],
+  "allocatedTokens": 900000,
+  "periodKey": "2026-12",
+  "periodStartMs": 1796083200000,
+  "periodEndMs": 1798761600000,
+  "ledgerRevision": 61,
+  "succession": {
+   "kind": "renewal",
+   "predecessorGrantId": "grant_pool_amendment_2",
+   "predecessorReceiptDigest": "179b7f798aa87d6ef5ff58babf3f723d51752ac8866d3da94d153d8eb6f45d46",
+   "carriedChildren": 2,
+   "carriedRetainedTokens": 600000
+  }
+ },
+ "renewalDigest": "36a77fe61abeda725de20024d4046945b9f2129cca1b05da426fb6d15e5b5c49"
+}

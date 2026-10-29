@@ -255,7 +255,7 @@ impl ManagedAgentReserveCommand {
                     || !self.allocation_receipt_digest.is_empty()
                     || self.project_revision != 0
                     || self.setup_binding_revision != 0
-                    || grant.version != 2
+                    || !matches!(grant.version, 2 | 3)
                     || grant.admission_request_id.is_none()
                     || grant.owner_mxid != grant.coordinator_mxid
                     || self.decision_actor_mxid != grant.owner_mxid
