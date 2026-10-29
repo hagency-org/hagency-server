@@ -1,6 +1,6 @@
 # Agent 加密房间：执行端持有 agent 设备
 
-日期：2026-10-28。状态：已决定，阶段 0 验证中。本文取代 `docs/CRYPTO_CAPABILITY_GAPS.zh-CN.md` 中“受限 crypto proxy、Matrix token 永不交给执行端”的方案，仅针对 agent 加密房间这一功能。
+日期：2026-10-28。状态：已决定，阶段 0 已通过。本文取代 `docs/CRYPTO_CAPABILITY_GAPS.zh-CN.md` 中“受限 crypto proxy、Matrix token 永不交给执行端”的方案，仅针对 agent 加密房间这一功能。
 
 ## 决定与信任模型
 
@@ -58,6 +58,14 @@
 - 服务器信任执行端“已被呼叫”的确认，用量归属可能被执行端误报。
 - 执行端离线期间，服务器的候选登记如何过期与清理。
 
-## 阶段 0 结果
+## 阶段 0 结果（2026-10-28，River，全部通过）
 
-（待填写）
+- **设备签发**：对已存在的 agent puppet（借用小白菜 `@_hagency_agt_01m5zes85dzsjag9qjc0fettd7`），appservice 登录指定 device_id `HAGENCYE2EESPIKE1` 成功，返回的 token 没有过期时间。River 上 Palpo 的 `/register` 对 appservice 也返回 “registration has been disabled”，appservice 登录要求用户已存在，因此只能为已有 puppet 签发设备。
+- **执行端加密客户端**：用与 Desktop 相同的 matrix-sdk 0.19.1（`e2e-encryption`、`sqlite`、`automatic-room-key-forwarding`）从该 token 恢复会话，首次同步上传了设备密钥，创建加密房间并邀请 edward。
+- **收**：edward 在 Rinx 中发送“加密测试”，执行端收到房间密钥并在本地解密。
+- **发**：执行端加密回复（`encryption_info` 存在），约 1 秒后到达，edward 的 Rinx 正常解密显示。
+- **服务器只存密文**：Palpo 中两条事件都是 `m.room.encrypted`（`m.megolm.v1.aes-sha2`），没有 `body` 字段，存储内容中找不到明文。
+- **撤销**：服务器对同一 device_id 再次 appservice 登录后，执行端旧 token 立即返回 `401 M_UNKNOWN_TOKEN Token is not active`，新请求和正在运行的同步都失败，无需执行端配合。
+- **清理**：客户端 `DELETE /devices/{id}` 需要密码交互认证，puppet 无法使用；改用服务器持有的新 token 退出房间并 `/logout`，设备及其密钥被删除，puppet 设备列表恢复为 `['appservice']`。
+
+未覆盖：Hagency 服务器对加密事件的候选登记与执行端确认、多人加密房间、MSC4268 历史、成员客户端对 agent 设备“未验证”的提示、长期运行时的一次性密钥补充。验证程序源码只保存在本次会话的临时目录，未入库。
