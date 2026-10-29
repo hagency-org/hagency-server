@@ -1,0 +1,39 @@
+name: Dependency risk policy
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 16 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned auditor
+        run: cargo install --locked cargo-audit --version 0.22.2
+      - name: Test review policy
+        run: python3 -m unittest discover -s scripts -p test_audit_dependencies.py
+      - name: Audit without hiding reviewed unresolved findings
+        run: python3 scripts/audit-dependencies.py
+      - name: Preserve complete audit output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dependency-audit
+          path: .run/dependency-audit.json
+          if-no-files-found: warn
