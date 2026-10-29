@@ -1,5 +1,6 @@
 //! Shared human work items. A separate pool never queues behind Agent storage.
 mod catalog;
+pub(crate) use catalog::SetNavigationDefault;
 mod collaboration;
 mod columns;
 mod types;
@@ -209,17 +210,19 @@ impl BoardStore {
             let exists=sql_query("SELECT to_regclass('hagency_project_v1.migrations') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
             if exists {
                 let version=sql_query("SELECT coalesce(max(version),0)::bigint AS value FROM hagency_project_v1.migrations").get_result::<Number>(db).await?.value;
-                if !(1..=5).contains(&version){return Err(Error::Conflict("board_schema_incompatible"));}
+                if !(1..=6).contains(&version){return Err(Error::Conflict("board_schema_incompatible"));}
                 let complete=sql_query("SELECT to_regclass('hagency_project_v1.boards') IS NOT NULL AND to_regclass('hagency_project_v1.tasks') IS NOT NULL AND to_regclass('hagency_project_v1.comments') IS NOT NULL AND to_regclass('hagency_project_v1.changes') IS NOT NULL AND to_regclass('hagency_project_v1.receipts') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
                 if version>=2 && !sql_query("SELECT to_regclass('hagency_project_v1.columns') IS NOT NULL AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if version>=3 && !sql_query("SELECT to_regclass('hagency_project_v1.notifications') IS NOT NULL AND to_regclass('hagency_project_v1.attachments') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='changes' AND column_name='details') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if version>=4 && !sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='columns' AND column_name='archived') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if version>=5 && !sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_project_v1' AND table_name='boards' AND column_name='owner_project_id') AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='projects' AND column_name='archived') AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
+                if version>=6 && !sql_query("SELECT to_regclass('hagency_project_v1.navigation_defaults') IS NOT NULL AS value").get_result::<Flag>(db).await?.value {return Err(Error::Conflict("board_schema_incompatible"));}
                 if !complete{return Err(Error::Conflict("board_schema_incompatible"));}
                 if version == 1 { db.batch_execute(include_str!("schema_v2.sql")).await?; }
                 if version < 3 { db.batch_execute(include_str!("schema_v3.sql")).await?; }
                 if version < 4 { db.batch_execute(include_str!("schema_v4.sql")).await?; }
                 if version < 5 { db.batch_execute(include_str!("schema_v5.sql")).await?; }
+                if version < 6 { db.batch_execute(include_str!("schema_v6.sql")).await?; }
                 return Ok(());
             }
             db.batch_execute(include_str!("schema.sql")).await?;
@@ -227,6 +230,7 @@ impl BoardStore {
             db.batch_execute(include_str!("schema_v3.sql")).await?;
             db.batch_execute(include_str!("schema_v4.sql")).await?;
             db.batch_execute(include_str!("schema_v5.sql")).await?;
+            db.batch_execute(include_str!("schema_v6.sql")).await?;
             Ok(())
         }).await?;
         drop(db);

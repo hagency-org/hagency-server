@@ -1231,26 +1231,79 @@ async fn postgres_label_suggestions_ignore_filters_pages_and_archive_and_stay_bo
     let board = &domain.board;
     let mut first = None;
     for page in 0..18 {
-        let result = board.mutate(&alice, &access, Mutation::Create(Create {
-            idempotency_key: format!("labels-{page}"), state: "todo".into(),
-            fields: Fields { title: format!("catalog task {page}"),
-                labels: (page*12..(page+1)*12).map(|i| format!("catalog-{i:03}")).collect(),
-                ..Default::default() },
-        })).await.unwrap();
-        if page == 0 { first = result["task"]["id"].as_str().map(str::to_owned); }
+        let result = board
+            .mutate(
+                &alice,
+                &access,
+                Mutation::Create(Create {
+                    idempotency_key: format!("labels-{page}"),
+                    state: "todo".into(),
+                    fields: Fields {
+                        title: format!("catalog task {page}"),
+                        labels: (page * 12..(page + 1) * 12)
+                            .map(|i| format!("catalog-{i:03}"))
+                            .collect(),
+                        ..Default::default()
+                    },
+                }),
+            )
+            .await
+            .unwrap();
+        if page == 0 {
+            first = result["task"]["id"].as_str().map(str::to_owned);
+        }
     }
-    board.mutate(&alice, &access, Mutation::Archive { task: first.unwrap(),
-        input: Versioned { idempotency_key:"archive-labels".into(), expected_version:1 }
-    }).await.unwrap();
-    let snapshot = board.board(&alice, &access, Query { label:Some("no-matches".into()), limit:Some(1), ..Default::default() }).await.unwrap();
-    assert!(snapshot["lanes"].as_array().unwrap().iter().all(|l| l["tasks"].as_array().unwrap().is_empty()));
+    board
+        .mutate(
+            &alice,
+            &access,
+            Mutation::Archive {
+                task: first.unwrap(),
+                input: Versioned {
+                    idempotency_key: "archive-labels".into(),
+                    expected_version: 1,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let snapshot = board
+        .board(
+            &alice,
+            &access,
+            Query {
+                label: Some("no-matches".into()),
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        snapshot["lanes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|l| l["tasks"].as_array().unwrap().is_empty())
+    );
     assert_eq!(snapshot["labelSuggestions"].as_array().unwrap().len(), 200);
     assert_eq!(snapshot["labelSuggestions"][0], "catalog-000");
     assert_eq!(snapshot["labelSuggestions"][199], "catalog-199");
     assert_eq!(snapshot["hasMoreLabels"], true);
     assert_eq!(snapshot["lanes"][0]["taskCount"], 17);
     assert_eq!(snapshot["lanes"][0]["allTaskCount"], 18);
-    let archived = board.board(&alice, &access, Query { archived:true, label:Some("catalog-000".into()), ..Default::default() }).await.unwrap();
+    let archived = board
+        .board(
+            &alice,
+            &access,
+            Query {
+                archived: true,
+                label: Some("catalog-000".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(archived["lanes"][0]["total"], 1);
     assert_eq!(archived["labelSuggestions"], snapshot["labelSuggestions"]);
 }
@@ -1259,57 +1312,518 @@ async fn postgres_label_suggestions_ignore_filters_pages_and_archive_and_stay_bo
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_multiple_boards_keep_tasks_receipts_and_cursors_isolated() {
     use super::catalog::NewBoard;
-    let (_auth,domain,alice,_bob,access)=fixture().await;
-    let board=&domain.board;
-    let original=board.mutate(&alice,&access,create("same-intent","Original board task")).await.unwrap();
-    let catalog=board.catalog(&alice,&access,None).await.unwrap();
-    assert_eq!(catalog["boards"].as_array().unwrap().len(),1);
-    assert_eq!(catalog["boards"][0]["name"],"Main Board");
-    let input=||Some(NewBoard {idempotency_key:"new-board".into(),name:"Planning".into()});
-    let created=board.catalog(&alice,&access,input()).await.unwrap();
-    let repeated=board.catalog(&alice,&access,input()).await.unwrap();
-    assert_eq!(created,repeated);
-    assert_eq!(created["boards"].as_array().unwrap().len(),2);
-    assert!(matches!(board.catalog(&alice,&access,Some(NewBoard {idempotency_key:"new-board".into(),name:"Changed intent".into()})).await,Err(Error::Conflict("board_intent_conflict"))));
-    let scope=created["boards"][1]["id"].as_str().unwrap();
-    board.resolve_board(&access.project,scope).await.unwrap();
-    assert!(board.resolve_board("another-project",scope).await.is_err());
-    let other=Access {project:scope.into(),space:access.space.clone(),actor:access.actor.clone(),members:access.members.clone(),member_names:access.member_names.clone(),observed:crate::api::now_ms()};
-    let task=board.mutate(&alice,&other,create("same-intent","Second board task")).await.unwrap();
-    assert_eq!(task["task"]["number"],1);
-    assert_eq!(original["task"]["number"],1);
-    assert_ne!(task["task"]["id"],original["task"]["id"]);
-    assert!(board.detail(&alice,&other,original["task"]["id"].as_str().unwrap()).await.is_err());
-    assert!(board.detail(&alice,&access,task["task"]["id"].as_str().unwrap()).await.is_err());
-    let summary=board.overview(&alice,&access).await.unwrap();
-    assert_eq!(summary["stats"]["tasks"],2);
-    assert_eq!(summary["activity"].as_array().unwrap().len(),2);
-    let reopened=BoardStore::open(&std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap()).await.unwrap();
-    assert_eq!(reopened.catalog(&alice,&access,None).await.unwrap()["boards"],created["boards"]);
-    assert_eq!(reopened.board(&alice,&other,Query::default()).await.unwrap()["lanes"][0]["tasks"][0]["title"],"Second board task");
+    let (_auth, domain, alice, _bob, access) = fixture().await;
+    let board = &domain.board;
+    let original = board
+        .mutate(
+            &alice,
+            &access,
+            create("same-intent", "Original board task"),
+        )
+        .await
+        .unwrap();
+    let catalog = board.catalog(&alice, &access, None).await.unwrap();
+    assert_eq!(catalog["boards"].as_array().unwrap().len(), 1);
+    assert_eq!(catalog["boards"][0]["name"], "Main Board");
+    let input = || {
+        Some(NewBoard {
+            idempotency_key: "new-board".into(),
+            name: "Planning".into(),
+        })
+    };
+    let created = board.catalog(&alice, &access, input()).await.unwrap();
+    let repeated = board.catalog(&alice, &access, input()).await.unwrap();
+    assert_eq!(created, repeated);
+    assert_eq!(created["boards"].as_array().unwrap().len(), 2);
+    assert!(matches!(
+        board
+            .catalog(
+                &alice,
+                &access,
+                Some(NewBoard {
+                    idempotency_key: "new-board".into(),
+                    name: "Changed intent".into()
+                })
+            )
+            .await,
+        Err(Error::Conflict("board_intent_conflict"))
+    ));
+    let scope = created["boards"][1]["id"].as_str().unwrap();
+    board.resolve_board(&access.project, scope).await.unwrap();
+    assert!(board.resolve_board("another-project", scope).await.is_err());
+    let other = Access {
+        project: scope.into(),
+        space: access.space.clone(),
+        actor: access.actor.clone(),
+        members: access.members.clone(),
+        member_names: access.member_names.clone(),
+        observed: crate::api::now_ms(),
+    };
+    let task = board
+        .mutate(&alice, &other, create("same-intent", "Second board task"))
+        .await
+        .unwrap();
+    assert_eq!(task["task"]["number"], 1);
+    assert_eq!(original["task"]["number"], 1);
+    assert_ne!(task["task"]["id"], original["task"]["id"]);
+    assert!(
+        board
+            .detail(&alice, &other, original["task"]["id"].as_str().unwrap())
+            .await
+            .is_err()
+    );
+    assert!(
+        board
+            .detail(&alice, &access, task["task"]["id"].as_str().unwrap())
+            .await
+            .is_err()
+    );
+    let summary = board.overview(&alice, &access).await.unwrap();
+    assert_eq!(summary["stats"]["tasks"], 2);
+    assert_eq!(summary["activity"].as_array().unwrap().len(), 2);
+    let reopened = BoardStore::open(&std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.catalog(&alice, &access, None).await.unwrap()["boards"],
+        created["boards"]
+    );
+    assert_eq!(
+        reopened
+            .board(&alice, &other, Query::default())
+            .await
+            .unwrap()["lanes"][0]["tasks"][0]["title"],
+        "Second board task"
+    );
 }
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_project_archive_requires_fresh_admin_and_restores_original_boards() {
     use crate::domain::AdminFacts;
-    let (_auth,domain,alice,bob,access)=fixture().await;
-    let original=domain.board.mutate(&alice,&access,create("before-archive","Keep this task")).await.unwrap();
-    let revision=domain.project(&alice,&access.project,crate::api::now_ms()).await.unwrap().revision;
-    let mut facts=AdminFacts {actor_mxid:bob.mxid.clone(),room_id:access.space.clone(),observed_at_ms:crate::api::now_ms(),joined:true,can_manage_policy:false,is_space:true,linked_space_id:None};
-    assert!(domain.archive_project(&bob,&access.project,revision,true,&facts,crate::api::now_ms()).await.is_err());
-    facts.actor_mxid=alice.mxid.clone();facts.can_manage_policy=true;
-    let archived=domain.archive_project(&alice,&access.project,revision,true,&facts,crate::api::now_ms()).await.unwrap();
+    let (_auth, domain, alice, bob, access) = fixture().await;
+    let original = domain
+        .board
+        .mutate(&alice, &access, create("before-archive", "Keep this task"))
+        .await
+        .unwrap();
+    let revision = domain
+        .project(&alice, &access.project, crate::api::now_ms())
+        .await
+        .unwrap()
+        .revision;
+    let mut facts = AdminFacts {
+        actor_mxid: bob.mxid.clone(),
+        room_id: access.space.clone(),
+        observed_at_ms: crate::api::now_ms(),
+        joined: true,
+        can_manage_policy: false,
+        is_space: true,
+        linked_space_id: None,
+    };
+    assert!(
+        domain
+            .archive_project(
+                &bob,
+                &access.project,
+                revision,
+                true,
+                &facts,
+                crate::api::now_ms()
+            )
+            .await
+            .is_err()
+    );
+    facts.actor_mxid = alice.mxid.clone();
+    facts.can_manage_policy = true;
+    let archived = domain
+        .archive_project(
+            &alice,
+            &access.project,
+            revision,
+            true,
+            &facts,
+            crate::api::now_ms(),
+        )
+        .await
+        .unwrap();
     assert!(archived.archived);
-    assert!(domain.projects(&alice,crate::api::now_ms()).await.unwrap().iter().any(|p|p.id==access.project && p.archived));
-    assert_eq!(domain.board.board(&alice,&access,Query::default()).await.unwrap()["readOnly"],true);
-    assert_eq!(domain.board.history(&alice,&access,None,0,10,false).await.unwrap()["readOnly"],true);
-    assert!(matches!(domain.board.mutate(&alice,&access,create("after-archive","Refused")).await,Err(Error::Conflict("project_archived"))));
-    assert!(domain.archive_project(&alice,&access.project,revision,false,&facts,crate::api::now_ms()).await.is_err());
-    let stale=AdminFacts {observed_at_ms:crate::api::now_ms()-31_000,..facts.clone()};
-    assert!(domain.archive_project(&alice,&access.project,archived.revision,false,&stale,crate::api::now_ms()).await.is_err());
-    let restored=domain.archive_project(&alice,&access.project,archived.revision,false,&facts,crate::api::now_ms()).await.unwrap();
+    assert!(
+        domain
+            .projects(&alice, crate::api::now_ms())
+            .await
+            .unwrap()
+            .iter()
+            .any(|p| p.id == access.project && p.archived)
+    );
+    assert_eq!(
+        domain
+            .board
+            .board(&alice, &access, Query::default())
+            .await
+            .unwrap()["readOnly"],
+        true
+    );
+    assert_eq!(
+        domain
+            .board
+            .history(&alice, &access, None, 0, 10, false)
+            .await
+            .unwrap()["readOnly"],
+        true
+    );
+    assert!(matches!(
+        domain
+            .board
+            .mutate(&alice, &access, create("after-archive", "Refused"))
+            .await,
+        Err(Error::Conflict("project_archived"))
+    ));
+    assert!(
+        domain
+            .archive_project(
+                &alice,
+                &access.project,
+                revision,
+                false,
+                &facts,
+                crate::api::now_ms()
+            )
+            .await
+            .is_err()
+    );
+    let stale = AdminFacts {
+        observed_at_ms: crate::api::now_ms() - 31_000,
+        ..facts.clone()
+    };
+    assert!(
+        domain
+            .archive_project(
+                &alice,
+                &access.project,
+                archived.revision,
+                false,
+                &stale,
+                crate::api::now_ms()
+            )
+            .await
+            .is_err()
+    );
+    let restored = domain
+        .archive_project(
+            &alice,
+            &access.project,
+            archived.revision,
+            false,
+            &facts,
+            crate::api::now_ms(),
+        )
+        .await
+        .unwrap();
     assert!(!restored.archived);
-    assert_eq!(domain.board.detail(&alice,&access,original["task"]["id"].as_str().unwrap()).await.unwrap()["task"],original["task"]);
-    domain.board.mutate(&alice,&access,create("after-restore","Allowed")).await.unwrap();
+    assert_eq!(
+        domain
+            .board
+            .detail(&alice, &access, original["task"]["id"].as_str().unwrap())
+            .await
+            .unwrap()["task"],
+        original["task"]
+    );
+    domain
+        .board
+        .mutate(&alice, &access, create("after-restore", "Allowed"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_navigation_defaults_are_shared_versioned_authorized_and_scope_safe() {
+    use super::catalog::{NewBoard, SetNavigationDefault};
+    use crate::domain::AdminFacts;
+    let (_auth, domain, alice, bob, access) = fixture().await;
+    let board = &domain.board;
+    let facts = AdminFacts {
+        actor_mxid: alice.mxid.clone(),
+        room_id: access.space.clone(),
+        observed_at_ms: crate::api::now_ms(),
+        joined: true,
+        can_manage_policy: true,
+        is_space: true,
+        linked_space_id: None,
+    };
+    let room_a = format!("!a_{}:example.test", crate::secret_token());
+    let room_b = format!("!z_{}:example.test", crate::secret_token());
+    for room in [&room_a, &room_b] {
+        let rf = AdminFacts {
+            room_id: room.clone(),
+            is_space: false,
+            linked_space_id: Some(access.space.clone()),
+            ..facts.clone()
+        };
+        domain
+            .register_room(
+                &alice,
+                &access.project,
+                room,
+                &facts,
+                &rf,
+                crate::api::now_ms(),
+            )
+            .await
+            .unwrap();
+    }
+    let catalog = board
+        .catalog(
+            &alice,
+            &access,
+            Some(NewBoard {
+                idempotency_key: "default-board-test".into(),
+                name: "A named board".into(),
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(catalog["boards"][0]["id"], access.project);
+    assert_eq!(catalog["boards"][0]["isDefault"], true);
+    let named = catalog["createdBoardId"].as_str().unwrap().to_owned();
+    let input = |kind: &str, id: &str, revision| SetNavigationDefault {
+        kind: kind.into(),
+        target_id: id.into(),
+        expected_revision: revision,
+    };
+    let mut denied = facts.clone();
+    denied.actor_mxid = bob.mxid.clone();
+    denied.can_manage_policy = false;
+    let bob_access = Access {
+        actor: bob.mxid.clone(),
+        project: access.project.clone(),
+        space: access.space.clone(),
+        members: access.members.clone(),
+        member_names: access.member_names.clone(),
+        observed: crate::api::now_ms(),
+    };
+    assert!(matches!(
+        board
+            .set_navigation_default(&bob, &bob_access, input("board", &named, 0), &denied)
+            .await,
+        Err(Error::Unauthorized(_))
+    ));
+    let mut stale = facts.clone();
+    stale.observed_at_ms -= 31_000;
+    assert!(matches!(
+        board
+            .set_navigation_default(&alice, &access, input("board", &named, 0), &stale)
+            .await,
+        Err(Error::Unavailable(_))
+    ));
+    assert!(
+        board
+            .set_navigation_default(
+                &alice,
+                &access,
+                input("board", "not_this_projects_board", 0),
+                &facts
+            )
+            .await
+            .is_err()
+    );
+    board
+        .set_navigation_default(&alice, &access, input("board", &named, 0), &facts)
+        .await
+        .unwrap();
+    let catalog = board.catalog(&bob, &bob_access, None).await.unwrap();
+    assert_eq!(catalog["boards"][0]["id"], named);
+    assert_eq!(catalog["navigationRevision"], 1);
+    assert_eq!(
+        catalog["boards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|b| b["isDefault"] == true)
+            .count(),
+        1
+    );
+    board
+        .set_navigation_default(&alice, &access, input("room", &room_b, 1), &facts)
+        .await
+        .unwrap();
+    assert!(matches!(
+        board
+            .set_navigation_default(&alice, &access, input("board", &access.project, 1), &facts)
+            .await,
+        Err(Error::Conflict("navigation_revision_conflict"))
+    ));
+    let navigation = board.navigation(&access.project).await.unwrap();
+    assert_eq!(navigation["boardId"], named);
+    assert_eq!(navigation["roomId"], room_b);
+    let same = board
+        .reconcile_room_default(&access.project, vec![room_a.clone(), room_b.clone()])
+        .await
+        .unwrap();
+    assert_eq!(same["roomId"], room_b);
+    assert_eq!(
+        same["revision"], 2,
+        "visibility filtering must not change a valid shared default"
+    );
+    let (_auth2, domain2, alice2, _bob2, access2) = fixture().await;
+    let foreign = domain2
+        .board
+        .catalog(&alice2, &access2, None)
+        .await
+        .unwrap()["boards"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(matches!(
+        board
+            .set_navigation_default(&alice, &access, input("board", &foreign, 2), &facts)
+            .await,
+        Err(Error::NotFound(_))
+    ));
+    let (left, right) = tokio::join!(
+        board.set_navigation_default(&alice, &access, input("board", &access.project, 2), &facts),
+        board.set_navigation_default(&alice, &access, input("room", &room_a, 2), &facts)
+    );
+    assert_eq!(
+        usize::from(left.is_ok()) + usize::from(right.is_ok()),
+        1,
+        "concurrent updates cannot overwrite one another or deadlock"
+    );
+    assert!(matches!(
+        left.as_ref().err().or(right.as_ref().err()),
+        Some(Error::Conflict("navigation_revision_conflict"))
+    ));
+    let reopened = BoardStore::open(&std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    let saved = reopened.navigation(&access.project).await.unwrap();
+    assert_eq!(saved["revision"], 3);
+    let old_room = saved["roomId"].as_str().unwrap();
+    let mut db = board.connection().await.unwrap();
+    sql_query("UPDATE hagency_agent_v1.rooms SET active=false WHERE project_id=$1 AND room_id=$2")
+        .bind::<Text, _>(&access.project)
+        .bind::<Text, _>(old_room)
+        .execute(&mut db)
+        .await
+        .unwrap();
+    drop(db);
+    let repaired = reopened.navigation(&access.project).await.unwrap();
+    assert_ne!(
+        repaired["roomId"], old_room,
+        "inactive defaults fall back to an active registered Room"
+    );
+    assert_eq!(repaired["revision"], 4);
+    let stored = board.navigation(&access.project).await.unwrap();
+    assert_eq!(
+        stored, repaired,
+        "repair is saved once and does not drift on every read"
+    );
+    assert!(matches!(
+        board
+            .set_navigation_default(&alice, &access, input("room", old_room, 4), &facts)
+            .await,
+        Err(Error::NotFound(_))
+    ));
+    let revision = domain
+        .project(&alice, &access.project, crate::api::now_ms())
+        .await
+        .unwrap()
+        .revision;
+    domain
+        .archive_project(
+            &alice,
+            &access.project,
+            revision,
+            true,
+            &facts,
+            crate::api::now_ms(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        board
+            .set_navigation_default(&alice, &access, input("board", &named, 3), &facts)
+            .await,
+        Err(Error::Conflict("project_archived"))
+    ));
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_room_default_repair_handles_zero_unlinked_and_new_children_without_drift() {
+    use crate::domain::AdminFacts;
+    let (_auth, domain, alice, _bob, access) = fixture().await;
+    let board = &domain.board;
+    board.catalog(&alice, &access, None).await.unwrap();
+    assert!(
+        board
+            .reconcile_room_default(&access.project, vec![])
+            .await
+            .unwrap()["roomId"]
+            .is_null()
+    );
+    let facts = AdminFacts {
+        actor_mxid: alice.mxid.clone(),
+        room_id: access.space.clone(),
+        observed_at_ms: crate::api::now_ms(),
+        joined: true,
+        can_manage_policy: true,
+        is_space: true,
+        linked_space_id: None,
+    };
+    let first = format!("!first_{}:example.test", crate::secret_token());
+    let second = format!("!second_{}:example.test", crate::secret_token());
+    for id in [&first, &second] {
+        let rf = AdminFacts {
+            room_id: id.clone(),
+            is_space: false,
+            linked_space_id: Some(access.space.clone()),
+            ..facts.clone()
+        };
+        domain
+            .register_room(
+                &alice,
+                &access.project,
+                id,
+                &facts,
+                &rf,
+                crate::api::now_ms(),
+            )
+            .await
+            .unwrap();
+    }
+    let initial = board
+        .reconcile_room_default(&access.project, vec![first.clone(), second.clone()])
+        .await
+        .unwrap();
+    assert_eq!(initial["roomId"], first);
+    let repaired = board
+        .reconcile_room_default(&access.project, vec![second.clone()])
+        .await
+        .unwrap();
+    assert_eq!(repaired["roomId"], second);
+    assert_eq!(board.navigation(&access.project).await.unwrap(), repaired);
+    let empty = board
+        .reconcile_room_default(&access.project, vec![])
+        .await
+        .unwrap();
+    assert!(empty["roomId"].is_null());
+    assert_eq!(
+        board.navigation(&access.project).await.unwrap(),
+        empty,
+        "other readers must not revive a Room with a removed Space link"
+    );
+    let new = board
+        .reconcile_room_default(&access.project, vec![first.clone()])
+        .await
+        .unwrap();
+    assert_eq!(new["roomId"], first);
+    assert_eq!(
+        board
+            .reconcile_room_default(&access.project, vec![first])
+            .await
+            .unwrap(),
+        new
+    );
 }
