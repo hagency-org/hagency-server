@@ -161,3 +161,10 @@
   详见 dev-vibe/agent-encrypted-owner-execution-2026-10-27.zh.md 合并前复核节。
   最终新头 CI 与合并状态记录在 PR 评论，不把原125项成功关联到新提交。
 - 本地 agent-service all-target strict Clippy、全 workspace format、diff 检查均通过。
+
+## 2026-10-29 — Tutorial issues9/10
+
+- Fixed administrator Room filtering at its source: optional public/encrypted parameters filter before pagination and totals in the embedded Palpo revision. Frontend sends the filter, isolates cached results and reads query signals inside the reactive resource; changing a filter resets page and selection. Full frontend20/20 and WASM strict Clippy pass locally.
+- The same Palpo revision returns empty sessions for a valid empty Room backup, all session IDs with the correct wire shape for populated Rooms, and retains missing/deleted/foreign-version errors. Dependency PR palpo-im/palpo#580; actual authenticated HTTP/disposable PostgreSQL regression1/1 plus filtered-page unit2/2 pass. Client paired PR17 retains SDK history sharing and adds four SDK regressions; its full native suite706 pass/2 original ignored. CI results are tracked on the PRs rather than inferred from local runs.
+
+- Operator clarified that Palpo must track latest upstream. Rebased Palpo PR580 onto current main ccc82d0e; the full Server/frontend/xtask integration suite49 passes against that unmodified upstream base. Restored branch="main" and locked its latest-main-based fix52abe8d3 for dependent PR validation. Standalone dependency deny now passes on the current upstream graph. Client PR17 all triggered checks passed at1c53bd76. Server/latest dependency CI is rerun on the updated heads; prior-head successes are not reused as final evidence.

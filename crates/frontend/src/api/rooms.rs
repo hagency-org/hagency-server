@@ -7,15 +7,48 @@ const ROOM_LIST_CACHE_TTL_MS: f64 = 30_000.0;
 const ROOM_LIST_CACHE_PREFIX: &str = "rooms:list:";
 const DASHBOARD_ROOM_COUNT_CACHE_KEY: &str = "dashboard_room_count";
 
+/// Filters are applied by the server before counting and pagination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomFilter {
+    All,
+    Public,
+    Private,
+    Encrypted,
+}
+
+impl RoomFilter {
+    fn cache_segment(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Public => "public",
+            Self::Private => "private",
+            Self::Encrypted => "encrypted",
+        }
+    }
+
+    fn query_parameter(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::All => None,
+            Self::Public => Some(("public", "true")),
+            Self::Private => Some(("public", "false")),
+            Self::Encrypted => Some(("encrypted", "true")),
+        }
+    }
+}
+
 fn room_list_cache_key(
     page: u64,
     per_page: u64,
     order_by: &str,
     order: &str,
     search_term: &str,
+    filter: RoomFilter,
 ) -> String {
     let encoded_search = urlencoding::encode(search_term);
-    format!("{ROOM_LIST_CACHE_PREFIX}{page}:{per_page}:{order_by}:{order}:{encoded_search}")
+    format!(
+        "{ROOM_LIST_CACHE_PREFIX}{page}:{per_page}:{order_by}:{order}:{}:{encoded_search}",
+        filter.cache_segment()
+    )
 }
 
 pub fn invalidate_room_related_caches() {
@@ -51,6 +84,7 @@ pub async fn get_rooms(
     order_by: &str,
     order: &str,
     search_term: &str,
+    filter: RoomFilter,
 ) -> Result<ListResponse<RoomRecord>, HttpError> {
     let from = (page - 1) * per_page;
     let from_str = from.to_string();
@@ -68,6 +102,9 @@ pub async fn get_rooms(
         params.push(("search_term", search_term));
     }
 
+    if let Some(parameter) = filter.query_parameter() {
+        params.push(parameter);
+    }
     let url = build_url("/_palpo/admin/v1/rooms", &params)?;
     let response: RoomsListResponse = api_client(&url, "GET", None).await?;
 
@@ -83,12 +120,13 @@ pub async fn get_rooms_cached(
     order_by: &str,
     order: &str,
     search_term: &str,
+    filter: RoomFilter,
 ) -> Result<ListResponse<RoomRecord>, HttpError> {
-    let cache_key = room_list_cache_key(page, per_page, order_by, order, search_term);
+    let cache_key = room_list_cache_key(page, per_page, order_by, order, search_term, filter);
     cached(
         &cache_key,
         ROOM_LIST_CACHE_TTL_MS,
-        get_rooms(page, per_page, order_by, order, search_term),
+        get_rooms(page, per_page, order_by, order, search_term, filter),
     )
     .await
 }
@@ -406,4 +444,59 @@ pub async fn make_room_admin(room_id: &str, user_id: &str) -> Result<(), HttpErr
     let _: serde_json::Value = api_client(&url, "POST", Some(body)).await?;
     invalidate_room_related_caches();
     Ok(())
+}
+
+#[cfg(test)]
+mod room_filter_tests {
+    use super::*;
+
+    #[test]
+    fn room_filter_query_parameters_are_server_side_and_preserve_private_false() {
+        assert_eq!(RoomFilter::All.query_parameter(), None);
+        assert_eq!(
+            RoomFilter::Public.query_parameter(),
+            Some(("public", "true"))
+        );
+        assert_eq!(
+            RoomFilter::Private.query_parameter(),
+            Some(("public", "false"))
+        );
+        assert_eq!(
+            RoomFilter::Encrypted.query_parameter(),
+            Some(("encrypted", "true"))
+        );
+    }
+
+    #[test]
+    fn room_filter_cache_isolated_for_every_filter_page_sort_and_search() {
+        let key = |filter| room_list_cache_key(1, 25, "name", "asc", "市集:安全", filter);
+        let filters = [
+            RoomFilter::All,
+            RoomFilter::Public,
+            RoomFilter::Private,
+            RoomFilter::Encrypted,
+        ];
+        let keys = filters.map(key);
+        let unique: std::collections::HashSet<_> = keys.iter().collect();
+        assert_eq!(unique.len(), 4);
+        for filter in filters {
+            assert_ne!(
+                key(filter),
+                room_list_cache_key(2, 25, "name", "asc", "市集:安全", filter)
+            );
+            assert_ne!(
+                key(filter),
+                room_list_cache_key(1, 10, "name", "asc", "市集:安全", filter)
+            );
+            assert_ne!(
+                key(filter),
+                room_list_cache_key(1, 25, "joined_members", "desc", "市集:安全", filter)
+            );
+            assert_ne!(
+                key(filter),
+                room_list_cache_key(1, 25, "name", "asc", "市集", filter)
+            );
+            assert!(key(filter).starts_with(ROOM_LIST_CACHE_PREFIX));
+        }
+    }
 }

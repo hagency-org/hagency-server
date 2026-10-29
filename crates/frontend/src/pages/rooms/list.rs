@@ -3,6 +3,7 @@ use dioxus::prelude::*;
 use std::collections::HashSet;
 
 use crate::api::rooms;
+use crate::api::rooms::RoomFilter as TypeFilter;
 use crate::components::ui::badge::{Badge, BadgeVariant};
 use crate::components::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::components::ui::dialog::Modal;
@@ -51,14 +52,6 @@ impl SortOption {
             _ => SortOption::Name,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum TypeFilter {
-    All,
-    Public,
-    Private,
-    Encrypted,
 }
 
 impl TypeFilter {
@@ -127,17 +120,29 @@ pub fn RoomList() -> Element {
         });
     }
 
-    let search_val = search.read().clone();
     let page_val = *page.read();
     let per_page_val = *per_page.read();
     let current_sort = sort_option.read().clone();
 
-    let order_by = current_sort.order_by();
-    let dir = current_sort.default_dir();
-
     let mut rooms_data = use_resource(move || {
-        let search = search_val.clone();
-        async move { rooms::get_rooms_cached(page_val, per_page_val, order_by, dir, &search).await }
+        // Read signals inside the resource so filter, sort and page changes
+        // fetch a new server-filtered page instead of filtering a stale page.
+        let query = search.read().clone();
+        let current_page = *page.read();
+        let size = *per_page.read();
+        let sort = sort_option.read().clone();
+        let filter = *type_filter.read();
+        async move {
+            rooms::get_rooms_cached(
+                current_page,
+                size,
+                sort.order_by(),
+                sort.default_dir(),
+                &query,
+                filter,
+            )
+            .await
+        }
     });
 
     let is_creating = *creating_room.read();
@@ -317,14 +322,14 @@ pub fn RoomList() -> Element {
 
             // Type filter chips
             {
-                let current_filter = type_filter.read().clone();
+                let current_filter = *type_filter.read();
                 let filters = [TypeFilter::All, TypeFilter::Public, TypeFilter::Private, TypeFilter::Encrypted];
                 rsx! {
                     div { class: "flex items-center gap-2",
                         for filter in filters.iter() {
                             {
                                 let is_active = current_filter == *filter;
-                                let filter_val = filter.clone();
+                                let filter_val = *filter;
                                 let label = filter.label();
                                 rsx! {
                                     button {
@@ -334,7 +339,11 @@ pub fn RoomList() -> Element {
                                         } else {
                                             "inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border border-input bg-background text-foreground hover:bg-accent hover:text-accent-foreground"
                                         },
-                                        onclick: move |_| type_filter.set(filter_val.clone()),
+                                        onclick: move |_| {
+                                            type_filter.set(filter_val);
+                                            page.set(1);
+                                            selected_rooms.write().clear();
+                                        },
                                         "{label}"
                                     }
                                 }
@@ -376,15 +385,7 @@ pub fn RoomList() -> Element {
 
             match &*rooms_data.read() {
                 Some(Ok(data)) => {
-                    let active_filter = type_filter.read().clone();
-                    let filtered_rooms: Vec<_> = data.data.iter().filter(|room| {
-                        match active_filter {
-                            TypeFilter::All => true,
-                            TypeFilter::Public => room.room.public,
-                            TypeFilter::Private => !room.room.public,
-                            TypeFilter::Encrypted => room.is_encrypted,
-                        }
-                    }).collect();
+                    let filtered_rooms = &data.data;
 
                     let all_ids: Vec<String> = filtered_rooms.iter().map(|r| r.id.clone()).collect();
                     let current_selected = selected_rooms.read().clone();
