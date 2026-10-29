@@ -9,6 +9,9 @@ pub const ALLOCATION_CAPABILITY: &str = "hagency.project_reservations.v1";
 pub const ALLOCATION_FEATURE: &str = "project-reservations-v1";
 pub const ALLOCATION_REVIEW_FEATURE: &str = "project-allocation-review-v1";
 pub const ADMISSION_BOUND_GRANTS_FEATURE: &str = "admission-bound-grants-v2";
+/// A v2 admission accepts one grant per UTC month, so its owner can grant the
+/// same pool again once the previous grant's month has ended.
+pub const POOL_MONTHLY_REGRANT_FEATURE: &str = "pool-monthly-regrant-v1";
 pub const MAX_NATIVE_GRANT_BYTES: usize = 12 * 1024;
 pub const MAX_EXACT: i64 = 9_007_199_254_740_991;
 

@@ -703,11 +703,12 @@ impl DomainStore {
             let duplicate=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND period_key=$2 AND state='active') AS matched").bind::<Text,_>(id).bind::<Text,_>(&r.period_key).get_result::<Flag>(db).await?.matched;
             if duplicate{return Err(Error::Conflict("resource_grant_already_exists"));}
             // authorize() holds the domain advisory transaction lock across
-            // this check and insertion. Revocation cannot permit a new hold
-            // against an already-issued v2 admission, including on two stores.
-            if let Some(request)=&r.admission_request_id {
-                if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND receipt::jsonb->>'admissionRequestId'=$2) AS matched").bind::<Text,_>(id).bind::<Text,_>(request).get_result::<Flag>(db).await?.matched {return Err(Error::Conflict("resource_grant_already_exists"));}
-            }
+            // this check and insertion. One grant per admission per UTC month:
+            // revocation cannot permit a second hold in the same month, while a
+            // month that has ended (the period check above) can be granted again.
+            if let Some(request)=&r.admission_request_id
+                && sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND receipt::jsonb->>'admissionRequestId'=$2 AND receipt::jsonb->>'periodKey'=$3) AS matched").bind::<Text,_>(id).bind::<Text,_>(request).bind::<Text,_>(&r.period_key).get_result::<Flag>(db).await?.matched
+            {return Err(Error::Conflict("resource_grant_already_exists"));}
             super::agents::executor::validate_external_ledger_receipt(db,&p.user_id,executor,r.ledger_revision,r.ledger_revision).await?;
             sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10)")
                 .bind::<Text,_>(&r.grant_id).bind::<Text,_>(id).bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(generation).bind::<Text,_>(wire(r)?).bind::<Text,_>(&receipt_digest).bind::<Text,_>(&r.period_key).bind::<BigInt,_>(r.delegation_expires_at_ms.min(r.period_end_ms)).bind::<BigInt,_>(now).execute(db).await?;
