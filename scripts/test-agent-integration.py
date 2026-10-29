@@ -129,9 +129,40 @@ def browser_api_paths(origin, password):
         except HTTPError as error:
             reply = error
         with reply:
-            assert reply.code == expected, "browser API status mismatch at " + path
-            assert reply.headers.get_content_type() == "application/json", "API returned SPA HTML"
-            return json.load(reply)
+            content_type = reply.headers.get_content_type()
+            payload = json.load(reply) if content_type == "application/json" else None
+            code = payload.get("code") if isinstance(payload, dict) else None
+            code = code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code) else "unavailable"
+            if reply.code != expected and path == "/hagency/api/login/token":
+                # Read-only probes run only after failure; never retry the login or print tokens.
+                known_errors = {
+                    "Token is not active", "Token has invalid OAuth scopes",
+                    "Token has no unique Matrix device", "Token has mismatched Matrix device",
+                    "No username in introspection response", "Invalid username in token",
+                    "User not found (not yet provisioned?)", "Device not found (not yet provisioned?)",
+                    "Token has no server administration scope", "Token has no Matrix API scope",
+                    "Pasion administrator authorization is required.",
+                }
+                for probe_path in ["/_matrix/client/v3/account/whoami", "/_palpo/admin/v1/appservices"]:
+                    probe_req = Request(origin + probe_path, headers={"Authorization": "Bearer " + token})
+                    try:
+                        probe = opener.open(probe_req, timeout=15)
+                    except HTTPError as error:
+                        probe = error
+                    with probe:
+                        probe_json = json.load(probe)
+                        error = probe_json.get("error")
+                        print("DIAGNOSTIC browser identity: " + json.dumps({
+                            "path": probe_path, "status": probe.code,
+                            "errcode": probe_json.get("errcode"),
+                            "known_error": error if error in known_errors else "unavailable",
+                            "soft_logout": probe_json.get("soft_logout"),
+                        }), flush=True)
+            assert reply.code == expected, (
+                "browser API status mismatch at " + path + ": expected " + str(expected)
+                + ", got " + str(reply.code) + ", code=" + code)
+            assert content_type == "application/json", "API returned SPA HTML"
+            return payload
 
     session = call("/hagency/api/login/token", "POST", {},
                    extra={"Authorization": "Bearer " + token})
@@ -253,6 +284,21 @@ try:
             else:
                 raise RuntimeError("real Matrix event did not reach durable Appservice inbox")
             print("PASS: embedded Pasion/Palpo startup, mandatory AS identity, private room, stable Matrix send and durable AS roundtrip")
+            # CLI bootstrap commits a durable provisioning job; AS readiness is
+            # independent of that job creating the human Matrix identity/role.
+            provisioning_started = time.monotonic()
+            for _ in range(120):
+                provisioned = sql(DBS[1],
+                    "SELECT count(*) FROM users WHERE id='@agent_smoke_owner:" + server_name
+                    + "' AND is_admin=true AND is_guest=false"
+                    + " AND deactivated_at IS NULL AND suspended_at IS NULL", True)
+                if provisioned == "1":
+                    break
+                time.sleep(0.5)
+            else:
+                raise RuntimeError("durable bootstrap job did not provision the Matrix administrator")
+            print("PASS: durable Pasion bootstrap provisioned the actual Matrix administrator (waited "
+                  + format(time.monotonic() - provisioning_started, ".1f") + "s)")
             if os.environ.get("HAGENCY_TEST_HOLD_BROWSER") == "1":
                 private(folder / "browser-fixture.json", json.dumps({"base": origin, "username": "agent_smoke_owner", "password": (folder / "bootstrap-password").read_text()}))
                 print("BROWSER fixture ready: " + origin + " ; private directory: " + str(folder), flush=True)
