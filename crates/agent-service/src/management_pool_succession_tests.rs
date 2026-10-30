@@ -709,3 +709,35 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
     crate::domain::DomainStore::open(&f.url, "example.test", "_hagency_test_").await.unwrap();
     assert_eq!(schema_state(&mut db).await.version, 29);
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn revoking_a_superseded_grant_withdraws_its_chain_with_and_without_parent_settlement() {
+    for settlement in [false, true] {
+        let mut f = succession_fixture().await;
+        f.policy = f.policy.with_parent_settlement(settlement);
+        let (a, root) = pool_grant(&f, &f.outsider.p).await;
+        let carried = request_agent(&f, &a, &format!("superseded_{settlement}"), 100, 1).await;
+        decide(&f, &carried, true).await.unwrap();
+        reserve(&f, &carried.id, 100).await;
+        let amended = amend(&f, &a, &root, 800_000, 20).await;
+        let old = grant_view(&f, &root.id).await;
+        f.domain
+            .revoke_management_grant(&f.owner.p, &f.policy, &old.id, RevokeInput { command_id: format!("revoke_superseded_{settlement}"), expected_revision: old.revision })
+            .await
+            .unwrap();
+        assert_eq!(grant_view(&f, &root.id).await.state, "superseded");
+        assert_eq!(grant_view(&f, &amended.id).await.state, "revoked");
+        assert_eq!(intent_state(&f, &carried.id).await, "fenced");
+        let closes = |id: String| {
+            let url = f.url.clone();
+            async move {
+                let mut db = AsyncPgConnection::establish(&url).await.unwrap();
+                sql_query("SELECT count(*)::bigint AS count FROM hagency_agent_v1.management_parent_settlements WHERE grant_id=$1")
+                    .bind::<Text, _>(id).get_result::<Count>(&mut db).await.unwrap().count
+            }
+        };
+        assert_eq!(closes(amended.id.clone()).await, i64::from(settlement));
+        assert_eq!(closes(root.id.clone()).await, 0);
+    }
+}

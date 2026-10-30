@@ -1036,7 +1036,11 @@ impl DomainStore {
                 for successor in retire_chain_from(db, p, policy, id, now).await? {
                     super::parents::enqueue_close(db, p, policy, &successor, "owner_withdrawal", now).await?;
                 }
-                super::parents::enqueue_close(db, p, policy, id, "owner_withdrawal", now).await?;
+                // A superseded grant's capacity moved to its successor; it is
+                // withdrawn through that chain and never gets its own close.
+                if grant(db, id).await?.state != "superseded" {
+                    super::parents::enqueue_close(db, p, policy, id, "owner_withdrawal", now).await?;
+                }
                 let result = grant_view(&grant(db, id).await?, now)?;
                 Self::audit(db, p, "grant.revoke", id, now).await?;
                 receipt(
