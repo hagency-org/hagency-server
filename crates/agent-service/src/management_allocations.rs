@@ -803,8 +803,10 @@ impl DomainStore {
             // this check and insertion. One grant per admission per UTC month:
             // revocation cannot permit a second hold in the same month, while a
             // month that has ended (the period check above) can be granted again.
+            // A renewal cancelled before any pool request or intent was bound to
+            // it never authorized anything, so it does not use up its month.
             if let Some(request)=&r.admission_request_id
-                && sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND receipt::jsonb->>'admissionRequestId'=$2 AND receipt::jsonb->>'periodKey'=$3) AS matched").bind::<Text,_>(id).bind::<Text,_>(request).bind::<Text,_>(&r.period_key).get_result::<Flag>(db).await?.matched
+                && sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants g WHERE g.contribution_id=$1 AND g.receipt::jsonb->>'admissionRequestId'=$2 AND g.receipt::jsonb->>'periodKey'=$3 AND NOT (g.state='revoked' AND g.succession IS NOT DISTINCT FROM 'renewal' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests q WHERE q.pool_grant_id=g.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents i WHERE i.payload::jsonb->'poolGrant'->>'grantId'=g.id))) AS matched").bind::<Text,_>(id).bind::<Text,_>(request).bind::<Text,_>(&r.period_key).get_result::<Flag>(db).await?.matched
             {return Err(Error::Conflict("resource_grant_already_exists"));}
             super::agents::executor::validate_external_ledger_receipt(db,&p.user_id,executor,r.ledger_revision,r.ledger_revision).await?;
             sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms,chain_root_id,period_start_ms) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$1,$11)")

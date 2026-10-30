@@ -980,3 +980,100 @@ async fn renewal_before_the_last_week_of_its_predecessor_is_refused() {
     gap.period_start_ms += 1;
     assert_eq!(code(attempt(&f, &a, &view, gap).await), "invalid_grant_period");
 }
+
+/// Last month's root and this month's renewal of it, as the successor route
+/// leaves them when last month's renewal window has passed.
+async fn seed_last_month_renewal(f: &Fixture, a: &Admission, state: &str) -> NativeGrantReceipt {
+    #[derive(QueryableByName)]
+    struct Months {
+        #[diesel(sql_type = Text)]
+        previous: String,
+        #[diesel(sql_type = BigInt)]
+        previous_start: i64,
+        #[diesel(sql_type = Text)]
+        current: String,
+        #[diesel(sql_type = BigInt)]
+        start: i64,
+        #[diesel(sql_type = BigInt)]
+        end: i64,
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let m = sql_query("SELECT to_char(date_trunc('month',clock_timestamp() AT TIME ZONE 'UTC') - interval '1 month','YYYY-MM') AS previous,(extract(epoch FROM ((date_trunc('month',clock_timestamp() AT TIME ZONE 'UTC') - interval '1 month') AT TIME ZONE 'UTC'))*1000)::bigint AS previous_start,to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM') AS current,(extract(epoch FROM (date_trunc('month',clock_timestamp() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))*1000)::bigint AS start,(extract(epoch FROM ((date_trunc('month',clock_timestamp() AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'))*1000)::bigint AS end")
+        .get_result::<Months>(&mut db).await.unwrap();
+    let mut root = grant_input(f, a, &f.outsider.p).await.receipt;
+    root.version = 2;
+    root.admission_request_id = Some(a.request.id.clone());
+    root.period_key = m.previous;
+    root.period_start_ms = m.previous_start;
+    root.period_end_ms = m.start;
+    root.delegation_expires_at_ms = m.start;
+    root.ledger_revision = 5;
+    let mut renewal = root.clone();
+    renewal.version = 3;
+    renewal.grant_id = format!("mgs_{}", &secret_token()[..32]);
+    renewal.grant_revision = 2;
+    renewal.period_key = m.current;
+    renewal.period_start_ms = m.start;
+    renewal.period_end_ms = m.end;
+    renewal.delegation_expires_at_ms = m.end;
+    renewal.ledger_revision = 6;
+    renewal.succession = Some(GrantSuccession {
+        kind: "renewal".into(),
+        predecessor_grant_id: root.grant_id.clone(),
+        predecessor_receipt_digest: allocation_digest(&root).unwrap(),
+        carried_children: 0,
+        carried_retained_tokens: 0,
+    });
+    for (r, predecessor, row_state) in [(&root, None, "active"), (&renewal, Some(root.grant_id.clone()), state)] {
+        r.validate("example.test").unwrap();
+        sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms,chain_root_id,predecessor_grant_id,succession,period_start_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
+            .bind::<Text, _>(&r.grant_id).bind::<Text, _>(&a.contribution.id).bind::<Text, _>(&f.owner.p.user_id)
+            .bind::<Text, _>(f.owner.p.device_id.as_ref().unwrap()).bind::<BigInt, _>(f.owner.p.device_generation.unwrap())
+            .bind::<Text, _>(serde_json::to_string(r).unwrap()).bind::<Text, _>(allocation_digest(r).unwrap())
+            .bind::<Text, _>(row_state).bind::<Text, _>(&r.period_key).bind::<BigInt, _>(r.period_end_ms)
+            .bind::<BigInt, _>(r.period_start_ms).bind::<Text, _>(&root.grant_id)
+            .bind::<Nullable<Text>, _>(predecessor.clone()).bind::<Nullable<Text>, _>(predecessor.as_ref().map(|_| "renewal"))
+            .bind::<BigInt, _>(r.period_start_ms).execute(&mut db).await.unwrap();
+    }
+    renewal
+}
+fn this_month_root(input: PublishGrantInput, a: &Admission, command: &str) -> PublishGrantInput {
+    let mut g = input;
+    g.command_id = command.into();
+    g.receipt.version = 2;
+    g.receipt.admission_request_id = Some(a.request.id.clone());
+    g
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_cancelled_renewal_leaves_its_month_open_for_one_regrant() {
+    let f = succession_fixture().await;
+    // Last month the owner scheduled this month's renewal, then cancelled it
+    // before any request: the month after the boundary can still be granted.
+    let a = admitted(&f).await;
+    seed_last_month_renewal(&f, &a, "revoked").await;
+    let input = this_month_root(grant_input(&f, &a, &f.outsider.p).await, &a, "regrant_after_cancelled_renewal");
+    let regrant = f.domain.publish_management_grant(&f.owner.p, &f.policy, &a.contribution.id, input).await.unwrap();
+    assert_eq!(regrant.state, "active");
+    // Still one grant per admission per month.
+    let again = this_month_root(grant_input(&f, &a, &f.outsider.p).await, &a, "second_regrant_this_month");
+    assert_eq!(code(f.domain.publish_management_grant(&f.owner.p, &f.policy, &a.contribution.id, again).await), "resource_grant_already_exists");
+    // A renewal that ever authorized a request keeps its month, even revoked.
+    let pending = f.domain.create_contribution(&f.owner.p, &f.policy, offer(&f, "second_pool")).await.unwrap();
+    let b = f
+        .domain
+        .decide_management_request(&f.admin.p, &f.policy, &pending.request.id, approve("admit_second_pool", 1))
+        .await
+        .unwrap();
+    assert_ne!(b.contribution.id, a.contribution.id);
+    let renewal = seed_last_month_renewal(&f, &b, "active").await;
+    request_agent(&f, &b, "bound_to_renewal", 100, 2).await;
+    let view = grant_view(&f, &renewal.grant_id).await;
+    f.domain
+        .revoke_management_grant(&f.owner.p, &f.policy, &view.id, RevokeInput { command_id: "revoke_used_renewal".into(), expected_revision: view.revision })
+        .await
+        .unwrap();
+    let blocked = this_month_root(grant_input(&f, &b, &f.outsider.p).await, &b, "regrant_after_used_renewal");
+    assert_eq!(code(f.domain.publish_management_grant(&f.owner.p, &f.policy, &b.contribution.id, blocked).await), "resource_grant_already_exists");
+}
