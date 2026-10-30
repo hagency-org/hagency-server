@@ -251,6 +251,15 @@ impl SessionState {
         if !result.as_ref().is_err_and(&unauthorized) {
             return result;
         }
+        // A public page probes an HttpOnly cookie before any account is known.
+        // Its ordinary guest 401 is not an authenticated session expiring: the
+        // expiry callback navigates to /login and would reload that page forever.
+        if original.access_token.is_none()
+            && original.refresh_token.is_none()
+            && self.0.borrow().actor.is_none()
+        {
+            return result;
+        }
         match self.recover(original.clone(), refresh).await {
             Recovery::Retry if self.generation() == original.generation => {
                 let retried = self.snapshot();
@@ -297,6 +306,43 @@ mod tests {
     }
     fn stale() -> u16 {
         409
+    }
+
+    #[test]
+    fn anonymous_401_probes_do_not_trigger_login_navigation_or_retire_the_guest() {
+        let state = SessionState::default();
+        let navigations = Cell::new(0);
+        for _ in 0..3 {
+            let result: Result<(), u16> = futures::executor::block_on(state.request(
+                |_| async { Err(401) },
+                |_| async { panic!("a guest has no refresh credential") },
+                unauthorized,
+                stale,
+                |_| navigations.set(navigations.get() + 1),
+            ));
+            assert_eq!(result, Err(401));
+            assert_eq!(state.generation(), 0);
+            assert!(state.allows_browser_session());
+        }
+        assert_eq!(navigations.get(), 0, "the public login page must not reload itself");
+    }
+
+    #[test]
+    fn accepted_cookie_session_still_expires_without_a_bearer_token() {
+        let state = SessionState::default();
+        assert_eq!(state.observe_actor(0, "@alice:example.test"), ActorCheck::Current);
+        let navigations = Cell::new(0);
+        let result: Result<(), u16> = futures::executor::block_on(state.request(
+            |_| async { Err(401) },
+            |_| async { panic!("no token refresh is possible for this cookie") },
+            unauthorized,
+            stale,
+            |_| navigations.set(navigations.get() + 1),
+        ));
+        assert_eq!(result, Err(401));
+        assert_eq!(navigations.get(), 1);
+        assert_eq!(state.generation(), 1);
+        assert!(!state.allows_browser_session());
     }
 
     #[test]
