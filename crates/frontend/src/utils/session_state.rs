@@ -324,13 +324,20 @@ mod tests {
             assert_eq!(state.generation(), 0);
             assert!(state.allows_browser_session());
         }
-        assert_eq!(navigations.get(), 0, "the public login page must not reload itself");
+        assert_eq!(
+            navigations.get(),
+            0,
+            "the public login page must not reload itself"
+        );
     }
 
     #[test]
     fn accepted_cookie_session_still_expires_without_a_bearer_token() {
         let state = SessionState::default();
-        assert_eq!(state.observe_actor(0, "@alice:example.test"), ActorCheck::Current);
+        assert_eq!(
+            state.observe_actor(0, "@alice:example.test"),
+            ActorCheck::Current
+        );
         let navigations = Cell::new(0);
         let result: Result<(), u16> = futures::executor::block_on(state.request(
             |_| async { Err(401) },
