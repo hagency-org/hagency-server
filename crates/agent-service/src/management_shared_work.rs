@@ -93,6 +93,7 @@ impl DomainStore {
         received: i64,
         gateway: &Gateway,
     ) -> Result<()> {
+        if event.encrypted { return self.retain_shared_encrypted(event, received).await; }
         if policy.shared_durable_intake() {
             self.retain_shared_event(event, received, gateway).await
         } else {
@@ -164,7 +165,7 @@ impl DomainStore {
                 let r=runtime(db,&id.id).await?;let w=original(db,&r).await?;let c=command(&r,&self.server)?;let now=clock(db).await?;
                 if !runtime_issuing(db,policy,&r).await? || r.state!="qualified" || r.activity_until_ms<=now || received<c.issued_at_ms || received>now || now-received>86_400_000 || !current(db,&r,&w,&c,now).await? {return Ok(());}
                 let m=membership(db,&r).await?;facts(&m,&observed)?;
-                if event.room_id!=m.room_id || !m.addressed_by(&event.sender_mxid,&event.mentioned_mxids) {return Err(Error::Unauthorized("shared_room_authority_changed"));}
+                if observed.encrypted!=event.encrypted || event.room_id!=m.room_id || !m.addressed_by(&event.sender_mxid,&event.mentioned_mxids) {return Err(Error::Unauthorized("shared_room_authority_changed"));}
                 let old=sql_query("SELECT w.* FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes old ON old.id=w.runtime_id WHERE old.assignment_id=$1 AND w.event_id=$2").bind::<Text,_>(&r.assignment_id).bind::<Text,_>(&event.event_id).get_result::<WorkRow>(db).await.optional()?;
                 let root=event.thread_root.as_deref().unwrap_or(&event.event_id);
                 if let Some(old)=old {let old_runtime=runtime(db,&old.runtime_id).await?;let v=item(&old,&old_runtime)?;if v.room_id!=event.room_id || v.requester_mxid!=event.sender_mxid || v.body!=event.body || v.thread_root!=root {return Err(Error::Conflict("shared_event_changed"));}return Ok(());}
@@ -173,7 +174,7 @@ impl DomainStore {
                 if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake WHERE assignment_id=$1 AND event_id=$2) AS matched").bind::<Text,_>(&r.assignment_id).bind::<Text,_>(&event.event_id).get_result::<Flag>(db).await?.matched {return Ok(());}
                 let full=sql_query("SELECT count(*)>=100 AS matched FROM hagency_agent_v1.management_shared_work WHERE runtime_id=$1 AND state IN('queued','acknowledged','started','unknown')").bind::<Text,_>(&r.id).get_result::<Flag>(db).await?.matched;
                 if full {return Err(Error::Unavailable("shared_work_queue_full"));}
-                let v=SharedWorkItem {id:format!("swork_{}",entity_id()?),assignment_id:r.assignment_id.clone(),runtime_command_digest:r.digest.clone(),event_id:event.event_id.clone(),room_id:event.room_id.clone(),requester_mxid:event.sender_mxid.clone(),thread_root:root.into(),body:event.body.clone(),body_digest:hash(&event.body),execution_id:format!("sx_{}",entity_id()?),created_at_ms:received};v.validate()?;
+                let v=SharedWorkItem {encrypted: false,id:format!("swork_{}",entity_id()?),assignment_id:r.assignment_id.clone(),runtime_command_digest:r.digest.clone(),event_id:event.event_id.clone(),room_id:event.room_id.clone(),requester_mxid:event.sender_mxid.clone(),thread_root:root.into(),body:event.body.clone(),body_digest:hash(&event.body),execution_id:format!("sx_{}",entity_id()?),created_at_ms:received};v.validate()?;
                 sql_query("INSERT INTO hagency_agent_v1.management_shared_work(id,runtime_id,event_id,payload,digest,created_at_ms) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&v.id).bind::<Text,_>(&r.id).bind::<Text,_>(&v.event_id).bind::<Text,_>(wire(&v)?).bind::<Text,_>(allocation_digest(&v)?).bind::<BigInt,_>(received).execute(db).await?;context::register_mode(db,policy,&v.id).await?;Ok(())
             }).await?;
         }
@@ -359,6 +360,21 @@ async fn latest_work_receipt(
 impl DomainStore {
     /// Exact executor history/upload only, including after generation rotation or
     /// cancellation. It exposes neither a new prompt nor model issuance authority.
+    pub(crate) async fn authorize_shared_encrypted_reply(&self,p:&Principal,policy:&ManagementPolicy,id:&str,gateway:&Gateway) -> Result<()> {
+        key(id)?;
+        let (m,v)={
+            let mut db=self.db.lock().await?;
+            Self::authorize(&mut db,p,0).await?;
+            let w=work_row(&mut db,id).await?;let r=runtime(&mut db,&w.runtime_id).await?;let original=original(&mut db,&r).await?;
+            owner(&original,p)?;let c=command(&r,&self.server)?;let v=item(&w,&r)?;let now=clock(&mut db).await?;
+            if !v.encrypted || w.started_at_ms.is_none() || !runtime_issuing(&mut db,policy,&r).await? || r.state!="qualified" || r.activity_until_ms<=now || p.device_generation!=Some(original.executor_generation) || !current(&mut db,&r,&original,&c,now).await? {return Err(Error::Unauthorized("encrypted_send_authority_changed"));}
+            (membership(&mut db,&r).await?,v)
+        };
+        let f=gateway.shared_delivery(&m.room_id,&m.space_id,&m.manager_mxid,&v.requester_mxid,&m.puppet_mxid).await?;
+        facts(&m,&f)?;
+        if !f.encrypted {return Err(Error::Unauthorized("encrypted_room_required"));}
+        Ok(())
+    }
     pub async fn recover_shared_work_result(
         &self,
         p: &Principal,
@@ -392,6 +408,7 @@ impl DomainStore {
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let w=work_row(db,id).await?;let r=runtime(db,&w.runtime_id).await?;let original=original(db,&r).await?;owner(&original,p)?;let c=command(&r,&self.server)?;let v=item(&w,&r)?;let now=clock(db).await?;
             if w.digest!=input.work_digest || w.started_at_ms.is_none() && !refusals::exists(db,id).await? || w.lease_hash.as_deref()!=Some(hash(&input.token).as_str()) || w.lease_until_ms<=now {return Err(Error::Conflict("shared_work_result_ticket_changed"));}
             if w.started_at_ms.is_none() {refusals::validate_zero(&input.receipt)?;}
+            if v.encrypted { if let Some(body)=&input.receipt.body {e2ee::receipt(body,&v.room_id)?;} }
             let process=r.process_digest.as_deref().ok_or(Error::Conflict("shared_process_required"))?;input.receipt.validate_for(&v,process)?;let digest=allocation_digest(&input.receipt)?;
             let old=sql_query("SELECT payload FROM hagency_agent_v1.management_shared_work_receipts WHERE id=$1").bind::<Text,_>(&input.receipt.observation_id).get_result::<Json>(db).await.optional()?;
             if let Some(old)=old {let old:SharedWorkReceipt=decode(&old.payload)?;if allocation_digest(&old)?!=digest {return Err(Error::Conflict("shared_work_receipt_changed"));}}
@@ -404,7 +421,8 @@ impl DomainStore {
                     if latest.state=="completed" {
                         let body=latest.body.as_ref().unwrap();let content=crate::workers::reply_content(false,&v.room_id,&v.thread_root,body);let content=wire_with_limit(&content,64*1024)?;
                         let sendable=runtime_issuing(db,policy,&r).await?&&r.state=="qualified"&&r.activity_until_ms>now&&p.device_generation==Some(original.executor_generation)&&current(db,&r,&original,&c,now).await?;
-                        sql_query("INSERT INTO hagency_agent_v1.management_shared_replies(work_id,content,content_digest,matrix_txn_id,created_at_ms,state) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(work_id) DO NOTHING").bind::<Text,_>(id).bind::<Text,_>(&content).bind::<Text,_>(hash(&content)).bind::<Text,_>(format!("hagency_shared_{id}")).bind::<BigInt,_>(now).bind::<Text,_>(if sendable {"pending"} else {"blocked"}).execute(db).await?;
+                        sql_query("INSERT INTO hagency_agent_v1.management_shared_replies(work_id,content,content_digest,matrix_txn_id,created_at_ms,state) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(work_id) DO NOTHING").bind::<Text,_>(id).bind::<Text,_>(&content).bind::<Text,_>(hash(&content)).bind::<Text,_>(format!("hagency_shared_{id}")).bind::<BigInt,_>(now).bind::<Text,_>(if v.encrypted {if e2ee::receipt(body,&v.room_id)?.is_some(){"sent"}else{"unknown"}} else if sendable {"pending"} else {"blocked"}).execute(db).await?;
+                        if v.encrypted && let Some(event)=e2ee::receipt(body,&v.room_id)? {sql_query("UPDATE hagency_agent_v1.management_shared_replies SET matrix_event_id=$2,sent_at_ms=$3 WHERE work_id=$1 AND state='sent'").bind::<Text,_>(id).bind::<Text,_>(event).bind::<BigInt,_>(now).execute(db).await?;}
                     }
                 }
             }
@@ -570,7 +588,7 @@ impl DomainStore {
         }
         let ids = {
             let mut db = self.db.lock().await?;
-            sql_query("SELECT work_id AS id FROM hagency_agent_v1.management_shared_replies WHERE state IN('pending','issued','unknown') AND lease_until_ms<=(extract(epoch from clock_timestamp())*1000)::bigint ORDER BY (work_id<=$1),work_id LIMIT 16").bind::<Text,_>(&*cursor).load::<Id>(&mut *db).await?
+            sql_query("SELECT work_id AS id FROM hagency_agent_v1.management_shared_replies WHERE state IN('pending','issued','unknown') AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w WHERE w.id=work_id AND coalesce((w.payload::jsonb->>'encrypted')::boolean,false)) AND lease_until_ms<=(extract(epoch from clock_timestamp())*1000)::bigint ORDER BY (work_id<=$1),work_id LIMIT 16").bind::<Text,_>(&*cursor).load::<Id>(&mut *db).await?
         };
         for id in ids {
             *cursor = id.id.clone();
@@ -610,7 +628,7 @@ impl DomainStore {
                 let reply=sql_query("SELECT * FROM hagency_agent_v1.management_shared_replies WHERE work_id=$1").bind::<Text,_>(&id.id).get_result::<Reply>(db).await?;
                 if !matches!(reply.state.as_str(),"pending"|"issued"|"unknown") || reply.lease_until_ms>now {return Ok(None);}
                 let m=membership(db,&r).await?;
-                if !reply_live(db,policy,&r,&self.server,now).await? || observed.as_ref().is_none_or(|f|facts(&m,f).is_err()) {
+                if !reply_live(db,policy,&r,&self.server,now).await? || observed.as_ref().is_none_or(|f|f.encrypted || facts(&m,f).is_err()) {
                     sql_query("UPDATE hagency_agent_v1.management_shared_replies SET state='blocked' WHERE work_id=$1").bind::<Text,_>(&reply.work_id).execute(db).await?;return Ok(None);
                 }
                 if hash(&reply.content)!=reply.content_digest {return Err(Error::Conflict("shared_reply_changed"));}

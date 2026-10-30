@@ -47,9 +47,10 @@ pub(in super::super) async fn register_mode(
     policy: &ManagementPolicy,
     id: &str,
 ) -> Result<()> {
+    let encrypted=sql_query("SELECT coalesce((payload::jsonb->>'encrypted')::boolean,false) AS matched FROM hagency_agent_v1.management_shared_work WHERE id=$1").bind::<Text,_>(id).get_result::<Flag>(db).await?.matched;
     sql_query("INSERT INTO hagency_agent_v1.management_shared_input_modes VALUES($1,$2)")
         .bind::<Text, _>(id)
-        .bind::<Text, _>(if policy.shared_thread_context() {
+        .bind::<Text, _>(if policy.shared_thread_context() && !encrypted {
             "thread_context_v1"
         } else {
             "plain_text_v1"

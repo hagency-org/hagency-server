@@ -168,6 +168,8 @@ pub struct SharedRuntimeAcknowledgement {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SharedWorkItem {
+    #[serde(default, skip_serializing_if="std::ops::Not::not")]
+    pub encrypted: bool,
     pub id: String,
     pub assignment_id: String,
     pub runtime_command_digest: String,
@@ -188,6 +190,7 @@ impl SharedWorkItem {
         if !valid_digest(&self.runtime_command_digest)
             || !valid_digest(&self.body_digest)
             || !exact(self.created_at_ms)
+            || (self.encrypted && self.body != self.event_id)
             || self.body.is_empty()
             || self.body.len() > MAX_SHARED_TEXT
             || self.body_digest != crate::hash(&self.body)

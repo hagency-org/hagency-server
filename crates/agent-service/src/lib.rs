@@ -1,4 +1,5 @@
 //! New Agent-domain identity. No Fleet credentials or legacy storage imports.
+mod executor_matrix_device;
 pub mod api;
 mod api_configuration;
 #[cfg(test)]

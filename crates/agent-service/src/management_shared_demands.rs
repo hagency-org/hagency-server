@@ -393,12 +393,12 @@ pub(super) async fn promote(
         || event.event_id != q.event_id
         || event.room_id != m.room_id
         || !m.addressed_by(&event.sender_mxid, &event.mentioned_mxids)
-        || event.encrypted
         || event.is_edit
     {
         return Err(Error::Conflict("shared_event_changed"));
     }
     let v = SharedWorkItem {
+        encrypted: event.encrypted,
         id: format!("swork_{}", entity_id()?),
         assignment_id: r.assignment_id.clone(),
         runtime_command_digest: r.digest.clone(),

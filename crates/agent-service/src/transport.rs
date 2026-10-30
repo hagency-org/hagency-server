@@ -12,6 +12,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 #[path = "transport_history.rs"]
 mod history;
+#[path="transport_e2ee.rs"]
+mod e2ee;
 #[path = "pause_notices.rs"]
 pub(crate) mod pause_notices;
 #[path = "processing.rs"]
@@ -80,7 +82,7 @@ pub struct Lease {
 }
 /// Canonical event parsed from a verified Appservice transaction, never from a
 /// client request. Mentions and relation fields retain canonical Matrix meaning.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RoutedEvent {
     pub event_id: String,
     pub room_id: String,
@@ -647,6 +649,9 @@ impl TransportStore {
         received_at_ms: i64,
         now: i64,
     ) -> Result<RouteResult> {
+        self.ingest_routed_confirmed(binding,event,f,received_at_ms,now,false).await
+    }
+    async fn ingest_routed_confirmed(&self,binding:&str,event:RoutedEvent,f:&DeliveryFacts,received_at_ms:i64,now:i64,confirmed:bool)->Result<RouteResult> {
         self.observe_delivery_authority(None, binding, &event.sender_mxid, None, f, now)
             .await?;
         key(binding)?;
@@ -658,9 +663,9 @@ impl TransportStore {
         } else if !event.body.is_empty() {
             return Err(Error::Invalid("invalid_message_body"));
         }
-        // Encrypted prompts need matching Room encryption, and `facts` admits them
-        // only in an owner-direct scope; the executor decrypts with the Agent's own
-        // device. Plaintext in an encrypted Room is never a canonical prompt.
+        // Encrypted prompts need matching Room encryption. The executor
+        // decrypts with the Agent's device and confirms group addressing.
+        // Plaintext in an encrypted Room is never a canonical prompt.
         if event.encrypted != f.encrypted {
             return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
         }
@@ -678,10 +683,17 @@ impl TransportStore {
             Self::expire_pending(db,self.limits.event_ttl_ms,now).await?;
             pause_notices::routing_facts(&scope,&event.sender_mxid,f,now)?;if event.room_id!=scope.room_id {return Err(Error::Unauthorized("event_room_mismatch"));}
             let existing=sql_query("SELECT id,digest FROM hagency_agent_v1.owner_events WHERE binding_id=$1 AND event_id=$2").bind::<Text,_>(binding).bind::<Text,_>(&event.event_id).get_result::<Existing>(db).await.optional()?;
-            if let Some(old)=existing {if old.digest!=digest {return Err(Error::Conflict("event_payload_changed"));}return Ok(RouteResult::Duplicate{dispatch_id:old.id});}
+            if let Some(old)=existing {if old.digest!=digest && !(event.encrypted && !confirmed) {return Err(Error::Conflict("event_payload_changed"));}return Ok(RouteResult::Duplicate{dispatch_id:old.id});}
             if let Some(duplicate)=Self::existing_pause_notice(db,binding,&event.event_id,&digest).await? {return Ok(duplicate);}
             let puppet_sender=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agents WHERE puppet_mxid=$1) AS matched").bind::<Text,_>(&event.sender_mxid).get_result::<Flag>(db).await?;
             if puppet_sender.matched || event.sender_mxid.starts_with("@_hagency_") {return Ok(RouteResult::Ignored);}
+            if event.encrypted && !scope.space_id.is_empty() && !confirmed {
+                sql_query("DELETE FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1 AND received_at_ms<=$2").bind::<Text,_>(binding).bind::<BigInt,_>(now-self.limits.event_ttl_ms).execute(db).await?;
+                if sql_query("SELECT count(*)>=10000 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1 AND event_id=$2) AS matched FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1").bind::<Text,_>(binding).bind::<Text,_>(&event.event_id).get_result::<Flag>(db).await?.matched {return Err(Error::Unavailable("encrypted_candidate_capacity"));}
+                let payload=serde_json::to_string(&event).map_err(|_|Error::Invalid("invalid_event"))?;
+                sql_query("INSERT INTO hagency_agent_v1.personal_e2ee_candidates(binding_id,event_id,payload,received_at_ms) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind::<Text,_>(binding).bind::<Text,_>(&event.event_id).bind::<Text,_>(payload).bind::<BigInt,_>(received_at_ms).execute(db).await?;
+                return Ok(RouteResult::Ignored);
+            }
             let known=match &event.thread_root {Some(root)=>sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agent_threads WHERE binding_id=$1 AND thread_root=$2) AS matched").bind::<Text,_>(binding).bind::<Text,_>(root).get_result::<Flag>(db).await?.matched,None=>false};
             if !scope.space_id.is_empty()&&!event.mentioned_mxids.contains(&scope.puppet_mxid)&&!(scope.thread_auto_reply && known) {return Ok(RouteResult::Ignored);}
             if scope.service_paused {
@@ -1340,11 +1352,7 @@ fn facts(scope: &RoutingScope, requester: &str, f: &DeliveryFacts, now: i64) -> 
     {
         return Err(Error::Unauthorized("room_delivery_denied"));
     }
-    // An owner-direct conversation may be encrypted: its executor holds the
-    // Agent's own Matrix device and decrypts and replies locally.
-    if f.encrypted && !scope.space_id.is_empty() {
-        return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
-    }
+    // The executor holds the Agent's Matrix device and handles encrypted Rooms.
     Ok(())
 }
 /// Facts for anything the server itself sends: replies, status notices and

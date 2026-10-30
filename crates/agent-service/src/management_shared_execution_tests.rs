@@ -1342,3 +1342,52 @@ async fn pool_owner_direct_funding_is_atomic_idempotent_and_owner_only() {
     assert_eq!(f.domain.pool_agent_request(&f.outsider.p,&request.id).await.unwrap().requested_tokens,100);
 }
 
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn encrypted_pool_intake_requires_assigned_executor_before_any_model_work() {
+    let (f,request,assignment,matrix)=Box::pin(prepared_pool(true)).await;
+    matrix.states.lock().unwrap().get_mut(&request.room_id).unwrap().push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
+    let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();
+    let received=sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS count").get_result::<Count>(&mut db).await.unwrap().count;
+    let event=crate::transport::RoutedEvent{event_id:"$encrypted_pool".into(),room_id:request.room_id.clone(),sender_mxid:f.outsider.p.mxid.clone(),body:String::new(),mentioned_mxids:Default::default(),thread_root:None,encrypted:true,is_edit:false};
+    f.domain.route_shared_event(&f.policy,&event,received,&matrix.gateway).await.unwrap();
+    assert!(sql_query("SELECT NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work) AS matched").get_result::<Check>(&mut db).await.unwrap().matched);
+    let poll=f.domain.shared_crypto_poll(&f.owner.p,None).await.unwrap();
+    assert_eq!(poll["scopes"][0]["events"][0]["event_id"],event.event_id);
+    assert_eq!(f.domain.shared_crypto_poll(&f.outsider.p,None).await.unwrap()["scopes"],json!([]));
+    let input=json!({"assignmentId":assignment.id,"eventId":event.event_id,"addressed":true,"threadRoot":null});
+    assert!(f.domain.shared_crypto_confirm(&f.outsider.p,serde_json::from_value(input.clone()).unwrap(),&matrix.gateway).await.is_err());
+    for _ in 0..2 {f.domain.shared_crypto_confirm(&f.owner.p,serde_json::from_value(input.clone()).unwrap(),&matrix.gateway).await.unwrap();}
+    let rows=f.domain.shared_intake_history(&f.outsider.p,&assignment.id,crate::management_shared_intake_types::SharedIntakeQuery{after:None}).await.unwrap();
+    assert_eq!(rows.items.len(),1);assert_eq!(rows.items[0].state,"pending");
+    let mut changed=input.clone();changed["threadRoot"]=json!("$different_thread");
+    assert!(f.domain.shared_crypto_confirm(&f.owner.p,serde_json::from_value(changed).unwrap(),&matrix.gateway).await.is_err());
+    assert!(sql_query("SELECT NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work) AS matched").get_result::<Check>(&mut db).await.unwrap().matched);
+    let mut unrelated=event.clone();unrelated.event_id="$unrelated".into();
+    f.domain.route_shared_event(&f.policy,&unrelated,received,&matrix.gateway).await.unwrap();
+    let no=json!({"assignmentId":assignment.id,"eventId":unrelated.event_id,"addressed":false});
+    f.domain.shared_crypto_confirm(&f.owner.p,serde_json::from_value(no).unwrap(),&matrix.gateway).await.unwrap();
+    assert_eq!(f.domain.shared_intake_history(&f.outsider.p,&assignment.id,crate::management_shared_intake_types::SharedIntakeQuery{after:None}).await.unwrap().items.len(),1);
+    let puppet=poll["scopes"][0]["puppetMxid"].as_str().unwrap();
+    sql_query("INSERT INTO hagency_agent_v1.executor_matrix_devices VALUES($1,$2,'HAGE2EETEST',$3,$4,'shared',false)").bind::<Text,_>(&assignment.id).bind::<Text,_>(puppet).bind::<Text,_>(f.owner.p.device_id.as_deref().unwrap()).bind::<BigInt,_>(f.owner.p.device_generation.unwrap()).execute(&mut db).await.unwrap();
+    let before=matrix.calls.lock().unwrap().len();
+    f.domain.revoke_shared_crypto_devices(&matrix.matrix).await.unwrap();
+    assert_eq!(matrix.calls.lock().unwrap().len(),before);
+    f.domain.stop_pool_agent(&f.owner.p,&request.id,RevokeInput{command_id:"encrypted_pool_stop".into(),expected_revision:2}).await.unwrap();
+    let unavailable=crate::matrix_client::MatrixClient::new(url::Url::parse("http://127.0.0.1:1").unwrap(),"test-only".into(),"test.local".into()).unwrap();
+    assert!(f.domain.revoke_shared_crypto_devices(&unavailable).await.is_err());
+    assert_ne!(crate::executor_matrix_device::select(&mut db,&assignment.id,f.owner.p.device_id.as_deref().unwrap(),f.owner.p.device_generation.unwrap(),"HAGE2EETEST").await.unwrap(),"HAGE2EETEST");
+    f.domain.revoke_shared_crypto_devices(&matrix.matrix).await.unwrap();
+    assert_eq!(matrix.calls.lock().unwrap().iter().filter(|p|p.ends_with("/logout")).count(),1);
+    f.domain.revoke_shared_crypto_devices(&matrix.matrix).await.unwrap();
+    assert_eq!(matrix.calls.lock().unwrap().iter().filter(|p|p.ends_with("/logout")).count(),1);
+
+    let fresh=crate::executor_matrix_device::select(&mut db,&assignment.id,f.owner.p.device_id.as_deref().unwrap(),f.owner.p.device_generation.unwrap(),"HAGE2EETEST").await.unwrap();
+    assert_ne!(fresh,"HAGE2EETEST");
+    sql_query("INSERT INTO hagency_agent_v1.executor_matrix_devices VALUES($1,$2,$3,$4,$5,'shared',false)").bind::<Text,_>(&assignment.id).bind::<Text,_>(puppet).bind::<Text,_>(&fresh).bind::<Text,_>(f.owner.p.device_id.as_deref().unwrap()).bind::<BigInt,_>(f.owner.p.device_generation.unwrap()).execute(&mut db).await.unwrap();
+    assert_eq!(crate::executor_matrix_device::select(&mut db,&assignment.id,f.owner.p.device_id.as_deref().unwrap(),f.owner.p.device_generation.unwrap(),"HAGE2EETEST").await.unwrap(),fresh);
+
+    assert_eq!(f.domain.shared_crypto_poll(&f.owner.p,None).await.unwrap()["scopes"],json!([]));
+    assert!(f.domain.shared_crypto_confirm(&f.owner.p,serde_json::from_value(input).unwrap(),&matrix.gateway).await.is_err());
+}

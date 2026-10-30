@@ -97,7 +97,7 @@ pub(super) async fn running_revision(db: &mut AsyncPgConnection, id: &str) -> Re
 pub(super) async fn assignment(db: &mut AsyncPgConnection, id: &str) -> Result<Work> {
     sql_query(format!("{WORK} JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=i.request_id WHERE a.id=$1 AND w.operation='agent.reserve'")).bind::<Text,_>(id).get_result(db).await.map_err(hidden)
 }
-async fn member(db: &mut AsyncPgConnection, id: &str) -> Result<Membership> {
+pub(super) async fn member(db: &mut AsyncPgConnection, id: &str) -> Result<Membership> {
     sql_query("SELECT m.room_id,m.space_id,m.puppet_mxid,u.mxid AS manager_mxid,q.pool_contribution_id IS NOT NULL AS pool_agent FROM hagency_agent_v1.management_agent_matrix m JOIN hagency_agent_v1.management_shared_assignments a ON a.id=m.assignment_id JOIN hagency_agent_v1.management_agent_requests q ON q.id=a.request_id JOIN hagency_agent_v1.users u ON u.id=a.manager_user_id WHERE a.id=$1 AND m.state='matrix_verified'").bind::<Text,_>(id).get_result(db).await.optional()?.ok_or(Error::NotFound("shared_matrix_not_verified"))
 }
 // Retention is not execution authorization. Deliberately ignore only transient
@@ -330,7 +330,12 @@ impl DomainStore {
         received: i64,
         gateway: &Gateway,
     ) -> Result<()> {
-        if event.encrypted
+        self.retain_shared_event_for(event, received, gateway, None).await
+    }
+    pub(super) async fn retain_shared_event_for(
+        &self, event: &RoutedEvent, received: i64, gateway: &Gateway, target: Option<&str>,
+    ) -> Result<()> {
+        if (event.encrypted && target.is_none())
             || event.is_edit
             || event.body.is_empty()
             || event.body.len() > MAX_SHARED_TEXT
@@ -359,7 +364,7 @@ impl DomainStore {
         loop {
             let ids = {
                 let mut db = self.db.lock().await?;
-                let conflict=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake WHERE event_id=$1 AND event_digest<>$2) AS matched").bind::<Text,_>(&event.event_id).bind::<Text,_>(&digest).get_result::<Flag>(&mut *db).await?.matched;
+                let conflict=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake WHERE event_id=$1 AND event_digest<>$2 AND ($3::text IS NULL OR assignment_id=$3)) AS matched").bind::<Text,_>(&event.event_id).bind::<Text,_>(&digest).bind::<Nullable<Text>,_>(target).get_result::<Flag>(&mut *db).await?.matched;
                 if conflict {
                     return Err(Error::Conflict("shared_event_changed"));
                 }
@@ -368,7 +373,7 @@ impl DomainStore {
                     .iter()
                     .map(String::as_str)
                     .collect::<Vec<_>>();
-                sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id JOIN hagency_agent_v1.management_agent_requests r ON r.id=a.request_id JOIN hagency_agent_v1.users u ON u.id=a.manager_user_id JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.id>$5 AND m.room_id=$1 AND (m.puppet_mxid=ANY($3) OR (r.pool_contribution_id IS NOT NULL AND m.space_id='' AND u.mxid=$2)) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.event_id=$4) ORDER BY a.id LIMIT 32").bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.sender_mxid).bind::<Array<Text>,_>(mentions).bind::<Text,_>(&event.event_id).bind::<Text,_>(&after).load::<Id>(&mut *db).await?
+                sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id JOIN hagency_agent_v1.management_agent_requests r ON r.id=a.request_id JOIN hagency_agent_v1.users u ON u.id=a.manager_user_id JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.id>$5 AND ($6::text IS NULL OR a.id=$6) AND m.room_id=$1 AND (m.puppet_mxid=ANY($3) OR (r.pool_contribution_id IS NOT NULL AND m.space_id='' AND u.mxid=$2)) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.event_id=$4) ORDER BY a.id LIMIT 32").bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.sender_mxid).bind::<Array<Text>,_>(mentions).bind::<Text,_>(&event.event_id).bind::<Text,_>(&after).bind::<Nullable<Text>,_>(target).load::<Id>(&mut *db).await?
             };
             let more = ids.len() == 32;
             if let Some(last) = ids.last() {
@@ -411,10 +416,10 @@ impl DomainStore {
                 let result=(*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
     db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;let now=clock(db).await?;if received>now{return Err(Error::Invalid("invalid_shared_intake_event"));}
     if expired_before_observation && received>now-TTL { return Err(Error::Unavailable("shared_intake_clock_changed")); }
-    if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake WHERE event_id=$1 AND event_digest<>$2) AS matched").bind::<Text,_>(&event.event_id).bind::<Text,_>(&digest).get_result::<Flag>(db).await?.matched { return Err(Error::Conflict("shared_event_changed")); }
+    if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake WHERE event_id=$1 AND event_digest<>$2 AND ($3::text IS NULL OR assignment_id=$3)) AS matched").bind::<Text,_>(&event.event_id).bind::<Text,_>(&digest).bind::<Nullable<Text>,_>(target).get_result::<Flag>(db).await?.matched { return Err(Error::Conflict("shared_event_changed")); }
     let old=sql_query("SELECT * FROM hagency_agent_v1.management_shared_intake WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&id.id).bind::<Text,_>(&event.event_id).get_result::<Intake>(db).await.optional()?;
     if let Some(old)=old {if old.event_digest!=digest||old.event_payload!=payload{return Err(Error::Conflict("shared_event_changed"));}return Ok(());}
-    let room_ok=match member(db,&id.id).await {Ok(m)=>observed.as_ref().is_some_and(|f|facts(&m,f).is_ok())&&m.room_id==event.room_id&&m.addressed_by(&event.sender_mxid,&event.mentioned_mxids),Err(Error::NotFound(_))=>false,Err(e)=>return Err(e)};
+    let room_ok=match member(db,&id.id).await {Ok(m)=>observed.as_ref().is_some_and(|f|facts(&m,f).is_ok()&&f.encrypted==event.encrypted)&&m.room_id==event.room_id&&m.addressed_by(&event.sender_mxid,&event.mentioned_mxids),Err(Error::NotFound(_))=>false,Err(e)=>return Err(e)};
     let ctl=control(db,&id.id).await?;let w=assignment(db,&id.id).await?;expire(db,&id.id,now).await?;
     let old_work=sql_query("SELECT w.payload FROM hagency_agent_v1.management_shared_event_pins p JOIN hagency_agent_v1.management_shared_work w ON w.id=p.work_id WHERE p.assignment_id=$1 AND p.event_id=$2").bind::<Text,_>(&id.id).bind::<Text,_>(&event.event_id).get_result::<Json>(db).await.optional()?;
     if let Some(old)=&old_work {let v:SharedWorkItem=decode(&old.payload)?;if v.room_id!=event.room_id||v.requester_mxid!=event.sender_mxid||v.body!=event.body||v.thread_root!=event.thread_root.as_deref().unwrap_or(&event.event_id){return Err(Error::Conflict("shared_event_changed"));}}

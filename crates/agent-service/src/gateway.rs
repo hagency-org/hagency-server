@@ -114,7 +114,6 @@ impl Gateway {
     async fn pool_room_state(&self, room: &str, owner: &str) -> Result<Vec<Value>> {
         let state = self.state(room).await?;
         if !pool_conversation(&state, owner)
-            || content(&state, "m.room.encryption", "").is_some()
             || level(content(&state, "m.room.power_levels", ""), &self.service_mxid)?
                 < power_integer(power_object(content(&state, "m.room.power_levels", ""))?.and_then(|p| p.get("invite")), 0)?
         {
@@ -391,7 +390,8 @@ mod tests {
         assert!(gateway.pool_room("joined", "@owner:test").await.is_ok());
         // Other people the applicant invites may share the conversation.
         assert!(gateway.pool_service_invited("member", "@owner:test").await.unwrap());
-        for room in ["public", "guest", "absent", "encrypted", "power"] {
+        assert!(gateway.pool_service_invited("encrypted", "@owner:test").await.unwrap());
+        for room in ["public", "guest", "absent", "power"] {
             assert!(gateway.pool_service_invited(room, "@owner:test").await.is_err(), "{room}");
         }
     }

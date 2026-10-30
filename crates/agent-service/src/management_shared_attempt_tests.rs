@@ -988,14 +988,14 @@ async fn shared_permissions_owner_scope_session_decision_and_single_consumption(
     let a=f.domain.record_shared_attempt_process(&f.owner.p,&f.policy,&d.command.command_id,result(&d,"qualified",240)).await.unwrap().activity.unwrap();
     let w=work::started(&f,&request,&m,&a,"$permission_session").await;
     let service=svc(&f,m.gateway.clone());
-    let register=json!({"authority":a.authority,"workId":w.id,"workDigest":allocation_digest(&w).unwrap(),"id":"sap_once","remainingMs":100_000,"request":{"id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread_a","turnId":"turn_a","itemId":"item_a","command":"curl https://example.test","cwd":"/workspace","reason":"Network access"},"sessionAllowed":true,"managerCanDecide":false}});
+    let register=json!({"authority":a.authority,"workId":w.id,"workDigest":allocation_digest(&w).unwrap(),"id":format!("sap_once_{}",w.id),"remainingMs":100_000,"request":{"id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread_a","turnId":"turn_a","itemId":"item_a","command":"curl https://example.test","cwd":"/workspace","reason":"Network access"},"sessionAllowed":true,"managerCanDecide":false}});
     let created=post(&service,"shared-execution/approvals/register",&f.owner.token,register.clone(),StatusCode::OK).await;
     assert_eq!(created["approval"]["roomId"],w.room_id);
     let listed=post(&service,"shared-execution/approvals/query",&f.owner.token,json!({"roomId":w.room_id}),StatusCode::OK).await;
     assert_eq!(listed["approvals"][0]["canDecide"],true);
     let foreign_room=post(&service,"shared-execution/approvals/query",&f.owner.token,json!({"roomId":"!elsewhere:example.test"}),StatusCode::OK).await;
     assert_eq!(foreign_room["approvals"],json!([]));
-    let decision=json!({"id":"sap_once","digest":created["digest"],"decision":"approve_session"});
+    let decision=json!({"id":format!("sap_once_{}",w.id),"digest":created["digest"],"decision":"approve_session"});
     post(&service,"shared-execution/approvals/decide",&f.outsider.token,decision.clone(),StatusCode::UNAUTHORIZED).await;
     let mut wrong=decision.clone();wrong["digest"]=json!("0".repeat(64));
     post(&service,"shared-execution/approvals/decide",&f.owner.token,wrong,StatusCode::CONFLICT).await;
@@ -1003,20 +1003,20 @@ async fn shared_permissions_owner_scope_session_decision_and_single_consumption(
     post(&service,"shared-execution/approvals/decide",&f.owner.token,decision.clone(),StatusCode::OK).await;
     let mut opposite=decision.clone();opposite["decision"]=json!("deny");
     post(&service,"shared-execution/approvals/decide",&f.owner.token,opposite,StatusCode::CONFLICT).await;
-    let take=json!({"authority":a.authority,"id":"sap_once","digest":created["digest"]});
+    let take=json!({"authority":a.authority,"id":format!("sap_once_{}",w.id),"digest":created["digest"]});
     let result=post(&service,"shared-execution/approvals/take",&f.owner.token,take.clone(),StatusCode::OK).await;
     assert_eq!(result["decision"],"approve_session");
     post(&service,"shared-execution/approvals/take",&f.owner.token,take,StatusCode::CONFLICT).await;
-    let mut denied=register.clone();denied["id"]=json!("sap_denied");denied["request"]["id"]=json!(8);
+    let mut denied=register.clone();denied["id"]=json!(format!("sap_denied_{}",w.id));denied["request"]["id"]=json!(8);
     let second=post(&service,"shared-execution/approvals/register",&f.owner.token,denied,StatusCode::OK).await;
-    let undecided=post(&service,"shared-execution/approvals/take",&f.owner.token,json!({"authority":a.authority,"id":"sap_denied","digest":second["digest"]}),StatusCode::OK).await;
+    let undecided=post(&service,"shared-execution/approvals/take",&f.owner.token,json!({"authority":a.authority,"id":format!("sap_denied_{}",w.id),"digest":second["digest"]}),StatusCode::OK).await;
     assert!(undecided["decision"].is_null(),"session approval must not become a server-wide grant");
-    post(&service,"shared-execution/approvals/decide",&f.owner.token,json!({"id":"sap_denied","digest":second["digest"],"decision":"deny"}),StatusCode::OK).await;
-    let mut delegated=register.clone();delegated["id"]=json!("sap_workspace");delegated["request"]=json!({"id":10,"method":"item/fileChange/requestApproval","params":{"threadId":"thread_a","turnId":"turn_a","itemId":"file_a","grantRoot":"/workspace"},"sessionAllowed":true,"managerCanDecide":true});
+    post(&service,"shared-execution/approvals/decide",&f.owner.token,json!({"id":format!("sap_denied_{}",w.id),"digest":second["digest"],"decision":"deny"}),StatusCode::OK).await;
+    let mut delegated=register.clone();delegated["id"]=json!(format!("sap_workspace_{}",w.id));delegated["request"]=json!({"id":10,"method":"item/fileChange/requestApproval","params":{"threadId":"thread_a","turnId":"turn_a","itemId":"file_a","grantRoot":"/workspace"},"sessionAllowed":true,"managerCanDecide":true});
     let fourth=post(&service,"shared-execution/approvals/register",&f.owner.token,delegated,StatusCode::OK).await;
-    post(&service,"shared-execution/approvals/decide",&f.outsider.token,json!({"id":"sap_workspace","digest":fourth["digest"],"decision":"approve_once"}),StatusCode::OK).await;
-    let mut expired=register.clone();expired["id"]=json!("sap_expired");expired["request"]["id"]=json!(9);
+    post(&service,"shared-execution/approvals/decide",&f.outsider.token,json!({"id":format!("sap_workspace_{}",w.id),"digest":fourth["digest"],"decision":"approve_once"}),StatusCode::OK).await;
+    let mut expired=register.clone();expired["id"]=json!(format!("sap_expired_{}",w.id));expired["request"]["id"]=json!(9);
     let third=post(&service,"shared-execution/approvals/register",&f.owner.token,expired,StatusCode::OK).await;
-    {let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();sql_query("UPDATE hagency_agent_v1.management_shared_approvals SET expires_at_ms=1 WHERE id='sap_expired'").execute(&mut db).await.unwrap();}
-    post(&service,"shared-execution/approvals/decide",&f.owner.token,json!({"id":"sap_expired","digest":third["digest"],"decision":"approve_once"}),StatusCode::CONFLICT).await;
+    {let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();sql_query("UPDATE hagency_agent_v1.management_shared_approvals SET expires_at_ms=1 WHERE id=$1").bind::<Text,_>(format!("sap_expired_{}",w.id)).execute(&mut db).await.unwrap();}
+    post(&service,"shared-execution/approvals/decide",&f.owner.token,json!({"id":format!("sap_expired_{}",w.id),"digest":third["digest"],"decision":"approve_once"}),StatusCode::CONFLICT).await;
 }

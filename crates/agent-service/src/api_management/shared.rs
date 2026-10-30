@@ -8,10 +8,30 @@ pub(super) async fn call(
     p: &crate::store::Principal,
     gateway: &crate::gateway::Gateway,
     parts: &[&str],
+    matrix: Option<&crate::matrix_client::MatrixClient>,
 ) -> Result<Option<Value>> {
+    if parts.get(1)==Some(&"crypto") && !policy.shared_budget_execution() {return Err(Error::Unavailable("shared_encryption_unavailable"));}
     Ok(Some(match (req.method(), parts) {
+        (&Method::POST,["shared-execution","crypto","poll"]) => {
+            #[derive(serde::Deserialize)] #[serde(rename_all="camelCase",deny_unknown_fields)] struct Poll { after: Option<String> }
+            let input:Poll=body(req).await?;
+            domain.shared_crypto_poll(p,input.after.as_deref()).await?
+        }
+        (&Method::POST,["shared-execution","crypto","device"]) => domain.shared_crypto_device(p,body(req).await?,matrix.ok_or(Error::Unavailable("matrix_unavailable"))?).await?,
+        (&Method::POST,["shared-execution","crypto","thread"]) => domain.shared_crypto_thread(p,body(req).await?).await?,
+        (&Method::POST,["shared-execution","crypto","send"]) => {
+            #[derive(serde::Deserialize)] #[serde(rename_all="camelCase",deny_unknown_fields)] struct Send {work_id:String}
+            let input:Send=body(req).await?;
+            domain.authorize_shared_encrypted_reply(p,policy,&input.work_id,gateway).await?;
+            json!({"authorized":true})
+        }
+        (&Method::POST,["shared-execution","crypto","confirm"]) => domain.shared_crypto_confirm(p,body(req).await?,gateway).await?,
         (&Method::POST,["shared-execution","approvals","register"])=>domain.register_shared_approval(p,body(req).await?).await?,
         (&Method::POST,["shared-execution","approvals","query"])=>domain.shared_approvals(p,body(req).await?).await?,
+        (&Method::POST,["shared-execution","approvals","get"])=>{
+            #[derive(serde::Deserialize)] #[serde(deny_unknown_fields)] struct Lookup{id:String}
+            let input:Lookup=body(req).await?;domain.shared_approval(p,&input.id).await?
+        },
         (&Method::POST,["shared-execution","approvals","decide"])=>domain.decide_shared_approval(p,body(req).await?).await?,
         (&Method::POST,["shared-execution","approvals","take"])=>domain.take_shared_approval(p,body(req).await?).await?,
         (&Method::POST, ["shared-execution", "work", id, "input-mode"]) => serde_json::to_value(

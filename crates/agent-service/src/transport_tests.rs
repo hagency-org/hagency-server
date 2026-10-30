@@ -2923,3 +2923,29 @@ async fn postgres_lost_start_can_retire_unstarted_offer_without_poisoning_next_r
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn encrypted_personal_group_waits_for_local_addressing_before_dispatch() {
+    let mut f=fixture().await;f.facts.encrypted=true;
+    let matrix=crate::matrix_client::MatrixClient::new(url::Url::parse("http://127.0.0.1:1").unwrap(),"test-only".into(),"example.test".into()).unwrap();
+    f.transport.revoke_stale_matrix_devices(&matrix).await.unwrap();
+    let now=crate::api::now_ms();
+    let mut e=event(&f,"encrypted_group",false,None);e.encrypted=true;e.body.clear();
+    assert!(matches!(f.transport.ingest_routed(&f.binding,e.clone(),&f.facts,now).await.unwrap(),RouteResult::Ignored));
+    let lease=f.transport.acquire_for_test(&f.p,&f.agent,30_000,false,now).await.unwrap();
+    let reference=LeaseRef{agent_id:f.agent.clone(),epoch:lease.epoch};
+    let poll=||e2ee::CryptoCandidateInput{lease:reference.clone(),binding_id:f.binding.clone(),event_id:None,mentions:Default::default(),thread_root:None};
+    let candidates=f.transport.encrypted_candidates(&f.p,poll()).await.unwrap();
+    assert_eq!(candidates["events"].as_array().unwrap().len(),1);
+    assert!(f.transport.encrypted_candidates(&f.second,poll()).await.is_err());
+    let unavailable=crate::gateway::Gateway::new(Arc::new(|_|Box::pin(async{Err(Error::Unavailable("test_gateway_offline"))})),"@service:example.test".into());
+    let mut confirmation=poll();confirmation.event_id=Some(e.event_id.clone());
+    assert!(matches!(f.transport.confirm_encrypted_candidate(&f.p,confirmation,&unavailable).await,Err(Error::Unavailable("test_gateway_offline"))));
+    let mut changed=poll();changed.event_id=Some(e.event_id.clone());changed.thread_root=Some("$changed".into());
+    assert!(matches!(f.transport.confirm_encrypted_candidate(&f.p,changed,&unavailable).await,Err(Error::Conflict("encrypted_confirmation_changed"))));
+    assert!(matches!(f.transport.ingest_routed_confirmed(&f.binding,e.clone(),&f.facts,now,now,true).await.unwrap(),RouteResult::Ignored));
+    e.mentioned_mxids.insert(f.facts.puppet_mxid.clone());
+    assert!(matches!(f.transport.ingest_routed_confirmed(&f.binding,e.clone(),&f.facts,now,now,true).await.unwrap(),RouteResult::Queued{..}));
+    assert!(matches!(f.transport.ingest_routed_confirmed(&f.binding,e,&f.facts,now,now,true).await.unwrap(),RouteResult::Duplicate{..}));
+}

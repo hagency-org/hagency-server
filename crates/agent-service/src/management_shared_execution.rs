@@ -2,6 +2,8 @@
 #[path = "management_shared_tickets.rs"]
 mod tickets;
 use super::*;
+#[path = "management_shared_e2ee.rs"]
+pub(super) mod e2ee;
 #[path = "management_shared_attempts.rs"]
 mod attempts;
 #[path = "management_shared_budget_attempts.rs"]
@@ -237,7 +239,6 @@ fn facts_at(m: &Membership, f: &DeliveryFacts, now: i64) -> Result<()> {
         || !f.requester_in_room
         || !f.puppet_in_room
         || !f.puppet_can_send_message
-        || f.encrypted
     {
         return Err(Error::Unauthorized("shared_room_authority_changed"));
     }
@@ -690,6 +691,7 @@ async fn validate_receipt(
 #[cfg(test)]
 mod clock_tests {
     use super::*;
+
     #[test]
     fn matrix_observation_freshness_uses_its_host_clock_without_accepting_stale_or_future_facts() {
         let m = Membership {

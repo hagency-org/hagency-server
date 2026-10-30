@@ -228,10 +228,6 @@ fn creating(
         return Err(Error::Unauthorized("service_invitation_denied"));
     }
 
-    if f.encrypted {
-        return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
-    }
-
     Ok(())
 }
 
@@ -504,6 +500,7 @@ impl DomainStore {
             if management.matched {db.batch_execute(include_str!("management_pool_succession_schema.sql")).await?;}
             let management=sql_query("SELECT version=29 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
             if !management.matched { return Err(Error::Conflict("management_schema_incompatible")); }
+            db.batch_execute(include_str!("management_shared_e2ee_schema.sql")).await?;
             db.batch_execute("CREATE INDEX IF NOT EXISTS management_command_recovery ON hagency_agent_v1.management_commands(actor_user_id,device_id,command_id)").await?;
 
             let pause_initialized=sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='bindings' AND column_name='owner_service_paused') AS matched").get_result::<Flag>(db).await?;
@@ -1197,7 +1194,6 @@ impl DomainStore {
             if f.owner_mxid!=owner.mxid || f.room_id!=b.room_id || f.space_id!=space || f.puppet_mxid.as_deref()!=Some(&a.puppet_mxid) || !f.owner_in_room || (if space.is_empty() {!f.owner_direct_valid} else {!f.owner_in_space || !f.room_in_space}) || !pp.permits(&owner.mxid) || !rp.permits(&owner.mxid) {
                 return Err(Error::Unauthorized("provisioning_authority_revoked"));
             }
-            if f.encrypted { return Err(Error::Conflict("encrypted_room_requires_client_crypto")); }
             if !f.puppet_in_room && !f.service_can_invite && !f.owner_direct_valid { return Err(Error::Unauthorized("service_invitation_denied")); }
             if activate {
                 if !f.puppet_in_room { return Err(Error::Conflict("puppet_join_not_confirmed")); }
@@ -1347,10 +1343,6 @@ impl DomainStore {
 
                 if !f.puppet_in_room || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid) {
                     return Err(Error::Unauthorized("puppet_not_joined"));
-                }
-
-                if f.encrypted {
-                    return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
                 }
 
                 Ok(AgentBinding {
@@ -1618,9 +1610,6 @@ impl DomainStore {
 
             if !f.puppet_in_room || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid) {
                 return Err(Error::Conflict("puppet_join_not_confirmed"));
-            }
-            if f.encrypted {
-                return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
             }
 
             let result=sql_query("UPDATE hagency_agent_v1.bindings SET state='active',owner_service_paused=false,generation=generation+1 WHERE id=$1 RETURNING id,agent_id,project_id,room_id,state,generation,scope_kind,owner_service_paused,thread_auto_reply").bind::<Text,_>(id).get_result(db).await?;

@@ -561,6 +561,7 @@ pub(crate) fn start(
         }
         tokio::join!(
             worker_loop!(t.invalidate_stale_dispatches(now_ms())),
+            worker_loop!(t.revoke_stale_matrix_devices(&m)),
             worker_loop!(route_with_shared(
                 &inbox,
                 &t,
@@ -608,6 +609,7 @@ pub(crate) fn start_cleanup(
             if !domain.try_membership_controller().await.unwrap_or(false) {
                 continue;
             }
+            let _ = domain.revoke_shared_crypto_devices(&m).await;
             let _ = domain.sweep_managed_runtime().await;
             if let Ok(ids) = domain
                 .managed_matrix_candidates(&managed_matrix_cursor, 20)

@@ -1,5 +1,6 @@
 //! Authenticated, finite permission requests bound to one running work item.
 use super::*;
+use crate::management_allocation_types::valid_digest;
 use serde::Deserialize;
 use serde_json::{Value,json};
 #[path="management_shared_chat_status.rs"]
@@ -32,6 +33,19 @@ struct Row {
  #[diesel(sql_type=Nullable<Text>)] decision:Option<String>,
  #[diesel(sql_type=Nullable<Bool>)] decision_by_owner:Option<bool>,
  #[diesel(sql_type=Bool)] consumed:bool,
+ #[diesel(sql_type=Nullable<Text>)] decided_by_mxid:Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct EncryptedRequest {encrypted:EncryptedDetails,session_allowed:bool,manager_can_decide:bool}
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct EncryptedDetails {algorithm:String,request_digest:String,device_id:String}
+fn encrypted_request(request:&Value)->Result<EncryptedRequest> {
+ let value:EncryptedRequest=serde_json::from_value(request.clone()).map_err(|_|Error::Invalid("invalid_encrypted_approval"))?;
+ if value.encrypted.algorithm!="m.olm.v1.curve25519-aes-sha2" || !valid_digest(&value.encrypted.request_digest) || !value.encrypted.device_id.starts_with("HAGE2EE") || value.encrypted.device_id.len()>64 || !value.encrypted.device_id.bytes().all(|b|b.is_ascii_alphanumeric()) {return Err(Error::Invalid("invalid_encrypted_approval"));}
+ let _=(value.session_allowed,value.manager_can_decide);
+ Ok(value)
 }
 async fn row(db:&mut AsyncPgConnection,id:&str)->Result<Row>{sql_query("SELECT * FROM hagency_agent_v1.management_shared_approvals WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result(db).await.map_err(hidden)}
 async fn live_request(db:&mut AsyncPgConnection,a:&Row,server:&str,now:i64)->Result<bool>{
@@ -44,7 +58,8 @@ impl DomainStore {
   key(&input.id)?;key(&input.work_id)?;
   if !(1..=120_000).contains(&input.remaining_ms) || serde_json::to_vec(&input.request).map_or(true,|v|v.len()>64*1024) {return Err(Error::Invalid("invalid_permission_request"));}
   let request=&input.request;
-  if !matches!(request["method"].as_str(),Some("item/commandExecution/requestApproval"|"item/fileChange/requestApproval"|"item/permissions/requestApproval")) || !request["params"].is_object() || !request["sessionAllowed"].is_boolean() || !request["managerCanDecide"].is_boolean() || ["threadId","turnId","itemId"].iter().any(|k|request["params"][k].as_str().is_none_or(|s|s.is_empty()||s.len()>255)) {return Err(Error::Invalid("invalid_permission_request"));}
+  let encrypted=if request.get("encrypted").is_some(){Some(encrypted_request(request)?)}else{None};
+  if encrypted.is_none() && (!matches!(request["method"].as_str(),Some("item/commandExecution/requestApproval"|"item/fileChange/requestApproval"|"item/permissions/requestApproval")) || !request["params"].is_object() || !request["sessionAllowed"].is_boolean() || !request["managerCanDecide"].is_boolean() || ["threadId","turnId","itemId"].iter().any(|k|request["params"][k].as_str().is_none_or(|s|s.is_empty()||s.len()>255))) {return Err(Error::Invalid("invalid_permission_request"));}
   let mut guard=self.db.lock().await?;
   (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
    let now=clock(db).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;
@@ -52,12 +67,19 @@ impl DomainStore {
    let raw:Value=decode(&r.payload)?;
    if raw["toolPolicy"]["mode"]!="standard" {return Err(Error::Unauthorized("approval_mode_required"));}
    let w=work_row(db,&input.work_id).await?;let work=item(&w,&r)?;
+   if work.encrypted!=encrypted.is_some() {return Err(Error::Invalid("encrypted_approval_required"));}
+   if let Some(e)=&encrypted {
+    let (device,generation)=device(p)?;
+    if !sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.executor_matrix_devices WHERE scope_id=$1 AND executor_device_id=$2 AND executor_generation=$3 AND device_id=$4 AND kind='shared' AND NOT revoked AND NOT retiring) AS matched").bind::<Text,_>(&r.assignment_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(&e.encrypted.device_id).get_result::<Flag>(db).await?.matched {return Err(Error::Unauthorized("encrypted_approval_device_changed"));}
+   }
    if w.state!="started" || w.digest!=input.work_digest {return Err(Error::Conflict("approval_work_changed"));}
    let old=sql_query("SELECT * FROM hagency_agent_v1.management_shared_approvals WHERE id=$1").bind::<Text,_>(&input.id).get_result::<Row>(db).await.optional()?;
    if let Some(old)=old {let payload:Value=decode(&old.payload)?;if old.work_id!=w.id || old.owner_user_id!=p.user_id || payload["request"]!=input.request{return Err(Error::Conflict("approval_request_changed"));}return Ok(json!({"approval":payload,"digest":old.digest}));}
    if sql_query("SELECT count(*)>=16 AS matched FROM hagency_agent_v1.management_shared_approvals WHERE runtime_id=$1 AND NOT consumed AND expires_at_ms>$2").bind::<Text,_>(&r.id).bind::<BigInt,_>(now).get_result::<Flag>(db).await?.matched {return Err(Error::Unavailable("approval_queue_full"));}
    let expires=(now+input.remaining_ms).min(reserve_lifetime(db,&c.reserve_command,now).await?);
-   let payload=json!({"id":input.id,"workId":w.id,"agentId":c.reserve_command.proposed_agent_id,"agentName":c.reserve_command.definition.name,"roomId":work.room_id,"eventId":work.event_id,"threadRoot":work.thread_root,"requesterMxid":work.requester_mxid,"ownerMxid":p.mxid,"request":input.request,"expiresAtMs":expires,"sessionScope":"current_codex_session"});let digest=allocation_digest(&payload)?;
+   let mut payload=json!({"id":input.id,"workId":w.id,"agentId":c.reserve_command.proposed_agent_id,"agentName":c.reserve_command.definition.name,"roomId":work.room_id,"eventId":work.event_id,"threadRoot":work.thread_root,"requesterMxid":work.requester_mxid,"ownerMxid":p.mxid,"request":input.request,"expiresAtMs":expires,"sessionScope":"current_codex_session"});
+   if encrypted.is_some(){let m=membership(db,&r).await?;payload["agentMxid"]=json!(m.puppet_mxid);payload["managerMxid"]=json!(c.reserve_command.manager_mxid);}
+   let digest=allocation_digest(&payload)?;
    // Other Room members may send the work, but manager-delegable decisions stay with the manager.
    sql_query("INSERT INTO hagency_agent_v1.management_shared_approvals(id,work_id,runtime_id,owner_user_id,requester_mxid,room_id,payload,digest,expires_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)").bind::<Text,_>(&input.id).bind::<Text,_>(&w.id).bind::<Text,_>(&r.id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&c.reserve_command.manager_mxid).bind::<Text,_>(&work.room_id).bind::<Text,_>(wire(&payload)?).bind::<Text,_>(&digest).bind::<BigInt,_>(expires).execute(db).await?;
    Ok(json!({"approval":payload,"digest":digest}))
@@ -70,6 +92,13 @@ impl DomainStore {
   let mut result=Vec::new();for a in rows {if live_request(&mut db,&a,&self.server,now).await? {let payload:Value=decode(&a.payload)?;let can=a.owner_user_id==p.user_id || (a.requester_mxid==p.mxid && payload["request"]["managerCanDecide"]==true);result.push(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}));}}
   let executions=chat_status::query(&mut db,p,input.room_id.as_deref(),now).await?;
   Ok(json!({"approvals":result,"executions":executions}))
+ }
+ pub async fn shared_approval(&self,p:&Principal,id:&str)->Result<Value>{
+  key(id)?;let mut db=self.db.lock().await?;let a=row(&mut db,id).await?;
+  if a.owner_user_id!=p.user_id && a.requester_mxid!=p.mxid {return Err(Error::Unauthorized("approval_reader_required"));}
+  let now=clock(&mut db).await?;if !live_request(&mut db,&a,&self.server,now).await? {return Err(Error::Conflict("approval_expired"));}
+  let payload:Value=decode(&a.payload)?;let can=a.owner_user_id==p.user_id || (a.requester_mxid==p.mxid && payload["request"]["managerCanDecide"]==true);
+  Ok(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}))
  }
  pub async fn decide_shared_approval(&self,p:&Principal,input:DecideApproval)->Result<Value>{
   key(&input.id)?;
@@ -96,7 +125,7 @@ impl DomainStore {
    if a.digest!=input.digest || a.owner_user_id!=p.user_id {return Err(Error::Unauthorized("approval_request_changed"));}
    if !live_request(db,&a,&self.server,now).await? {return Err(Error::Conflict("approval_expired"));}
    if a.decision.is_some() {sql_query("UPDATE hagency_agent_v1.management_shared_approvals SET consumed=true WHERE id=$1 AND NOT consumed").bind::<Text,_>(&a.id).execute(db).await?;}
-   Ok(json!({"id":a.id,"digest":a.digest,"decision":a.decision,"ownerApproved":a.decision_by_owner}))
+   Ok(json!({"id":a.id,"digest":a.digest,"decision":a.decision,"ownerApproved":a.decision_by_owner,"decidedByMxid":a.decided_by_mxid}))
   }).await
  }
 }

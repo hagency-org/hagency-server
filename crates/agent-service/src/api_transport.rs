@@ -98,6 +98,8 @@ pub(crate) async fn call(
         reply: SubmitReply,
     }
     match path.as_str() {
+        "/hagency/api/v1/execution/e2ee-candidates" => t.encrypted_candidates(p,body(req).await?).await,
+        "/hagency/api/v1/execution/e2ee-confirm" => t.confirm_encrypted_candidate(p,body(req).await?,g).await,
         "/hagency/api/v1/execution/history" => {
             let b: History = body(req).await?;
             Ok(

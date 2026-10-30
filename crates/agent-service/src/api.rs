@@ -207,11 +207,11 @@ impl App {
         let matrix_device = format!("HAGE2EE{}", digest[..16].to_ascii_uppercase());
         match path {
             "/hagency/api/v1/execution/e2ee-device" => {
-                let token = matrix.login_device(&puppet, &matrix_device).await?;
+                let (matrix_device,token) = t.issue_matrix_device(p,&input.lease,&puppet,&matrix_device,matrix).await?;
                 Ok(json!({"userId":puppet,"deviceId":matrix_device,"accessToken":token,"homeserver":self.public}))
             }
             "/hagency/api/v1/execution/e2ee-device/revoke" => {
-                matrix.logout_device(&puppet, &matrix_device).await?;
+                let matrix_device=t.revoke_current_matrix_device(p,&input.lease,&puppet,&matrix_device,matrix).await?;
                 Ok(json!({"revoked":true,"deviceId":matrix_device}))
             }
             _ => Err(Error::Invalid("unsupported_operation")),
@@ -238,7 +238,7 @@ impl App {
         if path == "/hagency/api/v1/discovery" && method == salvo::http::Method::GET {
             return Ok(
                 json!({"product":"hagency-server","version":env!("CARGO_PKG_VERSION"),
-                "capabilities":["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","agent-e2ee-device-v1","processing-reaction-v1","execution-configuration-v1","shared-durable-demand-v1","shared-thread-context-v1","managed-agent-budget-delta-v1","shared-budget-execution-v1","agent-settlement-v1"],
+                "capabilities":["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","agent-e2ee-device-v1","shared-agent-e2ee-v1","processing-reaction-v1","execution-configuration-v1","shared-durable-demand-v1","shared-thread-context-v1","managed-agent-budget-delta-v1","shared-budget-execution-v1","agent-settlement-v1"],
                 "managementProtocol":self.management.as_ref().map(|_|crate::management_types::PROTOCOL),
                 "protocolVersion":3,"serverName":self.server_name,"homeserver":self.public,
                 "serviceMxid":format!("@_hagency_service:{}",self.server_name),"issuer":self.issuer,"authorizationEndpoint":self.issuer.join("authorize").unwrap(),

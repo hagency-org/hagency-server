@@ -561,7 +561,7 @@ fn policy_deny_priority_and_trusted_observation_requirements() {
     );
     f.service_can_invite = true;
     f.encrypted = true;
-    assert!(creating(&p, &f, "!room:s", "!space:s", &policy, &rp, None, *NOW).is_err());
+    assert!(creating(&p, &f, "!room:s", "!space:s", &policy, &rp, None, *NOW).is_ok());
 }
 
 #[tokio::test]

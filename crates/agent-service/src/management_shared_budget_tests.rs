@@ -1269,3 +1269,61 @@ async fn budget_execution_v3_long_reply_http_recovery_and_matrix_delivery(){
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn encrypted_shared_budget_work_keeps_plaintext_out_of_results_and_sends() {
+    let (mut f,r,_,m,mut i)=Box::pin(fixture()).await;
+    i.tool_policy=Some(crate::management_shared_tool_policy::SharedAgentToolPolicy{mode:"standard".into(),revision:1});
+    f.policy=f.policy.with_shared_durable_intake(true).with_shared_demands(true).with_shared_thread_context(true);
+    f.domain.change_shared_run_control(&f.outsider.p,&f.policy,&i.assignment_id,intake_tests::change("encrypted_arm",1,"running"),&m.gateway).await.unwrap();
+    let room=read_matrix(&f,&r).await.room_id;
+    m.states.lock().unwrap().get_mut(&room).unwrap().push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
+    let (d,a)=started(&f,&m,i).await;
+    let mut e=work::message(&f,&r,"encrypted_budget").await;
+    e.encrypted=true;e.body.clear();e.mentioned_mxids.clear();
+    let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();
+    let now=sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now").get_result::<Clock>(&mut db).await.unwrap().now;
+    f.domain.route_shared_event(&f.policy,&e,now,&m.gateway).await.unwrap();
+    f.domain.shared_crypto_confirm(&f.owner.p,serde_json::from_value(json!({"assignmentId":d.command.assignment_id,"eventId":e.event_id,"addressed":true})).unwrap(),&m.gateway).await.unwrap();
+    let w=f.domain.poll_shared_budget_work(&f.owner.p,&f.policy,a.authority.clone(),&m.gateway).await.unwrap().unwrap();
+    assert!(w.encrypted);assert_eq!(w.body,w.event_id);
+    let mode=f.domain.shared_budget_work_input_mode(&f.owner.p,&w.id,crate::management_shared_context_types::SharedWorkEvidenceInput{runtime_command_digest:d.command_digest.clone(),work_digest:allocation_digest(&w).unwrap()}).await.unwrap();
+    assert_eq!(mode.mode,"plain_text_v1");
+    f.domain.acknowledge_shared_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
+    f.domain.start_shared_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
+    f.domain.authorize_shared_encrypted_reply(&f.owner.p,&f.policy,&w.id,&m.gateway).await.unwrap();
+    let puppet=read_matrix(&f,&r).await.puppet_mxid;
+    sql_query("INSERT INTO hagency_agent_v1.executor_matrix_devices(scope_id,puppet_mxid,device_id,executor_device_id,executor_generation,kind) VALUES($1,$2,'HAGE2EEAPPROVAL',$3,$4,'shared')").bind::<Text,_>(&d.command.assignment_id).bind::<Text,_>(&puppet).bind::<Text,_>(f.owner.p.device_id.as_deref().unwrap()).bind::<BigInt,_>(f.owner.p.device_generation.unwrap()).execute(&mut db).await.unwrap();
+    let register=json!({"authority":a.authority,"workId":w.id,"workDigest":allocation_digest(&w).unwrap(),"id":format!("sap_encrypted_{}",w.id),"remainingMs":100000,"request":{"encrypted":{"algorithm":"m.olm.v1.curve25519-aes-sha2","requestDigest":"a".repeat(64),"deviceId":"HAGE2EEAPPROVAL"},"sessionAllowed":true,"managerCanDecide":false}});
+    let mut leaking=register.clone();leaking["request"]["params"]=json!({"command":"private command"});
+    assert!(f.domain.register_shared_approval(&f.owner.p,serde_json::from_value(leaking).unwrap()).await.is_err());
+    let mut wrong=register.clone();wrong["request"]["encrypted"]["deviceId"]=json!("HAGE2EEOTHER");
+    assert!(f.domain.register_shared_approval(&f.owner.p,serde_json::from_value(wrong).unwrap()).await.is_err());
+    let created=f.domain.register_shared_approval(&f.owner.p,serde_json::from_value(register.clone()).unwrap()).await.unwrap();
+    assert_eq!(created["approval"]["agentMxid"],puppet);
+    assert_eq!(created["approval"]["managerMxid"],f.outsider.p.mxid);
+    assert_eq!(f.domain.shared_approval(&f.owner.p,&format!("sap_encrypted_{}",w.id)).await.unwrap()["digest"],created["digest"]);
+    assert_eq!(f.domain.shared_approval(&f.outsider.p,&format!("sap_encrypted_{}",w.id)).await.unwrap()["canDecide"],false);
+    assert_eq!(f.domain.register_shared_approval(&f.owner.p,serde_json::from_value(register.clone()).unwrap()).await.unwrap(),created);
+    let mut changed=register;changed["request"]["encrypted"]["requestDigest"]=json!("b".repeat(64));
+    assert!(f.domain.register_shared_approval(&f.owner.p,serde_json::from_value(changed).unwrap()).await.is_err());
+    let decide=json!({"id":format!("sap_encrypted_{}",w.id),"digest":created["digest"],"decision":"approve_session"});
+    assert!(f.domain.decide_shared_approval(&f.outsider.p,serde_json::from_value(decide.clone()).unwrap()).await.is_err());
+    f.domain.decide_shared_approval(&f.owner.p,serde_json::from_value(decide).unwrap()).await.unwrap();
+    let take=json!({"authority":a.authority,"id":format!("sap_encrypted_{}",w.id),"digest":created["digest"]});
+    let consumed=f.domain.take_shared_approval(&f.owner.p,serde_json::from_value(take.clone()).unwrap()).await.unwrap();
+    assert_eq!(consumed["decidedByMxid"],f.owner.p.mxid);assert_eq!(consumed["decision"],"approve_session");
+    assert!(f.domain.take_shared_approval(&f.owner.p,serde_json::from_value(take).unwrap()).await.is_err());
+    let mut result=usage(&f,&d,&w,260,12,"completed").await;
+    assert!(f.domain.record_shared_work_result(&f.owner.p,&f.policy,&w.id,result.clone()).await.is_err());
+    let body=json!({"algorithm":"m.megolm.v1.aes-sha2","delivery":"sent","roomId":w.room_id,"eventId":"$encrypted_answer"}).to_string();
+    result.receipt.body_digest=Some(crate::hash(&body));result.receipt.body=Some(body);
+    let ack=f.domain.record_shared_work_result(&f.owner.p,&f.policy,&w.id,result.clone()).await.unwrap();
+    assert_eq!(ack.reply_state.as_deref(),Some("sent"));
+    let again=f.domain.record_shared_work_result(&f.owner.p,&f.policy,&w.id,result).await.unwrap();
+    assert_eq!(again.receipt_digest,ack.receipt_digest);
+    let calls=m.calls.lock().unwrap().len();
+    f.domain.send_shared_replies(&f.policy,&m.gateway,&m.matrix,&mut String::new()).await.unwrap();
+    assert_eq!(m.calls.lock().unwrap().len(),calls,"server must never publish encrypted answers as plaintext");
+}

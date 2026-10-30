@@ -52,7 +52,7 @@ pub(crate) async fn call(
     } else if let Some(value) = Box::pin(pools::call(req, domain, policy, &p, &parts)).await? {
         value
     } else if let Some(value) =
-        Box::pin(shared::call(req, domain, policy, &p, gateway, &parts)).await?
+        Box::pin(shared::call(req, domain, policy, &p, gateway, &parts, matrix)).await?
     {
         value
     } else if let Some(value) = Box::pin(budget_execution::call(
