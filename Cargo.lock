@@ -3855,9 +3855,9 @@ dependencies = [
 
 [[package]]
 name = "granit-parser"
-version = "1.3.0"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e20f99e46474f56bd905c56e817ebddcf377a611f94c53ac4649e4d3fa3c0cd0"
+checksum = "da55feca5d1625466bae068f9fd4b87892caeae70c3fe671ddb0f50d41aebf37"
 dependencies = [
  "arraydeque",
  "smallvec",
@@ -6892,7 +6892,7 @@ dependencies = [
 [[package]]
 name = "palpo"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#c8568d9844a6be0a3172d98d7c9810e3a1f7521c"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#8c1759f1832709da92e087e58796780a3cacee58"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6955,7 +6955,7 @@ dependencies = [
  "scheduled-thread-pool",
  "secrecy",
  "serde",
- "serde-saphyr 1.3.0",
+ "serde-saphyr 2.0.0",
  "serde_ignored",
  "serde_json",
  "serde_regex",
@@ -6987,7 +6987,7 @@ dependencies = [
 [[package]]
 name = "palpo-core"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#c8568d9844a6be0a3172d98d7c9810e3a1f7521c"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#8c1759f1832709da92e087e58796780a3cacee58"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -7004,6 +7004,7 @@ dependencies = [
  "form_urlencoded",
  "futures-util",
  "globwalk",
+ "hmac 0.13.0",
  "html5ever 0.40.1",
  "http",
  "http-auth",
@@ -7051,7 +7052,7 @@ dependencies = [
 [[package]]
 name = "palpo-core-macros"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#c8568d9844a6be0a3172d98d7c9810e3a1f7521c"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#8c1759f1832709da92e087e58796780a3cacee58"
 dependencies = [
  "as_variant",
  "palpo-identifiers-validation",
@@ -7066,7 +7067,7 @@ dependencies = [
 [[package]]
 name = "palpo-data"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#c8568d9844a6be0a3172d98d7c9810e3a1f7521c"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#8c1759f1832709da92e087e58796780a3cacee58"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7112,7 +7113,7 @@ dependencies = [
  "sanitize-filename",
  "secrecy",
  "serde",
- "serde-saphyr 1.3.0",
+ "serde-saphyr 2.0.0",
  "serde_json",
  "sha1 0.11.0",
  "smallvec",
@@ -7136,7 +7137,7 @@ dependencies = [
 [[package]]
 name = "palpo-identifiers-validation"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#c8568d9844a6be0a3172d98d7c9810e3a1f7521c"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#8c1759f1832709da92e087e58796780a3cacee58"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -7144,7 +7145,7 @@ dependencies = [
 [[package]]
 name = "palpo-server-macros"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#c8568d9844a6be0a3172d98d7c9810e3a1f7521c"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#8c1759f1832709da92e087e58796780a3cacee58"
 dependencies = [
  "palpo-identifiers-validation",
  "proc-macro-crate",
@@ -9854,14 +9855,15 @@ dependencies = [
 
 [[package]]
 name = "serde-saphyr"
-version = "1.3.0"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8050abb251097357e24aff63ba2c52a6309ecb7d23a5474023df960a02694d8"
+checksum = "a253edfdea34032da21af84e16fcc94f4c7a6ba237f9f3bc2dbf43cea8535c44"
 dependencies = [
  "annotate-snippets",
  "base64 0.23.1",
  "encoding_rs_io",
- "granit-parser 1.3.0",
+ "figment",
+ "granit-parser 2.0.0",
  "nohash-hasher",
  "num-traits",
  "serde_core",
