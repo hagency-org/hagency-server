@@ -18,10 +18,7 @@ pub fn NotAuthorizedPage() -> Element {
     let user_id = storage::get_item("user_id").unwrap_or_default();
 
     let handle_logout = move |_evt: MouseEvent| {
-        spawn(async move {
-            let _ = auth::logout().await;
-            nav.replace(Route::LoginPage {});
-        });
+        auth::logout_and_redirect(nav);
     };
 
     rsx! {

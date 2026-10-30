@@ -701,6 +701,19 @@ fn logout_plan(
     requests
 }
 
+/// Session retirement unmounts the header and access-denied page. Keep both
+/// server-side revocation and the final redirect alive across that unmount.
+pub fn logout_and_redirect(nav: dioxus::router::Navigator) {
+    run_logout_task(async move {
+        let _ = logout().await;
+        nav.replace(crate::router::Route::LoginPage {});
+    });
+}
+
+fn run_logout_task(task: impl std::future::Future<Output = ()> + 'static) {
+    dioxus::dioxus_core::spawn_forever(task);
+}
+
 pub async fn logout() -> Result<(), HttpError> {
     let token = storage::get_item("access_token");
     let oauth = storage::get_item("auth_kind").as_deref() == Some("oauth2");
@@ -882,5 +895,65 @@ mod tests {
         assert!(scope.contains("urn:palpo:admin:*"));
         assert!(scope.contains("urn:pasion:admin"));
         assert!(!scope.contains("openid"));
+    }
+}
+
+#[cfg(test)]
+mod logout_lifetime_tests {
+    use super::run_logout_task;
+    use dioxus::prelude::*;
+    use futures::{channel::oneshot, future::poll_fn};
+    use std::{cell::RefCell, task::Poll};
+
+    thread_local! {
+        static WAIT: RefCell<Option<oneshot::Receiver<()>>> = const { RefCell::new(None) };
+        static FINISHED: RefCell<bool> = const { RefCell::new(false) };
+        static UNMOUNTED: RefCell<bool> = const { RefCell::new(false) };
+    }
+
+    fn app() -> Element {
+        if dioxus::dioxus_core::generation() == 0 {
+            dioxus::dioxus_core::needs_update();
+            rsx! { LogoutControl {} }
+        } else {
+            rsx! { div { "Session retired" } }
+        }
+    }
+
+    #[component]
+    fn LogoutControl() -> Element {
+        use_drop(|| UNMOUNTED.with(|flag| *flag.borrow_mut() = true));
+        use_hook(|| {
+            let wait = WAIT.with(|slot| slot.borrow_mut().take().unwrap());
+            run_logout_task(async move {
+                // Model the async server-side revocation after retire_session
+                // invalidates the authenticated layout and removes this control.
+                wait.await.unwrap();
+                FINISHED.with(|flag| *flag.borrow_mut() = true);
+            });
+        });
+        rsx! { button { "Sign out" } }
+    }
+
+    #[test]
+    fn logout_completes_after_its_control_is_unmounted() {
+        let (send, receive) = oneshot::channel();
+        WAIT.with(|slot| *slot.borrow_mut() = Some(receive));
+        FINISHED.with(|flag| *flag.borrow_mut() = false);
+        UNMOUNTED.with(|flag| *flag.borrow_mut() = false);
+        let mut dom = VirtualDom::new(app);
+        dom.rebuild_in_place();
+        dom.render_immediate(&mut dioxus::dioxus_core::NoOpMutations);
+        assert!(UNMOUNTED.with(|flag| *flag.borrow()));
+        assert!(!FINISHED.with(|flag| *flag.borrow()));
+        send.send(()).unwrap();
+        futures::executor::block_on(poll_fn(|cx| {
+            let _ = std::pin::pin!(dom.wait_for_work()).poll(cx);
+            Poll::Ready(())
+        }));
+        assert!(
+            FINISHED.with(|flag| *flag.borrow()),
+            "revocation and navigation must survive the initiating control"
+        );
     }
 }

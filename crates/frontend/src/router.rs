@@ -320,10 +320,7 @@ fn AuthenticatedLayout() -> Element {
                         variant: crate::components::ui::button::ButtonVariant::Outline,
                         class: "w-full".to_string(),
                         onclick: move |_| {
-                            spawn(async move {
-                                let _ = auth::logout().await;
-                                nav.replace(Route::LoginPage {});
-                            });
+                            auth::logout_and_redirect(nav);
                         },
                         {crate::utils::i18n::t("auth.sign_out")}
                     }

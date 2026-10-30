@@ -3,7 +3,6 @@ use dioxus::prelude::*;
 use crate::components::theme::{get_resolved_theme, set_theme};
 use crate::components::ui::icons::Icon;
 use crate::components::ui::notifications::{self, NOTIFICATIONS, NotificationSeverity};
-use crate::router::Route;
 use crate::utils::i18n::{Language, current_language, set_language, t};
 
 /// Pre-computed header identity, derived once from localStorage.
@@ -204,10 +203,7 @@ pub fn AppHeader(collapsed: Signal<bool>, mobile_sidebar_open: Signal<bool>) -> 
                             button {
                                 class: "app-header-logout inline-flex h-9 items-center justify-center rounded-lg border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent hover:text-accent-foreground touch-target",
                                 onclick: move |_| {
-                                    spawn(async move {
-                                        let _ = crate::api::auth::logout().await;
-                                        nav.push(Route::LoginPage {});
-                                    });
+                                    crate::api::auth::logout_and_redirect(nav);
                                 },
                                 {t("nav.logout")}
                             }
