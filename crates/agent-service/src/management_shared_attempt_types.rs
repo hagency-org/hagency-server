@@ -157,7 +157,9 @@ impl SharedAttemptCommand {
             || !positive(self.expires_at_ms)
             || self.expires_at_ms <= self.issued_at_ms
             || self.expires_at_ms - self.issued_at_ms > 30_000
-            || self.expires_at_ms > original.reserve_command.expires_at_ms
+            // Pool Agents: capped by the pool chain's lifetime at issuance (E8).
+            || (original.reserve_command.pool_grant.is_none()
+                && self.expires_at_ms > original.reserve_command.expires_at_ms)
             || serde_json::to_vec(self).map_or(true, |v| v.len() > MAX_ATTEMPT_BYTES)
         {
             return Err(invalid());

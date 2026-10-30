@@ -438,7 +438,11 @@ pub(super) async fn seed_for_project(
         .bind::<Text,_>(&p.contribution_id).bind::<BigInt,_>(now).load::<GrantRow>(db).await?;
     for g in grants {
         let r: NativeGrantReceipt = decode(&g.receipt)?;
-        if !r.eligible_managers.contains(&p.manager_mxid) || !grant_live(db, &g, now).await? {
+        // Successor grants carry pool Agents only, never project allocations.
+        if r.succession.is_some()
+            || !r.eligible_managers.contains(&p.manager_mxid)
+            || !grant_live(db, &g, now).await?
+        {
             continue;
         }
         if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_allocations WHERE project_id=$1 AND grant_id=$2) AS matched").bind::<Text,_>(id).bind::<Text,_>(&g.id).get_result::<Flag>(db).await?.matched {continue;}
@@ -571,6 +575,43 @@ pub(super) async fn release_for_project(
         release(db, p, policy, &a.id, now).await?;
     }
     Ok(())
+}
+#[derive(QueryableByName)]
+struct ChainLink {
+    #[diesel(sql_type=Text)]
+    id: String,
+    #[diesel(sql_type=BigInt)]
+    expires_at_ms: i64,
+    #[diesel(sql_type=BigInt)]
+    period_end_ms: i64,
+}
+/// End of the contiguous run of active grants of `effective`'s chain: a
+/// renewal that starts exactly when the current grant's month ends extends it.
+pub(super) async fn chain_until(db: &mut AsyncPgConnection, effective: &str) -> Result<i64> {
+    const LINK: &str = "SELECT id,expires_at_ms,(receipt::jsonb->>'periodEndMs')::bigint AS period_end_ms FROM hagency_agent_v1.management_resource_grants";
+    let mut current = sql_query(format!("{LINK} WHERE id=$1")).bind::<Text,_>(effective).get_result::<ChainLink>(db).await.map_err(hidden)?;
+    let mut until = current.expires_at_ms;
+    for _ in 0..24 {
+        if current.expires_at_ms != current.period_end_ms {
+            break;
+        }
+        let next = sql_query(format!("{LINK} WHERE predecessor_grant_id=$1 AND state='active' AND succession='renewal' AND period_start_ms=$2"))
+            .bind::<Text,_>(&current.id).bind::<BigInt,_>(current.period_end_ms).get_result::<ChainLink>(db).await.optional()?;
+        let Some(next) = next else { break };
+        until = next.expires_at_ms;
+        current = next;
+    }
+    Ok(until)
+}
+/// The active renewal of `grant` that has not started yet, if any.
+pub(super) async fn scheduled_renewal(
+    db: &mut AsyncPgConnection,
+    grant: &str,
+    now: i64,
+) -> Result<Option<ResourceGrantView>> {
+    let row = sql_query("SELECT * FROM hagency_agent_v1.management_resource_grants WHERE predecessor_grant_id=$1 AND state='active' AND succession='renewal' AND period_start_ms>$2")
+        .bind::<Text,_>(grant).bind::<BigInt,_>(now).get_result::<GrantRow>(db).await.optional()?;
+    row.map(|row| grant_view(&row, now)).transpose()
 }
 pub(super) async fn retire_grant(
     db: &mut AsyncPgConnection,

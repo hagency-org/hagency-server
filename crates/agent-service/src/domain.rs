@@ -388,6 +388,12 @@ pub struct DomainStore {
 }
 
 impl DomainStore {
+    /// [management] enable_pool_grant_succession: a reserved pool Agent's
+    /// lifetime follows its pool's capacity chain instead of its reserve
+    /// command's expiry. Applied to every database session of this store.
+    pub fn set_pool_grant_succession(&self, enabled: bool) {
+        self.db.set_pool_chain_lifetime(enabled);
+    }
     /// Trusted Appservice existence query; cannot allocate an ownerless puppet.
     pub async fn known_puppet(&self, mxid: &str) -> Result<bool> {
         let mut db = self.db.lock().await?;

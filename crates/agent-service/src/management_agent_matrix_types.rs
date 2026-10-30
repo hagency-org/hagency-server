@@ -48,7 +48,9 @@ impl ManagedAgentMatrixChallenge {
             || !(1..=MAX_EXACT).contains(&self.issued_at_ms)
             || self.expires_at_ms <= self.issued_at_ms
             || self.expires_at_ms - self.issued_at_ms > 30_000
-            || self.expires_at_ms > self.reserve_command.expires_at_ms
+            // Pool Agents: capped by the pool chain's lifetime at issuance (E8).
+            || (self.reserve_command.pool_grant.is_none()
+                && self.expires_at_ms > self.reserve_command.expires_at_ms)
         {
             return Err(Error::Invalid("invalid_agent_matrix_challenge"));
         }

@@ -131,6 +131,20 @@ pub(super) async fn command_live(
         && allocations::chain_contains(db, &original.grant_id, &current.id).await?)
 }
 
+/// How long a reserved, authorized Agent keeps its authority (see
+/// `executor::reserve_lifetime`), never past its effective grant's chain.
+async fn authority_until(db: &mut AsyncPgConnection, r: &Row, now: i64) -> Result<Option<i64>> {
+    let Some(intent) = sql_query("SELECT payload FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1")
+        .bind::<Text,_>(&r.id).get_result::<AgentPerson>(db).await.optional()? else { return Ok(None) };
+    let c: ManagedAgentReserveCommand = decode(&intent.payload)?;
+    let effective = match effective_grant(db, r, now).await {
+        Ok(g) => g,
+        Err(Error::Conflict(_) | Error::NotFound(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let lifetime = super::executor::reserve_lifetime(db, &c, now).await?;
+    Ok(Some(lifetime.min(allocations::chain_until(db, &effective.id).await?)))
+}
 async fn view_pool(
     db: &mut AsyncPgConnection,
     id: &str,
@@ -174,6 +188,11 @@ async fn view_pool(
         r.state.as_str(),
         "pending_approval" | "approved_waiting_executor"
     );
+    let authority_until = if r.state == "approved_waiting_executor" && blocked.is_none() && reserved(db, &r.id).await? {
+        authority_until(db, &r, now).await?
+    } else {
+        None
+    };
     let progress=sql_query("SELECT json_build_object('assignment',a.id,'membership',m.state,'runtime',CASE WHEN x.permanent_fence THEN 'cleanup_pending' ELSE x.state END)::text AS payload FROM hagency_agent_v1.management_shared_assignments a LEFT JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id LEFT JOIN LATERAL (SELECT state,permanent_fence FROM hagency_agent_v1.management_shared_runtimes WHERE assignment_id=a.id ORDER BY created_at_ms DESC,id DESC LIMIT 1) x ON true WHERE a.request_id=$1").bind::<Text,_>(&r.id).get_result::<AgentPerson>(db).await.optional()?.map(|r|decode::<Value>(&r.payload)).transpose()?.unwrap_or(Value::Null);
     let reservation=sql_query("SELECT w.receipt AS payload FROM hagency_agent_v1.management_agent_executor_commands w JOIN hagency_agent_v1.management_agent_intents i ON i.id=w.intent_id WHERE i.request_id=$1 AND w.operation='agent.reserve' AND w.receipt IS NOT NULL").bind::<Text,_>(&r.id).get_result::<AgentPerson>(db).await.optional()?.map(|r|decode::<Value>(&r.payload)).transpose()?.unwrap_or(Value::Null);
     Ok(PoolAgentRequest {
@@ -205,6 +224,7 @@ async fn view_pool(
             && p.user_id == r.administrator_user_id,
         can_cancel: open && p.user_id == r.manager_user_id,
         can_stop_supply: open && p.user_id == r.administrator_user_id,
+        authority_until_ms: authority_until,
         blocking_reason: blocked,
     })
 }
@@ -271,10 +291,16 @@ impl DomainStore {
                 let grant=allocations::live_grant_for_pool(db,&c.id,now).await?;
                 let eligible=grant.as_ref().is_some_and(|g|g.receipt.eligible_managers.contains(&p.mxid));
                 let visible=eligible || row.owner_user_id==p.user_id;
+                let renewal=match grant.as_ref().filter(|_|visible) {
+                    Some(g)=>allocations::scheduled_renewal(db,&g.id,now).await?.map(|s|PoolRenewal {period_key:s.receipt.period_key,period_start_ms:s.receipt.period_start_ms,published_tokens:s.receipt.allocated_tokens,grant_revision:s.receipt.grant_revision}),
+                    None=>None,
+                };
                 items.push(ResourcePool {id:c.id,label:c.label,revision:c.revision,owner_mxid:c.owner_mxid,
                     runtime:c.runtime,capabilities:c.capabilities,
                     grant_revision:grant.as_ref().filter(|_|visible).map(|g|g.receipt.grant_revision),
                     published_tokens:grant.as_ref().filter(|_|visible).map(|g|g.receipt.allocated_tokens),
+                    current_period_end_ms:grant.as_ref().filter(|_|visible).map(|g|g.receipt.period_end_ms),
+                    renewal,
                     native_available_tokens:None,can_request:eligible,
                     blocking_reason:if eligible {None} else {Some(if grant.is_some() {"pool_not_shared_with_account"}else{"pool_capacity_unavailable"}.into())}});
             }

@@ -235,4 +235,4 @@ async fn pool_agent_http_is_closed_and_retries_do_not_duplicate_requests() {
 }
 
 #[path = "management_pool_succession_tests.rs"]
-mod succession;
+pub(in crate::management_tests::allocations) mod succession;

@@ -47,6 +47,9 @@ impl App {
         }
     }
     pub fn with_management(mut self, policy: crate::management_types::ManagementPolicy) -> Self {
+        if let Some((domain, _)) = &self.domain {
+            domain.set_pool_grant_succession(policy.pool_grant_succession());
+        }
         self.management = Some(policy);
         self
     }

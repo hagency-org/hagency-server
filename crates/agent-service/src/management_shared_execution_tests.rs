@@ -56,6 +56,47 @@ async fn prepared_pool(durable: bool) -> (Fixture, crate::management_pool_types:
     (f, request, assignment, matrix)
 }
 
+/// A carried pool Agent's activity lease follows its pool's capacity chain:
+/// with chain lifetimes on it outlasts the month its reserve command names.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn carried_pool_agent_activity_lease_follows_the_capacity_chain() {
+    use crate::management_pool_types::DecidePoolAgent;
+    use crate::management_tests::allocations::pool_agents::{self, succession};
+    let mut f=succession::succession_fixture().await;
+    f.policy=f.policy.with_agent_matrix_provisioning(true).with_shared_execution(true).with_shared_successors(true);
+    let pool=admitted(&f).await;
+    // The root's month ends in 20 s; its renewal follows without a gap.
+    let (root,renewal)=succession::seed_short_chain(&f,&pool,&f.outsider.p,20_000).await;
+    let request=f.domain.request_pool_agent(&f.outsider.p,&f.policy,&pool.contribution.id,pool_agents::input(&pool,"chain_runtime")).await.unwrap();
+    f.domain.decide_pool_agent(&f.owner.p,&f.policy,&request.id,DecidePoolAgent {command_id:"chain_runtime_approve".into(),expected_revision:1,decision:Decision::Approve}).await.unwrap();
+    let delivery=poll(&f).await;
+    let assignment=f.domain.record_managed_agent_executor_result(&f.owner.p,&f.policy,id(&delivery),reservation(&delivery)).await.unwrap().assignment.unwrap();
+    let check=f.domain.poll_managed_agent_matrix(&f.owner.p,&f.policy,Default::default()).await.unwrap().unwrap();
+    // Matrix checks are capped by the chain lifetime, not the reserve expiry.
+    assert!(check.command.expires_at_ms<=renewal.period_end_ms);
+    let observation=ManagedAgentMatrixObservation {version:1,command_id:check.command.command_id.clone(),command_digest:check.command_digest.clone(),assignment_id:assignment.id.clone(),agent_reservation_id:assignment.agent_reservation_id.clone(),reserve_command_digest:check.command.reserve_command_digest.clone(),reserve_receipt_digest:assignment.reserve_receipt_digest.clone(),observed_ledger_revision:100,eligible:true,reason:None,valid_until_ms:check.command.expires_at_ms};
+    f.domain.record_managed_agent_matrix(&f.owner.p,&f.policy,&check.command.command_id,AgentMatrixResultInput {command_digest:check.command_digest,token:check.token,observation}).await.unwrap();
+    let events=vec![
+        json!({"type":"m.room.create","state_key":"","content":{}}),
+        json!({"type":"m.room.join_rules","state_key":"","content":{"join_rule":"invite"}}),
+        json!({"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"joined"}}),
+        json!({"type":"m.room.guest_access","state_key":"","content":{"guest_access":"forbidden"}}),
+        json!({"type":"m.room.member","state_key":f.outsider.p.mxid,"content":{"membership":"join"}}),
+        json!({"type":"m.room.member","state_key":SERVICE,"content":{"membership":"invite"}}),
+    ];
+    let matrix=matrix_fixture_from_states(HashMap::from([(request.room_id.clone(),events)])).await;
+    f.domain.reconcile_managed_agent_matrix(&assignment.id,&matrix.gateway,&matrix.matrix,Some(&f.policy)).await.unwrap();
+    let runtime=shared_poll(&f).await;
+    assert!(runtime.execution_allowed);
+    assert_eq!(runtime.command.reserve_command.expires_at_ms,root.period_end_ms);
+    let activity=save(&f,&runtime,"qualified",101).await.unwrap().activity.unwrap();
+    // The lease is the usual 30 s session window, past the root's month end:
+    // the renewal already covers that instant.
+    assert!(activity.expires_at_ms>root.period_end_ms,"{} <= {}",activity.expires_at_ms,root.period_end_ms);
+    assert!(activity.expires_at_ms<=renewal.period_end_ms);
+}
+
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn pool_agent_reaches_private_room_and_runtime_without_any_project() {

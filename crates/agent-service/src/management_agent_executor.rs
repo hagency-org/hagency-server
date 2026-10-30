@@ -102,13 +102,48 @@ fn command(w: &Work, server: &str) -> Result<(AgentExecutorCommand, String)> {
     let digest = allocation_digest(&command)?;
     Ok((command, digest))
 }
+/// When an approved Agent's reserve authority ends. With [management]
+/// enable_pool_grant_succession, a reserved pool Agent lives while its pool's
+/// capacity chain continues: through amendments and contiguous renewals of
+/// the grant its command was issued under (E8). Otherwise, and for every
+/// unreserved or project Agent, its reserve command's expiry, as before.
+pub(super) async fn reserve_lifetime(
+    db: &mut AsyncPgConnection,
+    c: &ManagedAgentReserveCommand,
+    now: i64,
+) -> Result<i64> {
+    let Some(grant) = &c.pool_grant else {
+        return Ok(c.expires_at_ms);
+    };
+    #[derive(QueryableByName)]
+    struct Chain {
+        #[diesel(sql_type=Bool)]
+        enabled: bool,
+        #[diesel(sql_type=Bool)]
+        reserved: bool,
+        #[diesel(sql_type=Nullable<Text>)]
+        effective: Option<String>,
+    }
+    let chain=sql_query(format!("SELECT coalesce(current_setting('{}',true),'off')='on' AS enabled,EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands w JOIN hagency_agent_v1.management_agent_intents i ON i.id=w.intent_id WHERE i.request_id=$1 AND w.operation='agent.reserve' AND w.receipt::jsonb->>'state'='reserved') AS reserved,(SELECT g.id FROM hagency_agent_v1.management_resource_grants g WHERE g.contribution_id=$2 AND g.state='active' AND g.period_start_ms<=$3 AND g.expires_at_ms>$3 ORDER BY g.id LIMIT 1) AS effective",crate::database::POOL_CHAIN_LIFETIME))
+        .bind::<Text,_>(&c.request_id).bind::<Text,_>(&grant.contribution_id).bind::<BigInt,_>(now).get_result::<Chain>(db).await?;
+    match chain.effective {
+        Some(effective)
+            if chain.enabled
+                && chain.reserved
+                && super::super::allocations::chain_contains(db, &grant.grant_id, &effective).await? =>
+        {
+            super::super::allocations::chain_until(db, &effective).await
+        }
+        _ => Ok(c.expires_at_ms),
+    }
+}
 async fn live(
     db: &mut AsyncPgConnection,
     w: &Work,
     c: &ManagedAgentReserveCommand,
     now: i64,
 ) -> Result<bool> {
-    if w.intent_state == "fenced" || now >= c.expires_at_ms {
+    if w.intent_state == "fenced" || now >= reserve_lifetime(db, c, now).await? {
         return Ok(false);
     }
     let r = row(db, &w.request_id).await?;
@@ -154,7 +189,7 @@ async fn fence(db: &mut AsyncPgConnection, intent: &str) -> Result<()> {
     sql_query("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE id=$1 AND state<>'fenced'").bind::<Text,_>(intent).execute(db).await?;
     Ok(())
 }
-const POOL_SWEEP: &str = "UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE id IN (SELECT i.id FROM hagency_agent_v1.management_agent_intents i JOIN hagency_agent_v1.management_agent_requests r ON r.id=i.request_id AND r.pool_grant_id IS NOT NULL JOIN hagency_agent_v1.management_resource_grants c ON c.id=i.payload::jsonb->'poolGrant'->>'grantId' JOIN hagency_agent_v1.devices d ON d.id=i.executor_device_id JOIN hagency_agent_v1.sessions ds ON ds.id=d.session_id LEFT JOIN LATERAL (SELECT g.id FROM hagency_agent_v1.management_resource_grants g WHERE g.contribution_id=r.pool_contribution_id AND g.state='active' AND g.period_start_ms<=$3 AND g.expires_at_ms>$3 ORDER BY g.id LIMIT 1) e ON true WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND i.state<>'fenced' AND (r.state<>'approved_waiting_executor' OR (i.payload::jsonb->>'expiresAtMs')::bigint<=$3 OR e.id IS NULL OR d.generation<>i.executor_generation OR d.revoked OR ds.revoked OR (e.id<>c.id AND NOT (EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands w WHERE w.intent_id=i.id AND w.operation='agent.reserve' AND w.receipt::jsonb->>'state'='reserved') AND EXISTS(WITH RECURSIVE up(id,predecessor,depth) AS (SELECT u.id,u.predecessor_grant_id,0 FROM hagency_agent_v1.management_resource_grants u WHERE u.id=e.id UNION ALL SELECT u.id,u.predecessor_grant_id,up.depth+1 FROM hagency_agent_v1.management_resource_grants u JOIN up ON u.id=up.predecessor WHERE up.depth<4096) SELECT 1 FROM up WHERE up.id=c.id)))) ORDER BY i.id LIMIT 64)";
+const POOL_SWEEP: &str = "UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE id IN (SELECT i.id FROM hagency_agent_v1.management_agent_intents i JOIN hagency_agent_v1.management_agent_requests r ON r.id=i.request_id AND r.pool_grant_id IS NOT NULL JOIN hagency_agent_v1.management_resource_grants c ON c.id=i.payload::jsonb->'poolGrant'->>'grantId' JOIN hagency_agent_v1.devices d ON d.id=i.executor_device_id JOIN hagency_agent_v1.sessions ds ON ds.id=d.session_id LEFT JOIN LATERAL (SELECT g.id FROM hagency_agent_v1.management_resource_grants g WHERE g.contribution_id=r.pool_contribution_id AND g.state='active' AND g.period_start_ms<=$3 AND g.expires_at_ms>$3 ORDER BY g.id LIMIT 1) e ON true WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND i.state<>'fenced' AND (r.state<>'approved_waiting_executor' OR ((i.payload::jsonb->>'expiresAtMs')::bigint<=$3 AND NOT (coalesce(current_setting('hagency.pool_chain_lifetime',true),'off')='on' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands x WHERE x.intent_id=i.id AND x.operation='agent.reserve' AND x.receipt::jsonb->>'state'='reserved'))) OR e.id IS NULL OR d.generation<>i.executor_generation OR d.revoked OR ds.revoked OR (e.id<>c.id AND NOT (EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands w WHERE w.intent_id=i.id AND w.operation='agent.reserve' AND w.receipt::jsonb->>'state'='reserved') AND EXISTS(WITH RECURSIVE up(id,predecessor,depth) AS (SELECT u.id,u.predecessor_grant_id,0 FROM hagency_agent_v1.management_resource_grants u WHERE u.id=e.id UNION ALL SELECT u.id,u.predecessor_grant_id,up.depth+1 FROM hagency_agent_v1.management_resource_grants u JOIN up ON u.id=up.predecessor WHERE up.depth<4096) SELECT 1 FROM up WHERE up.id=c.id)))) ORDER BY i.id LIMIT 64)";
 async fn sweep(db: &mut AsyncPgConnection, p: &Principal, now: i64) -> Result<()> {
     // Pool intents follow their pool's chain. `c` is the command's own grant and
     // `e` the pool's effective grant: a reserved Agent stays while `c` is `e` or

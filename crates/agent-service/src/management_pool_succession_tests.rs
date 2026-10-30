@@ -69,14 +69,71 @@ async fn attempt(f: &Fixture, a: &Admission, root: &ResourceGrantView, receipt: 
         .publish_management_grant_successor(&f.owner.p, &f.policy, &root.id, succeed(a, root, receipt))
         .await
 }
-async fn succession_fixture() -> Fixture {
+pub(in crate::management_tests::allocations) async fn succession_fixture() -> Fixture {
     let mut f = isolated_fixture().await;
     f.policy = f
         .policy
         .with_agent_admission(true)
         .with_agent_executor(true)
         .with_pool_grant_succession(true);
+    f.domain.set_pool_grant_succession(true);
     f
+}
+/// A v2 root whose period ends `boundary_ms` from now and its contiguous v3
+/// renewal for the following hour: a month boundary a test can wait for.
+pub(in crate::management_tests::allocations) async fn seed_short_chain(
+    f: &Fixture,
+    a: &Admission,
+    manager: &Principal,
+    boundary_ms: i64,
+) -> (NativeGrantReceipt, NativeGrantReceipt) {
+    let now = crate::api::now_ms();
+    let mut root = grant_input(f, a, manager).await.receipt;
+    root.version = 2;
+    root.admission_request_id = Some(a.request.id.clone());
+    root.period_start_ms = now - 3_600_000;
+    root.period_end_ms = now + boundary_ms;
+    root.delegation_expires_at_ms = root.period_end_ms;
+    let mut renewal = root.clone();
+    renewal.version = 3;
+    renewal.grant_id = format!("mgs_{}", &secret_token()[..32]);
+    renewal.grant_revision = 2;
+    renewal.allocated_tokens = 900_000;
+    renewal.ledger_revision = 11;
+    renewal.period_key = format!("{}-{:02}", &root.period_key[..4], root.period_key[5..].parse::<u8>().unwrap() % 12 + 1);
+    renewal.period_start_ms = root.period_end_ms;
+    renewal.period_end_ms = root.period_end_ms + 3_600_000;
+    renewal.delegation_expires_at_ms = renewal.period_end_ms;
+    renewal.succession = Some(GrantSuccession {
+        kind: "renewal".into(),
+        predecessor_grant_id: root.grant_id.clone(),
+        predecessor_receipt_digest: allocation_digest(&root).unwrap(),
+        carried_children: 0,
+        carried_retained_tokens: 0,
+    });
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    for (r, predecessor) in [(&root, None), (&renewal, Some(root.grant_id.clone()))] {
+        r.validate("example.test").unwrap();
+        sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms,chain_root_id,predecessor_grant_id,succession,period_start_ms) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$11,$12,$13,$14)")
+            .bind::<Text, _>(&r.grant_id)
+            .bind::<Text, _>(&a.contribution.id)
+            .bind::<Text, _>(&f.owner.p.user_id)
+            .bind::<Text, _>(f.owner.p.device_id.as_ref().unwrap())
+            .bind::<BigInt, _>(f.owner.p.device_generation.unwrap())
+            .bind::<Text, _>(serde_json::to_string(r).unwrap())
+            .bind::<Text, _>(allocation_digest(r).unwrap())
+            .bind::<Text, _>(&r.period_key)
+            .bind::<BigInt, _>(r.delegation_expires_at_ms.min(r.period_end_ms))
+            .bind::<BigInt, _>(now)
+            .bind::<Text, _>(&root.grant_id)
+            .bind::<Nullable<Text>, _>(predecessor.clone())
+            .bind::<Nullable<Text>, _>(predecessor.as_ref().map(|_| "renewal"))
+            .bind::<BigInt, _>(r.period_start_ms)
+            .execute(&mut db)
+            .await
+            .unwrap();
+    }
+    (root, renewal)
 }
 /// A v2 pool grant, as `pool` publishes it, with its server view.
 async fn pool_grant(f: &Fixture, manager: &Principal) -> (Admission, ResourceGrantView) {
@@ -712,6 +769,113 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn renewal_route_honours_its_window_period_and_single_successor() {
+    let f = succession_fixture().await;
+    let (a, root) = pool_grant(&f, &f.outsider.p).await;
+    // Same month as a renewal: the wrong period, whatever today's date.
+    let same_month = successor(&root, "renewal", 900_000, 20);
+    assert_eq!(code(attempt(&f, &a, &root, same_month).await), "invalid_grant_period");
+    let mut next = successor(&root, "renewal", 900_000, 21);
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    #[derive(QueryableByName)]
+    struct Next {
+        #[diesel(sql_type = Text)]
+        key: String,
+        #[diesel(sql_type = BigInt)]
+        end_ms: i64,
+    }
+    let month = sql_query("SELECT to_char(to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC','YYYY-MM') AS key,(extract(epoch FROM ((date_trunc('month',to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'))*1000)::bigint AS end_ms")
+        .bind::<BigInt, _>(root.receipt.period_end_ms).get_result::<Next>(&mut db).await.unwrap();
+    next.period_key = month.key.clone();
+    next.period_start_ms = root.receipt.period_end_ms;
+    next.period_end_ms = month.end_ms;
+    next.delegation_expires_at_ms = month.end_ms;
+    let now = crate::api::now_ms();
+    let in_window = now >= root.receipt.period_end_ms - RENEWAL_WINDOW_MS;
+    let result = attempt(&f, &a, &root, next.clone()).await;
+    if !in_window {
+        assert_eq!(code(result), "grant_succession_window_closed");
+        return;
+    }
+    // In the last seven days of the month the renewal is scheduled.
+    let renewal = result.unwrap();
+    assert_eq!((renewal.state.as_str(), renewal.receipt.period_key.as_str()), ("active", month.key.as_str()));
+    assert_eq!(grant_view(&f, &root.id).await.state, "active");
+    assert_eq!(live_count(&f, &a.contribution.id, now).await, 1);
+    assert_eq!(live_count(&f, &a.contribution.id, next.period_start_ms).await, 1);
+    let entry = pool_entry(&f, &a.contribution.id).await;
+    assert_eq!((entry.grant_revision, entry.current_period_end_ms), (Some(1), Some(root.receipt.period_end_ms)));
+    let scheduled = entry.renewal.unwrap();
+    assert_eq!((scheduled.period_key.as_str(), scheduled.published_tokens, scheduled.grant_revision, scheduled.period_start_ms), (month.key.as_str(), 900_000, 2, root.receipt.period_end_ms));
+    // One successor per grant: neither a second renewal nor an amendment.
+    let mut again = next.clone();
+    again.grant_id = format!("mgs_{}", &secret_token()[..32]);
+    again.ledger_revision = 22;
+    assert_eq!(code(attempt(&f, &a, &root, again).await), "grant_successor_exists");
+    assert_eq!(code(attempt(&f, &a, &root, successor(&root, "amendment", 800_000, 23)).await), "grant_successor_exists");
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn carried_agent_crosses_a_renewal_boundary_only_with_chain_lifetimes() {
+    let f = succession_fixture().await;
+    let a = admitted(&f).await;
+    let (root, renewal) = seed_short_chain(&f, &a, &f.outsider.p, 8_000).await;
+    let r = request_agent(&f, &a, "boundary", 100, 1).await;
+    decide(&f, &r, true).await.unwrap();
+    let assignment = reserve(&f, &r.id, 100).await;
+    let d = f.domain.pool_agent_request(&f.outsider.p, &r.id).await.unwrap();
+    // Before the boundary the root is effective and the renewal is scheduled.
+    assert_eq!(live_count(&f, &a.contribution.id, crate::api::now_ms()).await, 1);
+    assert_eq!(d.authority_until_ms, Some(renewal.period_end_ms));
+    let pool = pool_entry(&f, &a.contribution.id).await;
+    assert_eq!(pool.current_period_end_ms, Some(root.period_end_ms));
+    assert_eq!(pool.renewal.as_ref().map(|r| r.period_start_ms), Some(root.period_end_ms));
+    // The reserve command itself still ends with the root's month.
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let expiry: Count = sql_query("SELECT (payload::jsonb->>'expiresAtMs')::bigint AS count FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1")
+        .bind::<Text, _>(&r.id).get_result(&mut db).await.unwrap();
+    assert_eq!(expiry.count, root.period_end_ms);
+    tokio::time::sleep(std::time::Duration::from_millis((root.period_end_ms - crate::api::now_ms()).max(0) as u64 + 1_500)).await;
+    // After it the renewal is the effective grant and the Agent carries on:
+    // the sweep does not fence it and its exact command is still live.
+    assert_eq!(live_count(&f, &a.contribution.id, crate::api::now_ms()).await, 1);
+    assert_eq!(pool_entry(&f, &a.contribution.id).await.grant_revision, Some(2));
+    let _ = f.domain.poll_managed_agent_executor(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap();
+    assert_ne!(intent_state(&f, &r.id).await, "fenced");
+    let current = f.domain.managed_agent_assignment(&f.owner.p, &f.policy, &r.id).await.unwrap().unwrap();
+    assert_eq!((current.id.as_str(), current.state.as_str()), (assignment.id.as_str(), "pending_native"));
+    let d = f.domain.pool_agent_request(&f.outsider.p, &r.id).await.unwrap();
+    assert_eq!((d.blocking_reason, d.authority_until_ms), (None, Some(renewal.period_end_ms)));
+    // Without chain lifetimes the same Agent ends with its reserve command,
+    // exactly as before: the next liveness check fences it.
+    f.domain.set_pool_grant_succession(false);
+    let fenced = f.domain.managed_agent_assignment(&f.owner.p, &f.policy, &r.id).await.unwrap().unwrap();
+    assert_eq!(fenced.state, "fenced");
+    assert_eq!(intent_state(&f, &r.id).await, "fenced");
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn chain_lifetimes_off_keep_the_reserve_expiry_and_the_sweep_fences_at_the_boundary() {
+    let f = succession_fixture().await;
+    f.domain.set_pool_grant_succession(false);
+    let a = admitted(&f).await;
+    let (root, renewal) = seed_short_chain(&f, &a, &f.outsider.p, 6_000).await;
+    let r = request_agent(&f, &a, "flag_off", 100, 1).await;
+    decide(&f, &r, true).await.unwrap();
+    reserve(&f, &r.id, 100).await;
+    let d = f.domain.pool_agent_request(&f.outsider.p, &r.id).await.unwrap();
+    assert_eq!(d.authority_until_ms, Some(root.period_end_ms));
+    assert!(renewal.period_end_ms > root.period_end_ms);
+    tokio::time::sleep(std::time::Duration::from_millis((root.period_end_ms - crate::api::now_ms()).max(0) as u64 + 1_500)).await;
+    // The executor sweep alone fences the expired reservation.
+    let _ = f.domain.poll_managed_agent_executor(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap();
+    assert_eq!(intent_state(&f, &r.id).await, "fenced");
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn revoking_a_superseded_grant_withdraws_its_chain_with_and_without_parent_settlement() {
     for settlement in [false, true] {
         let mut f = succession_fixture().await;
@@ -740,4 +904,79 @@ async fn revoking_a_superseded_grant_withdraws_its_chain_with_and_without_parent
         assert_eq!(closes(amended.id.clone()).await, i64::from(settlement));
         assert_eq!(closes(root.id.clone()).await, 0);
     }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn lowering_the_limit_to_the_holds_refuses_top_ups_but_keeps_agents() {
+    use crate::management_agent_budget_types::RequestAgentTopUp;
+    let mut f = succession_fixture().await;
+    f.policy = f.policy.with_agent_budget_deltas(true);
+    let (a, root) = pool_grant(&f, &f.outsider.p).await;
+    let r = request_agent(&f, &a, "topped", 100, 1).await;
+    decide(&f, &r, true).await.unwrap();
+    let assignment = reserve(&f, &r.id, 100).await;
+    // The server knows 100 tokens are held: the limit can go down to exactly that.
+    amend(&f, &a, &root, 100, 20).await;
+    let digest = allocation_digest(&json!({"version":1,"originalReserveReceiptDigest":assignment.reserve_receipt_digest,"budgetRevision":1,"effectiveCeilingTokens":100})).unwrap();
+    let topup = RequestAgentTopUp {
+        owner_funded: false,
+        approve_immediately: false,
+        command_id: "topup_above_lowered_limit".into(),
+        expected_request_revision: 2,
+        expected_assignment_generation: 1,
+        expected_budget_revision: 1,
+        expected_budget_digest: digest,
+        add_tokens: 50,
+        purpose: "More work".into(),
+    };
+    assert_eq!(code(f.domain.request_agent_topup(&f.outsider.p, &f.policy, &r.id, topup).await), "agent_budget_exceeds_pool");
+    // The refusal fences nothing: the Agent keeps its reservation.
+    assert_ne!(intent_state(&f, &r.id).await, "fenced");
+    let current = f.domain.managed_agent_assignment(&f.owner.p, &f.policy, &r.id).await.unwrap().unwrap();
+    assert_eq!(current.state, "pending_native");
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn renewal_before_the_last_week_of_its_predecessor_is_refused() {
+    let f = succession_fixture().await;
+    let a = admitted(&f).await;
+    // A live root whose month ends at the start of the month after next: its
+    // renewal window opens seven days before that, never today.
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    #[derive(QueryableByName)]
+    struct Months {
+        #[diesel(sql_type = BigInt)]
+        boundary: i64,
+        #[diesel(sql_type = BigInt)]
+        after: i64,
+        #[diesel(sql_type = Text)]
+        key: String,
+    }
+    let m = sql_query("SELECT (extract(epoch FROM ((date_trunc('month',clock_timestamp() AT TIME ZONE 'UTC') + interval '2 month') AT TIME ZONE 'UTC'))*1000)::bigint AS boundary,(extract(epoch FROM ((date_trunc('month',clock_timestamp() AT TIME ZONE 'UTC') + interval '3 month') AT TIME ZONE 'UTC'))*1000)::bigint AS after,to_char(clock_timestamp() AT TIME ZONE 'UTC' + interval '2 month','YYYY-MM') AS key")
+        .get_result::<Months>(&mut db).await.unwrap();
+    let mut root = grant_input(&f, &a, &f.outsider.p).await.receipt;
+    root.version = 2;
+    root.admission_request_id = Some(a.request.id.clone());
+    root.period_start_ms = crate::api::now_ms() - 3_600_000;
+    root.period_end_ms = m.boundary;
+    root.delegation_expires_at_ms = m.boundary;
+    sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms,chain_root_id,period_start_ms) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$1,$11)")
+        .bind::<Text, _>(&root.grant_id).bind::<Text, _>(&a.contribution.id).bind::<Text, _>(&f.owner.p.user_id)
+        .bind::<Text, _>(f.owner.p.device_id.as_ref().unwrap()).bind::<BigInt, _>(f.owner.p.device_generation.unwrap())
+        .bind::<Text, _>(serde_json::to_string(&root).unwrap()).bind::<Text, _>(allocation_digest(&root).unwrap())
+        .bind::<Text, _>(&root.period_key).bind::<BigInt, _>(m.boundary).bind::<BigInt, _>(crate::api::now_ms())
+        .bind::<BigInt, _>(root.period_start_ms).execute(&mut db).await.unwrap();
+    let view = grant_view(&f, &root.grant_id).await;
+    let mut next = successor(&view, "renewal", 900_000, 20);
+    next.period_key = m.key;
+    next.period_start_ms = m.boundary;
+    next.period_end_ms = m.after;
+    next.delegation_expires_at_ms = m.after;
+    assert_eq!(code(attempt(&f, &a, &view, next.clone()).await), "grant_succession_window_closed");
+    // A month that does not start where the predecessor's ends is the wrong period.
+    let mut gap = next.clone();
+    gap.period_start_ms += 1;
+    assert_eq!(code(attempt(&f, &a, &view, gap).await), "invalid_grant_period");
 }

@@ -71,6 +71,21 @@ pub struct ResourcePool {
     pub native_available_tokens: Option<i64>,
     pub can_request: bool,
     pub blocking_reason: Option<String>,
+    /// End of the effective grant's UTC month.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_period_end_ms: Option<i64>,
+    /// The effective grant's scheduled renewal for the next UTC month.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renewal: Option<PoolRenewal>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolRenewal {
+    pub period_key: String,
+    pub period_start_ms: i64,
+    pub published_tokens: i64,
+    pub grant_revision: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -99,4 +114,9 @@ pub struct PoolAgentRequest {
     pub can_cancel: bool,
     pub can_stop_supply: bool,
     pub blocking_reason: Option<String>,
+    /// When a reserved Agent's authority ends: the end of its pool's capacity
+    /// chain with chain lifetimes on, else its reserve expiry. Absent when the
+    /// Agent is not reserved or no longer authorized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_until_ms: Option<i64>,
 }

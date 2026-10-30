@@ -165,7 +165,7 @@ async fn fresh_base(
     if !live || !cx.roles.active
         || b.assignment_state == "fenced"
         || r.state != "approved_waiting_executor"
-        || now >= c.expires_at_ms
+        || now >= super::executor::reserve_lifetime(db, c, now).await?
         || cx.grant.executor_device_id != b.device_id
         || cx.grant.executor_generation != b.generation
         || cx.grant.resource_revision != c.resource_revision
@@ -490,7 +490,7 @@ impl DomainStore {
 if pending(db,id).await?{return Err(Error::Conflict("agent_topup_pending"))}if !input.owner_funded {fits_parent(db,&r,&cx,&h,input.add_tokens,&self.server).await?;}
 if h.ceiling.checked_add(input.add_tokens).is_none_or(|v|v>MAX_EXACT){return Err(Error::Invalid("invalid_agent_budget"))}
  let full=sql_query("SELECT count(*)>=10000 AS matched FROM hagency_agent_v1.management_agent_topups WHERE manager_user_id=$1").bind::<Text,_>(&p.user_id).get_result::<Flag>(db).await?.matched;if full{return Err(Error::Conflict("agent_topup_capacity"))}
- let target=format!("mat_{}",entity_id()?);let expires=(now+TTL).min(cx.grant.period_end_ms).min(cx.grant.delegation_expires_at_ms).min(c.expires_at_ms);
+ let target=format!("mat_{}",entity_id()?);let expires=(now+TTL).min(cx.grant.period_end_ms).min(cx.grant.delegation_expires_at_ms).min(super::executor::reserve_lifetime(db,&c,now).await?);
  sql_query("INSERT INTO hagency_agent_v1.management_agent_topups(id,request_id,assignment_id,manager_user_id,payload,digest,expected_budget_revision,expected_budget_digest,expected_ceiling_tokens,add_tokens,purpose,state,created_at_ms,expires_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',$12,$13)").bind::<Text,_>(&target).bind::<Text,_>(id).bind::<Text,_>(&b.assignment_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(wire(&input)?).bind::<Text,_>(&d).bind::<BigInt,_>(h.revision).bind::<Text,_>(&h.digest).bind::<BigInt,_>(h.ceiling).bind::<BigInt,_>(input.add_tokens).bind::<Text,_>(&input.purpose).bind::<BigInt,_>(now).bind::<BigInt,_>(expires).execute(db).await?;
  let a=AgentTopUpAck{command_id:input.command_id.clone(),operation:"agent.topup.request".into(),top_up_id:target,applied_revision:1};super::receipt(db,p,&input.command_id,"agent.topup.request",&d,&a).await?;Self::audit(db,p,"agent.topup.request",&a.top_up_id,now).await?;
  // The owner already confirmed funding and approval together. Persist both receipts

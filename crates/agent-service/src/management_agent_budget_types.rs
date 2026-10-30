@@ -191,7 +191,9 @@ impl AgentBudgetCommand {
                 .expected_ceiling_tokens
                 .checked_add(self.add_tokens)
                 .is_none_or(|v| v > MAX_EXACT)
-            || self.expires_at_ms > self.reserve_command.expires_at_ms
+            // Pool Agents: capped by the pool chain's lifetime at issuance (E8).
+            || (self.reserve_command.pool_grant.is_none()
+                && self.expires_at_ms > self.reserve_command.expires_at_ms)
             || self.expires_at_ms <= self.issued_at_ms
             || [
                 &self.top_up_request_digest,

@@ -114,7 +114,7 @@ pub(super) async fn retainable(
     if allocation_digest(&c)? != w.digest
         || c.command_id != w.intent_id
         || w.intent_state == "fenced"
-        || c.expires_at_ms <= now
+        || reserve_lifetime(db, &c, now).await? <= now
     {
         return Ok(false);
     }

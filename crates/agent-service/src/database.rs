@@ -1,19 +1,39 @@
 //! A cancelled request must never return a connection with an open transaction.
 use crate::{Error, Result};
-use diesel_async::{AsyncConnection, AsyncPgConnection, pooled_connection::PoolableConnection};
+use diesel_async::{
+    AsyncConnection, AsyncPgConnection, SimpleAsyncConnection, pooled_connection::PoolableConnection,
+};
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::sync::{Mutex, MutexGuard};
+
+/// Session setting read by SQL and by pool Agent lifetime checks: a reserved
+/// pool Agent lives while its pool's capacity chain continues.
+pub(crate) const POOL_CHAIN_LIFETIME: &str = "hagency.pool_chain_lifetime";
+const UNKNOWN: u8 = 0;
+const OFF: u8 = 1;
+const ON: u8 = 2;
 
 pub(crate) struct Database {
     connection: Mutex<Option<AsyncPgConnection>>,
     url: String,
+    /// Process configuration ([management] enable_pool_grant_succession).
+    pool_chain_lifetime: AtomicBool,
+    /// The value applied to the current connection's session; reset whenever
+    /// the connection is replaced. Only changed while `connection` is locked.
+    applied: AtomicU8,
 }
 impl Database {
     pub(crate) fn new(connection: AsyncPgConnection, url: &str) -> Self {
         Self {
             connection: Mutex::new(Some(connection)),
             url: url.into(),
+            pool_chain_lifetime: AtomicBool::new(false),
+            applied: AtomicU8::new(UNKNOWN),
         }
+    }
+    pub(crate) fn set_pool_chain_lifetime(&self, enabled: bool) {
+        self.pool_chain_lifetime.store(enabled, Ordering::Release);
     }
     pub(crate) async fn lock(&self) -> Result<Guard<'_>> {
         let mut connection = self.connection.lock().await;
@@ -28,11 +48,28 @@ impl Database {
             .map_err(|_| Error::Unavailable("database_reconnect_timeout"))?
             .map_err(|_| Error::Unavailable("database_unavailable"))?;
             *connection = Some(db);
+            self.applied.store(UNKNOWN, Ordering::Release);
             tracing::info!(
                 stage = "database_reconnected",
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "Replaced unusable database connection"
             );
+        }
+        // A fresh or replaced connection starts without the setting, which
+        // every reader treats as off: the shorter, pre-succession lifetime.
+        let wanted = if self.pool_chain_lifetime.load(Ordering::Acquire) { ON } else { OFF };
+        if self.applied.load(Ordering::Acquire) != wanted {
+            let statement = format!(
+                "SET {POOL_CHAIN_LIFETIME} TO '{}'",
+                if wanted == ON { "on" } else { "off" }
+            );
+            connection
+                .as_mut()
+                .expect("connected guard")
+                .batch_execute(&statement)
+                .await
+                .map_err(|_| Error::Unavailable("database_unavailable"))?;
+            self.applied.store(wanted, Ordering::Release);
         }
         Ok(Guard { connection })
     }
@@ -76,7 +113,6 @@ fn discard_broken_connection(connection: &mut Option<AsyncPgConnection>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use diesel_async::SimpleAsyncConnection;
 
     #[tokio::test]
     #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]

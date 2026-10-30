@@ -223,6 +223,7 @@ pub(super) async fn commit_start(
     now: i64,
 ) -> Result<SharedAttemptDelivery> {
     let (previous, original) = prepared;
+    let lifetime = reserve_lifetime(db, &original.reserve_command, now).await?;
     let c = SharedAttemptCommand {
         web_search: input.web_search, tool_policy: input.tool_policy.clone(),
         version: 2,
@@ -242,7 +243,7 @@ pub(super) async fn commit_start(
         budget_observation: input.budget_observation.clone(),
         start_intent_id: input.start_intent_id.clone(),
         issued_at_ms: now,
-        expires_at_ms: (now + 30000).min(original.reserve_command.expires_at_ms),
+        expires_at_ms: (now + 30000).min(lifetime),
         original_runtime_command: original,
     };
     c.validate(server)?;

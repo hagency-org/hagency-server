@@ -363,7 +363,7 @@ async fn mint_activity(
     let expiry = if r.activity_epoch == 0 {
         until(db, p, now)
             .await?
-            .min(c.reserve_command.expires_at_ms)
+            .min(reserve_lifetime(db, &c.reserve_command, now).await?)
     } else {
         r.activity_until_ms
     };
@@ -434,7 +434,8 @@ impl DomainStore {
                 let codex=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests ar LEFT JOIN hagency_agent_v1.management_projects p ON p.id=ar.plan_id JOIN hagency_agent_v1.management_contributions c ON c.id=COALESCE(ar.pool_contribution_id,p.contribution_id) WHERE ar.id=$1 AND c.runtime='codex') AS matched").bind::<Text,_>(&reserve.request_id).get_result::<Flag>(db).await?.matched;
                 if !codex {continue;}
                 let receipt:ManagedAgentReservationReceipt=decode(w.receipt.as_deref().ok_or(Error::Conflict("agent_reservation_required"))?)?;
-                let c=SharedRuntimeCommand {version:1,capability:SHARED_EXECUTION_CAPABILITY.into(),operation:"agent.execution.provision".into(),command_id:format!("sex_{}",entity_id()?),assignment_id:id.assignment_id,assignment_generation:1,agent_reservation_id:receipt.agent_reservation_id.ok_or(Error::Conflict("agent_reservation_required"))?,reserve_command_digest:w.digest,reserve_receipt_digest:w.receipt_digest.ok_or(Error::Conflict("agent_reservation_required"))?,policy:SHARED_TEXT_POLICY.into(),issued_at_ms:now,expires_at_ms:(now+30000).min(reserve.expires_at_ms),reserve_command:reserve};c.validate(&self.server)?;
+                let lifetime=reserve_lifetime(db,&reserve,now).await?;
+                let c=SharedRuntimeCommand {version:1,capability:SHARED_EXECUTION_CAPABILITY.into(),operation:"agent.execution.provision".into(),command_id:format!("sex_{}",entity_id()?),assignment_id:id.assignment_id,assignment_generation:1,agent_reservation_id:receipt.agent_reservation_id.ok_or(Error::Conflict("agent_reservation_required"))?,reserve_command_digest:w.digest,reserve_receipt_digest:w.receipt_digest.ok_or(Error::Conflict("agent_reservation_required"))?,policy:SHARED_TEXT_POLICY.into(),issued_at_ms:now,expires_at_ms:(now+30000).min(lifetime),reserve_command:reserve};c.validate(&self.server)?;
                 let digest=allocation_digest(&c)?;
                 sql_query("INSERT INTO hagency_agent_v1.management_shared_runtimes(id,assignment_id,payload,digest,created_at_ms,expires_at_ms) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&c.command_id).bind::<Text,_>(&c.assignment_id).bind::<Text,_>(wire(&c)?).bind::<Text,_>(&digest).bind::<BigInt,_>(now).bind::<BigInt,_>(c.expires_at_ms).execute(db).await?;
                 let r=runtime(db,&c.command_id).await?;return Ok(Some(delivery(db,p,policy,&r,&self.server,false,None).await?));
@@ -584,7 +585,7 @@ impl DomainStore {
             if r.last_renewal_id.as_deref()==Some(&input.renewal_id)&&r.last_renewal_epoch==Some(input.authority.epoch) {return activity(&r,input.authority.token);}
             let reused=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_activity_renewals WHERE id=$1) AS matched").bind::<Text,_>(&input.renewal_id).get_result::<Flag>(db).await?.matched;
             if reused {return Err(Error::Conflict("shared_activity_renewal_changed"));}
-            let expiry=until(db,p,now).await?.min(c.reserve_command.expires_at_ms);
+            let expiry=until(db,p,now).await?.min(reserve_lifetime(db,&c.reserve_command,now).await?);
             if r.activity_epoch>=MAX_EXACT {return Err(Error::Conflict("shared_activity_epoch_exhausted"));}
             sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET activity_epoch=activity_epoch+1,activity_until_ms=$2,last_renewal_id=$3,last_renewal_epoch=$4 WHERE id=$1").bind::<Text,_>(&r.id).bind::<BigInt,_>(expiry).bind::<Text,_>(&input.renewal_id).bind::<BigInt,_>(input.authority.epoch).execute(db).await?;
             sql_query("INSERT INTO hagency_agent_v1.management_shared_activity_renewals(id,runtime_id,from_epoch,to_epoch,expires_at_ms,authority_hash) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&input.renewal_id).bind::<Text,_>(&r.id).bind::<BigInt,_>(input.authority.epoch).bind::<BigInt,_>(input.authority.epoch+1).bind::<BigInt,_>(expiry).bind::<Text,_>(hash(&input.authority.token)).execute(db).await?;

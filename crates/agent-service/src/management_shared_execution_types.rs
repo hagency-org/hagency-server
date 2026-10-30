@@ -55,7 +55,10 @@ impl SharedRuntimeCommand {
             || !exact(self.expires_at_ms)
             || self.expires_at_ms <= self.issued_at_ms
             || self.expires_at_ms - self.issued_at_ms > 30_000
-            || self.expires_at_ms > self.reserve_command.expires_at_ms
+            // A pool Agent's lifetime follows its pool's capacity chain; its issuer
+            // caps this command by that lifetime instead (E8).
+            || (self.reserve_command.pool_grant.is_none()
+                && self.expires_at_ms > self.reserve_command.expires_at_ms)
         {
             return Err(invalid());
         }
