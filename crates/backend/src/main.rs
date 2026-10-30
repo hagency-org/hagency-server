@@ -256,10 +256,14 @@ async fn run() -> anyhow::Result<()> {
         .push(frontend.router());
     if let Some(pasion) = &pasion {
         router = Router::new()
-            .push(pasion.router(
-                &conf.pasion.as_ref().unwrap().resources()?,
-                Some(hagency_server::pasion::MOUNT),
-            ))
+            .push(
+                pasion
+                    .router(
+                        &conf.pasion.as_ref().unwrap().resources()?,
+                        Some(hagency_server::pasion::MOUNT),
+                    )
+                    .hoop(hagency_server::pasion::transport_peer),
+            )
             .push(router);
     }
     let mut service = matrix.service(router);
