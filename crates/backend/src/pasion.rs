@@ -11,6 +11,26 @@ use std::path::{Path, PathBuf};
 pub const MOUNT: &str = "/auth/";
 pub const ADMIN_CLIENT_ID: &str = "01KMQPADM1N000000000000000";
 
+/// Pasion currently infers the caller from X-Forwarded-For. The integrated
+/// listener has no trusted proxies, so only its transport peer may supply it.
+/// Keep this hoop on Pasion routes; never trust a client-provided forwarding
+/// chain for account activity or per-requester rate limiting.
+#[salvo::handler]
+pub async fn transport_peer(req: &mut salvo::Request) {
+    let peer = req.remote_addr().ip().map(|ip| ip.to_canonical());
+    for header in ["x-forwarded-for", "forwarded", "x-real-ip"] {
+        req.headers_mut().remove(header);
+    }
+    if let Some(peer) = peer {
+        req.headers_mut().insert(
+            "x-forwarded-for",
+            peer.to_string()
+                .parse()
+                .expect("IP addresses are valid header values"),
+        );
+    }
+}
+
 #[derive(Clone)]
 pub struct PasionConfig {
     pub database_url: String,
@@ -485,6 +505,52 @@ mod tests {
     #[salvo::handler]
     async fn guarded_route_reached(res: &mut salvo::Response) {
         res.status_code(salvo::http::StatusCode::NO_CONTENT);
+    }
+
+    #[salvo::handler]
+    async fn echo_transport_peer(req: &mut salvo::Request, res: &mut salvo::Response) {
+        assert!(req.headers().get("forwarded").is_none());
+        assert!(req.headers().get("x-real-ip").is_none());
+        res.render(
+            req.headers()
+                .get("x-forwarded-for")
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("none")
+                .to_owned(),
+        );
+    }
+    #[tokio::test]
+    async fn embedded_pasion_receives_only_the_canonical_transport_peer() {
+        use salvo::test::{ResponseExt, TestClient};
+        let service = salvo::Service::new(
+            salvo::Router::with_path("auth/{**path}")
+                .hoop(transport_peer)
+                .goal(echo_transport_peer),
+        );
+        for (peer, expected) in [
+            (Some("198.51.100.5:30000"), "198.51.100.5"),
+            (Some("[::ffff:198.51.100.5]:30001"), "198.51.100.5"),
+            (Some("[2001:db8::5]:30002"), "2001:db8::5"),
+            (None, "none"),
+        ] {
+            for forwarded in [None, Some("203.0.113.8, 203.0.113.9"), Some("not-an-ip")] {
+                let mut request = TestClient::get("http://example.test/auth/api/v1/auth/register")
+                    .add_header("forwarded", "for=203.0.113.8", true)
+                    .add_header("x-real-ip", "203.0.113.9", true)
+                    .build();
+                if let Some(forwarded) = forwarded {
+                    request
+                        .headers_mut()
+                        .insert("x-forwarded-for", forwarded.parse().unwrap());
+                }
+                if let Some(peer) = peer {
+                    *request.remote_addr_mut() =
+                        peer.parse::<std::net::SocketAddr>().unwrap().into();
+                }
+                let mut response = service.handle(request).await;
+                assert_eq!(response.take_string().await.unwrap(), expected);
+            }
+        }
     }
 
     async fn admin_guard_fixture() -> (salvo::Service, tokio::task::JoinHandle<()>) {
