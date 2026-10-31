@@ -217,3 +217,17 @@
   to both configuration guides. Existing services and application data were not
   changed. The separate recovery issue Palpo #605 remains open; #606 was closed
   without merging. Hagency test/CI results are recorded on the PR's exact head.
+
+## 2026-10-31 — Recovery closure follow-up
+
+- Integrated newly merged Server main `9b60e63` (typed Diesel/Horme pool safety)
+  before requalifying PR #31. Old-head CI is not final composed-head evidence.
+- Reproduced both Palpo #605 failures independently against official main719f:
+  repeated cross-signing signature uniqueness, then concurrent key-change marker
+  uniqueness with only the signature correction applied. Both corrected passes
+  the same fresh PostgreSQL regression; strict palpo-data Clippy passes.
+- Palpo #618 supersedes the closed/unmerged #606 and was squash-merged as
+  `296f6bdb`, without waiting for broad Palpo CI per operator direction. PR #31
+  now locks all six packages to this official main and retains branch="main".
+  Its final CI, stopped-backup cutover and original-key native recovery checks
+  remain separate acceptance steps; no completed recovery claim is made here.

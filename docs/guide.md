@@ -467,7 +467,7 @@ AGPL licenses; changing the manifests does not relicense that code.
 
 ### Upgrading embedded Palpo
 
-The Palpo main update to `719f6753` includes the 2026-10-30 publication
+The Palpo main update to `296f6bdb` includes the 2026-10-30 publication
 migrations. Before starting the new binary, stop every old Hagency/Palpo process,
 watcher and worker sharing its Matrix database. Take a consistent stopped backup
 of all three databases and private files as described in [RECOVERY.md](RECOVERY.md).
@@ -478,7 +478,7 @@ this update does not support a rolling deployment with mixed binary versions.
 Clients must preserve opaque sync and pagination tokens. Old sync positions remain
 accepted, but resuming a pre-upgrade sync boundary may require a full sync for
 late-published history. Existing history cursors need not be discarded.
-See the [upstream upgrade procedure](https://github.com/palpo-im/palpo/blob/719f6753a49a57a1f951399c21df4312bcf61e5d/docs/UPGRADING.md).
+See the [upstream upgrade procedure](https://github.com/palpo-im/palpo/blob/296f6bdb55919f2bfef5fb7afc322b7c8fbde68d/docs/UPGRADING.md).
 
 The updated outbound transport rejects active forward-proxy configuration and
 proxy environment variables at startup. A configured PostgreSQL TLS requirement

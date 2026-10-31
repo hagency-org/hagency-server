@@ -42,7 +42,7 @@ Detailed contract and actual/failed qualification evidence are in dev-vibe.
 
 # 持久知识
 
-- Palpo main `719f6753` includes the 2026-10-30 publication migrations. Stop all
+- Palpo main `296f6bdb` includes the 2026-10-30 publication migrations. Stop all
   old writers sharing a Matrix database before migration; start one upgraded
   instance first, then the remaining upgraded instances. Preserve opaque sync
   tokens and follow upstream UPGRADING.md. A source lock update does not upgrade

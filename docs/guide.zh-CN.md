@@ -366,7 +366,7 @@ Padmin 源码和 Pasion 依赖仍保留其上游 AGPL 许可；修改项目清�
 
 ### 升级内嵌 Palpo
 
-本次 Palpo main 更新到 `719f6753`，包含 2026-10-30 的事件发布迁移。
+本次 Palpo main 更新到 `296f6bdb`，包含 2026-10-30 的事件发布迁移。
 启动新二进制前，先停止所有共用该 Matrix 数据库的旧 Hagency/Palpo 进程、
 开发监听及 worker，并按 [RECOVERY.md](RECOVERY.md) 对三个数据库和私有文件
 执行一致的停机备份。先启动一个新实例，等待迁移与启动完成，再启动其余新实例
@@ -374,7 +374,7 @@ Padmin 源码和 Pasion 依赖仍保留其上游 AGPL 许可；修改项目清�
 
 客户端应原样保存和回传 sync 与分页 token。旧 sync 位置仍可使用，但从升级前
 的边界继续同步时，迟发布的历史可能需要完整同步；无需丢弃仍有效的历史分页
-cursor。详见[上游升级步骤](https://github.com/palpo-im/palpo/blob/719f6753a49a57a1f951399c21df4312bcf61e5d/docs/UPGRADING.md)。
+cursor。详见[上游升级步骤](https://github.com/palpo-im/palpo/blob/296f6bdb55919f2bfef5fb7afc322b7c8fbde68d/docs/UPGRADING.md)。
 
 新版本会在启动时拒绝生效中的正向代理配置及代理环境变量。PostgreSQL 配置
 要求 TLS 时，连接 URL 中较弱的 `sslmode` 也不能覆盖该要求。启动前应确认部署
