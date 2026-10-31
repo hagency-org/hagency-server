@@ -50,7 +50,7 @@ jobs:
           toolchain: 1.99.0
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
-      - run: sudo apt-get update && sudo apt-get install -y libpq-dev cmake clang pkg-config
+      - run: sudo apt-get update && sudo apt-get install -y libpq-dev postgresql-client cmake clang pkg-config
       - uses: Swatinem/rust-cache@v2
       - name: Check release version
         if: startsWith(github.ref, 'refs/tags/')
@@ -64,6 +64,18 @@ jobs:
           PY
       - run: cargo fmt --all -- --check
       - run: python3 scripts/validate-agent-openapi.py --self-test
+      - name: Check Diesel-generated database schemas
+        env:
+          PGPASSWORD: ci-only-password
+          HAGENCY_SCHEMA_DATABASE_URL: postgres://hagency_ci:ci-only-password@127.0.0.1:5432/hagency_schema_ci
+        run: |
+          cargo install diesel_cli --version 2.3.5 --locked --no-default-features --features postgres
+          createdb --host 127.0.0.1 --username hagency_ci hagency_schema_ci
+          python3 scripts/check-db-schema.py
+      - name: Horme single-slot pool and cancellation regressions
+        env:
+          DB_TEST_DATABASE_URL: postgres://hagency_ci:ci-only-password@127.0.0.1:5432/hagency_ci
+        run: cargo test --locked -p hagency-db-runtime --features postgres-tests -- --test-threads=1
       - run: cargo clippy --locked -p hagency-server -p hagency-agent-service -p hagency-xtask --all-targets -- -D warnings
       - run: cargo test --locked -p hagency-server -p hagency-xtask -p hagency-frontend
       - name: Agent service tests including PostgreSQL

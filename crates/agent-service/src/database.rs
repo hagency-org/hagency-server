@@ -1,14 +1,74 @@
-//! A cancelled request must never return a connection with an open transaction.
+//! Dedicated infrastructure sessions for controller leadership and crypto row fences.
+//! Ordinary business work uses the bounded Horme pool runtime instead.
 use crate::{Error, Result};
 use diesel_async::{AsyncConnection, AsyncPgConnection, pooled_connection::PoolableConnection};
-use std::ops::{Deref, DerefMut};
-use tokio::sync::{Mutex, MutexGuard};
-
+/// Pool handles never retain a checked-out connection.
+#[derive(Clone)]
 pub(crate) struct Database {
-    connection: Mutex<Option<AsyncPgConnection>>,
+    runtime: hagency_db_runtime::Database,
+    #[cfg(test)]
     url: String,
 }
 impl Database {
+    pub(crate) fn business(url: &str) -> diesel::QueryResult<Self> {
+        let size = match std::env::var("HAGENCY_AGENT_DB_POOL_SIZE") {
+            Ok(value) => value.parse::<usize>().map_err(|_| {
+                diesel::result::Error::QueryBuilderError(Box::new(std::io::Error::other(
+                    "HAGENCY_AGENT_DB_POOL_SIZE must be a positive integer",
+                )))
+            })?,
+            Err(std::env::VarError::NotPresent) => 8,
+            Err(error) => return Err(diesel::result::Error::QueryBuilderError(Box::new(error))),
+        };
+        Self::connect(url, size)
+    }
+
+    pub(crate) fn connect(url: &str, size: usize) -> diesel::QueryResult<Self> {
+        Ok(Self {
+            runtime: hagency_db_runtime::Database::connect(url, size)?,
+            #[cfg(test)]
+            url: url.into(),
+        })
+    }
+    /// Independent fixture/observer session; never used by production operations.
+    #[cfg(test)]
+    pub(crate) async fn test_connection(&self) -> Result<TestConnection> {
+        Ok(TestConnection(
+            AsyncPgConnection::establish(&self.url)
+                .await
+                .map_err(|_| Error::Unavailable("test_database_unavailable"))?,
+        ))
+    }
+}
+impl Deref for Database {
+    type Target = hagency_db_runtime::Database;
+    fn deref(&self) -> &Self::Target {
+        &self.runtime
+    }
+}
+#[cfg(test)]
+pub(crate) struct TestConnection(AsyncPgConnection);
+#[cfg(test)]
+impl Deref for TestConnection {
+    type Target = AsyncPgConnection;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+#[cfg(test)]
+impl DerefMut for TestConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+use std::ops::{Deref, DerefMut};
+use tokio::sync::{Mutex, MutexGuard};
+
+pub(crate) struct DedicatedDatabase {
+    connection: Mutex<Option<AsyncPgConnection>>,
+    url: String,
+}
+impl DedicatedDatabase {
     pub(crate) fn new(connection: AsyncPgConnection, url: &str) -> Self {
         Self {
             connection: Mutex::new(Some(connection)),
@@ -16,7 +76,10 @@ impl Database {
         }
     }
     pub(crate) async fn lock(&self) -> Result<Guard<'_>> {
-        let mut connection = self.connection.lock().await;
+        let mut connection =
+            tokio::time::timeout(std::time::Duration::from_secs(8), self.connection.lock())
+                .await
+                .map_err(|_| Error::Unavailable("dedicated_database_busy"))?;
         discard_broken_connection(&mut connection);
         if connection.is_none() {
             let started = std::time::Instant::now();
@@ -88,7 +151,7 @@ mod tests {
             pid: i32,
         }
         let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-        let db = Database::new(AsyncPgConnection::establish(&url).await.unwrap(), &url);
+        let db = DedicatedDatabase::new(AsyncPgConnection::establish(&url).await.unwrap(), &url);
         let pid = diesel::sql_query("SELECT pg_backend_pid() AS pid")
             .get_result::<Backend>(&mut *db.lock().await.unwrap())
             .await
@@ -119,7 +182,7 @@ mod tests {
     #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
     async fn cancelled_transaction_releases_locks_and_does_not_commit_on_reuse() {
         let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-        let db = Database::new(AsyncPgConnection::establish(&url).await.unwrap(), &url);
+        let db = DedicatedDatabase::new(AsyncPgConnection::establish(&url).await.unwrap(), &url);
         db.lock().await.unwrap().batch_execute(
             "CREATE TABLE IF NOT EXISTS hagency_cancel_test(value integer); DELETE FROM hagency_cancel_test").await.unwrap();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();

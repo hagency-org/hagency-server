@@ -2,6 +2,7 @@
 use super::*;
 use crate::configuration_types::*;
 use diesel::QueryableByName;
+use diesel::{BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl};
 use serde_json::Value;
 
 const TTL: i64 = 60_000;
@@ -10,7 +11,7 @@ const RETENTION: i64 = 7 * 24 * 60 * 60 * 1000;
 const COLUMNS: &str = "id,owner_user_id,agent_id,agent_generation,execution_device_id,device_generation,requester_device_id,requester_generation,idempotency_key,digest,operation,input,state,created_at_ms,expires_at_ms,claimed_at_ms,completed_at_ms,result,error_code";
 // Current ownership, assignment, lifecycle and both authorization epochs are required.
 const VALID_PINS: &str = "EXISTS(SELECT 1 FROM hagency_agent_v1.agents a JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id JOIN hagency_agent_v1.devices t ON t.id=q.execution_device_id AND t.user_id=u.id JOIN hagency_agent_v1.devices r ON r.id=q.requester_device_id AND r.user_id=u.id JOIN hagency_agent_v1.sessions ts ON ts.id=t.session_id AND ts.user_id=u.id JOIN hagency_agent_v1.sessions rs ON rs.id=r.session_id AND rs.user_id=u.id WHERE a.id=q.agent_id AND u.id=q.owner_user_id AND u.active AND a.state IN ('creating','active','suspended') AND a.generation=q.agent_generation AND a.execution_device_id=q.execution_device_id AND t.generation=q.device_generation AND r.generation=q.requester_generation AND NOT t.revoked AND NOT r.revoked AND NOT ts.revoked AND NOT rs.revoked AND ts.valid_until_ms>greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint) AND rs.valid_until_ms>greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint))";
-#[derive(QueryableByName)]
+#[derive(diesel::Queryable, QueryableByName)]
 struct Row {
     #[diesel(sql_type=Text)]
     id: String,
@@ -84,14 +85,14 @@ impl Row {
         })
     }
 }
-#[derive(QueryableByName)]
+#[derive(diesel::Queryable, QueryableByName)]
 struct Presence {
     #[diesel(sql_type=BigInt)]
     generation: i64,
     #[diesel(sql_type=Nullable<BigInt>)]
     last_seen: Option<i64>,
 }
-#[derive(QueryableByName)]
+#[derive(diesel::Queryable, QueryableByName)]
 struct Observation {
     #[diesel(sql_type=BigInt)]
     observed_at_ms: i64,
@@ -107,15 +108,35 @@ fn device(p: &Principal) -> Result<(&str, i64)> {
 async fn maintain(db: &mut AsyncPgConnection, owner: &str, now: i64) -> Result<()> {
     // Sign-out updates a session directly. Keep both remote authorization epochs
     // locked through publication, including when the two devices have different sessions.
-    sql_query("SELECT true AS matched FROM hagency_agent_v1.sessions WHERE user_id=$1 ORDER BY id FOR SHARE")
-        .bind::<Text,_>(owner).load::<Flag>(db).await?;
+    {
+        use crate::schema::agent_tables::sessions as q;
+        let params = (owner,);
+        q::table
+            .select((true.into_sql::<diesel::sql_types::Bool>(),))
+            .filter((q::user_id).eq(&params.0))
+            .order((q::id.asc(),))
+            .for_share()
+            .load::<Flag>(db)
+            .await
+    }?;
     // Evaluated under the same domain advisory lock as assignment/lifecycle changes.
     sql_query(format!("UPDATE hagency_agent_v1.configuration_requests q SET state=CASE WHEN state='pending' THEN 'expired' ELSE 'unknown' END,result=NULL,error_code='configuration_target_changed' WHERE owner_user_id=$2 AND state NOT IN ('unknown','expired') AND NOT {VALID_PINS}"))
         .bind::<BigInt,_>(now).bind::<Text,_>(owner).execute(db).await?;
     sql_query("UPDATE hagency_agent_v1.configuration_requests SET state=CASE WHEN state='pending' THEN 'expired' ELSE 'unknown' END,result=NULL,error_code='configuration_request_expired' WHERE owner_user_id=$1 AND state IN ('pending','claimed') AND expires_at_ms<=greatest($2,(extract(epoch from clock_timestamp())*1000)::bigint)")
         .bind::<Text,_>(owner).bind::<BigInt,_>(now).execute(db).await?;
-    sql_query("DELETE FROM hagency_agent_v1.configuration_requests WHERE owner_user_id=$1 AND state NOT IN ('pending','claimed') AND created_at_ms<$2")
-        .bind::<Text,_>(owner).bind::<BigInt,_>(now.saturating_sub(RETENTION)).execute(db).await?;
+    {
+        use crate::schema::agent_tables::configuration_requests as q;
+        let params = (owner, now.saturating_sub(RETENTION));
+        diesel::delete(q::table)
+            .filter(
+                (((q::owner_user_id).eq(&params.0)).and(diesel::dsl::not(
+                    q::state.eq_any(vec!["pending", "claimed"]),
+                )))
+                .and((q::created_at_ms).lt(&params.1)),
+            )
+            .execute(db)
+            .await
+    }?;
     Ok(())
 }
 async fn row(db: &mut AsyncPgConnection, owner: &str, id: &str) -> Result<Row> {
@@ -148,24 +169,63 @@ impl DomainStore {
         key(id)?;
         device(p)?;
         let now = now.max(crate::api::now_ms());
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::authorize(db,p,now).await?;maintain(db,&p.user_id,now).await?;
-            let a=Self::agent_db(db,p,id).await?;
-            let target=match a.execution_device_id.as_deref() {Some(id)=>presence(db,&p.user_id,id,now).await?,None=>None};
-            let target=if matches!(a.state.as_str(),"creating"|"active"|"suspended"){target}else{None};
-            let mut result=ConfigurationStatus {agent_id:a.id.clone(),agent_generation:a.generation,execution_device_id:a.execution_device_id.clone(),device_generation:target.as_ref().map(|p|p.generation),online:target.as_ref().is_some_and(|p|online(p,now)),last_seen_at_ms:target.as_ref().and_then(|p|p.last_seen),observed_at_ms:None,cached:false,environment:None};
-            if let (Some(target_id),Some(t))=(a.execution_device_id.as_deref(),target) {
-                let observation=sql_query("SELECT observed_at_ms,environment FROM hagency_agent_v1.configuration_observations WHERE agent_id=$1 AND agent_generation=$2 AND execution_device_id=$3 AND device_generation=$4")
-                    .bind::<Text,_>(&a.id).bind::<BigInt,_>(a.generation).bind::<Text,_>(target_id).bind::<BigInt,_>(t.generation).get_result::<Observation>(db).await.optional()?;
-                if let Some(o)=observation {
-                    result.observed_at_ms=Some(o.observed_at_ms);
-                    result.cached=!result.online || o.observed_at_ms<now-ONLINE;
-                    result.environment=Some(serde_json::from_str(&o.environment).map_err(|_|Error::Unavailable("configuration_storage_invalid"))?);
-                }
-            }
-            Ok(result)
-        }).await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::authorize(db, p, now).await?;
+                    maintain(db, &p.user_id, now).await?;
+                    let a = Self::agent_db(db, p, id).await?;
+                    let target = match a.execution_device_id.as_deref() {
+                        Some(id) => presence(db, &p.user_id, id, now).await?,
+                        None => None,
+                    };
+                    let target = if matches!(a.state.as_str(), "creating" | "active" | "suspended")
+                    {
+                        target
+                    } else {
+                        None
+                    };
+                    let mut result = ConfigurationStatus {
+                        agent_id: a.id.clone(),
+                        agent_generation: a.generation,
+                        execution_device_id: a.execution_device_id.clone(),
+                        device_generation: target.as_ref().map(|p| p.generation),
+                        online: target.as_ref().is_some_and(|p| online(p, now)),
+                        last_seen_at_ms: target.as_ref().and_then(|p| p.last_seen),
+                        observed_at_ms: None,
+                        cached: false,
+                        environment: None,
+                    };
+                    if let (Some(target_id), Some(t)) = (a.execution_device_id.as_deref(), target) {
+                        let observation = {
+                            use crate::schema::agent_tables::configuration_observations as q;
+                            let params = (&a.id, a.generation, target_id, t.generation);
+                            q::table
+                                .select((q::observed_at_ms, q::environment))
+                                .filter(
+                                    ((((q::agent_id).eq(&params.0))
+                                        .and((q::agent_generation).eq(&params.1)))
+                                    .and((q::execution_device_id).eq(&params.2)))
+                                    .and((q::device_generation).eq(&params.3)),
+                                )
+                                .get_result::<Observation>(db)
+                                .await
+                        }
+                        .optional()?;
+                        if let Some(o) = observation {
+                            result.observed_at_ms = Some(o.observed_at_ms);
+                            result.cached = !result.online || o.observed_at_ms < now - ONLINE;
+                            result.environment =
+                                Some(serde_json::from_str(&o.environment).map_err(|_| {
+                                    Error::Unavailable("configuration_storage_invalid")
+                                })?);
+                        }
+                    }
+                    Ok(result)
+                })
+                .await
+            })
+            .await
     }
     pub async fn create_configuration_request(
         &self,
@@ -189,8 +249,9 @@ impl DomainStore {
             &value,
         ))?);
         let now = now.max(crate::api::now_ms());
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;maintain(db,&p.user_id,now).await?;
             let a=Self::agent_db(db,p,id).await?;
             let existing=sql_query(format!("SELECT {COLUMNS} FROM hagency_agent_v1.configuration_requests WHERE owner_user_id=$1 AND requester_device_id=$2 AND agent_id=$3 AND idempotency_key=$4"))
@@ -209,10 +270,50 @@ impl DomainStore {
                 if busy{return Err(Error::Conflict("configuration_request_busy"));}
             }
             let request_id=format!("cfg_{}",entity_id()?);
-            sql_query("INSERT INTO hagency_agent_v1.configuration_requests(id,owner_user_id,agent_id,agent_generation,execution_device_id,device_generation,requester_device_id,requester_generation,idempotency_key,digest,operation,input,mutation,state,created_at_ms,expires_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',$14,$15)")
-                .bind::<Text,_>(&request_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(id).bind::<BigInt,_>(a.generation).bind::<Text,_>(target).bind::<BigInt,_>(t.generation).bind::<Text,_>(requester).bind::<BigInt,_>(requester_generation).bind::<Text,_>(&input.idempotency_key).bind::<Text,_>(&digest).bind::<Text,_>(&operation).bind::<Text,_>(&input_json).bind::<Bool,_>(input.operation.mutation()).bind::<BigInt,_>(now).bind::<BigInt,_>(now+TTL).execute(db).await?;
+            {
+                use crate::schema::agent_tables::configuration_requests as q;
+                let params = (
+                    &request_id,
+                    &p.user_id,
+                    id,
+                    a.generation,
+                    target,
+                    t.generation,
+                    requester,
+                    requester_generation,
+                    &input.idempotency_key,
+                    &digest,
+                    &operation,
+                    &input_json,
+                    input.operation.mutation(),
+                    now,
+                    now + TTL,
+                );
+                diesel::insert_into(q::table)
+                    .values((
+                        q::id.eq(&params.0),
+                        q::owner_user_id.eq(&params.1),
+                        q::agent_id.eq(&params.2),
+                        q::agent_generation.eq(&params.3),
+                        q::execution_device_id.eq(&params.4),
+                        q::device_generation.eq(&params.5),
+                        q::requester_device_id.eq(&params.6),
+                        q::requester_generation.eq(&params.7),
+                        q::idempotency_key.eq(&params.8),
+                        q::digest.eq(&params.9),
+                        q::operation.eq(&params.10),
+                        q::input.eq(&params.11),
+                        q::mutation.eq(&params.12),
+                        q::state.eq("pending"),
+                        q::created_at_ms.eq(&params.13),
+                        q::expires_at_ms.eq(&params.14),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             row(db,&p.user_id,&request_id).await?.public()
         }).await
+    }).await
     }
     pub async fn configuration_request(
         &self,
@@ -225,17 +326,19 @@ impl DomainStore {
         key(id)?;
         device(p)?;
         let now = now.max(crate::api::now_ms());
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                Self::authorize(db, p, now).await?;
-                maintain(db, &p.user_id, now).await?;
-                Self::agent_db(db, p, agent).await?;
-                let r = row(db, &p.user_id, id).await?;
-                if r.agent_id != agent {
-                    return Err(Error::NotFound("not_found"));
-                }
-                r.public()
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::authorize(db, p, now).await?;
+                    maintain(db, &p.user_id, now).await?;
+                    Self::agent_db(db, p, agent).await?;
+                    let r = row(db, &p.user_id, id).await?;
+                    if r.agent_id != agent {
+                        return Err(Error::NotFound("not_found"));
+                    }
+                    r.public()
+                })
+                .await
             })
             .await
     }
@@ -247,8 +350,9 @@ impl DomainStore {
     ) -> Result<Option<ConfigurationRequest>> {
         let (id, generation) = device(p)?;
         let now = now.max(crate::api::now_ms());
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;maintain(db,&p.user_id,now).await?;
             sql_query("INSERT INTO hagency_agent_v1.configuration_presence(device_id,device_generation,last_seen_at_ms) VALUES($1,$2,$3) ON CONFLICT(device_id) DO UPDATE SET device_generation=EXCLUDED.device_generation,last_seen_at_ms=EXCLUDED.last_seen_at_ms")
                 .bind::<Text,_>(id).bind::<BigInt,_>(generation).bind::<BigInt,_>(now).execute(db).await?;
@@ -258,9 +362,18 @@ impl DomainStore {
             let r=sql_query(format!("SELECT {COLUMNS} FROM hagency_agent_v1.configuration_requests WHERE owner_user_id=$1 AND execution_device_id=$2 AND device_generation=$3 AND state='pending' ORDER BY created_at_ms,id LIMIT 1"))
                 .bind::<Text,_>(&p.user_id).bind::<Text,_>(id).bind::<BigInt,_>(generation).get_result::<Row>(db).await.optional()?;
             let Some(mut r)=r else{return Ok(None);};
-            sql_query("UPDATE hagency_agent_v1.configuration_requests SET state='claimed',claimed_at_ms=$2 WHERE id=$1").bind::<Text,_>(&r.id).bind::<BigInt,_>(now).execute(db).await?;
+            {
+                use crate::schema::agent_tables::configuration_requests as q;
+                let params = (&r.id, now);
+                diesel::update(q::table)
+                    .filter((q::id).eq(&params.0))
+                    .set((q::state.eq("claimed"), q::claimed_at_ms.eq(&params.1)))
+                    .execute(db)
+                    .await
+            }?;
             r.state="claimed".into();r.claimed_at_ms=Some(now);Ok(Some(r.public()?))
         }).await
+    }).await
     }
     pub async fn complete_configuration(
         &self,
@@ -272,8 +385,9 @@ impl DomainStore {
         key(id)?;
         let (target, generation) = device(p)?;
         let now = now.max(crate::api::now_ms());
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;maintain(db,&p.user_id,now).await?;
             let r=row(db,&p.user_id,id).await?;
             if r.execution_device_id!=target || r.device_generation!=generation {return Err(Error::Unauthorized("execution_device_required"));}
@@ -290,16 +404,36 @@ impl DomainStore {
                 if r.state!=input.state || r.result!=result || r.error_code!=input.error_code {return Err(Error::Conflict("configuration_completion_conflict"));}
                 return r.public();
             }
-            sql_query("UPDATE hagency_agent_v1.configuration_requests SET state=$2,result=$3,error_code=$4,completed_at_ms=$5 WHERE id=$1")
-                .bind::<Text,_>(id).bind::<Text,_>(&input.state).bind::<Nullable<Text>,_>(&result).bind::<Nullable<Text>,_>(&input.error_code).bind::<BigInt,_>(now).execute(db).await?;
+            {
+                use crate::schema::agent_tables::configuration_requests as q;
+                let params = (id, &input.state, &result, &input.error_code, now);
+                diesel::update(q::table)
+                    .filter((q::id).eq(&params.0))
+                    .set((
+                        q::state.eq(&params.1),
+                        q::result.eq(params.2),
+                        q::error_code.eq(params.3),
+                        q::completed_at_ms.eq(&params.4),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             if op==ConfigurationOperation::Environment && let Some(environment)=result {
                 sql_query("INSERT INTO hagency_agent_v1.configuration_observations(agent_id,agent_generation,execution_device_id,device_generation,observed_at_ms,environment) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(agent_id) DO UPDATE SET agent_generation=EXCLUDED.agent_generation,execution_device_id=EXCLUDED.execution_device_id,device_generation=EXCLUDED.device_generation,observed_at_ms=EXCLUDED.observed_at_ms,environment=EXCLUDED.environment")
                     .bind::<Text,_>(&r.agent_id).bind::<BigInt,_>(r.agent_generation).bind::<Text,_>(target).bind::<BigInt,_>(generation).bind::<BigInt,_>(now).bind::<Text,_>(&environment).execute(db).await?;
             } else if op.mutation() && input.state=="succeeded" {
                 // A saved profile/provider/policy invalidates an earlier environment snapshot.
-                sql_query("DELETE FROM hagency_agent_v1.configuration_observations WHERE agent_id=$1").bind::<Text,_>(&r.agent_id).execute(db).await?;
+                {
+                    use crate::schema::agent_tables::configuration_observations as q;
+                    let params = (&r.agent_id,);
+                    diesel::delete(q::table)
+                        .filter((q::agent_id).eq(&params.0))
+                        .execute(db)
+                        .await
+                }?;
             }
             row(db,&p.user_id,id).await?.public()
         }).await
+    }).await
     }
 }

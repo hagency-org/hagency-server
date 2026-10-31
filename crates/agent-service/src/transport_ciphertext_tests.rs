@@ -146,7 +146,7 @@ async fn postgres_ciphertext_retains_original_as_custody_after_compaction_and_ne
         "SELECT count(*) AS total FROM hagency_agent_v1.owner_events WHERE binding_id=$1",
     )
     .bind::<Text, _>(&f.binding)
-    .get_result::<Count>(&mut *f.transport.db.lock().await.unwrap())
+    .get_result::<Count>(&mut *f.transport.db.test_connection().await.unwrap())
     .await
     .unwrap();
     assert_eq!(original.total, 0);
@@ -208,7 +208,7 @@ async fn postgres_ciphertext_capacity_expiry_and_tombstone_cannot_rearm_or_mutat
             "UPDATE hagency_agent_v1.ciphertext_inbox SET source_digest='changed' WHERE id=$1"
         )
         .bind::<Text, _>(&id)
-        .execute(&mut *f.transport.db.lock().await.unwrap())
+        .execute(&mut *f.transport.db.test_connection().await.unwrap())
         .await
         .is_err()
     );
@@ -216,7 +216,7 @@ async fn postgres_ciphertext_capacity_expiry_and_tombstone_cannot_rearm_or_mutat
         "UPDATE hagency_agent_v1.ciphertext_inbox SET state='expired',event=NULL WHERE id=$1",
     )
     .bind::<Text, _>(&id)
-    .execute(&mut *f.transport.db.lock().await.unwrap())
+    .execute(&mut *f.transport.db.test_connection().await.unwrap())
     .await
     .unwrap();
     assert!(
@@ -242,14 +242,14 @@ async fn postgres_ciphertext_capacity_expiry_and_tombstone_cannot_rearm_or_mutat
         )
         .bind::<Text, _>(&id)
         .bind::<diesel::sql_types::Jsonb, _>(&first)
-        .execute(&mut *f.transport.db.lock().await.unwrap())
+        .execute(&mut *f.transport.db.test_connection().await.unwrap())
         .await
         .is_err()
     );
     assert!(
         sql_query("DELETE FROM hagency_agent_v1.ciphertext_inbox WHERE id=$1")
             .bind::<Text, _>(&id)
-            .execute(&mut *f.transport.db.lock().await.unwrap())
+            .execute(&mut *f.transport.db.test_connection().await.unwrap())
             .await
             .is_err()
     );
@@ -398,11 +398,11 @@ async fn postgres_encrypted_prepare_ack_are_original_idempotent_and_plain_execut
     assert!(
         sql_query("UPDATE hagency_agent_v1.owner_events SET state='acknowledged' WHERE id=$1")
             .bind::<Text, _>(&prepared.dispatch.id)
-            .execute(&mut *f.transport.db.lock().await.unwrap())
+            .execute(&mut *f.transport.db.test_connection().await.unwrap())
             .await
             .is_err()
     );
-    assert!(sql_query("UPDATE hagency_agent_v1.encrypted_dispatches SET source_digest='changed' WHERE dispatch_id=$1").bind::<Text,_>(&prepared.dispatch.id).execute(&mut *f.transport.db.lock().await.unwrap()).await.is_err());
+    assert!(sql_query("UPDATE hagency_agent_v1.encrypted_dispatches SET source_digest='changed' WHERE dispatch_id=$1").bind::<Text,_>(&prepared.dispatch.id).execute(&mut *f.transport.db.test_connection().await.unwrap()).await.is_err());
     let mut replay = event.clone();
     replay["event_id"] = json!("$replay-header");
     replay["origin_server_ts"] = json!(124);
@@ -648,7 +648,7 @@ async fn postgres_encrypted_execution_and_original_publication_are_fenced_and_ne
         assert!(status["publication"].is_null());
         assert_eq!(
             TransportStore::dispatch(
-                &mut f.transport.db.lock().await.unwrap(),
+                &mut f.transport.db.test_connection().await.unwrap(),
                 &f.p,
                 &b.dispatch_id
             )
@@ -706,7 +706,7 @@ async fn postgres_encrypted_execution_and_original_publication_are_fenced_and_ne
     );
     assert_eq!(
         TransportStore::dispatch(
-            &mut f.transport.db.lock().await.unwrap(),
+            &mut f.transport.db.test_connection().await.unwrap(),
             &f.p,
             &b.dispatch_id
         )

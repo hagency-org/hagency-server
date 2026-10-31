@@ -1,10 +1,11 @@
 //! Original AS ciphertext custody. Reading/decrypting never admits model work.
 use super::*;
 use diesel::sql_types::Jsonb;
+use diesel::{BoolExpressionMethods, ExpressionMethods, NullableExpressionMethods, QueryDsl};
 use serde_json::{Value, json};
 pub(crate) const CAPABILITY: &str = "agent-encrypted-inbox-v1";
 const MAX_EVENT: usize = 131072;
-#[derive(Serialize, diesel::QueryableByName)]
+#[derive(Serialize, diesel::Queryable, diesel::QueryableByName)]
 #[serde(rename_all = "camelCase")]
 pub struct Ciphertext {
     #[diesel(sql_type=Text)]
@@ -30,7 +31,7 @@ pub struct Ciphertext {
     #[diesel(sql_type=Jsonb)]
     pub event: Value,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 pub(crate) struct Header {
     #[diesel(sql_type=Text)]
     pub id: String,
@@ -142,31 +143,84 @@ impl TransportStore {
     ) -> Result<()> {
         key(binding)?;
         let (event, digest) = parse(raw)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
    Self::lock(db).await?;let now=Self::clock(db,now).await?;let scope=Self::scope(db,binding).await?;
    facts_mode(&scope,event["sender"].as_str().ok_or_else(invalid)?,f,now,true)?;
    if scope.service_paused||event["room_id"]!=scope.room_id{return Err(Error::Unauthorized("ciphertext_scope_revoked"));}
-   #[derive(diesel::QueryableByName)]struct Source{#[diesel(sql_type=BigInt)] received_at_ms:i64}
+   #[derive(diesel::Queryable, diesel::QueryableByName)]struct Source{#[diesel(sql_type=BigInt)] received_at_ms:i64}
    // Original full raw event must still be in a durable verified AS transaction.
    // This same lock serializes against routing compaction and AS acceptance.
    let source=sql_query("SELECT t.received_at_ms FROM hagency_agent_v1.inbound_transactions t JOIN hagency_agent_v1.routing_jobs j ON j.transaction_id=t.id WHERE t.id=$1 AND j.state='pending' AND t.body->'events' @> $2::jsonb").bind::<Text,_>(transaction).bind::<Jsonb,_>(json!([raw])).get_result::<Source>(db).await.optional()?.ok_or(Error::Unauthorized("original_ciphertext_required"))?;
    if source.received_at_ms<0||source.received_at_ms>now{return Err(invalid());}
    let puppet=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agents WHERE puppet_mxid=$1) AS matched").bind::<Text,_>(event["sender"].as_str().ok_or_else(invalid)?).get_result::<Flag>(db).await?;
    if puppet.matched||event["sender"].as_str().is_some_and(|s|s.starts_with("@_hagency_")){return Ok(());}
-   #[derive(diesel::QueryableByName)]struct Digest{#[diesel(sql_type=Text)] source_digest:String}
-   if let Some(old)=sql_query("SELECT source_digest FROM hagency_agent_v1.ciphertext_inbox WHERE binding_id=$1 AND event_id=$2").bind::<Text,_>(binding).bind::<Text,_>(event["event_id"].as_str().ok_or_else(invalid)?).get_result::<Digest>(db).await.optional()?{
+   #[derive(diesel::Queryable, diesel::QueryableByName)]struct Digest{#[diesel(sql_type=Text)] source_digest:String}
+   if let Some(old)={
+       use crate::schema::agent_tables::ciphertext_inbox as q;
+       let params = (binding, event["event_id"].as_str().ok_or_else(invalid)?);
+       q::table
+           .select((q::source_digest,))
+           .filter(((q::binding_id).eq(&params.0)).and((q::event_id).eq(&params.1)))
+           .get_result::<Digest>(db)
+           .await
+   }.optional()?{
     return if old.source_digest==digest{Ok(())}else{Err(Error::Conflict("ciphertext_changed"))};
    }
    if source.received_at_ms<=now.saturating_sub(self.limits.event_ttl_ms){return Err(Error::Conflict("event_expired"));}
    sql_query("UPDATE hagency_agent_v1.ciphertext_inbox SET state='expired',event=NULL WHERE state='pending' AND received_at_ms<=$1").bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).execute(db).await?;
    let count=sql_query("SELECT (SELECT count(*) FROM hagency_agent_v1.ciphertext_inbox WHERE owner_user_id=$1 AND state='pending' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.encrypted_dispatches d WHERE d.inbox_id=hagency_agent_v1.ciphertext_inbox.id))+(SELECT count(*) FROM hagency_agent_v1.owner_events WHERE owner_user_id=$1 AND state IN ('pending','offered','acknowledged','running','unknown','encrypted_pending','encrypted_offered','encrypted_acknowledged','encrypted_running','encrypted_unknown')) AS total").bind::<Text,_>(&scope.owner_user_id).get_result::<Count>(db).await?;
    if count.total>=self.limits.max_owner_events{return Err(Error::Unavailable("owner_queue_full"));}
-   let generation=sql_query("SELECT generation AS value FROM hagency_agent_v1.agents WHERE id=$1").bind::<Text,_>(&scope.agent_id).get_result::<Generation>(db).await?.value;
-   sql_query("INSERT INTO hagency_agent_v1.ciphertext_inbox(id,transaction_id,binding_id,agent_id,owner_user_id,agent_generation,binding_generation,event_id,room_id,sender_mxid,source_digest,event,received_at_ms,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending')")
-    .bind::<Text,_>(format!("enc_{}",entity_id()?)).bind::<Text,_>(transaction).bind::<Text,_>(binding).bind::<Text,_>(&scope.agent_id).bind::<Text,_>(&scope.owner_user_id).bind::<BigInt,_>(generation).bind::<BigInt,_>(scope.binding_generation).bind::<Text,_>(event["event_id"].as_str().ok_or_else(invalid)?).bind::<Text,_>(&scope.room_id).bind::<Text,_>(event["sender"].as_str().ok_or_else(invalid)?).bind::<Text,_>(digest).bind::<Jsonb,_>(&event).bind::<BigInt,_>(source.received_at_ms).execute(db).await?;
+   let generation={
+       use crate::schema::agent_tables::agents as q;
+       let params = (&scope.agent_id,);
+       q::table
+           .select((q::generation,))
+           .filter((q::id).eq(&params.0))
+           .get_result::<Generation>(db)
+           .await
+   }?.value;
+   {
+       use crate::schema::agent_tables::ciphertext_inbox as q;
+       let params = (
+           format!("enc_{}", entity_id()?),
+           transaction,
+           binding,
+           &scope.agent_id,
+           &scope.owner_user_id,
+           generation,
+           scope.binding_generation,
+           event["event_id"].as_str().ok_or_else(invalid)?,
+           &scope.room_id,
+           event["sender"].as_str().ok_or_else(invalid)?,
+           digest,
+           &event,
+           source.received_at_ms,
+       );
+       diesel::insert_into(q::table)
+           .values((
+               q::id.eq(&params.0),
+               q::transaction_id.eq(&params.1),
+               q::binding_id.eq(&params.2),
+               q::agent_id.eq(&params.3),
+               q::owner_user_id.eq(&params.4),
+               q::agent_generation.eq(&params.5),
+               q::binding_generation.eq(&params.6),
+               q::event_id.eq(&params.7),
+               q::room_id.eq(&params.8),
+               q::sender_mxid.eq(&params.9),
+               q::source_digest.eq(&params.10),
+               q::event.eq(&params.11),
+               q::received_at_ms.eq(&params.12),
+               q::state.eq("pending"),
+           ))
+           .execute(db)
+           .await
+   }?;
    Ok(())
   }).await
+    }).await
     }
     pub(crate) async fn ciphertext_candidates(
         &self,
@@ -180,12 +234,14 @@ impl TransportStore {
         if limit == 0 || limit > 4 {
             return Err(Error::Invalid("invalid_batch_limit"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
    let(now,_)=Self::authenticate(db,p,now).await?;Self::lease(db,p,lease,now).await?;Self::agent_active(db,p,&lease.agent_id).await?;
    let scope=Self::scope(db,binding).await?;if scope.owner_user_id!=p.user_id||scope.agent_id!=lease.agent_id||!scope.active||scope.service_paused{return Err(Error::Unauthorized("ciphertext_scope_revoked"));}
    Ok(sql_query("SELECT c.id,c.binding_id,c.sender_mxid FROM hagency_agent_v1.ciphertext_inbox c JOIN hagency_agent_v1.bindings b ON b.id=c.binding_id JOIN hagency_agent_v1.agents a ON a.id=c.agent_id WHERE c.owner_user_id=$1 AND c.agent_id=$2 AND c.binding_id=$3 AND c.state='pending' AND c.binding_generation=b.generation AND c.agent_generation=a.generation AND c.received_at_ms>$4 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.encrypted_dispatches d JOIN hagency_agent_v1.owner_events e ON e.id=d.dispatch_id WHERE d.inbox_id=c.id AND e.state NOT IN ('encrypted_pending','encrypted_offered')) ORDER BY c.received_at_ms,c.id LIMIT $5").bind::<Text,_>(&p.user_id).bind::<Text,_>(&lease.agent_id).bind::<Text,_>(binding).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).bind::<BigInt,_>(limit as i64).load(db).await?)
   }).await
+    }).await
     }
     pub(crate) async fn ciphertext_header(
         &self,
@@ -194,8 +250,24 @@ impl TransportStore {
         now: i64,
     ) -> Result<Header> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{Self::authenticate(db,p,now).await?;sql_query("SELECT id,binding_id,sender_mxid FROM hagency_agent_v1.ciphertext_inbox WHERE id=$1 AND owner_user_id=$2").bind::<Text,_>(id).bind::<Text,_>(&p.user_id).get_result(db).await.map_err(unauthorized)}).await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::authenticate(db, p, now).await?;
+                    {
+                        use crate::schema::agent_tables::ciphertext_inbox as q;
+                        let params = (id, &p.user_id);
+                        q::table
+                            .select((q::id, q::binding_id, q::sender_mxid))
+                            .filter(((q::id).eq(&params.0)).and((q::owner_user_id).eq(&params.1)))
+                            .get_result(db)
+                            .await
+                    }
+                    .map_err(unauthorized)
+                })
+                .await
+            })
+            .await
     }
     pub(crate) async fn read_ciphertext(
         &self,
@@ -206,12 +278,14 @@ impl TransportStore {
         now: i64,
     ) -> Result<Ciphertext> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                Self::current_ciphertext(db, p, lease, id, f, self.limits.event_ttl_ms, now)
-                    .await
-                    .map(|(event, _)| event)
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::current_ciphertext(db, p, lease, id, f, self.limits.event_ttl_ms, now)
+                        .await
+                        .map(|(event, _)| event)
+                })
+                .await
             })
             .await
     }
@@ -227,14 +301,44 @@ impl TransportStore {
         let (now, _) = Self::authenticate(db, p, now).await?;
         Self::lease(db, p, lease, now).await?;
         Self::agent_active(db, p, &lease.agent_id).await?;
-        let c=sql_query("SELECT id,binding_id,agent_id,agent_generation,binding_generation,event_id,room_id,sender_mxid,source_digest,received_at_ms,event FROM hagency_agent_v1.ciphertext_inbox WHERE id=$1 AND owner_user_id=$2 AND state='pending' AND received_at_ms>$3").bind::<Text,_>(id).bind::<Text,_>(&p.user_id).bind::<BigInt,_>(now.saturating_sub(ttl)).get_result::<Ciphertext>(db).await.map_err(unauthorized)?;
+        let c = {
+            use crate::schema::agent_tables::ciphertext_inbox as q;
+            let params = (id, &p.user_id, now.saturating_sub(ttl));
+            q::table
+                .select((
+                    q::id,
+                    q::binding_id,
+                    q::agent_id,
+                    q::agent_generation,
+                    q::binding_generation,
+                    q::event_id,
+                    q::room_id,
+                    q::sender_mxid,
+                    q::source_digest,
+                    q::received_at_ms,
+                    q::event.assume_not_null(),
+                ))
+                .filter(
+                    ((((q::id).eq(&params.0)).and((q::owner_user_id).eq(&params.1)))
+                        .and((q::state).eq("pending")))
+                    .and((q::received_at_ms).gt(&params.2))
+                    .and(q::event.is_not_null()),
+                )
+                .get_result::<Ciphertext>(db)
+                .await
+        }
+        .map_err(unauthorized)?;
         let scope = Self::scope(db, &c.binding_id).await?;
-        let generation =
-            sql_query("SELECT generation AS value FROM hagency_agent_v1.agents WHERE id=$1")
-                .bind::<Text, _>(&scope.agent_id)
+        let generation = {
+            use crate::schema::agent_tables::agents as q;
+            let params = (&scope.agent_id,);
+            q::table
+                .select((q::generation,))
+                .filter((q::id).eq(&params.0))
                 .get_result::<Generation>(db)
-                .await?
-                .value;
+                .await
+        }?
+        .value;
         if scope.owner_user_id != p.user_id
             || scope.agent_id != lease.agent_id
             || c.agent_id != lease.agent_id
@@ -252,7 +356,7 @@ impl TransportStore {
         Ok((c, now))
     }
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct Generation {
     #[diesel(sql_type=BigInt)]
     value: i64,

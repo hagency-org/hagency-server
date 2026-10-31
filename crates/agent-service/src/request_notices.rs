@@ -1,6 +1,7 @@
 //! Durable per-request feedback. Does not consume model quota, start/replay work,
 //! or require the executing device to be online. Fresh Matrix authority still applies.
 use super::*;
+use diesel::{BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl};
 
 const SELECT: &str = "SELECT n.id,n.owner_event_id,n.kind,n.matrix_txn_id,n.state,n.worker_token,e.binding_id,e.requester_mxid,e.event_id,e.thread_root,e.binding_generation,coalesce(d.name,'') AS device_name,CASE WHEN a.execution_device_id IS NULL THEN 'unassigned' WHEN d.id IS NULL OR d.revoked OR s.revoked OR s.valid_until_ms<=(extract(epoch from clock_timestamp())*1000)::bigint THEN 'offline' WHEN l.expires_at_ms>(extract(epoch from clock_timestamp())*1000)::bigint AND l.device_generation=d.generation THEN 'ready' WHEN p.device_generation=d.generation AND p.last_seen_at_ms BETWEEN (extract(epoch from clock_timestamp())*1000)::bigint-15000 AND (extract(epoch from clock_timestamp())*1000)::bigint THEN 'not_running' WHEN p.device_generation=d.generation AND p.last_seen_at_ms IS NOT NULL THEN 'offline' ELSE 'unobserved' END AS device_state FROM hagency_agent_v1.request_notice_outbox n JOIN hagency_agent_v1.owner_events e ON e.id=n.owner_event_id JOIN hagency_agent_v1.agents a ON a.id=e.agent_id LEFT JOIN hagency_agent_v1.devices d ON d.id=a.execution_device_id AND d.user_id=e.owner_user_id LEFT JOIN hagency_agent_v1.sessions s ON s.id=d.session_id AND s.user_id=e.owner_user_id LEFT JOIN hagency_agent_v1.configuration_presence p ON p.device_id=d.id LEFT JOIN hagency_agent_v1.execution_leases l ON l.agent_id=a.id AND l.device_id=d.id";
 
@@ -44,7 +45,7 @@ pub(crate) fn body_for(kind: &str, device: &str) -> &'static str {
     }
 }
 
-#[derive(Debug, diesel::QueryableByName)]
+#[derive(Debug, diesel::Queryable, diesel::QueryableByName)]
 pub(crate) struct RequestNotice {
     #[diesel(sql_type=Text)]
     pub id: String,
@@ -79,8 +80,9 @@ impl TransportStore {
         cursor: &str,
         now: i64,
     ) -> Result<Vec<RequestNotice>> {
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
             let now=Self::clock(db,now).await?;
             // A circular scan bounds maintenance and cannot be pinned by one Room.
@@ -90,6 +92,7 @@ impl TransportStore {
             Ok(sql_query(format!("{SELECT} WHERE n.state IN ('pending','unknown','sending') AND n.worker_until_ms<=$1 ORDER BY (n.id<=$2),n.id LIMIT 20"))
                 .bind::<BigInt,_>(now).bind::<Text,_>(cursor).load(db).await?)
         }).await
+    }).await
     }
     #[cfg(test)]
     pub(crate) async fn claim_request_notice(
@@ -107,10 +110,20 @@ impl TransportStore {
         now: i64,
         gate: Option<&crate::worker_runtime::ClaimGate>,
     ) -> Result<RequestNotice> {
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
-            sql_query("SELECT true AS matched FROM hagency_agent_v1.request_notice_outbox WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<Flag>(db).await?;
+            {
+                use crate::schema::agent_tables::request_notice_outbox as q;
+                let params = (id,);
+                q::table
+                    .select((true.into_sql::<diesel::sql_types::Bool>(),))
+                    .filter((q::id).eq(&params.0))
+                    .for_update()
+                    .get_result::<Flag>(db)
+                    .await
+            }?;
             let now=Self::clock(db,now).await?;
             let n=sql_query(format!("{SELECT} WHERE n.id=$1")).bind::<Text,_>(id).get_result::<RequestNotice>(db).await?;
             let scope=Self::scope(db,&n.binding_id).await?;
@@ -122,18 +135,40 @@ impl TransportStore {
                 }
             } else {false};
             if !authorized {
-                sql_query("UPDATE hagency_agent_v1.request_notice_outbox SET state='cancelled' WHERE id=$1 AND state NOT IN ('sent','cancelled')")
-                    .bind::<Text,_>(id).execute(db).await?;
+                {
+                    use crate::schema::agent_tables::request_notice_outbox as q;
+                    let params = (id,);
+                    diesel::update(q::table)
+                        .filter(
+                            ((q::id).eq(&params.0))
+                                .and(diesel::dsl::not(q::state.eq_any(vec!["sent", "cancelled"]))),
+                        )
+                        .set((q::state.eq("cancelled"),))
+                        .execute(db)
+                        .await
+                }?;
                 return Ok(None);
             }
             if !matches!(n.state.as_str(),"pending"|"unknown"|"sending") {return Ok(None);}
             let _admission=gate.map(crate::worker_runtime::ClaimGate::admit).transpose()?;
             let worker=secret_token();
-            let claimed=sql_query("UPDATE hagency_agent_v1.request_notice_outbox SET state='sending',worker_token=$2,worker_until_ms=$3 WHERE id=$1 AND worker_until_ms<=$4")
-                .bind::<Text,_>(id).bind::<Text,_>(worker).bind::<BigInt,_>(now+self.limits.worker_lease_ms).bind::<BigInt,_>(now).execute(db).await?;
+            let claimed={
+                use crate::schema::agent_tables::request_notice_outbox as q;
+                let params = (id, worker, now + self.limits.worker_lease_ms, now);
+                diesel::update(q::table)
+                    .filter(((q::id).eq(&params.0)).and((q::worker_until_ms).le(&params.3)))
+                    .set((
+                        q::state.eq("sending"),
+                        q::worker_token.eq(&params.1),
+                        q::worker_until_ms.eq(&params.2),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             if claimed==0 {return Ok(None);}
             Ok(Some(sql_query(format!("{SELECT} WHERE n.id=$1")).bind::<Text,_>(id).get_result::<RequestNotice>(db).await?))
         }).await?.ok_or(Error::Conflict("request_notice_not_sendable"))
+    }).await
     }
     pub(crate) async fn confirm_request_notice(
         &self,
@@ -142,7 +177,8 @@ impl TransportStore {
         outcome: &Result<String>,
         now: i64,
     ) -> Result<()> {
-        let mut guard = self.db.lock().await?;
+        self.db.with_connection(async |db| {
+
         let state = match outcome {
             Ok(_) => "sent",
             Err(Error::Conflict("matrix_permission_missing")) => "cancelled",
@@ -151,7 +187,8 @@ impl TransportStore {
         sql_query("UPDATE hagency_agent_v1.request_notice_outbox SET state=$3,matrix_event_id=$4,worker_token=NULL,worker_until_ms=$5 WHERE id=$1 AND worker_token=$2 AND state='sending'")
             .bind::<Text,_>(id).bind::<Text,_>(worker).bind::<Text,_>(state)
             .bind::<Nullable<Text>,_>(outcome.as_ref().ok().map(String::as_str))
-            .bind::<BigInt,_>(if state=="unknown" {now+5000} else {0}).execute(&mut *guard).await?;
+            .bind::<BigInt,_>(if state=="unknown" {now+5000} else {0}).execute(&mut *db).await?;
         Ok(())
+    }).await
     }
 }

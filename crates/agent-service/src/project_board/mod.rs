@@ -5,14 +5,12 @@ mod collaboration;
 mod columns;
 mod types;
 use crate::{Error, Result, domain::DomainStore, store::Principal};
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
 use diesel::{
     sql_query,
     sql_types::{BigInt, Bool, Jsonb, Nullable, Text},
 };
-use diesel_async::{
-    AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection,
-    pooled_connection::{AsyncDieselConnectionManager, deadpool::Pool},
-};
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -20,7 +18,7 @@ pub use types::*;
 
 #[derive(Clone)]
 pub struct BoardStore {
-    pool: Pool<AsyncPgConnection>,
+    pool: crate::database::Database,
 }
 /// Created only by the trusted Matrix gateway; never deserialized from a client.
 pub(crate) struct Access {
@@ -31,17 +29,17 @@ pub(crate) struct Access {
     pub member_names: std::collections::BTreeMap<String, String>,
     pub observed: i64,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct Row {
     #[diesel(sql_type=Jsonb)]
     value: Value,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct Number {
     #[diesel(sql_type=BigInt)]
     value: i64,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct LaneCounts {
     #[diesel(sql_type=Text)]
     state: String,
@@ -52,7 +50,7 @@ struct LaneCounts {
     #[diesel(sql_type=BigInt)]
     matching: i64,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct Flag {
     #[diesel(sql_type=Bool)]
     value: bool,
@@ -209,15 +207,20 @@ const FILTER: &str = "t.project_id=$1 AND ($2::text IS NULL OR t.state_key=$2) A
 
 impl BoardStore {
     pub async fn open(url: &str) -> Result<Self> {
-        let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(url);
-        let pool = Pool::builder(manager)
-            .max_size(4)
-            .build()
-            .map_err(|_| Error::Unavailable("board_storage_unavailable"))?;
-        let this = Self { pool };
-        let mut db = this.connection().await?;
+        let this = Self {
+            pool: crate::database::Database::connect(url, 4)?,
+        };
+        // Startup upgrades own their session; large legacy upgrades must not
+        // occupy a business slot or inherit the 30s request deadline.
+        let mut db = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            AsyncPgConnection::establish(url),
+        )
+        .await
+        .map_err(|_| Error::Unavailable("board_migration_connect_timeout"))?
+        .map_err(|_| Error::Unavailable("board_storage_unavailable"))?;
         db.transaction::<_,Error,_>(async |db|{
-            db.batch_execute("SET LOCAL lock_timeout='5s'; SET LOCAL statement_timeout='8s'; SELECT pg_advisory_xact_lock(5210750088328915)").await?;
+            db.batch_execute("SET LOCAL lock_timeout='30s'; SET LOCAL statement_timeout='120s'; SELECT pg_advisory_xact_lock(5210750088328915)").await?;
             let exists=sql_query("SELECT to_regclass('hagency_project_v1.migrations') IS NOT NULL AS value").get_result::<Flag>(db).await?.value;
             if exists {
                 let version=sql_query("SELECT coalesce(max(version),0)::bigint AS value FROM hagency_project_v1.migrations").get_result::<Number>(db).await?.value;
@@ -247,16 +250,7 @@ impl BoardStore {
             db.batch_execute(include_str!("schema_v7.sql")).await?;
             Ok(())
         }).await?;
-        drop(db);
         Ok(this)
-    }
-    async fn connection(
-        &self,
-    ) -> Result<diesel_async::pooled_connection::deadpool::Object<AsyncPgConnection>> {
-        tokio::time::timeout(std::time::Duration::from_secs(8), self.pool.get())
-            .await
-            .map_err(|_| Error::Unavailable("board_storage_busy"))?
-            .map_err(|_| Error::Unavailable("board_storage_unavailable"))
     }
     async fn authorize(db: &mut AsyncPgConnection, p: &Principal, a: &Access) -> Result<()> {
         db.batch_execute("SET LOCAL lock_timeout='5s'; SET LOCAL statement_timeout='8s'")
@@ -369,7 +363,8 @@ impl BoardStore {
         if q.cursor.is_some() {
             return Err(Error::Invalid("invalid_board_query"));
         }
-        let mut db = self.connection().await?;
+        self.pool.with_connection(async |db| {
+
         db.build_transaction().repeatable_read().run::<_,Error,_>(async |db|{
             Self::authorize(db,p,a).await?;
             let seq=Self::sequence(db,&a.project).await?;
@@ -397,24 +392,29 @@ impl BoardStore {
             let archived=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.projects p WHERE p.archived AND (p.id=$1 OR EXISTS(SELECT 1 FROM hagency_project_v1.boards b WHERE b.project_id=$1 AND b.owner_project_id=p.id))) AS value").bind::<Text,_>(&a.project).get_result::<Flag>(db).await?.value;
             Ok(json!({"readOnly":archived,"projectId":a.project,"sequence":seq,"lanes":lanes,"members":members,"memberNames":a.member_names,"labelSuggestions":labels,"hasMoreLabels":more_labels,"capability":CAPABILITY}))
         }).await
+    }).await
     }
     pub(crate) async fn tasks(&self, p: &Principal, a: &Access, q: Query) -> Result<Value> {
         q.validate()?;
-        let mut db = self.connection().await?;
-        db.build_transaction()
-            .repeatable_read()
-            .run::<_, Error, _>(async |db| {
-                Self::authorize(db, p, a).await?;
-                let seq = Self::sequence(db, &a.project).await?;
-                let result = Self::page(db, &a.project, &q, seq, None).await?;
-                Self::fresh(a)?;
-                Ok(result)
+        self.pool
+            .with_connection(async |db| {
+                db.build_transaction()
+                    .repeatable_read()
+                    .run::<_, Error, _>(async |db| {
+                        Self::authorize(db, p, a).await?;
+                        let seq = Self::sequence(db, &a.project).await?;
+                        let result = Self::page(db, &a.project, &q, seq, None).await?;
+                        Self::fresh(a)?;
+                        Ok(result)
+                    })
+                    .await
             })
             .await
     }
     pub(crate) async fn detail(&self, p: &Principal, a: &Access, id: &str) -> Result<Value> {
         crate::key(id)?;
-        let mut db = self.connection().await?;
+        self.pool.with_connection(async |db| {
+
         db.build_transaction().repeatable_read().run::<_, Error, _>(async |db| {
             Self::authorize(db, p, a).await?;
             let task = Self::task(db, &a.project, id).await?;
@@ -427,6 +427,7 @@ impl BoardStore {
             Ok(json!({"task":task,"subtasks":children,"parent":parent,"attachments":attachments}))
         })
         .await
+    }).await
     }
     pub(crate) async fn history(
         &self,
@@ -443,7 +444,8 @@ impl BoardStore {
         if let Some(id) = id {
             crate::key(id)?;
         }
-        let mut db = self.connection().await?;
+        self.pool.with_connection(async |db| {
+
         db.build_transaction().repeatable_read().run::<_,Error,_>(async |db|{
             Self::authorize(db,p,a).await?;
             if let Some(id)=id{Self::task(db,&a.project,id).await?;}
@@ -462,6 +464,7 @@ impl BoardStore {
             let archived=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.projects p WHERE p.archived AND (p.id=$1 OR EXISTS(SELECT 1 FROM hagency_project_v1.boards b WHERE b.project_id=$1 AND b.owner_project_id=p.id))) AS value").bind::<Text,_>(&a.project).get_result::<Flag>(db).await?.value;
             Ok(json!({"readOnly":archived,"items":items,"next":next,"hasMore":more,"sequence":seq}))
         }).await
+    }).await
     }
     async fn rank(
         db: &mut AsyncPgConnection,
@@ -528,11 +531,32 @@ impl BoardStore {
             &serde_json::to_string(&mutation)
                 .map_err(|_| Error::Invalid("invalid_board_payload"))?,
         );
-        let mut db = self.connection().await?;
+        self.pool.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db|{
             Self::authorize(db,p,a).await?;
-            sql_query("INSERT INTO hagency_project_v1.boards(project_id,owner_project_id) VALUES($1,$1) ON CONFLICT DO NOTHING").bind::<Text,_>(&a.project).execute(db).await?;
-            let seq=sql_query("SELECT change_seq AS value FROM hagency_project_v1.boards WHERE project_id=$1 FOR UPDATE").bind::<Text,_>(&a.project).get_result::<Number>(db).await?.value;
+            {
+                use crate::schema::project_tables::boards as q;
+                let params = (&a.project,);
+                diesel::insert_into(q::table)
+                    .values((
+                        q::project_id.eq(&params.0),
+                        q::owner_project_id.eq(&params.0),
+                    ))
+                    .on_conflict_do_nothing()
+                    .execute(db)
+                    .await
+            }?;
+            let seq={
+                use crate::schema::project_tables::boards as q;
+                let params = (&a.project,);
+                q::table
+                    .select((q::change_seq,))
+                    .filter((q::project_id).eq(&params.0))
+                    .for_update()
+                    .get_result::<Number>(db)
+                    .await
+            }?.value;
             DomainStore::authorize_identity(db,p,crate::api::now_ms()).await?;Self::fresh(a)?;
             let replay=sql_query("SELECT jsonb_build_object('digest',digest,'result',result) AS value FROM hagency_project_v1.receipts WHERE project_id=$1 AND actor=$2 AND intent_key=$3")
                 .bind::<Text,_>(&a.project).bind::<Text,_>(&p.mxid).bind::<Text,_>(mutation.intent()).get_result::<Row>(db).await;
@@ -567,13 +591,30 @@ impl BoardStore {
                 Mutation::ConfigureColumns(input)=>{ Self::configure(db,&a.project,seq,input).await?; None }
                 Mutation::Create(input)=>{
                     Self::assignee(db,a,&input.fields).await?;
-                    let count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND archived_at IS NULL").bind::<Text,_>(&a.project).get_result::<Number>(db).await?.value;
+                    let count={
+                        use crate::schema::project_tables::tasks as q;
+                        let params = (&a.project,);
+                        q::table
+                            .select((diesel::dsl::count_star(),))
+                            .filter(((q::project_id).eq(&params.0)).and(q::archived_at.is_null()))
+                            .get_result::<Number>(db)
+                            .await
+                    }?.value;
                     if count>=10000{return Err(Error::Conflict("board_capacity_exceeded"));}
                     let id=format!("tsk_{}",crate::entity_id()?);
                     Self::admit(db,&a.project,&input.state,false).await?;
                     Self::parent(db,&a.project,&id,&input.fields).await?;
                     let rank=Self::rank(db,&a.project,&input.state,&id,None).await?;
-                    let number=sql_query("UPDATE hagency_project_v1.boards SET next_number=next_number+1 WHERE project_id=$1 RETURNING next_number-1 AS value").bind::<Text,_>(&a.project).get_result::<Number>(db).await?.value;
+                    let number={
+                        use crate::schema::project_tables::boards as q;
+                        let params = (&a.project,);
+                        diesel::update(q::table)
+                            .filter((q::project_id).eq(&params.0))
+                            .set((q::next_number.eq(q::next_number + 1),))
+                            .returning(((q::next_number - 1),))
+                            .get_result::<Number>(db)
+                            .await
+                    }?.value;
                     let f=&input.fields;
                     sql_query("INSERT INTO hagency_project_v1.tasks(id,project_id,number,title,description,state_key,rank,priority,assignee_mxid,labels,due_date,created_by,created_at,updated_at,parent_id,checklist) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::text::date,$12,$13,$13,$14,$15)")
                         .bind::<Text,_>(&id).bind::<Text,_>(&a.project).bind::<BigInt,_>(number).bind::<Text,_>(&f.title).bind::<Text,_>(&f.description).bind::<Text,_>(&input.state).bind::<BigInt,_>(rank).bind::<Text,_>(&f.priority).bind::<Nullable<Text>,_>(&f.assignee_mxid).bind::<Jsonb,_>(json!(f.labels)).bind::<Nullable<Text>,_>(&f.due_date).bind::<Text,_>(&p.mxid).bind::<BigInt,_>(now).bind::<Nullable<Text>,_>(&f.parent_id).bind::<Jsonb,_>(json!(f.checklist)).execute(db).await?;
@@ -592,14 +633,46 @@ impl BoardStore {
                     if input.position==Position::Between && input.expected_sequence!=Some(seq){return Err(Error::Conflict("board_snapshot_changed"));}
                     Self::admit(db,&a.project,&input.state,current_state==input.state).await?;
                     let rank=Self::rank(db,&a.project,&input.state,task,Some(input)).await?;
-                    sql_query("UPDATE hagency_project_v1.tasks SET state_key=$3,rank=$4,version=version+1,updated_at=$5 WHERE project_id=$1 AND id=$2")
-                        .bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<Text,_>(&input.state).bind::<BigInt,_>(rank).bind::<BigInt,_>(now).execute(db).await?;Some(task.clone())
+                    {
+                        use crate::schema::project_tables::tasks as q;
+                        let params = (&a.project, task, &input.state, rank, now);
+                        diesel::update(q::table)
+                            .filter(((q::project_id).eq(&params.0)).and((q::id).eq(&params.1)))
+                            .set((
+                                q::state_key.eq(&params.2),
+                                q::rank.eq(&params.3),
+                                q::version.eq(q::version + 1),
+                                q::updated_at.eq(&params.4),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;Some(task.clone())
                 }
                 Mutation::Archive{task,..}=>{
-                    sql_query("UPDATE hagency_project_v1.tasks SET archived_at=$3,updated_at=$3,version=version+1 WHERE project_id=$1 AND id=$2").bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<BigInt,_>(now).execute(db).await?;Some(task.clone())
+                    {
+                        use crate::schema::project_tables::tasks as q;
+                        let params = (&a.project, task, now);
+                        diesel::update(q::table)
+                            .filter(((q::project_id).eq(&params.0)).and((q::id).eq(&params.1)))
+                            .set((
+                                q::archived_at.eq(&params.2),
+                                q::updated_at.eq(&params.2),
+                                q::version.eq(q::version + 1),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;Some(task.clone())
                 }
                 Mutation::Restore{task:id,..}=>{
-                    let count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND archived_at IS NULL").bind::<Text,_>(&a.project).get_result::<Number>(db).await?.value;
+                    let count={
+                        use crate::schema::project_tables::tasks as q;
+                        let params = (&a.project,);
+                        q::table
+                            .select((diesel::dsl::count_star(),))
+                            .filter(((q::project_id).eq(&params.0)).and(q::archived_at.is_null()))
+                            .get_result::<Number>(db)
+                            .await
+                    }?.value;
                     if count>=10000{return Err(Error::Conflict("board_capacity_exceeded"));}
                     let state=task.as_ref().unwrap()["state"].as_str().unwrap();
                     Self::admit(db,&a.project,state,false).await?;
@@ -608,20 +681,71 @@ impl BoardStore {
                 }
                 Mutation::Comment{task,input}=>{
                     let id=format!("cmt_{}",crate::entity_id()?);
-                    sql_query("INSERT INTO hagency_project_v1.comments(id,project_id,task_id,author,body,created_at) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&id).bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<Text,_>(&p.mxid).bind::<Text,_>(&input.body).bind::<BigInt,_>(now).execute(db).await?;
+                    {
+                        use crate::schema::project_tables::comments as q;
+                        let params = (&id, &a.project, task, &p.mxid, &input.body, now);
+                        diesel::insert_into(q::table)
+                            .values((
+                                q::id.eq(&params.0),
+                                q::project_id.eq(&params.1),
+                                q::task_id.eq(&params.2),
+                                q::author.eq(&params.3),
+                                q::body.eq(&params.4),
+                                q::created_at.eq(&params.5),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;
                     comment=json!({"id":id,"author":p.mxid,"body":input.body,"createdAt":now});Some(task.clone())
                 }
             };
-            let seq=sql_query("UPDATE hagency_project_v1.boards SET change_seq=change_seq+1 WHERE project_id=$1 RETURNING change_seq AS value").bind::<Text,_>(&a.project).get_result::<Number>(db).await?.value;
-            sql_query("INSERT INTO hagency_project_v1.changes(project_id,seq,task_id,actor,kind,occurred_at) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&a.project).bind::<BigInt,_>(seq).bind::<Nullable<Text>,_>(&id).bind::<Text,_>(&p.mxid).bind::<Text,_>(mutation.kind()).bind::<BigInt,_>(now).execute(db).await?;
+            let seq={
+                use crate::schema::project_tables::boards as q;
+                let params = (&a.project,);
+                diesel::update(q::table)
+                    .filter((q::project_id).eq(&params.0))
+                    .set((q::change_seq.eq(q::change_seq + 1),))
+                    .returning((q::change_seq,))
+                    .get_result::<Number>(db)
+                    .await
+            }?.value;
+            {
+                use crate::schema::project_tables::changes as q;
+                let params = (&a.project, seq, &id, &p.mxid, mutation.kind(), now);
+                diesel::insert_into(q::table)
+                    .values((
+                        q::project_id.eq(&params.0),
+                        q::seq.eq(&params.1),
+                        q::task_id.eq(params.2),
+                        q::actor.eq(&params.3),
+                        q::kind.eq(&params.4),
+                        q::occurred_at.eq(&params.5),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             let previous=task.unwrap_or(Value::Null);
             let task=if let Some(id)=&id { Self::task(db,&a.project,id).await? } else { Value::Null };
             Self::record_collaboration(db,p,a,seq,&mutation,(&previous,&task),now).await?;
             let result=json!({"task":task,"sequence":seq,"comment":comment,"attachment":attachment,"replayed":false});
-            sql_query("INSERT INTO hagency_project_v1.receipts(project_id,actor,intent_key,digest,result) VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(&a.project).bind::<Text,_>(&p.mxid).bind::<Text,_>(mutation.intent()).bind::<Text,_>(&digest).bind::<Jsonb,_>(&result).execute(db).await?;
+            {
+                use crate::schema::project_tables::receipts as q;
+                let params = (&a.project, &p.mxid, mutation.intent(), &digest, &result);
+                diesel::insert_into(q::table)
+                    .values((
+                        q::project_id.eq(&params.0),
+                        q::actor.eq(&params.1),
+                        q::intent_key.eq(&params.2),
+                        q::digest.eq(&params.3),
+                        q::result.eq(&params.4),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             DomainStore::authorize_identity(db,p,crate::api::now_ms()).await?;Self::fresh(a)?;
             Ok(result)
         }).await
+    }).await
     }
 }
 #[cfg(test)]

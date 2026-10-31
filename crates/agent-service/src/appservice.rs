@@ -1,5 +1,6 @@
 //! Persist transaction and routing intent together before acknowledging Matrix.
 use crate::{Error, Result, hash};
+use diesel::{ExpressionMethods, QueryDsl};
 use diesel::{
     sql_query,
     sql_types::{BigInt, Bool, Jsonb, Text},
@@ -34,7 +35,7 @@ pub struct Inbox {
 }
 pub type KnownUser =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<bool>> + Send>> + Send + Sync>;
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 pub(crate) struct PendingTransaction {
     #[diesel(sql_type=Text)]
     pub id: String,
@@ -45,47 +46,85 @@ pub(crate) struct PendingTransaction {
 }
 impl Inbox {
     pub(crate) async fn probe_room(&self) -> Result<Option<String>> {
-        #[derive(diesel::QueryableByName)]
-        struct Room {
-            #[diesel(sql_type=Text)]
-            room_id: String,
-        }
-        Ok(
-            sql_query("SELECT room_id FROM hagency_agent_v1.readiness_room WHERE singleton")
-                .load::<Room>(&mut *self.db.lock().await?)
-                .await?
-                .into_iter()
-                .next()
-                .map(|r| r.room_id),
-        )
+        self.db
+            .with_connection(async |db| {
+                #[derive(diesel::Queryable, diesel::QueryableByName, diesel::Selectable)]
+                #[diesel(table_name = crate::schema::agent_tables::rooms)]
+                #[diesel(check_for_backend(diesel::pg::Pg))]
+                struct Room {
+                    #[diesel(sql_type=Text)]
+                    room_id: String,
+                }
+                Ok(
+                    sql_query(
+                        "SELECT room_id FROM hagency_agent_v1.readiness_room WHERE singleton",
+                    )
+                    .load::<Room>(&mut *db)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .map(|r| r.room_id),
+                )
+            })
+            .await
     }
     pub(crate) async fn retain_probe_room(&self, room: &str) -> Result<()> {
-        sql_query("INSERT INTO hagency_agent_v1.readiness_room(singleton,room_id) VALUES(true,$1) ON CONFLICT DO NOTHING").bind::<Text,_>(room).execute(&mut *self.db.lock().await?).await?;
-        Ok(())
+        self.db
+            .with_connection(async |db| {
+                {
+                    use crate::schema::agent_tables::readiness_room as q;
+                    let params = (room,);
+                    diesel::insert_into(q::table)
+                        .values((q::singleton.eq(true), q::room_id.eq(&params.0)))
+                        .on_conflict_do_nothing()
+                        .execute(&mut *db)
+                        .await
+                }?;
+                Ok(())
+            })
+            .await
     }
     pub(crate) async fn observed_event(&self, event: &str) -> Result<bool> {
-        #[derive(diesel::QueryableByName)]
+        self.db.with_connection(async |db| {
+
+        #[derive(diesel::Queryable, diesel::QueryableByName)]
         struct Observed {
             #[diesel(sql_type=Bool)]
             matched: bool,
         }
-        Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.readiness_receipts WHERE event_id=$2) OR EXISTS(SELECT 1 FROM hagency_agent_v1.inbound_transactions WHERE body->'events' @> $1::jsonb) AS matched").bind::<Jsonb,_>(json!([{"event_id":event}])).bind::<Text,_>(event).get_result::<Observed>(&mut *self.db.lock().await?).await?.matched)
+        Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.readiness_receipts WHERE event_id=$2) OR EXISTS(SELECT 1 FROM hagency_agent_v1.inbound_transactions WHERE body->'events' @> $1::jsonb) AS matched").bind::<Jsonb,_>(json!([{"event_id":event}])).bind::<Text,_>(event).get_result::<Observed>(&mut *db).await?.matched)
+
+}).await
     }
     pub(crate) async fn pending(&self) -> Result<Vec<PendingTransaction>> {
+        self.db.with_connection(async |db| {
+
         Ok(sql_query("SELECT t.id,t.body,t.received_at_ms FROM hagency_agent_v1.inbound_transactions t JOIN hagency_agent_v1.routing_jobs j ON j.transaction_id=t.id WHERE j.state='pending' ORDER BY j.received_at_ms,t.id LIMIT 10")
-            .load(&mut *self.db.lock().await?).await?)
+            .load(&mut *db).await?)
+
+}).await
     }
     pub(crate) async fn routed(&self, id: &str) -> Result<()> {
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
-            sql_query("UPDATE hagency_agent_v1.routing_jobs SET state='routed' WHERE transaction_id=$1").bind::<Text,_>(id).execute(db).await?;
+            {
+                use crate::schema::agent_tables::routing_jobs as q;
+                let params = (id,);
+                diesel::update(q::table)
+                    .filter((q::transaction_id).eq(&params.0))
+                    .set((q::state.eq("routed"),))
+                    .execute(db)
+                    .await
+            }?;
             // All recipient queues have durably accepted or definitively rejected
             // the event. Keep permanent id/digest tombstones, discard duplicate
             // plaintext. Unknown execution/reply/cost records are untouched.
             sql_query("UPDATE hagency_agent_v1.inbound_transactions SET body='{\"events\":[]}'::jsonb WHERE id=$1 AND EXISTS(SELECT 1 FROM hagency_agent_v1.routing_jobs WHERE transaction_id=$1 AND state='routed')").bind::<Text,_>(id).execute(db).await?;
             Ok(())
         }).await
+    }).await
     }
     pub async fn open(url: &str, hs_token: String) -> Result<Self> {
         if hs_token.len() < 32 {
@@ -109,7 +148,7 @@ impl Inbox {
             Ok(())
         }).await?;
         Ok(Self {
-            db: Arc::new(crate::database::Database::new(db, url)),
+            db: Arc::new(crate::database::Database::business(url)?),
             hs_token,
             limits: Limits::default(),
             known_user: None,
@@ -132,11 +171,15 @@ impl Inbox {
         binding: &str,
         reason: &str,
     ) -> Result<()> {
+        self.db.with_connection(async |db| {
+
         // Bounded metadata samples per transaction, without duplicating bodies.
         sql_query("INSERT INTO hagency_agent_v1.routing_rejections(transaction_id,event_id,binding_id,reason) SELECT $1,$2,$3,$4 WHERE (SELECT count(*) FROM hagency_agent_v1.routing_rejections WHERE transaction_id=$1)<16 ON CONFLICT DO NOTHING")
             .bind::<Text,_>(transaction).bind::<Text,_>(event).bind::<Text,_>(binding).bind::<Text,_>(reason)
-            .execute(&mut *self.db.lock().await?).await?;
+            .execute(&mut *db).await?;
         Ok(())
+
+}).await
     }
     pub fn router(&self) -> Router {
         Router::with_path("_matrix/app/v1")
@@ -175,28 +218,74 @@ impl Inbox {
         }
         let digest = hash(&encoded);
         let limits = self.limits;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection| {
-            #[derive(diesel::QueryableByName)] struct Existing {#[diesel(sql_type=Text)] digest:String}
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection| {
+            #[derive(diesel::Queryable, diesel::QueryableByName)] struct Existing {#[diesel(sql_type=Text)] digest:String}
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
-            let existing=sql_query("SELECT digest FROM hagency_agent_v1.inbound_transactions WHERE id=$1").bind::<Text,_>(id).load::<Existing>(db).await?;
+            let existing={
+                use crate::schema::agent_tables::inbound_transactions as q;
+                let params = (id,);
+                q::table
+                    .select((q::digest,))
+                    .filter((q::id).eq(&params.0))
+                    .load::<Existing>(db)
+                    .await
+            }?;
             if let Some(old)=existing.as_slice().first() {
                 return if old.digest==digest {Ok(())} else {Err(Error::Conflict("transaction_content_mismatch"))};
             }
-            #[derive(diesel::QueryableByName)] struct Count {#[diesel(sql_type=BigInt)] count:i64}
-            let pending=sql_query("SELECT count(*) AS count FROM hagency_agent_v1.routing_jobs WHERE state='pending'").get_result::<Count>(db).await?;
-            #[derive(diesel::QueryableByName)] struct Capacity {#[diesel(sql_type=BigInt)] records:i64,#[diesel(sql_type=BigInt)] bytes:i64}
+            #[derive(diesel::Queryable, diesel::QueryableByName)] struct Count {#[diesel(sql_type=BigInt)] count:i64}
+            let pending={
+                use crate::schema::agent_tables::routing_jobs as q;
+                q::table
+                    .select((diesel::dsl::count_star(),))
+                    .filter((q::state).eq("pending"))
+                    .get_result::<Count>(db)
+                    .await
+            }?;
+            #[derive(diesel::Queryable, diesel::QueryableByName)] struct Capacity {#[diesel(sql_type=BigInt)] records:i64,#[diesel(sql_type=BigInt)] bytes:i64}
             let capacity=sql_query("SELECT count(*) AS records,coalesce(sum(octet_length(t.body::text)),0)::bigint AS bytes FROM hagency_agent_v1.inbound_transactions t JOIN hagency_agent_v1.routing_jobs j ON j.transaction_id=t.id WHERE j.state='pending'").get_result::<Capacity>(db).await?;
-            #[derive(diesel::QueryableByName)] struct Incoming {#[diesel(sql_type=BigInt)] bytes:i64}
+            #[derive(diesel::Queryable, diesel::QueryableByName)] struct Incoming {#[diesel(sql_type=BigInt)] bytes:i64}
             let payload_bytes=sql_query("SELECT octet_length($1::jsonb::text)::bigint AS bytes").bind::<Jsonb,_>(&body).get_result::<Incoming>(db).await?.bytes;
             if pending.count>=limits.max_pending || capacity.records>=limits.max_records || capacity.bytes.saturating_add(payload_bytes)>limits.max_bytes {return Err(Error::Unavailable("appservice_queue_full"));}
             sql_query("INSERT INTO hagency_agent_v1.readiness_receipts(event_id,received_at_ms) SELECT e->>'event_id',$2 FROM jsonb_array_elements($1->'events') e WHERE e->>'type'='m.room.message' AND split_part(e->>'sender',':',1)='@_hagency_service' AND e->'content'->>'msgtype'='m.notice' AND e->'content'->>'body'='Hagency service readiness probe' AND length(e->>'event_id') BETWEEN 2 AND 255 AND EXISTS(SELECT 1 FROM hagency_agent_v1.readiness_room r WHERE r.room_id=e->>'room_id') ON CONFLICT DO NOTHING")
                 .bind::<Jsonb,_>(&body).bind::<BigInt,_>(now).execute(db).await?;
-            sql_query("DELETE FROM hagency_agent_v1.readiness_receipts WHERE received_at_ms<$1").bind::<BigInt,_>(now.saturating_sub(86_400_000)).execute(db).await?;
-            sql_query("INSERT INTO hagency_agent_v1.inbound_transactions(id,digest,body,received_at_ms) VALUES($1,$2,$3,$4)").bind::<Text,_>(id).bind::<Text,_>(digest).bind::<Jsonb,_>(body).bind::<BigInt,_>(now).execute(db).await?;
-            sql_query("INSERT INTO hagency_agent_v1.routing_jobs(transaction_id,received_at_ms) VALUES($1,$2)").bind::<Text,_>(id).bind::<BigInt,_>(now).execute(db).await?;
+            {
+                use crate::schema::agent_tables::readiness_receipts as q;
+                let params = (now.saturating_sub(86_400_000),);
+                diesel::delete(q::table)
+                    .filter((q::received_at_ms).lt(&params.0))
+                    .execute(db)
+                    .await
+            }?;
+            {
+                use crate::schema::agent_tables::inbound_transactions as q;
+                let params = (id, digest, body, now);
+                diesel::insert_into(q::table)
+                    .values((
+                        q::id.eq(&params.0),
+                        q::digest.eq(&params.1),
+                        q::body.eq(&params.2),
+                        q::received_at_ms.eq(&params.3),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
+            {
+                use crate::schema::agent_tables::routing_jobs as q;
+                let params = (id, now);
+                diesel::insert_into(q::table)
+                    .values((
+                        q::transaction_id.eq(&params.0),
+                        q::received_at_ms.eq(&params.1),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             Ok(())
         }).await
+    }).await
     }
     fn authenticated(&self, req: &Request) -> bool {
         let headers = req
@@ -331,7 +420,7 @@ mod tests {
         );
         let reopened = Inbox::open(&url, "h".repeat(64)).await.unwrap();
         reopened.accept(&id, json!({"events":[]}), 3).await.unwrap();
-        #[derive(diesel::QueryableByName)]
+        #[derive(diesel::Queryable, diesel::QueryableByName)]
         struct Job {
             #[diesel(sql_type=Text)]
             state: String,
@@ -339,7 +428,7 @@ mod tests {
         let jobs =
             sql_query("SELECT state FROM hagency_agent_v1.routing_jobs WHERE transaction_id=$1")
                 .bind::<Text, _>(&id)
-                .load::<Job>(&mut *reopened.db.lock().await.unwrap())
+                .load::<Job>(&mut *reopened.db.test_connection().await.unwrap())
                 .await
                 .unwrap();
         assert_eq!(jobs.len(), 1);
@@ -395,7 +484,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        #[derive(diesel::QueryableByName)]
+        #[derive(diesel::Queryable, diesel::QueryableByName)]
         struct Compact {
             #[diesel(sql_type=Jsonb)]
             body: Value,
@@ -403,7 +492,7 @@ mod tests {
         let stored =
             sql_query("SELECT body FROM hagency_agent_v1.inbound_transactions WHERE id=$1")
                 .bind::<Text, _>(&id)
-                .get_result::<Compact>(&mut *inbox.db.lock().await.unwrap())
+                .get_result::<Compact>(&mut *inbox.db.test_connection().await.unwrap())
                 .await
                 .unwrap();
         assert_eq!(stored.body, json!({"events":[]}));

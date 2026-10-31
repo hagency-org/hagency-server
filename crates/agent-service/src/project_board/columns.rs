@@ -1,4 +1,5 @@
 use super::*;
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
 impl BoardStore {
     pub(super) async fn columns(
         db: &mut AsyncPgConnection,
@@ -86,7 +87,19 @@ impl BoardStore {
             return Err(Error::Conflict("board_column_archived"));
         }
         if !same_column && let Some(limit) = column.wip_limit {
-            let count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND state_key=$2 AND archived_at IS NULL").bind::<Text,_>(project).bind::<Text,_>(state).get_result::<Number>(db).await?.value;
+            let count = {
+                use crate::schema::project_tables::tasks as q;
+                let params = (project, state);
+                q::table
+                    .select((diesel::dsl::count_star(),))
+                    .filter(
+                        (((q::project_id).eq(&params.0)).and((q::state_key).eq(&params.1)))
+                            .and(q::archived_at.is_null()),
+                    )
+                    .get_result::<Number>(db)
+                    .await
+            }?
+            .value;
             if count >= limit {
                 return Err(Error::Conflict("board_wip_limit_reached"));
             }
@@ -111,7 +124,19 @@ impl BoardStore {
             {
                 return Err(Error::Invalid("invalid_board_parent"));
             }
-            let children=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.tasks WHERE project_id=$1 AND parent_id=$2 AND id<>$3").bind::<Text,_>(project).bind::<Text,_>(parent).bind::<Text,_>(id).get_result::<Number>(db).await?.value;
+            let children = {
+                use crate::schema::project_tables::tasks as q;
+                let params = (project, parent, id);
+                q::table
+                    .select((diesel::dsl::count_star(),))
+                    .filter(
+                        (((q::project_id).eq(&params.0)).and((q::parent_id).eq(&params.1)))
+                            .and((q::id).ne(&params.2)),
+                    )
+                    .get_result::<Number>(db)
+                    .await
+            }?
+            .value;
             let has_children=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_project_v1.tasks WHERE project_id=$1 AND parent_id=$2) AS value").bind::<Text,_>(project).bind::<Text,_>(id).get_result::<Flag>(db).await?.value;
             if children >= 100 || has_children {
                 return Err(Error::Invalid("invalid_board_parent"));
