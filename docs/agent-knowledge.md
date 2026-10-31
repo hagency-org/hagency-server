@@ -42,6 +42,12 @@ Detailed contract and actual/failed qualification evidence are in dev-vibe.
 
 # 持久知识
 
+- Palpo main `719f6753` includes the 2026-10-30 publication migrations. Stop all
+  old writers sharing a Matrix database before migration; start one upgraded
+  instance first, then the remaining upgraded instances. Preserve opaque sync
+  tokens and follow upstream UPGRADING.md. A source lock update does not upgrade
+  an already running service or establish full recovery qualification (#605).
+
 - Synapse资格示例的OAuth桥可验证多个实际主人SDK token，但必须逐token查真实
   whoami并拒绝Bob/无效token；不能将第二台设备的任意字符串视为主人。可选
   --retain-owner-password仅保存新隔离test主人的密码，默认关闭，绝不用于生产。
