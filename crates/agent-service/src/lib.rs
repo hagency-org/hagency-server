@@ -12,6 +12,7 @@ pub mod configuration_types;
 mod database;
 pub mod domain;
 pub mod file_delivery;
+mod schema;
 pub use domain::project_board;
 mod api_project_board;
 pub mod gateway;
@@ -19,6 +20,8 @@ pub mod identity;
 pub mod matrix_client;
 pub mod store;
 pub mod transport;
+#[cfg(test)]
+mod upgrade_tests;
 pub mod worker_runtime;
 mod workers;
 

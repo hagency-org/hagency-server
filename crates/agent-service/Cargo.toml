@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+hagency-db-runtime = { path = "../db-runtime" }
 diesel.workspace = true
 diesel-async = { workspace = true, features = ["deadpool"] }
 tokio.workspace = true

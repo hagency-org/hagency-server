@@ -1,5 +1,6 @@
 //! Encrypted owner-conversation execution and original ciphertext publication.
 use super::*;
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
 pub(crate) const CAPABILITY: &str = "agent-encrypted-owner-execution-v1";
 use diesel::sql_types::Jsonb;
 use serde_json::{Value, json};
@@ -38,7 +39,7 @@ impl Action {
         }
     }
 }
-#[derive(diesel::QueryableByName, Serialize)]
+#[derive(diesel::Queryable, diesel::QueryableByName, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Publication {
     #[diesel(sql_type=Text)]
@@ -164,8 +165,9 @@ impl TransportStore {
         {
             return Err(Error::Invalid("invalid_encrypted_action_fields"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
    let(now,_)=Self::authenticate(db,p,now).await?;
    let e=Self::dispatch(db,p,&b.dispatch_id).await?;
    let scope=Self::scope(db,&e.binding_id).await?;
@@ -182,13 +184,35 @@ impl TransportStore {
     if e.state!="encrypted_acknowledged"||e.execution_id.is_some(){return Err(Error::Conflict("encrypted_dispatch_not_acknowledged"));}
     let reused=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.owner_events WHERE agent_id=$1 AND execution_id=$2) AS matched").bind::<Text,_>(&e.agent_id).bind::<Text,_>(&b.execution_id).get_result::<Flag>(db).await?.matched;
     if reused{return Err(Error::Conflict("execution_id_reused"));}
-    sql_query("UPDATE hagency_agent_v1.owner_events SET state='encrypted_running',execution_id=$1 WHERE id=$2").bind::<Text,_>(&b.execution_id).bind::<Text,_>(&e.id).execute(db).await?;
+    {
+        use crate::schema::agent_tables::owner_events as q;
+        let params = (&b.execution_id, &e.id);
+        diesel::update(q::table)
+            .filter((q::id).eq(&params.1))
+            .set((
+                q::state.eq("encrypted_running"),
+                q::execution_id.eq(&params.0),
+            ))
+            .execute(db)
+            .await
+    }?;
     let current=Self::clock(db,now).await?;Self::lease(db,p,&b.lease,current).await?;
     return Ok((json!({"dispatch":Self::dispatch(db,p,&e.id).await?,"newlyStarted":true}),false));
    }
    if e.execution_id.as_deref()!=Some(&b.execution_id){return Err(Error::Unauthorized("encrypted_execution_changed"));}
    if b.action=="finish" {
-    if e.state=="encrypted_running"{sql_query("UPDATE hagency_agent_v1.owner_events SET state='encrypted_unknown',outcome='host_stopped' WHERE id=$1").bind::<Text,_>(&e.id).execute(db).await?;}
+    if e.state=="encrypted_running"{{
+        use crate::schema::agent_tables::owner_events as q;
+        let params = (&e.id,);
+        diesel::update(q::table)
+            .filter((q::id).eq(&params.0))
+            .set((
+                q::state.eq("encrypted_unknown"),
+                q::outcome.eq("host_stopped"),
+            ))
+            .execute(db)
+            .await
+    }?;}
     return Ok((json!({"finished":true}),false));
    }
    if b.action=="authorize" {
@@ -203,26 +227,61 @@ impl TransportStore {
    let payload=b.payload.as_ref().ok_or(Error::Invalid("encrypted_payload_required"))?;validate_payload(payload,&p.mxid)?;
    let old=sql_query(format!("{SELECT} WHERE dispatch_id=$1 AND kind=$2 AND request_id=$3")).bind::<Text,_>(&e.id).bind::<Text,_>(kind).bind::<Text,_>(request).get_result::<Publication>(db).await.optional()?;
    if let Some(old)=old{
-    #[derive(diesel::QueryableByName)]struct Payload{#[diesel(sql_type=Jsonb)]payload:Value}
-    let original=sql_query("SELECT payload FROM hagency_agent_v1.encrypted_publications WHERE id=$1").bind::<Text,_>(&old.id).get_result::<Payload>(db).await?;
+    #[derive(diesel::Queryable, diesel::QueryableByName)]struct Payload{#[diesel(sql_type=Jsonb)]payload:Value}
+    let original={
+        use crate::schema::agent_tables::encrypted_publications as q;
+        let params = (&old.id,);
+        q::table
+            .select((q::payload,))
+            .filter((q::id).eq(&params.0))
+            .get_result::<Payload>(db)
+            .await
+    }?;
     if original.payload!=*payload||old.execution_id!=b.execution_id{return Err(Error::Conflict("encrypted_publication_changed"));}
     return Ok((json!({"publication":old}),false));
    }
    if e.state!="encrypted_running"{return Err(Error::Conflict("execution_not_running"));}
    let id=format!("encpub_{}",entity_id()?);
-   sql_query("INSERT INTO hagency_agent_v1.encrypted_publications(id,dispatch_id,execution_id,request_id,kind,payload,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,'possible',$7)").bind::<Text,_>(&id).bind::<Text,_>(&e.id).bind::<Text,_>(&b.execution_id).bind::<Text,_>(request).bind::<Text,_>(kind).bind::<Jsonb,_>(payload).bind::<BigInt,_>(now).execute(db).await?;
+   {
+       use crate::schema::agent_tables::encrypted_publications as q;
+       let params = (&id, &e.id, &b.execution_id, request, kind, payload, now);
+       diesel::insert_into(q::table)
+           .values((
+               q::id.eq(&params.0),
+               q::dispatch_id.eq(&params.1),
+               q::execution_id.eq(&params.2),
+               q::request_id.eq(&params.3),
+               q::kind.eq(&params.4),
+               q::payload.eq(&params.5),
+               q::state.eq("possible"),
+               q::created_at_ms.eq(&params.6),
+           ))
+           .execute(db)
+           .await
+   }?;
    let current=Self::clock(db,now).await?;Self::lease(db,p,&b.lease,current).await?;
    let publication=sql_query(format!("{SELECT} WHERE id=$1")).bind::<Text,_>(&id).get_result::<Publication>(db).await?;
    Ok((json!({"publication":publication,"room":scope.room_id,"puppet":scope.puppet_mxid}),true))
   }).await
+    }).await
     }
     pub(crate) async fn encrypted_sent(&self, id: &str, event: &str) -> Result<()> {
         matrix_id(event, '$')?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-   sql_query("UPDATE hagency_agent_v1.encrypted_publications SET state='sent',matrix_event_id=$2 WHERE id=$1 AND state='possible'").bind::<Text,_>(id).bind::<Text,_>(event).execute(db).await?;
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+   {
+       use crate::schema::agent_tables::encrypted_publications as q;
+       let params = (id, event);
+       diesel::update(q::table)
+           .filter(((q::id).eq(&params.0)).and((q::state).eq("possible")))
+           .set((q::state.eq("sent"), q::matrix_event_id.eq(&params.1)))
+           .execute(db)
+           .await
+   }?;
    sql_query("UPDATE hagency_agent_v1.owner_events SET state='encrypted_completed',outcome='replied' WHERE id=(SELECT dispatch_id FROM hagency_agent_v1.encrypted_publications WHERE id=$1 AND kind='reply' AND matrix_event_id=$2) AND state IN ('encrypted_running','encrypted_unknown')").bind::<Text,_>(id).bind::<Text,_>(event).execute(db).await?;Ok(())
   }).await
+    }).await
     }
 }
 

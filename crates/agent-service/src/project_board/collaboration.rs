@@ -1,6 +1,6 @@
 use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use diesel::sql_types::Binary;
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl};
 use sha2::{Digest, Sha256};
 
 const MAX_FILE: usize = 2 * 1024 * 1024;
@@ -129,10 +129,35 @@ impl BoardStore {
             if recipient == p.mxid || !a.members.contains(&recipient) {
                 continue;
             }
-            sql_query("INSERT INTO hagency_project_v1.notifications(project_id,recipient,seq,task_id,actor,kind,title,details,occurred_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING")
-                .bind::<Text,_>(&a.project).bind::<Text,_>(&recipient).bind::<BigInt,_>(seq).bind::<Text,_>(task_id)
-                .bind::<Text,_>(&p.mxid).bind::<Text,_>(mutation.kind()).bind::<Text,_>(task["title"].as_str().unwrap_or(""))
-                .bind::<Jsonb,_>(&details).bind::<BigInt,_>(now).execute(db).await?;
+            {
+                use crate::schema::project_tables::notifications as q;
+                let params = (
+                    &a.project,
+                    &recipient,
+                    seq,
+                    task_id,
+                    &p.mxid,
+                    mutation.kind(),
+                    task["title"].as_str().unwrap_or(""),
+                    &details,
+                    now,
+                );
+                diesel::insert_into(q::table)
+                    .values((
+                        q::project_id.eq(&params.0),
+                        q::recipient.eq(&params.1),
+                        q::seq.eq(&params.2),
+                        q::task_id.eq(&params.3),
+                        q::actor.eq(&params.4),
+                        q::kind.eq(&params.5),
+                        q::title.eq(&params.6),
+                        q::details.eq(&params.7),
+                        q::occurred_at.eq(&params.8),
+                    ))
+                    .on_conflict_do_nothing()
+                    .execute(db)
+                    .await
+            }?;
         }
         Ok(())
     }
@@ -145,17 +170,29 @@ impl BoardStore {
         if before < 0 {
             return Err(Error::Invalid("invalid_board_query"));
         }
-        let mut db = self.connection().await?;
+        self.pool.with_connection(async |db| {
+
         db.build_transaction().repeatable_read().run::<_,Error,_>(async |db|{
             Self::authorize(db,p,a).await?;
             let mut rows=sql_query("SELECT jsonb_build_object('sequence',seq,'taskId',task_id,'actor',actor,'kind',kind,'title',title,'details',details,'occurredAt',occurred_at,'read',read_at IS NOT NULL) AS value FROM hagency_project_v1.notifications WHERE project_id=$1 AND recipient=$2 AND ($3=0 OR seq<$3) ORDER BY seq DESC LIMIT 51")
                 .bind::<Text,_>(&a.project).bind::<Text,_>(&p.mxid).bind::<BigInt,_>(before).load::<Row>(db).await?.into_iter().map(|r|r.value).collect::<Vec<_>>();
             let more=rows.len()>50; rows.truncate(50);
-            let count=sql_query("SELECT count(*)::bigint AS value FROM hagency_project_v1.notifications WHERE project_id=$1 AND recipient=$2 AND read_at IS NULL")
-                .bind::<Text,_>(&a.project).bind::<Text,_>(&p.mxid).get_result::<Number>(db).await?.value;
+            let count={
+                use crate::schema::project_tables::notifications as q;
+                let params = (&a.project, &p.mxid);
+                q::table
+                    .select((diesel::dsl::count_star(),))
+                    .filter(
+                        (((q::project_id).eq(&params.0)).and((q::recipient).eq(&params.1)))
+                            .and(q::read_at.is_null()),
+                    )
+                    .get_result::<Number>(db)
+                    .await
+            }?.value;
             Self::fresh(a)?;
             Ok(json!({"unread":count,"next":rows.last().map(|r|r["sequence"].clone()).unwrap_or(json!(0)),"items":rows,"hasMore":more}))
         }).await
+    }).await
     }
     pub(crate) async fn read_notification(
         &self,
@@ -166,7 +203,8 @@ impl BoardStore {
         if input.sequence < 1 {
             return Err(Error::Invalid("invalid_board_query"));
         }
-        let mut db = self.connection().await?;
+        self.pool.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db|{
             Self::authorize(db,p,a).await?;
             sql_query("UPDATE hagency_project_v1.notifications SET read_at=coalesce(read_at,$5) WHERE project_id=$1 AND recipient=$2 AND (seq=$3 OR ($4 AND seq<=$3))")
@@ -175,6 +213,7 @@ impl BoardStore {
             Self::fresh(a)?;
             Ok(json!({"read":true}))
         }).await
+    }).await
     }
     pub(super) async fn attachment_list(
         db: &mut AsyncPgConnection,
@@ -201,9 +240,36 @@ impl BoardStore {
         }
         let size = bytes.len() as i64;
         let digest = hex::encode(Sha256::digest(&bytes));
-        sql_query("INSERT INTO hagency_project_v1.attachments(id,project_id,task_id,filename,content_type,data,created_by,created_at,byte_size,content_sha256) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
-            .bind::<Text,_>(&id).bind::<Text,_>(&a.project).bind::<Text,_>(task)
-            .bind::<Text,_>(&input.filename).bind::<Text,_>(&input.content_type).bind::<Binary,_>(bytes).bind::<Text,_>(&p.mxid).bind::<BigInt,_>(now).bind::<BigInt,_>(size).bind::<Text,_>(digest).execute(db).await?;
+        {
+            use crate::schema::project_tables::attachments as q;
+            let params = (
+                &id,
+                &a.project,
+                task,
+                &input.filename,
+                &input.content_type,
+                bytes,
+                &p.mxid,
+                now,
+                size,
+                digest,
+            );
+            diesel::insert_into(q::table)
+                .values((
+                    q::id.eq(&params.0),
+                    q::project_id.eq(&params.1),
+                    q::task_id.eq(&params.2),
+                    q::filename.eq(&params.3),
+                    q::content_type.eq(&params.4),
+                    q::data.eq(&params.5),
+                    q::created_by.eq(&params.6),
+                    q::created_at.eq(&params.7),
+                    q::byte_size.eq(&params.8),
+                    q::content_sha256.eq(&params.9),
+                ))
+                .execute(db)
+                .await
+        }?;
         Ok(id)
     }
     pub(crate) async fn attachment(
@@ -215,12 +281,14 @@ impl BoardStore {
     ) -> Result<Value> {
         crate::key(task)?;
         crate::key(id)?;
-        let mut db = self.connection().await?;
+        self.pool.with_connection(async |db| {
+
         db.build_transaction().repeatable_read().run::<_,Error,_>(async |db|{
             Self::authorize(db,p,a).await?;
             let row=sql_query("SELECT jsonb_build_object('id',id,'filename',filename,'contentType',content_type,'data',replace(encode(data,'base64'),E'\\n','')) AS value FROM hagency_project_v1.attachments WHERE project_id=$1 AND task_id=$2 AND id=$3 AND removed_at IS NULL")
                 .bind::<Text,_>(&a.project).bind::<Text,_>(task).bind::<Text,_>(id).get_result::<Row>(db).await.map_err(|e|match e {diesel::result::Error::NotFound=>Error::NotFound("board_attachment_not_found"),other=>other.into()})?;
             Self::fresh(a)?;Ok(row.value)
         }).await
+    }).await
     }
 }

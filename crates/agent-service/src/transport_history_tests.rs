@@ -114,7 +114,7 @@ async fn postgres_started_history_pages_are_permanent_owner_scoped_and_body_free
             .is_err()
     );
     {
-        let mut db = f.transport.db.lock().await.unwrap();
+        let mut db = f.transport.db.test_connection().await.unwrap();
         for statement in [
             "DELETE FROM hagency_agent_v1.owner_events WHERE id=$1",
             "UPDATE hagency_agent_v1.owner_events SET execution_id=NULL WHERE id=$1",
@@ -384,7 +384,7 @@ async fn postgres_execution_history_real_routes_require_device_and_atomic_witnes
     )
     .await;
     {
-        let mut db = f.transport.db.lock().await.unwrap();
+        let mut db = f.transport.db.test_connection().await.unwrap();
         assert!(!sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.execution_leases WHERE agent_id=$1) AS matched").bind::<Text,_>(&f.agent).get_result::<Flag>(&mut *db).await.unwrap().matched);
     }
     let acquired=post(&service,acquire_path,&f.device_token,json!({"agentId":f.agent,"ttlMs":30000,"takeover":false,"historySnapshot":h["history"]["snapshot"]}),StatusCode::OK).await;

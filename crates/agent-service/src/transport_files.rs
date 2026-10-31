@@ -3,9 +3,10 @@ use crate::file_delivery::{
     CHUNK_BYTES, Delivery, FileLookup, FileObservation, MAX_BYTES, MAX_CHUNKS, Manifest, Target,
 };
 use diesel::sql_types::{Binary, Jsonb};
+use diesel::{BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl};
 use serde_json::Value;
 const SELECT: &str = "SELECT id,request_id,owner_event_id,execution_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,requester_mxid,thread_root,binding_generation,dispatch_epoch,dispatch_device_id,manifest,manifest_digest,received_bytes,state,mxc_url,worker_phase,worker_token,worker_until_ms,matrix_event_id,created_at_ms FROM hagency_agent_v1.file_outbox";
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 pub(crate) struct FileRow {
     #[diesel(sql_type=Text)]
     pub id: String,
@@ -56,7 +57,7 @@ pub(crate) struct FileRow {
     #[diesel(sql_type=BigInt)]
     created_at_ms: i64,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct Blob {
     #[diesel(sql_type=Binary)]
     content: Vec<u8>,
@@ -229,21 +230,77 @@ impl TransportStore {
             self.reject_event_delivery(dispatch, f, now).await?;
             return Err(Error::Unauthorized("requester_membership_revoked"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let (now,_)=Self::authenticate(db,p,now).await?;
             let e=Self::dispatch(db,p,dispatch).await?;Self::dispatch_scope(db,p,lease,&e,f,now).await?;Self::file_allowed(db,dispatch).await?;fenced(&e,p,lease)?;
             if e.state!="running"||e.execution_id.as_deref()!=Some(execution) {return Err(Error::Conflict("execution_not_running"))}
             let prior=sql_query(format!("{SELECT} WHERE owner_event_id=$1 AND request_id=$2")).bind::<Text,_>(dispatch).bind::<Text,_>(request_id).get_result::<FileRow>(db).await.optional()?;
             if let Some(prior)=prior {if prior.manifest_digest!=digest||prior.manifest!=serde_json::to_value(&file).map_err(|_|Error::Invalid("invalid_file_manifest"))?||prior.execution_id!=execution {return Err(Error::Conflict("file_request_changed"))}return prior.public();}
-            let count=sql_query("SELECT count(*) AS total FROM hagency_agent_v1.file_outbox WHERE owner_user_id=$1 AND state NOT IN ('sent','cancelled')").bind::<Text,_>(&p.user_id).get_result::<Count>(db).await?;
+            let count={
+                use crate::schema::agent_tables::file_outbox as q;
+                let params = (&p.user_id,);
+                q::table
+                    .select((diesel::dsl::count_star(),))
+                    .filter(
+                        ((q::owner_user_id).eq(&params.0))
+                            .and(diesel::dsl::not(q::state.eq_any(vec!["sent", "cancelled"]))),
+                    )
+                    .get_result::<Count>(db)
+                    .await
+            }?;
             let held=sql_query("SELECT coalesce(sum((manifest->>'bytes')::bigint),0)::bigint AS total FROM hagency_agent_v1.file_outbox WHERE owner_user_id=$1 AND state NOT IN ('sent','cancelled')").bind::<Text,_>(&p.user_id).get_result::<Count>(db).await?;
             if count.total>=4096||held.total.saturating_add(file.bytes as i64)>128*1024*1024 {return Err(Error::Conflict("file_capacity_exceeded"))}
             let scope=Self::scope(db,&e.binding_id).await?;let id=format!("fil_{}",entity_id()?);
-            sql_query("INSERT INTO hagency_agent_v1.file_outbox(id,request_id,owner_event_id,execution_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,requester_mxid,thread_root,binding_generation,dispatch_epoch,dispatch_device_id,manifest,manifest_digest,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'staging',$17)")
-                .bind::<Text,_>(&id).bind::<Text,_>(request_id).bind::<Text,_>(dispatch).bind::<Text,_>(execution).bind::<Text,_>(&e.agent_id).bind::<Text,_>(&e.binding_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&e.room_id).bind::<Text,_>(&scope.puppet_mxid).bind::<Text,_>(&e.requester_mxid).bind::<Text,_>(&e.thread_root).bind::<BigInt,_>(e.binding_generation).bind::<BigInt,_>(lease.epoch).bind::<Text,_>(device(p)?.0).bind::<Jsonb,_>(serde_json::to_value(&file).map_err(|_|Error::Invalid("invalid_file_manifest"))?).bind::<Text,_>(digest).bind::<BigInt,_>(now).execute(db).await?;
+            {
+                use crate::schema::agent_tables::file_outbox as q;
+                let params = (
+                    &id,
+                    request_id,
+                    dispatch,
+                    execution,
+                    &e.agent_id,
+                    &e.binding_id,
+                    &p.user_id,
+                    &e.room_id,
+                    &scope.puppet_mxid,
+                    &e.requester_mxid,
+                    &e.thread_root,
+                    e.binding_generation,
+                    lease.epoch,
+                    device(p)?.0,
+                    serde_json::to_value(&file).map_err(|_| Error::Invalid("invalid_file_manifest"))?,
+                    digest,
+                    now,
+                );
+                diesel::insert_into(q::table)
+                    .values((
+                        q::id.eq(&params.0),
+                        q::request_id.eq(&params.1),
+                        q::owner_event_id.eq(&params.2),
+                        q::execution_id.eq(&params.3),
+                        q::agent_id.eq(&params.4),
+                        q::binding_id.eq(&params.5),
+                        q::owner_user_id.eq(&params.6),
+                        q::room_id.eq(&params.7),
+                        q::puppet_mxid.eq(&params.8),
+                        q::requester_mxid.eq(&params.9),
+                        q::thread_root.eq(&params.10),
+                        q::binding_generation.eq(&params.11),
+                        q::dispatch_epoch.eq(&params.12),
+                        q::dispatch_device_id.eq(&params.13),
+                        q::manifest.eq(&params.14),
+                        q::manifest_digest.eq(&params.15),
+                        q::state.eq("staging"),
+                        q::created_at_ms.eq(&params.16),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             row(db,&id).await?.public()
         }).await
+    }).await
     }
     #[allow(clippy::too_many_arguments)]
     pub async fn stage_file_chunk(
@@ -266,26 +323,76 @@ impl TransportStore {
                 .await?;
             return Err(Error::Unauthorized("requester_membership_revoked"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?;let(now,_)=Self::authenticate(db,p,now).await?;
-            let r=Self::writable_file(db,p,lease,target,f,now).await?;
-            if r.state!="staging" {return Err(Error::Conflict("file_not_staging"))}let manifest=r.manifest()?;
-            if offset.saturating_add(bytes.len() as u64)>manifest.bytes {return Err(Error::Invalid("file_size_mismatch"))}
-            if offset<r.received_bytes as u64 {
-                if offset+bytes.len() as u64>r.received_bytes as u64 {return Err(Error::Conflict("file_chunk_changed"))}
-                let stored=file_range(db,&r.id,offset,bytes.len()).await?;
-                if stored!=bytes {return Err(Error::Conflict("file_chunk_changed"))}return r.public();
-            }
-            if offset!=r.received_bytes as u64 {return Err(Error::Conflict("file_chunk_gap"))}
-            let chunks=sql_query("SELECT count(*) AS total FROM hagency_agent_v1.file_chunks WHERE file_id=$1").bind::<Text,_>(&r.id).get_result::<Count>(db).await?.total as usize;
-            // Never accept a tiny chunk that leaves too few slots to complete
-            // the original manifest with legal maximum-size chunks.
-            let remaining=manifest.bytes-offset-bytes.len() as u64;
-            if chunks>=MAX_CHUNKS || remaining>(MAX_CHUNKS-chunks-1) as u64*CHUNK_BYTES as u64 {return Err(Error::Invalid("file_chunk_limit"))}
-            sql_query("INSERT INTO hagency_agent_v1.file_chunks(file_id,byte_offset,content) VALUES($1,$2,$3)").bind::<Text,_>(&r.id).bind::<diesel::sql_types::Integer,_>(offset as i32).bind::<Binary,_>(bytes).execute(db).await?;
-            sql_query("UPDATE hagency_agent_v1.file_outbox SET received_bytes=received_bytes+$2 WHERE id=$1").bind::<Text,_>(&r.id).bind::<BigInt,_>(bytes.len() as i64).execute(db).await?;row(db,&r.id).await?.public()
-        }).await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::lock(db).await?;
+                    let (now, _) = Self::authenticate(db, p, now).await?;
+                    let r = Self::writable_file(db, p, lease, target, f, now).await?;
+                    if r.state != "staging" {
+                        return Err(Error::Conflict("file_not_staging"));
+                    }
+                    let manifest = r.manifest()?;
+                    if offset.saturating_add(bytes.len() as u64) > manifest.bytes {
+                        return Err(Error::Invalid("file_size_mismatch"));
+                    }
+                    if offset < r.received_bytes as u64 {
+                        if offset + bytes.len() as u64 > r.received_bytes as u64 {
+                            return Err(Error::Conflict("file_chunk_changed"));
+                        }
+                        let stored = file_range(db, &r.id, offset, bytes.len()).await?;
+                        if stored != bytes {
+                            return Err(Error::Conflict("file_chunk_changed"));
+                        }
+                        return r.public();
+                    }
+                    if offset != r.received_bytes as u64 {
+                        return Err(Error::Conflict("file_chunk_gap"));
+                    }
+                    let chunks = {
+                        use crate::schema::agent_tables::file_chunks as q;
+                        let params = (&r.id,);
+                        q::table
+                            .select((diesel::dsl::count_star(),))
+                            .filter((q::file_id).eq(&params.0))
+                            .get_result::<Count>(db)
+                            .await
+                    }?
+                    .total as usize;
+                    // Never accept a tiny chunk that leaves too few slots to complete
+                    // the original manifest with legal maximum-size chunks.
+                    let remaining = manifest.bytes - offset - bytes.len() as u64;
+                    if chunks >= MAX_CHUNKS
+                        || remaining > (MAX_CHUNKS - chunks - 1) as u64 * CHUNK_BYTES as u64
+                    {
+                        return Err(Error::Invalid("file_chunk_limit"));
+                    }
+                    {
+                        use crate::schema::agent_tables::file_chunks as q;
+                        let params = (&r.id, offset as i32, bytes);
+                        diesel::insert_into(q::table)
+                            .values((
+                                q::file_id.eq(&params.0),
+                                q::byte_offset.eq(&params.1),
+                                q::content.eq(&params.2),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;
+                    {
+                        use crate::schema::agent_tables::file_outbox as q;
+                        let params = (&r.id, bytes.len() as i64);
+                        diesel::update(q::table)
+                            .filter((q::id).eq(&params.0))
+                            .set((q::received_bytes.eq(q::received_bytes + params.1),))
+                            .execute(db)
+                            .await
+                    }?;
+                    row(db, &r.id).await?.public()
+                })
+                .await
+            })
+            .await
     }
     pub async fn queue_file(
         &self,
@@ -302,28 +409,35 @@ impl TransportStore {
                 .await?;
             return Err(Error::Unauthorized("requester_membership_revoked"));
         }
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                Self::lock(db).await?;
-                let (now, _) = Self::authenticate(db, p, now).await?;
-                let r = Self::writable_file(db, p, lease, target, f, now).await?;
-                if r.state != "staging" {
-                    return r.public();
-                }
-                let f = r.manifest()?;
-                let bytes = file_bytes(db, &r.id).await?;
-                if bytes.len() as u64 != f.bytes
-                    || r.received_bytes as u64 != f.bytes
-                    || hash_bytes(&bytes) != f.sha256
-                {
-                    return Err(Error::Conflict("file_bytes_mismatch"));
-                }
-                sql_query("UPDATE hagency_agent_v1.file_outbox SET state='queued' WHERE id=$1")
-                    .bind::<Text, _>(&r.id)
-                    .execute(db)
-                    .await?;
-                row(db, &r.id).await?.public()
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::lock(db).await?;
+                    let (now, _) = Self::authenticate(db, p, now).await?;
+                    let r = Self::writable_file(db, p, lease, target, f, now).await?;
+                    if r.state != "staging" {
+                        return r.public();
+                    }
+                    let f = r.manifest()?;
+                    let bytes = file_bytes(db, &r.id).await?;
+                    if bytes.len() as u64 != f.bytes
+                        || r.received_bytes as u64 != f.bytes
+                        || hash_bytes(&bytes) != f.sha256
+                    {
+                        return Err(Error::Conflict("file_bytes_mismatch"));
+                    }
+                    {
+                        use crate::schema::agent_tables::file_outbox as q;
+                        let params = (&r.id,);
+                        diesel::update(q::table)
+                            .filter((q::id).eq(&params.0))
+                            .set((q::state.eq("queued"),))
+                            .execute(db)
+                            .await
+                    }?;
+                    row(db, &r.id).await?.public()
+                })
+                .await
             })
             .await
     }
@@ -335,13 +449,15 @@ impl TransportStore {
         now: i64,
     ) -> Result<Delivery> {
         target.validate()?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                Self::authenticate(db, p, now).await?;
-                let r = row(db, &target.file_id).await?;
-                target_matches(&r, p, target)?;
-                r.public()
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::authenticate(db, p, now).await?;
+                    let r = row(db, &target.file_id).await?;
+                    target_matches(&r, p, target)?;
+                    r.public()
+                })
+                .await
             })
             .await
     }
@@ -355,50 +471,67 @@ impl TransportStore {
         now: i64,
     ) -> Result<FileObservation> {
         request.validate()?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                Self::authenticate(db, p, now).await?;
-                let event = Self::dispatch(db, p, &request.dispatch_id).await?;
-                if event.execution_id.as_deref() != Some(&request.execution_id) {
-                    return Err(Error::NotFound("file_execution_not_found"));
-                }
-                let prior = sql_query(format!(
-                    "{SELECT} WHERE owner_event_id=$1 AND execution_id=$2 AND request_id=$3"
-                ))
-                .bind::<Text, _>(&request.dispatch_id)
-                .bind::<Text, _>(&request.execution_id)
-                .bind::<Text, _>(&request.request_id)
-                .get_result::<FileRow>(db)
-                .await
-                .optional()?;
-                Ok(FileObservation {
-                    request: request.clone(),
-                    delivery: prior.map(|r| r.public()).transpose()?,
-                    preparation_closed: matches!(
-                        event.state.as_str(),
-                        "unknown" | "completed" | "cancelled"
-                    ),
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::authenticate(db, p, now).await?;
+                    let event = Self::dispatch(db, p, &request.dispatch_id).await?;
+                    if event.execution_id.as_deref() != Some(&request.execution_id) {
+                        return Err(Error::NotFound("file_execution_not_found"));
+                    }
+                    let prior = sql_query(format!(
+                        "{SELECT} WHERE owner_event_id=$1 AND execution_id=$2 AND request_id=$3"
+                    ))
+                    .bind::<Text, _>(&request.dispatch_id)
+                    .bind::<Text, _>(&request.execution_id)
+                    .bind::<Text, _>(&request.request_id)
+                    .get_result::<FileRow>(db)
+                    .await
+                    .optional()?;
+                    Ok(FileObservation {
+                        request: request.clone(),
+                        delivery: prior.map(|r| r.public()).transpose()?,
+                        preparation_closed: matches!(
+                            event.state.as_str(),
+                            "unknown" | "completed" | "cancelled"
+                        ),
+                    })
                 })
+                .await
             })
             .await
     }
     pub(crate) async fn expire_files(&self, now: i64) -> Result<()> {
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;
-            sql_query("UPDATE hagency_agent_v1.file_outbox SET state='unknown' WHERE state IN ('uploading','sending') AND worker_until_ms<=$1").bind::<BigInt,_>(now).execute(db).await?;
+            {
+                use crate::schema::agent_tables::file_outbox as q;
+                let params = (now,);
+                diesel::update(q::table)
+                    .filter(
+                        (q::state.eq_any(vec!["uploading", "sending"])).and((q::worker_until_ms).le(&params.0)),
+                    )
+                    .set((q::state.eq("unknown"),))
+                    .execute(db)
+                    .await
+            }?;
             sql_query("UPDATE hagency_agent_v1.file_outbox SET state='cancelled',content=''::bytea WHERE state IN ('staging','queued','uploaded') AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.file_sendable v WHERE v.id=file_outbox.id)").execute(db).await?;Ok(())
         }).await
+    }).await
     }
     pub(crate) async fn file_candidates(&self, cursor: &str) -> Result<Vec<FileRow>> {
-        let mut db = self.db.lock().await?;
-        Ok(sql_query(format!(
-            "{SELECT} WHERE state IN ('queued','uploaded') ORDER BY (id<=$1),id LIMIT 10"
-        ))
-        .bind::<Text, _>(cursor)
-        .load(&mut *db)
-        .await?)
+        self.db
+            .with_connection(async |db| {
+                Ok(sql_query(format!(
+                    "{SELECT} WHERE state IN ('queued','uploaded') ORDER BY (id<=$1),id LIMIT 10"
+                ))
+                .bind::<Text, _>(cursor)
+                .load(&mut *db)
+                .await?)
+            })
+            .await
     }
     #[cfg(test)]
     pub(crate) async fn claim_file(
@@ -417,8 +550,9 @@ impl TransportStore {
         gate: Option<&crate::worker_runtime::ClaimGate>,
     ) -> Result<FileClaim> {
         let original = {
-            let mut db = self.db.lock().await?;
-            row(&mut db, id).await?
+            self.db
+                .with_connection(async |db| row(&mut *db, id).await)
+                .await?
         };
         self.observe_delivery_authority(
             None,
@@ -434,10 +568,20 @@ impl TransportStore {
                 .await?;
             return Err(Error::Unauthorized("requester_membership_revoked"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
-            sql_query("SELECT true AS matched FROM hagency_agent_v1.file_outbox WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<Flag>(db).await?;
+            {
+                use crate::schema::agent_tables::file_outbox as q;
+                let params = (id,);
+                q::table
+                    .select((true.into_sql::<diesel::sql_types::Bool>(),))
+                    .filter((q::id).eq(&params.0))
+                    .for_update()
+                    .get_result::<Flag>(db)
+                    .await
+            }?;
             let now=Self::clock(db,now).await?;let r=row(db,id).await?;
             if !matches!(r.state.as_str(),"queued"|"uploaded") {return Err(Error::Conflict("file_not_sendable"))}
             let scope=Self::scope(db,&r.binding_id).await?;facts(&scope,&r.requester_mxid,f,now)?;Self::file_allowed(db,&r.owner_event_id).await?;
@@ -454,9 +598,23 @@ impl TransportStore {
             let live=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.file_sendable WHERE id=$1) AND EXISTS(SELECT 1 FROM hagency_agent_v1.owner_events WHERE id=$2 AND created_at_ms>$3) AS matched").bind::<Text,_>(id).bind::<Text,_>(&r.owner_event_id).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).get_result::<Flag>(db).await?;
             if !live.matched {return Err(Error::Unauthorized("file_lease_expired"))}
             let _admission=gate.map(crate::worker_runtime::ClaimGate::admit).transpose()?;
-            let token=secret_token();sql_query("UPDATE hagency_agent_v1.file_outbox SET state=$2,worker_phase=$3,worker_token=$4,worker_until_ms=$5 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(state).bind::<Text,_>(phase).bind::<Text,_>(&token).bind::<BigInt,_>(now+60_000).execute(db).await?;
+            let token=secret_token();{
+                use crate::schema::agent_tables::file_outbox as q;
+                let params = (id, state, phase, &token, now + 60_000);
+                diesel::update(q::table)
+                    .filter((q::id).eq(&params.0))
+                    .set((
+                        q::state.eq(&params.1),
+                        q::worker_phase.eq(&params.2),
+                        q::worker_token.eq(&params.3),
+                        q::worker_until_ms.eq(&params.4),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             Ok(FileClaim{row:row(db,id).await?,token,bytes})
         }).await
+    }).await
     }
     pub(crate) async fn confirm_file_upload(
         &self,
@@ -470,43 +628,46 @@ impl TransportStore {
                 &serde_json::json!({"msgtype":"m.file","body":"file","url":url}),
             )?;
         }
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                Self::lock(db).await?;
-                let now = Self::clock(db, now).await?;
-                let r = row(db, id).await?;
-                if r.worker_phase.as_deref() != Some("upload")
-                    || r.worker_token.as_deref() != Some(token)
-                {
-                    return Err(Error::Conflict("stale_file_worker"));
-                }
-                if let Some(known) = &r.mxc_url {
-                    if Some(known.as_str()) != mxc {
-                        return Err(Error::Conflict("file_media_changed"));
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::lock(db).await?;
+                    let now = Self::clock(db, now).await?;
+                    let r = row(db, id).await?;
+                    if r.worker_phase.as_deref() != Some("upload")
+                        || r.worker_token.as_deref() != Some(token)
+                    {
+                        return Err(Error::Conflict("stale_file_worker"));
                     }
-                    return Ok(());
-                }
-                if !matches!(r.state.as_str(), "uploading" | "unknown") {
-                    return Err(Error::Conflict("file_not_uploading"));
-                }
-                let state = if r.state == "uploading" && r.worker_until_ms > now && mxc.is_some() {
-                    "uploaded"
-                } else {
-                    "unknown"
-                };
-                if r.state == "unknown" && mxc.is_none() {
-                    return Ok(());
-                }
-                sql_query(
-                    "UPDATE hagency_agent_v1.file_outbox SET state=$2,mxc_url=$3 WHERE id=$1",
-                )
-                .bind::<Text, _>(id)
-                .bind::<Text, _>(state)
-                .bind::<Nullable<Text>, _>(mxc)
-                .execute(db)
-                .await?;
-                Ok(())
+                    if let Some(known) = &r.mxc_url {
+                        if Some(known.as_str()) != mxc {
+                            return Err(Error::Conflict("file_media_changed"));
+                        }
+                        return Ok(());
+                    }
+                    if !matches!(r.state.as_str(), "uploading" | "unknown") {
+                        return Err(Error::Conflict("file_not_uploading"));
+                    }
+                    let state =
+                        if r.state == "uploading" && r.worker_until_ms > now && mxc.is_some() {
+                            "uploaded"
+                        } else {
+                            "unknown"
+                        };
+                    if r.state == "unknown" && mxc.is_none() {
+                        return Ok(());
+                    }
+                    sql_query(
+                        "UPDATE hagency_agent_v1.file_outbox SET state=$2,mxc_url=$3 WHERE id=$1",
+                    )
+                    .bind::<Text, _>(id)
+                    .bind::<Text, _>(state)
+                    .bind::<Nullable<Text>, _>(mxc)
+                    .execute(db)
+                    .await?;
+                    Ok(())
+                })
+                .await
             })
             .await
     }
@@ -519,8 +680,9 @@ impl TransportStore {
         if let Some(event) = event {
             matrix_id(event, '$')?;
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let r=row(db,id).await?;
             if r.worker_phase.as_deref()!=Some("send")||r.worker_token.as_deref()!=Some(token) {return Err(Error::Conflict("stale_file_worker"))}
             if r.state=="sent" {if r.matrix_event_id.as_deref()!=event {return Err(Error::Conflict("file_message_changed"))}return Ok(())}
@@ -528,6 +690,7 @@ impl TransportStore {
             if event.is_none()&&r.state=="unknown" {return Ok(())}
             sql_query("UPDATE hagency_agent_v1.file_outbox SET state=$2,matrix_event_id=$3,content=CASE WHEN $3::text IS NOT NULL THEN ''::bytea ELSE content END WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(if event.is_some(){"sent"}else{"unknown"}).bind::<Nullable<Text>,_>(event).execute(db).await?;Ok(())
         }).await
+    }).await
     }
     /// Verified Appservice observation can settle an original possible send.
     /// It never retries an upload or publication, or queues model inference.
@@ -538,8 +701,9 @@ impl TransportStore {
         let Some(id) = event["content"]["org.hagency.file_delivery_id"].as_str() else {
             return Ok(false);
         };
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
             let r=match row(db,id).await {Ok(r)=>r,Err(Error::NotFound(_))=>return Ok(false),Err(e)=>return Err(e)};
             if r.worker_phase.as_deref()!=Some("send") || !matches!(r.state.as_str(),"sending"|"unknown"|"sent") || event["sender"]!=r.puppet_mxid||event["room_id"]!=r.room_id||event["content"]!=r.content()? {return Ok(false)}
@@ -547,6 +711,7 @@ impl TransportStore {
             if r.state=="sent" {if r.matrix_event_id.as_deref()!=Some(event){return Err(Error::Conflict("file_message_changed"))}return Ok(true)}
             sql_query("UPDATE hagency_agent_v1.file_outbox SET state='sent',matrix_event_id=$2,content=''::bytea WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(event).execute(db).await?;Ok(true)
         }).await
+    }).await
     }
 }
 fn hash_bytes(bytes: &[u8]) -> String {

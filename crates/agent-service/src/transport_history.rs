@@ -47,14 +47,14 @@ pub struct ExecutionHistoryPage {
     pub executions: Vec<HistoryExecution>,
     pub next_cursor: Option<String>,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct IdentityRow {
     #[diesel(sql_type=Text)]
     id: String,
     #[diesel(sql_type=Text)]
     execution_id: String,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct HistoryRow {
     #[diesel(sql_type=Text)]
     id: String,
@@ -178,8 +178,9 @@ impl TransportStore {
         if let Some(expected) = expected {
             expected.validate()?;
         }
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authenticate(db,p,now).await?;
             let current=snapshot(db,p,agent).await?;
             if expected.is_some_and(|value|value!=&current){return Err(Error::Conflict("execution_history_changed"));}
@@ -191,6 +192,7 @@ impl TransportStore {
             Self::authenticate(db,p,now).await?;
             Ok(ExecutionHistoryPage{agent_id:agent.into(),snapshot:current,executions,next_cursor})
         }).await
+    }).await
     }
     #[cfg(test)]
     pub(crate) async fn acquire_for_test(

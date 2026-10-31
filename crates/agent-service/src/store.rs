@@ -1,4 +1,5 @@
 use crate::{Error, Result, entity_id, hash, identity::Identity, key, secret_token};
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl, SelectableHelper};
 use diesel::{
     sql_query,
     sql_types::{BigInt, Bool, Nullable, Text},
@@ -12,7 +13,9 @@ pub struct Store {
     db: Arc<crate::database::Database>,
     issuer: String,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName, diesel::Selectable)]
+#[diesel(table_name = crate::schema::agent_tables::users)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
 struct User {
     #[diesel(sql_type=Text)]
     id: String,
@@ -25,7 +28,7 @@ struct User {
     #[diesel(sql_type=Bool)]
     active: bool,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 pub struct Principal {
     #[diesel(sql_type=Text)]
     pub user_id: String,
@@ -66,7 +69,9 @@ pub struct DeviceGrant {
     pub generation: i64,
     pub valid_until_ms: i64,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName, diesel::Selectable)]
+#[diesel(table_name = crate::schema::agent_tables::devices)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
 struct Device {
     #[diesel(sql_type=Text)]
     id: String,
@@ -96,25 +101,50 @@ impl Store {
         db.transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328902); SELECT pg_advisory_xact_lock(5210750088328903)").await?;
             db.batch_execute("LOCK TABLE hagency_agent_v1.deployment, hagency_agent_v1.users, hagency_agent_v1.sessions, hagency_agent_v1.devices IN ACCESS EXCLUSIVE MODE").await?;
-            #[derive(diesel::QueryableByName)]
+            #[derive(diesel::Queryable, diesel::QueryableByName)]
             struct Deployment {
                 #[diesel(sql_type=Text)] issuer: String,
                 #[diesel(sql_type=Bool)] same_server: bool,
             }
-            let deployment=sql_query("SELECT issuer,(version=1 AND server_name=$1) AS same_server FROM hagency_agent_v1.deployment WHERE singleton")
-                .bind::<Text,_>(server).get_result::<Deployment>(db).await?;
+            let deployment={
+                use crate::schema::agent_tables::deployment as q;
+                let params = (server,);
+                q::table
+                    .select((
+                        q::issuer,
+                        (((q::version).eq(1)).and((q::server_name).eq(&params.0))),
+                    ))
+                    .filter(q::singleton)
+                    .get_result::<Deployment>(db)
+                    .await
+            }?;
             if !deployment.same_server || (deployment.issuer != issuer && deployment.issuer != legacy) {
                 return Err(Error::Conflict("deployment_identity_mismatch"));
             }
             if deployment.issuer == issuer { return Ok(false); }
-            #[derive(diesel::QueryableByName)]
+            #[derive(diesel::Queryable, diesel::QueryableByName)]
             struct Consistent { #[diesel(sql_type=Bool)] consistent: bool }
             let users=sql_query("SELECT NOT EXISTS(SELECT 1 FROM hagency_agent_v1.users WHERE issuer<>$1) AS consistent")
                 .bind::<Text,_>(&legacy).get_result::<Consistent>(db).await?;
             if !users.consistent { return Err(Error::Conflict("identity_mapping_mismatch")); }
             db.batch_execute("UPDATE hagency_agent_v1.sessions SET revoked=true; UPDATE hagency_agent_v1.devices SET revoked=true; DROP TRIGGER retain_identity ON hagency_agent_v1.users").await?;
-            sql_query("UPDATE hagency_agent_v1.users SET issuer=$1").bind::<Text,_>(issuer).execute(db).await?;
-            sql_query("UPDATE hagency_agent_v1.deployment SET issuer=$1 WHERE singleton").bind::<Text,_>(issuer).execute(db).await?;
+            {
+                use crate::schema::agent_tables::users as q;
+                let params = (issuer,);
+                diesel::update(q::table)
+                    .set((q::issuer.eq(&params.0),))
+                    .execute(db)
+                    .await
+            }?;
+            {
+                use crate::schema::agent_tables::deployment as q;
+                let params = (issuer,);
+                diesel::update(q::table)
+                    .filter(q::singleton)
+                    .set((q::issuer.eq(&params.0),))
+                    .execute(db)
+                    .await
+            }?;
             db.batch_execute("CREATE TRIGGER retain_identity BEFORE UPDATE OR DELETE ON hagency_agent_v1.users FOR EACH ROW EXECUTE FUNCTION hagency_agent_v1.retain_identity()").await?;
             Ok(true)
         }).await
@@ -124,22 +154,61 @@ impl Store {
         let mut db = AsyncPgConnection::establish(url)
             .await
             .map_err(|_| Error::Unavailable("database_unavailable"))?;
-        db.transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
+        db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
             // Serialize initialization across processes; never rewrite deployment identity.
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328902)").await?;
-            #[derive(diesel::QueryableByName)] struct Exists { #[diesel(sql_type=Bool)] initialized:bool }
-            let exists=sql_query("SELECT to_regclass('hagency_agent_v1.deployment') IS NOT NULL AS initialized").get_result::<Exists>(db).await?;
-            if !exists.initialized {db.batch_execute(include_str!("schema.sql")).await?;}
-            sql_query("INSERT INTO hagency_agent_v1.deployment(singleton,version,server_name,issuer) VALUES(true,1,$1,$2) ON CONFLICT(singleton) DO NOTHING")
-                .bind::<Text,_>(server).bind::<Text,_>(issuer).execute(db).await?;
-            #[derive(diesel::QueryableByName)] struct Match { #[diesel(sql_type=Bool)] matched:bool }
-            let matched=sql_query("SELECT (version=1 AND server_name=$1 AND issuer=$2) AS matched FROM hagency_agent_v1.deployment WHERE singleton")
-                .bind::<Text,_>(server).bind::<Text,_>(issuer).get_result::<Match>(db).await?;
-            if !matched.matched { return Err(Error::Conflict("deployment_identity_mismatch")); }
+            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328902)")
+                .await?;
+            #[derive(diesel::Queryable, diesel::QueryableByName)]
+            struct Exists {
+                #[diesel(sql_type=Bool)]
+                initialized: bool,
+            }
+            let exists = sql_query(
+                "SELECT to_regclass('hagency_agent_v1.deployment') IS NOT NULL AS initialized",
+            )
+            .get_result::<Exists>(db)
+            .await?;
+            if !exists.initialized {
+                db.batch_execute(include_str!("schema.sql")).await?;
+            }
+            {
+                use crate::schema::agent_tables::deployment as q;
+                let params = (server, issuer);
+                diesel::insert_into(q::table)
+                    .values((
+                        q::singleton.eq(true),
+                        q::version.eq(1),
+                        q::server_name.eq(&params.0),
+                        q::issuer.eq(&params.1),
+                    ))
+                    .on_conflict((q::singleton,))
+                    .do_nothing()
+                    .execute(db)
+                    .await
+            }?;
+            #[derive(diesel::Queryable, diesel::QueryableByName)]
+            struct Match {
+                #[diesel(sql_type=Bool)]
+                matched: bool,
+            }
+            let matched = {
+                use crate::schema::agent_tables::deployment as q;
+                let params = (server, issuer);
+                q::table
+                    .select((((((q::version).eq(1)).and((q::server_name).eq(&params.0)))
+                        .and((q::issuer).eq(&params.1))),))
+                    .filter(q::singleton)
+                    .get_result::<Match>(db)
+                    .await
+            }?;
+            if !matched.matched {
+                return Err(Error::Conflict("deployment_identity_mismatch"));
+            }
             Ok(())
-        }).await?;
+        })
+        .await?;
         Ok(Self {
-            db: Arc::new(crate::database::Database::new(db, url)),
+            db: Arc::new(crate::database::Database::business(url)?),
             issuer: issuer.into(),
         })
     }
@@ -152,38 +221,99 @@ impl Store {
             stage = "session_create_lock",
             "Waiting for owner session connection"
         );
-        let mut db = self.db.lock().await?;
-        tracing::debug!(
-            stage = "session_create_lock",
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "Owner session connection acquired"
-        );
-        (*db).transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
-            // All identity/device mutations enter the domain authority lock before rows.
-            // Configuration publication holds owner rows while locking both device sessions.
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
-            // Unique identity lock also serializes conflicting subject/MXID registrations.
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328903)").await?;
-            if identity.valid_until_ms<=crate::api::now_ms() {return Err(Error::Unauthorized("authorization_expired"));}
-            let users=sql_query("SELECT id,issuer,subject,mxid,active FROM hagency_agent_v1.users WHERE (issuer=$1 AND subject=$2) OR mxid=$3 FOR UPDATE")
-                .bind::<Text,_>(&identity.issuer).bind::<Text,_>(&identity.subject).bind::<Text,_>(&identity.mxid).load::<User>(db).await?;
-            let user_id=match users.as_slice() {
-                []=> {
-                    let id=format!("usr_{}",entity_id()?);
-                    sql_query("INSERT INTO hagency_agent_v1.users(id,issuer,subject,mxid) VALUES($1,$2,$3,$4)")
-                        .bind::<Text,_>(&id).bind::<Text,_>(&identity.issuer).bind::<Text,_>(&identity.subject).bind::<Text,_>(&identity.mxid).execute(db).await?;
-                    id
-                },
-                [user] if user.issuer==identity.issuer && user.subject==identity.subject && user.mxid==identity.mxid => {
-                    if !user.active { return Err(Error::Unauthorized("user_disabled")); } user.id.clone()
-                },
-                _=>return Err(Error::Conflict("identity_mapping_mismatch")),
-            };
-            let session_token=secret_token();
-            sql_query("INSERT INTO hagency_agent_v1.sessions(id,user_id,token_hash,client_id,valid_until_ms) VALUES($1,$2,$3,$4,$5)")
-                .bind::<Text,_>(format!("ses_{}",entity_id()?)).bind::<Text,_>(&user_id).bind::<Text,_>(hash(&session_token)).bind::<Text,_>(&identity.client_id).bind::<BigInt,_>(identity.valid_until_ms).execute(db).await?;
-            Ok(SessionGrant {token:session_token,user_id,mxid:identity.mxid,valid_until_ms:identity.valid_until_ms})
-        }).await
+        self.db
+            .with_connection(async |db| {
+                tracing::debug!(
+                    stage = "session_create_lock",
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "Owner session connection acquired"
+                );
+                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
+                    // All identity/device mutations enter the domain authority lock before rows.
+                    // Configuration publication holds owner rows while locking both device sessions.
+                    db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
+                        .await?;
+                    // Unique identity lock also serializes conflicting subject/MXID registrations.
+                    db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328903)")
+                        .await?;
+                    if identity.valid_until_ms <= crate::api::now_ms() {
+                        return Err(Error::Unauthorized("authorization_expired"));
+                    }
+                    let users = {
+                        use crate::schema::agent_tables::users as q;
+                        let params = (&identity.issuer, &identity.subject, &identity.mxid);
+                        q::table
+                            .select(User::as_select())
+                            .filter(
+                                (((q::issuer).eq(&params.0)).and((q::subject).eq(&params.1)))
+                                    .or((q::mxid).eq(&params.2)),
+                            )
+                            .for_update()
+                            .load::<User>(db)
+                            .await
+                    }?;
+                    let user_id = match users.as_slice() {
+                        [] => {
+                            let id = format!("usr_{}", entity_id()?);
+                            {
+                                use crate::schema::agent_tables::users as q;
+                                let params =
+                                    (&id, &identity.issuer, &identity.subject, &identity.mxid);
+                                diesel::insert_into(q::table)
+                                    .values((
+                                        q::id.eq(&params.0),
+                                        q::issuer.eq(&params.1),
+                                        q::subject.eq(&params.2),
+                                        q::mxid.eq(&params.3),
+                                    ))
+                                    .execute(db)
+                                    .await
+                            }?;
+                            id
+                        }
+                        [user]
+                            if user.issuer == identity.issuer
+                                && user.subject == identity.subject
+                                && user.mxid == identity.mxid =>
+                        {
+                            if !user.active {
+                                return Err(Error::Unauthorized("user_disabled"));
+                            }
+                            user.id.clone()
+                        }
+                        _ => return Err(Error::Conflict("identity_mapping_mismatch")),
+                    };
+                    let session_token = secret_token();
+                    {
+                        use crate::schema::agent_tables::sessions as q;
+                        let params = (
+                            format!("ses_{}", entity_id()?),
+                            &user_id,
+                            hash(&session_token),
+                            &identity.client_id,
+                            identity.valid_until_ms,
+                        );
+                        diesel::insert_into(q::table)
+                            .values((
+                                q::id.eq(&params.0),
+                                q::user_id.eq(&params.1),
+                                q::token_hash.eq(&params.2),
+                                q::client_id.eq(&params.3),
+                                q::valid_until_ms.eq(&params.4),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;
+                    Ok(SessionGrant {
+                        token: session_token,
+                        user_id,
+                        mxid: identity.mxid,
+                        valid_until_ms: identity.valid_until_ms,
+                    })
+                })
+                .await
+            })
+            .await
     }
     async fn principal(
         db: &mut AsyncPgConnection,
@@ -231,10 +361,14 @@ impl Store {
         now: i64,
         device: bool,
     ) -> Result<Principal> {
-        // Read-only identity snapshot: every operational Domain/Transport call
-        // revalidates it under its own transaction lock. Autocommit row locks here
-        // can invert owner/session ordering against configuration publication.
-        Self::principal(&mut *self.db.lock().await?, credential, now, device, false).await
+        self.db
+            .with_connection(async |db| {
+                // Read-only identity snapshot: every operational Domain/Transport call
+                // revalidates it under its own transaction lock. Autocommit row locks here
+                // can invert owner/session ordering against configuration publication.
+                Self::principal(&mut *db, credential, now, device, false).await
+            })
+            .await
     }
     pub async fn renew(&self, credential: &str, identity: Identity, now: i64) -> Result<i64> {
         if identity.issuer != self.issuer || identity.valid_until_ms <= now {
@@ -245,13 +379,14 @@ impl Store {
             stage = "session_renew_lock",
             "Waiting for owner renewal connection"
         );
-        let mut db = self.db.lock().await?;
+        self.db.with_connection(async |db| {
+
         tracing::debug!(
             stage = "session_renew_lock",
             elapsed_ms = started.elapsed().as_millis() as u64,
             "Owner renewal connection acquired"
         );
-        (*db)
+        db
             .transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
                 db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
                 // An expired session may renew only with fresh matching upstream proof.
@@ -275,14 +410,19 @@ impl Store {
                 if identity.valid_until_ms <= crate::api::now_ms() {
                     return Err(Error::Unauthorized("authorization_expired"));
                 }
-                sql_query("UPDATE hagency_agent_v1.sessions SET valid_until_ms=$1 WHERE id=$2")
-                    .bind::<BigInt, _>(identity.valid_until_ms)
-                    .bind::<Text, _>(&p.session_id)
-                    .execute(db)
-                    .await?;
+                {
+                    use crate::schema::agent_tables::sessions as q;
+                    let params = (identity.valid_until_ms, &p.session_id);
+                    diesel::update(q::table)
+                        .filter((q::id).eq(&params.1))
+                        .set((q::valid_until_ms.eq(&params.0),))
+                        .execute(db)
+                        .await
+                }?;
                 Ok(identity.valid_until_ms)
             })
             .await
+    }).await
     }
     pub async fn register_device(
         &self,
@@ -297,8 +437,9 @@ impl Store {
         {
             return Err(Error::Invalid("invalid_device_name"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             let p=Self::principal(db,credential,now,false,true).await?;
             let device_token=secret_token();
@@ -307,30 +448,50 @@ impl Store {
                 .bind::<Text,_>(format!("dev_{}",entity_id()?)).bind::<Text,_>(&p.user_id).bind::<Text,_>(&request.installation_id).bind::<Text,_>(request.name.trim()).bind::<Text,_>(&p.session_id).bind::<Text,_>(hash(&device_token)).get_result::<Device>(db).await?;
             Ok(DeviceGrant {device_id:device.id,token:device_token,generation:device.generation,valid_until_ms:p.valid_until_ms})
         }).await
+    }).await
     }
     pub async fn revoke_device(&self, credential: &str, id: &str, now: i64) -> Result<()> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async move |db: &mut AsyncPgConnection| {
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
-            let p=Self::principal(db,credential,now,false,true).await?;
-            let changed=sql_query("UPDATE hagency_agent_v1.devices SET revoked=true,generation=generation+1 WHERE id=$1 AND user_id=$2")
-                .bind::<Text,_>(id).bind::<Text,_>(&p.user_id).execute(db).await?;
-            if changed!=1 { return Err(Error::Unauthorized("device_not_owned")); } Ok(())
-        }).await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
+                    db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
+                        .await?;
+                    let p = Self::principal(db, credential, now, false, true).await?;
+                    let changed = {
+                        use crate::schema::agent_tables::devices as q;
+                        let params = (id, &p.user_id);
+                        diesel::update(q::table)
+                            .filter(((q::id).eq(&params.0)).and((q::user_id).eq(&params.1)))
+                            .set((q::revoked.eq(true), q::generation.eq(q::generation + 1)))
+                            .execute(db)
+                            .await
+                    }?;
+                    if changed != 1 {
+                        return Err(Error::Unauthorized("device_not_owned"));
+                    }
+                    Ok(())
+                })
+                .await
+            })
+            .await
     }
     pub async fn sign_out(&self, credential: &str) -> Result<()> {
         // Idempotent even after expiry; revocation closes every device attached to this session.
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-                    .await?;
-                sql_query("UPDATE hagency_agent_v1.sessions SET revoked=true WHERE token_hash=$1")
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
+                        .await?;
+                    sql_query(
+                        "UPDATE hagency_agent_v1.sessions SET revoked=true WHERE token_hash=$1",
+                    )
                     .bind::<Text, _>(hash(credential))
                     .execute(db)
                     .await?;
-                Ok(())
+                    Ok(())
+                })
+                .await
             })
             .await
     }
@@ -603,7 +764,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        let mut db = store.db.lock().await.unwrap();
+        let mut db = store.db.test_connection().await.unwrap();
         assert!(
             sql_query("UPDATE hagency_agent_v1.users SET subject='reassigned' WHERE id=$1")
                 .bind::<Text, _>(&s.user_id)
@@ -618,7 +779,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        #[derive(diesel::QueryableByName)]
+        #[derive(diesel::Queryable, diesel::QueryableByName)]
         struct Hash {
             #[diesel(sql_type=Text)]
             token_hash: String,

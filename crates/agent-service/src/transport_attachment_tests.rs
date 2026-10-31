@@ -312,7 +312,7 @@ async fn postgres_attachment_admission_is_atomic_private_and_excluded_from_legac
             .is_err()
     );
     {
-        let mut db = f.transport.db.lock().await.unwrap();
+        let mut db = f.transport.db.test_connection().await.unwrap();
         assert!(diesel::sql_query("UPDATE hagency_agent_v1.event_attachments SET descriptor='{}'::jsonb WHERE dispatch_id=$1").bind::<diesel::sql_types::Text,_>(&id).execute(&mut *db).await.is_err());
     }
     let mut left = f.facts.clone();

@@ -193,7 +193,7 @@ async fn postgres_file_staging_is_exact_scoped_and_unknown_upload_never_rearms()
             .is_err()
     );
     let deadline = {
-        let mut db = f.transport.db.lock().await.unwrap();
+        let mut db = f.transport.db.test_connection().await.unwrap();
         sql_query("SELECT worker_until_ms AS now_ms FROM hagency_agent_v1.file_outbox WHERE id=$1")
             .bind::<Text, _>(&t.file_id)
             .get_result::<Clock>(&mut *db)
@@ -315,7 +315,7 @@ async fn postgres_file_send_unknown_settles_only_exact_trusted_message_and_retai
             .await
             .is_err()
     );
-    let mut db = f.transport.db.lock().await.unwrap();
+    let mut db = f.transport.db.test_connection().await.unwrap();
     for statement in [
         "DELETE FROM hagency_agent_v1.file_outbox WHERE id=$1",
         "UPDATE hagency_agent_v1.file_outbox SET state='queued' WHERE id=$1",
@@ -743,7 +743,7 @@ async fn postgres_file_real_routes_and_matrix_bytes_retain_original_sender_threa
         assert_eq!(observed["delivery"]["state"], "sent");
         assert_eq!(observed["delivery"]["matrixEventId"], event_id);
         {
-            let mut db = f.transport.db.lock().await.unwrap();
+            let mut db = f.transport.db.test_connection().await.unwrap();
             let e = TransportStore::dispatch(&mut db, &f.p, &dispatch)
                 .await
                 .unwrap();
@@ -979,7 +979,7 @@ async fn postgres_completed_request_file_denial_is_permanent_after_requester_rej
             );
             // Old completed task outcomes cannot be rewritten just to fence a file.
             {
-                let mut db = f.transport.db.lock().await.unwrap();
+                let mut db = f.transport.db.test_connection().await.unwrap();
                 assert_eq!(
                     TransportStore::dispatch(&mut db, &f.p, &target.dispatch_id)
                         .await
@@ -1096,7 +1096,7 @@ async fn postgres_file_denial_before_preparation_is_shared_per_original_request_
         history.matrix_event_id.as_deref(),
         Some("$actual_before_or_during_block")
     );
-    let mut db = f.transport.db.lock().await.unwrap();
+    let mut db = f.transport.db.test_connection().await.unwrap();
     for sql in [
         "DELETE FROM hagency_agent_v1.file_delivery_denials WHERE owner_event_id=$1",
         "UPDATE hagency_agent_v1.file_delivery_denials SET owner_event_id=owner_event_id WHERE owner_event_id=$1",
@@ -1799,6 +1799,16 @@ async fn admission_lock_scenario(url: &str, kind: &str, lock: &str) {
     let mut blocker = AsyncPgConnection::establish(url).await.unwrap();
     // pg_stat_activity snapshots are cached inside a transaction. Observe from
     // an independent autocommit connection while blocker retains the real lock.
+    #[derive(diesel::QueryableByName)]
+    struct Backend {
+        #[diesel(sql_type = diesel::sql_types::Integer)]
+        pid: i32,
+    }
+    let blocker_pid = sql_query("SELECT pg_backend_pid() AS pid")
+        .get_result::<Backend>(&mut blocker)
+        .await
+        .unwrap()
+        .pid;
     let mut observer = AsyncPgConnection::establish(url).await.unwrap();
     crate::key(&id).unwrap();
     if lock == "device" {
@@ -1831,14 +1841,10 @@ async fn admission_lock_scenario(url: &str, kind: &str, lock: &str) {
         #[diesel(sql_type=diesel::sql_types::Bool)]
         value: bool,
     }
-    let pattern = if lock == "device" {
-        "%hagency_agent_v1.devices%FOR SHARE%".to_owned()
-    } else {
-        format!("SELECT true AS matched FROM hagency_agent_v1.{table}%FOR UPDATE")
-    };
     tokio::time::timeout(std::time::Duration::from_secs(5),async {
         loop {
-            let blocked=sql_query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE $1) AS value").bind::<Text,_>(&pattern).get_result::<Waiting>(&mut observer).await.unwrap().value;
+            let blocked=sql_query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid))) AS value")
+                .bind::<diesel::sql_types::Integer,_>(blocker_pid).get_result::<Waiting>(&mut observer).await.unwrap().value;
             if blocked {break;}tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }).await.unwrap_or_else(|_|panic!("{kind} did not reach its actual {lock} claim lock"));
