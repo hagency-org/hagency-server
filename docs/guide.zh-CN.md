@@ -33,6 +33,7 @@ Rust 后端在 `/` 提供无需登录的站点首页；成员 Home 位于 `/hage
 - [保留的业务行为与限制](#保留的业务行为与限制)
 - [验证方法](#验证方法)
 - [内嵌 Pasion](#内嵌-pasion)
+- [内嵌 Palpo 升级](#升级内嵌-palpo)
 - [数据库迁移](#拆分旧的合并数据库)
 - [配置迁移](#将旧的单一配置拆成组件配置)
 
@@ -362,6 +363,22 @@ Pasion 不实现旧 Matrix SSO 重定向。OAuth 客户端使用挂载的 issuer
 项目清单声明 Apache-2.0，项目仅保留一个许可证文件 `LICENSE`。
 `NOTICE` 保留 Palpo、Padmin、Pasion 的来源与上游许可证链接。
 Padmin 源码和 Pasion 依赖仍保留其上游 AGPL 许可；修改项目清单不会重新许可这些代码。
+
+### 升级内嵌 Palpo
+
+本次 Palpo main 更新到 `296f6bdb`，包含 2026-10-30 的事件发布迁移。
+启动新二进制前，先停止所有共用该 Matrix 数据库的旧 Hagency/Palpo 进程、
+开发监听及 worker，并按 [RECOVERY.md](RECOVERY.md) 对三个数据库和私有文件
+执行一致的停机备份。先启动一个新实例，等待迁移与启动完成，再启动其余新实例
+并恢复流量。旧 writer 必须保持停止；此次升级不支持新旧二进制混合的滚动部署。
+
+客户端应原样保存和回传 sync 与分页 token。旧 sync 位置仍可使用，但从升级前
+的边界继续同步时，迟发布的历史可能需要完整同步；无需丢弃仍有效的历史分页
+cursor。详见[上游升级步骤](https://github.com/palpo-im/palpo/blob/296f6bdb55919f2bfef5fb7afc322b7c8fbde68d/docs/UPGRADING.md)。
+
+新版本会在启动时拒绝生效中的正向代理配置及代理环境变量。PostgreSQL 配置
+要求 TLS 时，连接 URL 中较弱的 `sslmode` 也不能覆盖该要求。启动前应确认部署
+配置与这些策略一致。
 
 ### 拆分旧的合并数据库
 

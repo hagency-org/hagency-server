@@ -6765,7 +6765,7 @@ dependencies = [
 [[package]]
 name = "palpo"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#25b988bfdba702e334a345313e3488302ef2770a"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#296f6bdb55919f2bfef5fb7afc322b7c8fbde68d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6860,7 +6860,7 @@ dependencies = [
 [[package]]
 name = "palpo-core"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#25b988bfdba702e334a345313e3488302ef2770a"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#296f6bdb55919f2bfef5fb7afc322b7c8fbde68d"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -6877,6 +6877,7 @@ dependencies = [
  "form_urlencoded",
  "futures-util",
  "globwalk",
+ "hmac 0.13.0",
  "html5ever 0.40.1",
  "http",
  "http-auth",
@@ -6924,7 +6925,7 @@ dependencies = [
 [[package]]
 name = "palpo-core-macros"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#25b988bfdba702e334a345313e3488302ef2770a"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#296f6bdb55919f2bfef5fb7afc322b7c8fbde68d"
 dependencies = [
  "as_variant",
  "palpo-identifiers-validation",
@@ -6939,7 +6940,7 @@ dependencies = [
 [[package]]
 name = "palpo-data"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#25b988bfdba702e334a345313e3488302ef2770a"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#296f6bdb55919f2bfef5fb7afc322b7c8fbde68d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7009,7 +7010,7 @@ dependencies = [
 [[package]]
 name = "palpo-identifiers-validation"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#25b988bfdba702e334a345313e3488302ef2770a"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#296f6bdb55919f2bfef5fb7afc322b7c8fbde68d"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -7017,7 +7018,7 @@ dependencies = [
 [[package]]
 name = "palpo-server-macros"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#25b988bfdba702e334a345313e3488302ef2770a"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#296f6bdb55919f2bfef5fb7afc322b7c8fbde68d"
 dependencies = [
  "palpo-identifiers-validation",
  "proc-macro-crate",

@@ -203,3 +203,31 @@
 - Combined head 5f56dc2 passes all223 Rust tests locally and in GitHub, both strict Clippy targets and dependency policy. Its actual image and PKCE/AS/SIGTERM/restart smoke pass; backup/restore preparation succeeds, but the pre-restore BFF login assertion fails without an HTTP status/error code. Preserve run40932210636 and add only safe status/error-code diagnostics before reproducing and rerunning the full gate. Restoration is not counted as passed, and the batch remains unmerged pending resolution.
 
 - Failure-only upstream probes in run40944650619 confirm whoami401/M_UNKNOWN_TOKEN: User not found (not yet provisioned?), while the admin scope guard correctly returns403. CLI bootstrap deliberately commits ProvisionUserJob before the listener starts; AS startup readiness does not establish that the human Matrix identity/role exists. The fixture now waits, using bounded read-only SQL, for the real bootstrap administrator to be provisioned before requesting its OAuth grant. It never inserts/grants the identity itself or retries a rejected login. Three unmodified native full recovery runs passed, demonstrating why local timing alone missed the CI race. Final-head full gates must be rerun.
+
+## 2026-10-31 — Refresh embedded Palpo after backup fix
+
+- The operator explicitly directed proceeding without waiting for Palpo CI and
+  using latest upstream. Reviewed and squash-merged Palpo #610 as `719f6753`;
+  four hosted checks passed and two were still running at merge. Two independent
+  authenticated PostgreSQL route regressions passed locally (default/all features,
+  1/0/0 each). Pending upstream tests are not recorded as passing.
+- Server PR #31 updates all six Palpo packages from `25b988bf` to official main
+  `719f6753`, retaining branch="main" and the existing non-Palpo resolutions.
+  Added the required coordinated migration and transport-policy upgrade steps
+  to both configuration guides. Existing services and application data were not
+  changed. The separate recovery issue Palpo #605 remains open; #606 was closed
+  without merging. Hagency test/CI results are recorded on the PR's exact head.
+
+## 2026-10-31 — Recovery closure follow-up
+
+- Integrated newly merged Server main `9b60e63` (typed Diesel/Horme pool safety)
+  before requalifying PR #31. Old-head CI is not final composed-head evidence.
+- Reproduced both Palpo #605 failures independently against official main719f:
+  repeated cross-signing signature uniqueness, then concurrent key-change marker
+  uniqueness with only the signature correction applied. Both corrected passes
+  the same fresh PostgreSQL regression; strict palpo-data Clippy passes.
+- Palpo #618 supersedes the closed/unmerged #606 and was squash-merged as
+  `296f6bdb`, without waiting for broad Palpo CI per operator direction. PR #31
+  now locks all six packages to this official main and retains branch="main".
+  Its final CI, stopped-backup cutover and original-key native recovery checks
+  remain separate acceptance steps; no completed recovery claim is made here.

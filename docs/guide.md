@@ -44,6 +44,7 @@ assets together; this path change does not change the OAuth issuer or stored ide
 - [Retained behavior and limits](#behavior-retained-in-the-rust-port)
 - [Validation](#validation)
 - [Embedded Pasion](#embedded-pasion)
+- [Embedded Palpo upgrade](#upgrading-embedded-palpo)
 - [Database migration](#upgrading-the-former-combined-database)
 - [Configuration migration](#moving-the-previous-single-configuration-into-component-files)
 
@@ -463,6 +464,26 @@ Project manifests declare Apache-2.0 and the sole project license file is
 `LICENSE`. `NOTICE` retains Palpo, Padmin and Pasion provenance and upstream
 license references. Padmin source and Pasion dependencies retain their upstream
 AGPL licenses; changing the manifests does not relicense that code.
+
+### Upgrading embedded Palpo
+
+The Palpo main update to `296f6bdb` includes the 2026-10-30 publication
+migrations. Before starting the new binary, stop every old Hagency/Palpo process,
+watcher and worker sharing its Matrix database. Take a consistent stopped backup
+of all three databases and private files as described in [RECOVERY.md](RECOVERY.md).
+Start one upgraded instance, wait for migrations and startup to finish, then start
+the remaining upgraded instances and resume traffic. Keep all old writers stopped;
+this update does not support a rolling deployment with mixed binary versions.
+
+Clients must preserve opaque sync and pagination tokens. Old sync positions remain
+accepted, but resuming a pre-upgrade sync boundary may require a full sync for
+late-published history. Existing history cursors need not be discarded.
+See the [upstream upgrade procedure](https://github.com/palpo-im/palpo/blob/296f6bdb55919f2bfef5fb7afc322b7c8fbde68d/docs/UPGRADING.md).
+
+The updated outbound transport rejects active forward-proxy configuration and
+proxy environment variables at startup. A configured PostgreSQL TLS requirement
+also takes precedence over weaker `sslmode` values in the connection URL. Keep
+these policies consistent with the deployment before starting the new binary.
 
 ### Upgrading the former combined database
 
