@@ -63,6 +63,7 @@ jobs:
           assert os.environ['TAG'] == 'v' + version, 'Tag must match workspace version'
           PY
       - run: cargo fmt --all -- --check
+      - run: python3 scripts/validate-agent-openapi.py --self-test
       - name: Check Diesel-generated database schemas
         env:
           PGPASSWORD: ci-only-password
@@ -75,7 +76,6 @@ jobs:
         env:
           DB_TEST_DATABASE_URL: postgres://hagency_ci:ci-only-password@127.0.0.1:5432/hagency_ci
         run: cargo test --locked -p hagency-db-runtime --features postgres-tests -- --test-threads=1
-      - run: python3 scripts/validate-agent-openapi.py --self-test
       - run: cargo clippy --locked -p hagency-server -p hagency-agent-service -p hagency-xtask --all-targets -- -D warnings
       - run: cargo test --locked -p hagency-server -p hagency-xtask -p hagency-frontend
       - name: Agent service tests including PostgreSQL

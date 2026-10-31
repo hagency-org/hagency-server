@@ -2,6 +2,7 @@
 
 ## 2026-10-31 实施（覆盖下方早期分析）
 
+- PR #25 CI 跟进：quality 在 `validate-agent-openapi.py --self-test` 因旧源码指纹失败；PG17 schema 校验、5 个池测试和 compile-fail 已通过。复核 9 个存储重构文件后仅更新两个 OpenAPI 文档的对应 SHA，未改路由/DTO/安全定义；本地 129+4 个 operation、36 个反向校验测试通过。将此检查提前到 schema 编译前。检查时 Server #25 与 Cloud #17 的 GitHub review、行内评论均为空。
 - 分支 `chris/diesel-horme-pool-safety`，基于 main `05e9f62`；用户要求分别提交 Server/Cloud PR，未授权部署或合并。
 - 新增 Diesel CLI 生成的 `src/schema/agent.rs`、`project.rs`，两个配置为根目录 diesel.toml / diesel-project.toml。`scripts/check-db-schema.py` 重放真实启动路径并验证生成文件。没有手写生成文件，没有修改历史 SQL。
 - 193 个查询调用改为 DSL；Queryable/Selectable 明确字段映射，复杂 CTE/JSON/视图/目录查询保留原生 SQL。待处理密文显式检查 nullable payload 非空。
