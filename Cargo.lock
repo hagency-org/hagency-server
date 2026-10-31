@@ -3937,7 +3937,7 @@ dependencies = [
  "hagency-agent-service",
  "hex",
  "libc",
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "palpo",
  "pasion-backend",
  "pasion-config",
@@ -6538,9 +6538,9 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry"
-version = "0.33.0"
+version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cdb0b1b267eb9db3331b434ed9ddab10d50e280a9adf9d13e5233e2002b61b5"
+checksum = "8c1f1a6ac9c875a4941e4c7c085b61e8f4daa326de03b4701768c3491a6ad9ee"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -6559,7 +6559,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "http",
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "reqwest 0.13.5",
 ]
 
@@ -6592,7 +6592,7 @@ checksum = "699a67345e21962a231955b9059a157e428b219fa5df8efe11f08346fb23a344"
 dependencies = [
  "http",
  "httpdate",
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "opentelemetry-http",
  "opentelemetry-proto",
  "opentelemetry_sdk",
@@ -6606,7 +6606,7 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "884d95dfaf00ec1e068b5786ced2ab28f2d264cb3ff2cfd98a7408eed0207e85"
 dependencies = [
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "opentelemetry_sdk",
  "smartstring",
 ]
@@ -6617,7 +6617,7 @@ version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25da1ac11a0aeccf38d7f77ee0348715adaf8340f65ad46c94a02c6b20e2f65d"
 dependencies = [
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "opentelemetry_sdk",
  "prost",
 ]
@@ -6628,7 +6628,7 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60ac54422fb2a7ed2e0325b5650bedff0b6e777e33dbbac7b49572d92d689a56"
 dependencies = [
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "opentelemetry-semantic-conventions 0.33.0",
  "opentelemetry_sdk",
 ]
@@ -6652,7 +6652,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f71803f481d3f5ccbe477edb42a78f473613712b2327835911a9ea0ab069824"
 dependencies = [
  "chrono",
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "opentelemetry_sdk",
 ]
 
@@ -6665,7 +6665,7 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "percent-encoding",
  "portable-atomic",
  "rand 0.9.5",
@@ -7076,7 +7076,7 @@ dependencies = [
  "minijinja-contrib",
  "oauth2-types",
  "opendal",
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "opentelemetry-http",
  "opentelemetry-instrumentation-process",
  "opentelemetry-instrumentation-tokio",
@@ -7191,7 +7191,7 @@ dependencies = [
  "language-tags",
  "lettre",
  "oauth2-types",
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "opentelemetry-semantic-conventions 0.33.0",
  "pasion-iana",
  "pasion-jose",
@@ -7385,7 +7385,7 @@ dependencies = [
  "diesel",
  "diesel-async",
  "oauth2-types",
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "opentelemetry-semantic-conventions 0.33.0",
  "pasion-data",
  "pasion-i18n",
@@ -9233,7 +9233,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cadb06809f7d87a200f1887344e8b2112c3e9aed855a1ee2a6924ce61219bf26"
 dependencies = [
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "opentelemetry-http",
  "opentelemetry-semantic-conventions 0.33.0",
  "percent-encoding",
@@ -11015,7 +11015,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0a904802a1b902f43638b677ff2a650847e3b4404101b6c586d648e8c1e3e8fe"
 dependencies = [
  "js-sys",
- "opentelemetry 0.33.0",
+ "opentelemetry 0.33.1",
  "tracing",
  "tracing-core",
  "tracing-subscriber",
