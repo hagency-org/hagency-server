@@ -2,6 +2,7 @@
 //! DTOs. ACK confirms local inbox persistence; execution start and completion are
 //! separate durable transitions. Unknown executions are never automatically rerun.
 use crate::{Error, Result, entity_id, hash, key, secret_token, store::Principal};
+use diesel::{BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl};
 use diesel::{
     OptionalExtension, sql_query,
     sql_types::{BigInt, Bool, Nullable, Text},
@@ -72,7 +73,7 @@ pub struct LeaseRef {
     pub agent_id: String,
     pub epoch: i64,
 }
-#[derive(Debug, Serialize, diesel::QueryableByName)]
+#[derive(Debug, Serialize, diesel::Queryable, diesel::QueryableByName)]
 #[serde(rename_all = "camelCase")]
 pub struct Lease {
     #[diesel(sql_type=Text)]
@@ -119,7 +120,7 @@ pub struct DeliveryFacts {
     pub encrypted: bool,
     pub owner_direct_valid: bool,
 }
-#[derive(Debug, Serialize, diesel::QueryableByName)]
+#[derive(Debug, Serialize, diesel::Queryable, diesel::QueryableByName)]
 #[serde(rename_all = "camelCase")]
 pub struct EventHeader {
     #[diesel(sql_type=Text)]
@@ -135,7 +136,7 @@ pub struct EventHeader {
     #[diesel(sql_type=Text)]
     pub thread_root: String,
 }
-#[derive(Debug, Serialize, diesel::QueryableByName)]
+#[derive(Debug, Serialize, diesel::Queryable, diesel::QueryableByName)]
 #[serde(rename_all = "camelCase")]
 pub struct Dispatch {
     #[diesel(sql_type=Text)]
@@ -180,7 +181,7 @@ pub struct SubmitReply {
     pub execution_id: String,
     pub body: String,
 }
-#[derive(Debug, Serialize, diesel::QueryableByName)]
+#[derive(Debug, Serialize, diesel::Queryable, diesel::QueryableByName)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplyIntent {
     #[diesel(sql_type=Text)]
@@ -246,7 +247,7 @@ pub enum RouteResult {
     Queued { dispatch_id: String },
     Duplicate { dispatch_id: String },
 }
-#[derive(Clone, diesel::QueryableByName)]
+#[derive(Clone, diesel::Queryable, diesel::QueryableByName)]
 pub struct RoutingScope {
     #[diesel(sql_type=Text)]
     pub binding_id: String,
@@ -271,27 +272,27 @@ pub struct RoutingScope {
     #[diesel(sql_type=Bool)]
     pub thread_auto_reply: bool,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct Flag {
     #[diesel(sql_type=Bool)]
     matched: bool,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct Clock {
     #[diesel(sql_type=BigInt)]
     now_ms: i64,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct Auth {
     #[diesel(sql_type=BigInt)]
     valid_until_ms: i64,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct Count {
     #[diesel(sql_type=BigInt)]
     total: i64,
 }
-#[derive(diesel::QueryableByName)]
+#[derive(diesel::Queryable, diesel::QueryableByName)]
 struct Existing {
     #[diesel(sql_type=Text)]
     id: String,
@@ -321,8 +322,8 @@ impl TransportStore {
             if !domain.matched {
                 return Err(Error::Conflict("agent_domain_not_initialized"));
             }
-            let compatible = sql_query("SELECT (version=4) AS matched FROM hagency_agent_v1.domain_deployment WHERE singleton")
-                .get_result::<Flag>(db).await?;
+            let compatible = { use crate::schema::agent_tables::domain_deployment as q; q::table.select((((q::version).eq(4)),)).filter(q::singleton)
+                .get_result::<Flag>(db).await }?;
             if !compatible.matched { return Err(Error::Conflict("domain_schema_incompatible")); }
             let initialized = sql_query(
                 "SELECT to_regclass('hagency_agent_v1.execution_leases') IS NOT NULL AS matched",
@@ -369,7 +370,7 @@ impl TransportStore {
         })
         .await?;
         Ok(Self {
-            db: Arc::new(crate::database::Database::new(db, url)),
+            db: Arc::new(crate::database::Database::business(url)?),
             limits,
         })
     }
@@ -396,8 +397,22 @@ impl TransportStore {
         let auth=sql_query("SELECT s.valid_until_ms FROM hagency_agent_v1.sessions s JOIN hagency_agent_v1.users u ON u.id=s.user_id WHERE s.id=$1 AND u.id=$2 AND u.mxid=$3 AND u.subject=$4 AND s.client_id=$5 AND u.active AND NOT s.revoked FOR SHARE OF s,u")
             .bind::<Text,_>(&p.session_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(&p.subject).bind::<Text,_>(&p.client_id).get_result::<Auth>(db).await.map_err(unauthorized)?;
         let (device, generation) = device(p)?;
-        sql_query("SELECT true AS matched FROM hagency_agent_v1.devices WHERE id=$1 AND user_id=$2 AND session_id=$3 AND generation=$4 AND NOT revoked FOR SHARE")
-            .bind::<Text,_>(device).bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.session_id).bind::<BigInt,_>(generation).get_result::<Flag>(db).await.map_err(unauthorized)?;
+        {
+            use crate::schema::agent_tables::devices as q;
+            let params = (device, &p.user_id, &p.session_id, generation);
+            q::table
+                .select((true.into_sql::<diesel::sql_types::Bool>(),))
+                .filter(
+                    (((((q::id).eq(&params.0)).and((q::user_id).eq(&params.1)))
+                        .and((q::session_id).eq(&params.2)))
+                    .and((q::generation).eq(&params.3)))
+                    .and(diesel::dsl::not(q::revoked)),
+                )
+                .for_share()
+                .get_result::<Flag>(db)
+                .await
+        }
+        .map_err(unauthorized)?;
         let now = Self::clock(db, now).await?;
         if auth.valid_until_ms <= now {
             return Err(Error::Unauthorized("authorization_expired"));
@@ -410,28 +425,31 @@ impl TransportStore {
     }
     /// Trusted gateway lookup, never directly exposed as a user HTTP endpoint.
     pub async fn binding_scope(&self, binding_id: &str) -> Result<RoutingScope> {
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
-        db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-            Self::lock(db).await?;
-            let scope = Self::scope(db, binding_id).await?;
-            if !scope.active {
-                return Err(Error::Unauthorized("binding_not_running"));
-            }
-            Ok(scope)
-        })
-        .await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::lock(db).await?;
+                    let scope = Self::scope(db, binding_id).await?;
+                    if !scope.active {
+                        return Err(Error::Unauthorized("binding_not_running"));
+                    }
+                    Ok(scope)
+                })
+                .await
+            })
+            .await
     }
     /// Trusted AS routing discovery. Actual Matrix memberships still require live facts.
     pub async fn routing_scopes(&self, room_id: &str) -> Result<Vec<RoutingScope>> {
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
+        self.db.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
             let rows=sql_query("SELECT b.id AS binding_id,a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,a.id AS agent_id,b.room_id,coalesce(p.space_id,'') AS space_id,b.generation AS binding_generation,b.thread_auto_reply,(u.active AND a.state='active' AND b.state='active' AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS active,(u.active AND a.state='active' AND b.state='suspended' AND b.owner_service_paused AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS service_paused FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.room_id=$1")
                 .bind::<Text,_>(room_id).load::<RoutingScope>(db).await?;
             Ok(rows.into_iter().filter(|scope|scope.active||scope.service_paused).collect())
         }).await
+    }).await
     }
     /// Device-authenticated lookup of canonical requester/Room metadata. It never
     /// exposes body before gateway membership checks, and cannot cross owner scope.
@@ -442,16 +460,47 @@ impl TransportStore {
         now: i64,
     ) -> Result<EventHeader> {
         key(id)?;
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::authenticate(db,p,now).await?;
-            sql_query("SELECT id,binding_id,event_id,room_id,requester_mxid,thread_root FROM hagency_agent_v1.owner_events WHERE id=$1 AND owner_user_id=$2").bind::<Text,_>(id).bind::<Text,_>(&p.user_id).get_result(db).await.map_err(unauthorized)
-        }).await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::authenticate(db, p, now).await?;
+                    {
+                        use crate::schema::agent_tables::owner_events as q;
+                        let params = (id, &p.user_id);
+                        q::table
+                            .select((
+                                q::id,
+                                q::binding_id,
+                                q::event_id,
+                                q::room_id,
+                                q::requester_mxid,
+                                q::thread_root,
+                            ))
+                            .filter(((q::id).eq(&params.0)).and((q::owner_user_id).eq(&params.1)))
+                            .get_result(db)
+                            .await
+                    }
+                    .map_err(unauthorized)
+                })
+                .await
+            })
+            .await
     }
     async fn agent_active(db: &mut AsyncPgConnection, p: &Principal, agent: &str) -> Result<()> {
         crate::domain::require_assigned(db, p, agent).await?;
-        sql_query("SELECT true AS matched FROM hagency_agent_v1.agents WHERE id=$1 AND owner_user_id=$2 AND state='active'").bind::<Text,_>(agent).bind::<Text,_>(&p.user_id).get_result::<Flag>(db).await.map_err(unauthorized)?;
+        {
+            use crate::schema::agent_tables::agents as q;
+            let params = (agent, &p.user_id);
+            q::table
+                .select((true.into_sql::<diesel::sql_types::Bool>(),))
+                .filter(
+                    (((q::id).eq(&params.0)).and((q::owner_user_id).eq(&params.1)))
+                        .and((q::state).eq("active")),
+                )
+                .get_result::<Flag>(db)
+                .await
+        }
+        .map_err(unauthorized)?;
         Ok(())
     }
     async fn invalidate_epoch(db: &mut AsyncPgConnection, agent: &str) -> Result<()> {
@@ -459,7 +508,15 @@ impl TransportStore {
         // state for explicit operator reconciliation; ACK alone is not execution.
         sql_query("UPDATE hagency_agent_v1.owner_events SET state=CASE WHEN state='running' THEN 'unknown' ELSE 'pending' END WHERE agent_id=$1 AND state IN ('offered','acknowledged','running')").bind::<Text,_>(agent).execute(db).await?;
         sql_query("UPDATE hagency_agent_v1.owner_events SET state=CASE WHEN state='encrypted_running' THEN 'encrypted_unknown' ELSE 'encrypted_pending' END WHERE agent_id=$1 AND state IN ('encrypted_offered','encrypted_acknowledged','encrypted_running')").bind::<Text,_>(agent).execute(db).await?;
-        sql_query("UPDATE hagency_agent_v1.reply_outbox SET state='cancelled' WHERE agent_id=$1 AND state='pending'").bind::<Text,_>(agent).execute(db).await?;
+        {
+            use crate::schema::agent_tables::reply_outbox as q;
+            let params = (agent,);
+            diesel::update(q::table)
+                .filter(((q::agent_id).eq(&params.0)).and((q::state).eq("pending")))
+                .set((q::state.eq("cancelled"),))
+                .execute(db)
+                .await
+        }?;
         Ok(())
     }
     /// `takeover` must be an explicit same-owner user action, never automatic
@@ -478,13 +535,28 @@ impl TransportStore {
         if !(1000..=self.limits.max_lease_ms).contains(&ttl_ms) {
             return Err(Error::Invalid("invalid_lease_ttl"));
         }
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
+        self.db.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;Self::agent_active(db,p,agent).await?;
             if history::snapshot(db,p,agent).await?!=*history_snapshot {return Err(Error::Conflict("execution_history_changed"));}
             let (now,until)=Self::authenticate(db,p,now).await?;let (device,generation)=device(p)?;
-            let previous=sql_query("SELECT agent_id,owner_user_id,device_id,device_generation,epoch,expires_at_ms FROM hagency_agent_v1.execution_leases WHERE agent_id=$1").bind::<Text,_>(agent).get_result::<Lease>(db).await.optional()?;
+            let previous={
+                use crate::schema::agent_tables::execution_leases as q;
+                let params = (agent,);
+                q::table
+                    .select((
+                        q::agent_id,
+                        q::owner_user_id,
+                        q::device_id,
+                        q::device_generation,
+                        q::epoch,
+                        q::expires_at_ms,
+                    ))
+                    .filter((q::agent_id).eq(&params.0))
+                    .get_result::<Lease>(db)
+                    .await
+            }.optional()?;
             let epoch=match previous {
                 None=>1,
                 Some(old) if old.device_id==device && old.device_generation==generation && old.expires_at_ms>now=>old.epoch,
@@ -494,6 +566,7 @@ impl TransportStore {
             Ok(sql_query("INSERT INTO hagency_agent_v1.execution_leases(agent_id,owner_user_id,device_id,device_generation,epoch,expires_at_ms) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(agent_id) DO UPDATE SET device_id=EXCLUDED.device_id,device_generation=EXCLUDED.device_generation,epoch=EXCLUDED.epoch,expires_at_ms=EXCLUDED.expires_at_ms RETURNING agent_id,owner_user_id,device_id,device_generation,epoch,expires_at_ms")
                 .bind::<Text,_>(agent).bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<BigInt,_>(epoch).bind::<BigInt,_>(expires).get_result(db).await?)
         }).await
+    }).await
     }
     async fn lease(
         db: &mut AsyncPgConnection,
@@ -520,30 +593,33 @@ impl TransportStore {
         if !(1000..=self.limits.max_lease_ms).contains(&ttl_ms) {
             return Err(Error::Invalid("invalid_lease_ttl"));
         }
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
+        self.db.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,until)=Self::authenticate(db,p,now).await?;Self::agent_active(db,p,&reference.agent_id).await?;Self::lease(db,p,reference,now).await?;
             Ok(sql_query("UPDATE hagency_agent_v1.execution_leases SET expires_at_ms=least($1,$2) WHERE agent_id=$3 RETURNING agent_id,owner_user_id,device_id,device_generation,epoch,expires_at_ms").bind::<BigInt,_>(now.saturating_add(ttl_ms)).bind::<BigInt,_>(until).bind::<Text,_>(&reference.agent_id).get_result(db).await?)
         }).await
+    }).await
     }
     pub async fn release_lease(&self, p: &Principal, reference: &LeaseRef, now: i64) -> Result<()> {
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
-        db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-            let (now, _) = Self::authenticate(db, p, now).await?;
-            Self::lease(db, p, reference, now).await?;
-            Self::invalidate_epoch(db, &reference.agent_id).await?;
-            sql_query(
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    let (now, _) = Self::authenticate(db, p, now).await?;
+                    Self::lease(db, p, reference, now).await?;
+                    Self::invalidate_epoch(db, &reference.agent_id).await?;
+                    sql_query(
                 "UPDATE hagency_agent_v1.execution_leases SET expires_at_ms=$1 WHERE agent_id=$2",
             )
             .bind::<BigInt, _>(now)
             .bind::<Text, _>(&reference.agent_id)
             .execute(db)
             .await?;
-            Ok(())
-        })
-        .await
+                    Ok(())
+                })
+                .await
+            })
+            .await
     }
     async fn observe_delivery_authority(
         &self,
@@ -554,8 +630,9 @@ impl TransportStore {
         facts: &DeliveryFacts,
         now: i64,
     ) -> Result<()> {
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
             Self::lock(db).await?;
             let now = Self::clock(db, now).await?;
             let scope = Self::scope(db, binding).await?;
@@ -588,6 +665,7 @@ impl TransportStore {
             }
             Ok(())
         }).await
+    }).await
     }
     async fn observe_event_authority(
         &self,
@@ -597,8 +675,9 @@ impl TransportStore {
         now: i64,
     ) -> Result<()> {
         let event = {
-            let mut guard = self.db.lock().await?;
-            Self::dispatch(&mut guard, p, id).await?
+            self.db
+                .with_connection(async |db| Self::dispatch(&mut *db, p, id).await)
+                .await?
         };
         self.observe_delivery_authority(
             Some(p),
@@ -690,15 +769,23 @@ impl TransportStore {
         } else {
             hash(&serde_json::to_string(&event).map_err(|_| Error::Invalid("invalid_event"))?)
         };
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
+        self.db.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;let scope=Self::scope(db,binding).await?;
             if received_at_ms < 0 || received_at_ms > now { return Err(Error::Invalid("invalid_event_received_time")); }
             if received_at_ms <= now.saturating_sub(self.limits.event_ttl_ms) { return Err(Error::Conflict("event_expired")); }
             Self::expire_pending(db,self.limits.event_ttl_ms,now).await?;
             pause_notices::routing_facts(&scope,&event.sender_mxid,f,now)?;if event.room_id!=scope.room_id {return Err(Error::Unauthorized("event_room_mismatch"));}
-            let existing=sql_query("SELECT id,digest FROM hagency_agent_v1.owner_events WHERE binding_id=$1 AND event_id=$2").bind::<Text,_>(binding).bind::<Text,_>(&event.event_id).get_result::<Existing>(db).await.optional()?;
+            let existing={
+                use crate::schema::agent_tables::owner_events as q;
+                let params = (binding, &event.event_id);
+                q::table
+                    .select((q::id, q::digest))
+                    .filter(((q::binding_id).eq(&params.0)).and((q::event_id).eq(&params.1)))
+                    .get_result::<Existing>(db)
+                    .await
+            }.optional()?;
             if let Some(old)=existing {if old.digest!=digest {return Err(Error::Conflict("event_payload_changed"));}return Ok(RouteResult::Duplicate{dispatch_id:old.id});}
             if let Some(duplicate)=Self::existing_pause_notice(db,binding,&event.event_id,&digest).await? {return Ok(duplicate);}
             let puppet_sender=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agents WHERE puppet_mxid=$1) AS matched").bind::<Text,_>(&event.sender_mxid).get_result::<Flag>(db).await?;
@@ -719,14 +806,71 @@ impl TransportStore {
                 None=>&event.event_id,
             };
             let id=format!("evt_{}",entity_id()?);
-            sql_query("INSERT INTO hagency_agent_v1.owner_events(id,binding_id,agent_id,owner_user_id,event_id,room_id,requester_mxid,thread_root,body,digest,binding_generation,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',$12)")
-                .bind::<Text,_>(&id).bind::<Text,_>(binding).bind::<Text,_>(&scope.agent_id).bind::<Text,_>(&scope.owner_user_id).bind::<Text,_>(&event.event_id).bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.sender_mxid).bind::<Text,_>(root).bind::<Text,_>(&event.body).bind::<Text,_>(digest).bind::<BigInt,_>(scope.binding_generation).bind::<BigInt,_>(received_at_ms).execute(db).await?;
+            {
+                use crate::schema::agent_tables::owner_events as q;
+                let params = (
+                    &id,
+                    binding,
+                    &scope.agent_id,
+                    &scope.owner_user_id,
+                    &event.event_id,
+                    &event.room_id,
+                    &event.sender_mxid,
+                    root,
+                    &event.body,
+                    digest,
+                    scope.binding_generation,
+                    received_at_ms,
+                );
+                diesel::insert_into(q::table)
+                    .values((
+                        q::id.eq(&params.0),
+                        q::binding_id.eq(&params.1),
+                        q::agent_id.eq(&params.2),
+                        q::owner_user_id.eq(&params.3),
+                        q::event_id.eq(&params.4),
+                        q::room_id.eq(&params.5),
+                        q::requester_mxid.eq(&params.6),
+                        q::thread_root.eq(&params.7),
+                        q::body.eq(&params.8),
+                        q::digest.eq(&params.9),
+                        q::binding_generation.eq(&params.10),
+                        q::state.eq("pending"),
+                        q::created_at_ms.eq(&params.11),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             if let Some(a)=&attachment {
-                sql_query("INSERT INTO hagency_agent_v1.event_attachments(dispatch_id,descriptor,descriptor_digest) VALUES($1,$2,$3)").bind::<Text,_>(&id).bind::<diesel::sql_types::Jsonb,_>(serde_json::to_value(a).map_err(|_|Error::Invalid("invalid_agent_attachment"))?).bind::<Text,_>(&a.descriptor_digest).execute(db).await?;
+                {
+                    use crate::schema::agent_tables::event_attachments as q;
+                    let params = (
+                        &id,
+                        serde_json::to_value(a).map_err(|_| Error::Invalid("invalid_agent_attachment"))?,
+                        &a.descriptor_digest,
+                    );
+                    diesel::insert_into(q::table)
+                        .values((
+                            q::dispatch_id.eq(&params.0),
+                            q::descriptor.eq(&params.1),
+                            q::descriptor_digest.eq(&params.2),
+                        ))
+                        .execute(db)
+                        .await
+                }?;
             }
-            sql_query("INSERT INTO hagency_agent_v1.agent_threads(binding_id,thread_root) VALUES($1,$2) ON CONFLICT DO NOTHING").bind::<Text,_>(binding).bind::<Text,_>(root).execute(db).await?;
+            {
+                use crate::schema::agent_tables::agent_threads as q;
+                let params = (binding, root);
+                diesel::insert_into(q::table)
+                    .values((q::binding_id.eq(&params.0), q::thread_root.eq(&params.1)))
+                    .on_conflict_do_nothing()
+                    .execute(db)
+                    .await
+            }?;
             Ok(RouteResult::Queued{dispatch_id:id})
         }).await
+    }).await
     }
     /// Host gateway discovery: these headers are not an authorization to expose
     /// message bodies. Fetch current membership facts, then call claim_event.
@@ -776,8 +920,8 @@ impl TransportStore {
         if limit == 0 || limit > self.limits.max_batch {
             return Err(Error::Invalid("invalid_batch_limit"));
         }
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
+        self.db.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;Self::lease(db,p,reference,now).await?;Self::agent_active(db,p,&reference.agent_id).await?;
             if let Some(binding) = binding {
@@ -789,10 +933,34 @@ impl TransportStore {
             Self::expire_pending(db,self.limits.event_ttl_ms,now).await?;
             Ok(sql_query("SELECT e.id,e.binding_id,e.event_id,e.room_id,e.requester_mxid,e.thread_root FROM hagency_agent_v1.owner_events e JOIN hagency_agent_v1.bindings b ON b.id=e.binding_id WHERE e.owner_user_id=$1 AND e.agent_id=$2 AND e.state IN ('pending','offered','acknowledged') AND e.binding_generation=b.generation AND b.state='active' AND e.created_at_ms>$4 AND ($5::text IS NULL OR e.binding_id=$5) AND ($6 OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.event_attachments a WHERE a.dispatch_id=e.id)) ORDER BY e.created_at_ms,e.id LIMIT $3").bind::<Text,_>(&p.user_id).bind::<Text,_>(&reference.agent_id).bind::<BigInt,_>(limit as i64).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).bind::<Nullable<Text>,_>(binding).bind::<Bool,_>(accept_files).load(db).await?)
         }).await
+    }).await
     }
     async fn dispatch(db: &mut AsyncPgConnection, p: &Principal, id: &str) -> Result<Dispatch> {
-        sql_query("SELECT id,binding_id,agent_id,event_id,room_id,requester_mxid,thread_root,body,state,binding_generation,dispatch_epoch,dispatch_device_id,execution_id,outcome FROM hagency_agent_v1.owner_events WHERE id=$1 AND owner_user_id=$2")
-            .bind::<Text,_>(id).bind::<Text,_>(&p.user_id).get_result(db).await.map_err(unauthorized)
+        {
+            use crate::schema::agent_tables::owner_events as q;
+            let params = (id, &p.user_id);
+            q::table
+                .select((
+                    q::id,
+                    q::binding_id,
+                    q::agent_id,
+                    q::event_id,
+                    q::room_id,
+                    q::requester_mxid,
+                    q::thread_root,
+                    q::body,
+                    q::state,
+                    q::binding_generation,
+                    q::dispatch_epoch,
+                    q::dispatch_device_id,
+                    q::execution_id,
+                    q::outcome,
+                ))
+                .filter(((q::id).eq(&params.0)).and((q::owner_user_id).eq(&params.1)))
+                .get_result(db)
+                .await
+        }
+        .map_err(unauthorized)
     }
     async fn dispatch_scope(
         db: &mut AsyncPgConnection,
@@ -828,8 +996,8 @@ impl TransportStore {
     ) -> Result<Dispatch> {
         self.observe_event_authority(p, id, f, now).await?;
         key(id)?;
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
+        self.db.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;let event=Self::dispatch(db,p,id).await?;Self::dispatch_scope(db,p,reference,&event,f,now).await?;
             Self::event_unexpired(db,id,self.limits.event_ttl_ms,now).await?;
@@ -837,6 +1005,7 @@ impl TransportStore {
             else if !matches!(event.state.as_str(),"offered"|"acknowledged")||event.dispatch_epoch!=Some(reference.epoch)||event.dispatch_device_id.as_deref()!=Some(device(p)?.0) {return Err(Error::Conflict("dispatch_not_claimable"));}
             Self::dispatch(db,p,id).await
         }).await
+    }).await
     }
     /// Called only after client has durably committed this event into its inbox.
     pub async fn acknowledge(
@@ -846,36 +1015,40 @@ impl TransportStore {
         id: &str,
         now: i64,
     ) -> Result<()> {
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
-        db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-            let (now, _) = Self::authenticate(db, p, now).await?;
-            Self::lease(db, p, reference, now).await?;
-            Self::event_unexpired(db, id, self.limits.event_ttl_ms, now).await?;
-            let e = Self::dispatch(db, p, id).await?;
-            fenced(&e, p, reference)?;
-            let scope = Self::scope(db, &e.binding_id).await?;
-            if !scope.active || scope.binding_generation != e.binding_generation {
-                return Err(Error::Unauthorized("dispatch_scope_revoked"));
-            }
-            if e.state.starts_with("encrypted_") {
-                return Err(Error::Conflict(
-                    "encrypted_dispatch_requires_ciphertext_api",
-                ));
-            }
-            if e.state == "acknowledged" {
-                return Ok(());
-            }
-            if e.state != "offered" {
-                return Err(Error::Conflict("dispatch_not_offered"));
-            }
-            sql_query("UPDATE hagency_agent_v1.owner_events SET state='acknowledged' WHERE id=$1")
-                .bind::<Text, _>(id)
-                .execute(db)
-                .await?;
-            Ok(())
-        })
-        .await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    let (now, _) = Self::authenticate(db, p, now).await?;
+                    Self::lease(db, p, reference, now).await?;
+                    Self::event_unexpired(db, id, self.limits.event_ttl_ms, now).await?;
+                    let e = Self::dispatch(db, p, id).await?;
+                    fenced(&e, p, reference)?;
+                    let scope = Self::scope(db, &e.binding_id).await?;
+                    if !scope.active || scope.binding_generation != e.binding_generation {
+                        return Err(Error::Unauthorized("dispatch_scope_revoked"));
+                    }
+                    if e.state.starts_with("encrypted_") {
+                        return Err(Error::Conflict(
+                            "encrypted_dispatch_requires_ciphertext_api",
+                        ));
+                    }
+                    if e.state == "acknowledged" {
+                        return Ok(());
+                    }
+                    if e.state != "offered" {
+                        return Err(Error::Conflict("dispatch_not_offered"));
+                    }
+                    sql_query(
+                        "UPDATE hagency_agent_v1.owner_events SET state='acknowledged' WHERE id=$1",
+                    )
+                    .bind::<Text, _>(id)
+                    .execute(db)
+                    .await?;
+                    Ok(())
+                })
+                .await
+            })
+            .await
     }
     /// Persist the execution identity before any model/tool call. Repeated same
     /// execution ID resumes an existing attempt; it never authorizes another run.
@@ -890,16 +1063,25 @@ impl TransportStore {
     ) -> Result<ExecutionStart> {
         self.observe_event_authority(p, id, f, now).await?;
         key(execution_id)?;
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
+        self.db.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;let e=Self::dispatch(db,p,id).await?;Self::dispatch_scope(db,p,reference,&e,f,now).await?;fenced(&e,p,reference)?;
             if e.state=="running"&&e.execution_id.as_deref()==Some(execution_id) {return Ok(ExecutionStart{dispatch:e,newly_started:false});}
             Self::event_unexpired(db,id,self.limits.event_ttl_ms,now).await?;
             if e.state!="acknowledged" {return Err(Error::Conflict("dispatch_not_acknowledged"));}
             let reused=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.owner_events WHERE agent_id=$1 AND execution_id=$2) AS matched").bind::<Text,_>(&e.agent_id).bind::<Text,_>(execution_id).get_result::<Flag>(db).await?;if reused.matched {return Err(Error::Conflict("execution_id_reused"));}
-            sql_query("UPDATE hagency_agent_v1.owner_events SET state='running',execution_id=$1 WHERE id=$2").bind::<Text,_>(execution_id).bind::<Text,_>(id).execute(db).await?;Ok(ExecutionStart{dispatch:Self::dispatch(db,p,id).await?,newly_started:true})
+            {
+                use crate::schema::agent_tables::owner_events as q;
+                let params = (execution_id, id);
+                diesel::update(q::table)
+                    .filter((q::id).eq(&params.1))
+                    .set((q::state.eq("running"), q::execution_id.eq(&params.0)))
+                    .execute(db)
+                    .await
+            }?;Ok(ExecutionStart{dispatch:Self::dispatch(db,p,id).await?,newly_started:true})
         }).await
+    }).await
     }
     /// Fresh execution authority check immediately before a host tool. It grants
     /// no start/replay and carries no model, filesystem or local approval policy.
@@ -914,22 +1096,26 @@ impl TransportStore {
     ) -> Result<Dispatch> {
         self.observe_event_authority(p, id, f, now).await?;
         key(execution_id)?;
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
-        db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-            let (now, _) = Self::authenticate(db, p, now).await?;
-            let event = Self::dispatch(db, p, id).await?;
-            Self::dispatch_scope(db, p, reference, &event, f, now).await?;
-            fenced(&event, p, reference)?;
-            if event.state != "running" || event.execution_id.as_deref() != Some(execution_id) {
-                return Err(Error::Conflict("execution_not_running"));
-            }
-            Self::event_unexpired(db, id, self.limits.event_ttl_ms, now).await?;
-            let current = Self::clock(db, now).await?;
-            Self::lease(db, p, reference, current).await?;
-            Ok(event)
-        })
-        .await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    let (now, _) = Self::authenticate(db, p, now).await?;
+                    let event = Self::dispatch(db, p, id).await?;
+                    Self::dispatch_scope(db, p, reference, &event, f, now).await?;
+                    fenced(&event, p, reference)?;
+                    if event.state != "running"
+                        || event.execution_id.as_deref() != Some(execution_id)
+                    {
+                        return Err(Error::Conflict("execution_not_running"));
+                    }
+                    Self::event_unexpired(db, id, self.limits.event_ttl_ms, now).await?;
+                    let current = Self::clock(db, now).await?;
+                    Self::lease(db, p, reference, current).await?;
+                    Ok(event)
+                })
+                .await
+            })
+            .await
     }
     /// Completes a rejected/failed/interrupted run. Server status notices provide
     /// feedback without fabricating model output or replaying side effects.
@@ -945,52 +1131,68 @@ impl TransportStore {
         if !matches!(outcome, "rejected" | "failed" | "unknown") {
             return Err(Error::Invalid("invalid_execution_outcome"));
         }
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
-        db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-            let (now, _) = Self::authenticate(db, p, now).await?;
-            Self::lease(db, p, reference, now).await?;
-            let e = Self::dispatch(db, p, id).await?;
-            fenced(&e, p, reference)?;
-            let scope = Self::scope(db, &e.binding_id).await?;
-            if !scope.active || scope.binding_generation != e.binding_generation {
-                return Err(Error::Unauthorized("dispatch_scope_revoked"));
-            }
-            if e.execution_id.is_none() {
-                // A lost Start RPC may never have reached us. The current fenced
-                // device can retire its offer, without fabricating a started run.
-                if e.state == "cancelled" && e.outcome.as_deref() == Some(outcome) {
-                    return Ok(());
-                }
-                if !matches!(e.state.as_str(), "offered" | "acknowledged") {
-                    return Err(Error::Conflict("execution_not_running"));
-                }
-                sql_query("UPDATE hagency_agent_v1.owner_events SET state='cancelled',outcome=$1 WHERE id=$2")
-                    .bind::<Text,_>(outcome).bind::<Text,_>(id).execute(db).await?;
-                return Ok(());
-            }
-            if matches!(e.state.as_str(), "completed" | "unknown")
-                && e.execution_id.as_deref() == Some(execution_id)
-                && e.outcome.as_deref() == Some(outcome)
-            {
-                return Ok(());
-            }
-            if e.state != "running" || e.execution_id.as_deref() != Some(execution_id) {
-                return Err(Error::Conflict("execution_not_running"));
-            }
-            sql_query("UPDATE hagency_agent_v1.owner_events SET state=$1,outcome=$2 WHERE id=$3")
-                .bind::<Text, _>(if outcome == "unknown" {
-                    "unknown"
-                } else {
-                    "completed"
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    let (now, _) = Self::authenticate(db, p, now).await?;
+                    Self::lease(db, p, reference, now).await?;
+                    let e = Self::dispatch(db, p, id).await?;
+                    fenced(&e, p, reference)?;
+                    let scope = Self::scope(db, &e.binding_id).await?;
+                    if !scope.active || scope.binding_generation != e.binding_generation {
+                        return Err(Error::Unauthorized("dispatch_scope_revoked"));
+                    }
+                    if e.execution_id.is_none() {
+                        // A lost Start RPC may never have reached us. The current fenced
+                        // device can retire its offer, without fabricating a started run.
+                        if e.state == "cancelled" && e.outcome.as_deref() == Some(outcome) {
+                            return Ok(());
+                        }
+                        if !matches!(e.state.as_str(), "offered" | "acknowledged") {
+                            return Err(Error::Conflict("execution_not_running"));
+                        }
+                        {
+                            use crate::schema::agent_tables::owner_events as q;
+                            let params = (outcome, id);
+                            diesel::update(q::table)
+                                .filter((q::id).eq(&params.1))
+                                .set((q::state.eq("cancelled"), q::outcome.eq(&params.0)))
+                                .execute(db)
+                                .await
+                        }?;
+                        return Ok(());
+                    }
+                    if matches!(e.state.as_str(), "completed" | "unknown")
+                        && e.execution_id.as_deref() == Some(execution_id)
+                        && e.outcome.as_deref() == Some(outcome)
+                    {
+                        return Ok(());
+                    }
+                    if e.state != "running" || e.execution_id.as_deref() != Some(execution_id) {
+                        return Err(Error::Conflict("execution_not_running"));
+                    }
+                    {
+                        use crate::schema::agent_tables::owner_events as q;
+                        let params = (
+                            if outcome == "unknown" {
+                                "unknown"
+                            } else {
+                                "completed"
+                            },
+                            outcome,
+                            id,
+                        );
+                        diesel::update(q::table)
+                            .filter((q::id).eq(&params.2))
+                            .set((q::state.eq(&params.0), q::outcome.eq(&params.1)))
+                            .execute(db)
+                            .await
+                    }?;
+                    Ok(())
                 })
-                .bind::<Text, _>(outcome)
-                .bind::<Text, _>(id)
-                .execute(db)
-                .await?;
-            Ok(())
-        })
-        .await
+                .await
+            })
+            .await
     }
     pub async fn submit_reply(
         &self,
@@ -1007,19 +1209,81 @@ impl TransportStore {
         message(&request.body, self.limits.max_message_bytes)?;
         let digest =
             hash(&serde_json::to_string(&request).map_err(|_| Error::Invalid("invalid_reply"))?);
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            let (now,_)=Self::authenticate(db,p,now).await?;let e=Self::dispatch(db,p,&request.dispatch_id).await?;let scope=Self::dispatch_scope(db,p,reference,&e,f,now).await?;fenced(&e,p,reference)?;
-            let old=Self::reply_for_event(db,&e.id).await?;
-            if let Some(old)=old {if old.payload_digest!=digest {return Err(Error::Conflict("reply_payload_changed"));}return Ok(old);}
-            if e.state!="running"||e.execution_id.as_deref()!=Some(&request.execution_id) {return Err(Error::Conflict("execution_not_running"));}
-            let id=format!("rep_{}",entity_id()?);let txn=format!("hagency_{}",hash(&e.id));
-            sql_query("INSERT INTO hagency_agent_v1.reply_outbox(id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,'pending',$14)")
-                .bind::<Text,_>(&id).bind::<Text,_>(&e.id).bind::<Text,_>(&e.agent_id).bind::<Text,_>(&e.binding_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&e.room_id).bind::<Text,_>(&scope.puppet_mxid).bind::<Text,_>(&e.thread_root).bind::<Text,_>(&request.body).bind::<Text,_>(&digest).bind::<Text,_>(&txn).bind::<BigInt,_>(e.binding_generation).bind::<BigInt,_>(reference.epoch).bind::<BigInt,_>(now).execute(db).await?;
-            sql_query("UPDATE hagency_agent_v1.owner_events SET state='completed',outcome='replied' WHERE id=$1").bind::<Text,_>(&e.id).execute(db).await?;
-            Self::reply(db,&id).await
-        }).await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    let (now, _) = Self::authenticate(db, p, now).await?;
+                    let e = Self::dispatch(db, p, &request.dispatch_id).await?;
+                    let scope = Self::dispatch_scope(db, p, reference, &e, f, now).await?;
+                    fenced(&e, p, reference)?;
+                    let old = Self::reply_for_event(db, &e.id).await?;
+                    if let Some(old) = old {
+                        if old.payload_digest != digest {
+                            return Err(Error::Conflict("reply_payload_changed"));
+                        }
+                        return Ok(old);
+                    }
+                    if e.state != "running"
+                        || e.execution_id.as_deref() != Some(&request.execution_id)
+                    {
+                        return Err(Error::Conflict("execution_not_running"));
+                    }
+                    let id = format!("rep_{}", entity_id()?);
+                    let txn = format!("hagency_{}", hash(&e.id));
+                    {
+                        use crate::schema::agent_tables::reply_outbox as q;
+                        let params = (
+                            &id,
+                            &e.id,
+                            &e.agent_id,
+                            &e.binding_id,
+                            &p.user_id,
+                            &e.room_id,
+                            &scope.puppet_mxid,
+                            &e.thread_root,
+                            &request.body,
+                            &digest,
+                            &txn,
+                            e.binding_generation,
+                            reference.epoch,
+                            now,
+                        );
+                        diesel::insert_into(q::table)
+                            .values((
+                                q::id.eq(&params.0),
+                                q::owner_event_id.eq(&params.1),
+                                q::agent_id.eq(&params.2),
+                                q::binding_id.eq(&params.3),
+                                q::owner_user_id.eq(&params.4),
+                                q::room_id.eq(&params.5),
+                                q::puppet_mxid.eq(&params.6),
+                                q::thread_root.eq(&params.7),
+                                q::body.eq(&params.8),
+                                q::payload_digest.eq(&params.9),
+                                q::matrix_txn_id.eq(&params.10),
+                                q::binding_generation.eq(&params.11),
+                                q::dispatch_epoch.eq(&params.12),
+                                q::delivery_epoch.eq(&params.12),
+                                q::state.eq("pending"),
+                                q::created_at_ms.eq(&params.13),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;
+                    {
+                        use crate::schema::agent_tables::owner_events as q;
+                        let params = (&e.id,);
+                        diesel::update(q::table)
+                            .filter((q::id).eq(&params.0))
+                            .set((q::state.eq("completed"), q::outcome.eq("replied")))
+                            .execute(db)
+                            .await
+                    }?;
+                    Self::reply(db, &id).await
+                })
+                .await
+            })
+            .await
     }
     /// Explicit recovery of a locally durable known result under current authority.
     /// This never reruns execution, changes its original epoch or resolves unknown
@@ -1039,8 +1303,8 @@ impl TransportStore {
         message(&request.body, self.limits.max_message_bytes)?;
         let digest =
             hash(&serde_json::to_string(&request).map_err(|_| Error::Invalid("invalid_reply"))?);
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
+        self.db.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;
             let event=Self::dispatch(db,p,&request.dispatch_id).await?;if event.outcome.as_deref()==Some("puppet_send_permission_revoked") {return Err(Error::Unauthorized("reply_delivery_permanently_blocked"));}
@@ -1060,24 +1324,93 @@ impl TransportStore {
                 // Only a definitely unsent cancelled intent may return to pending.
                 sql_query("UPDATE hagency_agent_v1.reply_outbox SET delivery_epoch=$1,state=CASE WHEN state='cancelled' THEN 'pending' WHEN state='sending' THEN 'unknown' ELSE state END WHERE id=$2")
                     .bind::<BigInt,_>(reference.epoch).bind::<Text,_>(&old.id).execute(db).await?;
-                sql_query("INSERT INTO hagency_agent_v1.domain_audit(actor_user_id,operation,object_id,at_ms) VALUES($1,'device.reply.known_reconciled',$2,$3)")
-                    .bind::<Text,_>(&p.user_id).bind::<Text,_>(&old.id).bind::<BigInt,_>(now).execute(db).await?;
+                {
+                    use crate::schema::agent_tables::domain_audit as q;
+                    let params = (&p.user_id, &old.id, now);
+                    diesel::insert_into(q::table)
+                        .values((
+                            q::actor_user_id.eq(&params.0),
+                            q::operation.eq("device.reply.known_reconciled"),
+                            q::object_id.eq(&params.1),
+                            q::at_ms.eq(&params.2),
+                        ))
+                        .execute(db)
+                        .await
+                }?;
                 let checked_now=Self::clock(db,now).await?;Self::lease(db,p,reference,checked_now).await?;
                 return Self::reply(db,&old.id).await;
             }
             if event.state!="unknown" {return Err(Error::Conflict("execution_not_reconcilable"));}
             let id=format!("rep_{}",entity_id()?);let txn=format!("hagency_{}",hash(&event.id));
-            sql_query("INSERT INTO hagency_agent_v1.reply_outbox(id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15)")
-                .bind::<Text,_>(&id).bind::<Text,_>(&event.id).bind::<Text,_>(&event.agent_id).bind::<Text,_>(&event.binding_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&event.room_id).bind::<Text,_>(&scope.puppet_mxid).bind::<Text,_>(&event.thread_root).bind::<Text,_>(&request.body).bind::<Text,_>(&digest).bind::<Text,_>(&txn).bind::<BigInt,_>(event.binding_generation).bind::<BigInt,_>(event.dispatch_epoch.unwrap()).bind::<BigInt,_>(reference.epoch).bind::<BigInt,_>(now).execute(db).await?;
+            {
+                use crate::schema::agent_tables::reply_outbox as q;
+                let params = (
+                    &id,
+                    &event.id,
+                    &event.agent_id,
+                    &event.binding_id,
+                    &p.user_id,
+                    &event.room_id,
+                    &scope.puppet_mxid,
+                    &event.thread_root,
+                    &request.body,
+                    &digest,
+                    &txn,
+                    event.binding_generation,
+                    event.dispatch_epoch.unwrap(),
+                    reference.epoch,
+                    now,
+                );
+                diesel::insert_into(q::table)
+                    .values((
+                        q::id.eq(&params.0),
+                        q::owner_event_id.eq(&params.1),
+                        q::agent_id.eq(&params.2),
+                        q::binding_id.eq(&params.3),
+                        q::owner_user_id.eq(&params.4),
+                        q::room_id.eq(&params.5),
+                        q::puppet_mxid.eq(&params.6),
+                        q::thread_root.eq(&params.7),
+                        q::body.eq(&params.8),
+                        q::payload_digest.eq(&params.9),
+                        q::matrix_txn_id.eq(&params.10),
+                        q::binding_generation.eq(&params.11),
+                        q::dispatch_epoch.eq(&params.12),
+                        q::delivery_epoch.eq(&params.13),
+                        q::state.eq("pending"),
+                        q::created_at_ms.eq(&params.14),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             // Keep the execution unknown. Known text is not evidence resolving tool
             // effects or model accounting, and cannot start/settle that execution.
-            sql_query("UPDATE hagency_agent_v1.owner_events SET outcome='known_reply_reconciled' WHERE id=$1")
-                .bind::<Text,_>(&event.id).execute(db).await?;
-            sql_query("INSERT INTO hagency_agent_v1.domain_audit(actor_user_id,operation,object_id,at_ms) VALUES($1,'device.reply.known_reconciled',$2,$3)")
-                .bind::<Text,_>(&p.user_id).bind::<Text,_>(&id).bind::<BigInt,_>(now).execute(db).await?;
+            {
+                use crate::schema::agent_tables::owner_events as q;
+                let params = (&event.id,);
+                diesel::update(q::table)
+                    .filter((q::id).eq(&params.0))
+                    .set((q::outcome.eq("known_reply_reconciled"),))
+                    .execute(db)
+                    .await
+            }?;
+            {
+                use crate::schema::agent_tables::domain_audit as q;
+                let params = (&p.user_id, &id, now);
+                diesel::insert_into(q::table)
+                    .values((
+                        q::actor_user_id.eq(&params.0),
+                        q::operation.eq("device.reply.known_reconciled"),
+                        q::object_id.eq(&params.1),
+                        q::at_ms.eq(&params.2),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             let checked_now=Self::clock(db,now).await?;Self::lease(db,p,reference,checked_now).await?;
             Self::reply(db,&id).await
         }).await
+    }).await
     }
     async fn reply(db: &mut AsyncPgConnection, id: &str) -> Result<ReplyIntent> {
         sql_query("SELECT id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,delivery_blocked,worker_token,worker_until_ms,matrix_event_id,(SELECT requester_mxid FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS requester_mxid FROM hagency_agent_v1.reply_outbox WHERE id=$1").bind::<Text,_>(id).get_result(db).await.map_err(unauthorized)
@@ -1096,16 +1429,40 @@ impl TransportStore {
         f: &DeliveryFacts,
         now: i64,
     ) -> Result<bool> {
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
+        self.db.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;
-            let e=sql_query("SELECT id,binding_id,agent_id,event_id,room_id,requester_mxid,thread_root,body,state,binding_generation,dispatch_epoch,dispatch_device_id,execution_id,outcome FROM hagency_agent_v1.owner_events WHERE id=$1").bind::<Text,_>(id).get_result::<Dispatch>(db).await.map_err(unauthorized)?;
+            let e={
+                use crate::schema::agent_tables::owner_events as q;
+                let params = (id,);
+                q::table
+                    .select((
+                        q::id,
+                        q::binding_id,
+                        q::agent_id,
+                        q::event_id,
+                        q::room_id,
+                        q::requester_mxid,
+                        q::thread_root,
+                        q::body,
+                        q::state,
+                        q::binding_generation,
+                        q::dispatch_epoch,
+                        q::dispatch_device_id,
+                        q::execution_id,
+                        q::outcome,
+                    ))
+                    .filter((q::id).eq(&params.0))
+                    .get_result::<Dispatch>(db)
+                    .await
+            }.map_err(unauthorized)?;
             let scope=Self::scope(db,&e.binding_id).await?;observation(&scope,&e.requester_mxid,f,now)?;
             let denied=scope.binding_generation!=e.binding_generation||facts(&scope,&e.requester_mxid,f,now).is_err();
             if !denied||!matches!(e.state.as_str(),"pending"|"offered"|"acknowledged"|"running") {return Ok(false);}
             sql_query("UPDATE hagency_agent_v1.owner_events SET state=CASE WHEN state='running' THEN 'unknown' ELSE 'cancelled' END WHERE id=$1").bind::<Text,_>(id).execute(db).await?;Ok(true)
         }).await
+    }).await
     }
     /// Trusted sender only. Preserve unknown/sending network evidence, fixed txn,
     /// and payload, but permanently prohibit a new send after proven authority loss.
@@ -1115,8 +1472,8 @@ impl TransportStore {
         f: &DeliveryFacts,
         now: i64,
     ) -> Result<bool> {
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
+        self.db.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;let intent=Self::reply(db,id).await?;
             let scope=Self::scope(db,&intent.binding_id).await?;observation(&scope,&intent.requester_mxid,f,now)?;
@@ -1124,14 +1481,15 @@ impl TransportStore {
             if !denied||intent.state=="sent"||intent.delivery_blocked {return Ok(false);}
             sql_query("UPDATE hagency_agent_v1.reply_outbox SET delivery_blocked=true,state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END WHERE id=$1").bind::<Text,_>(id).execute(db).await?;Ok(true)
         }).await
+    }).await
     }
     /// Trusted maintenance worker. Invalid scope cancels queued work; an already
     /// started attempt becomes unknown. Lease expiry/revocation requeues only work
     /// that has not started. Matrix membership changes are checked by gateway facts
     /// at every sensitive operation, independently of this database maintenance.
     pub async fn invalidate_stale_dispatches(&self, now: i64) -> Result<usize> {
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
+        self.db.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;
             let ttl_expired=Self::expire_pending(db,self.limits.event_ttl_ms,now).await?;
@@ -1140,6 +1498,7 @@ impl TransportStore {
             sql_query("UPDATE hagency_agent_v1.reply_outbox o SET state='cancelled' WHERE o.state='pending' AND (NOT EXISTS(SELECT 1 FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.id=o.binding_id AND b.generation=o.binding_generation AND b.state='active' AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND a.state='active' AND u.active AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.execution_leases l JOIN hagency_agent_v1.agents a ON a.id=l.agent_id JOIN hagency_agent_v1.devices d ON d.id=l.device_id JOIN hagency_agent_v1.sessions s ON s.id=d.session_id WHERE l.agent_id=o.agent_id AND l.epoch=o.delivery_epoch AND a.execution_device_id=l.device_id AND l.device_generation=d.generation AND d.user_id=o.owner_user_id AND s.user_id=o.owner_user_id AND NOT d.revoked AND NOT s.revoked AND s.valid_until_ms>$1 AND l.expires_at_ms>$1))").bind::<BigInt,_>(now).execute(db).await?;
             Ok(count+expired+ttl_expired)
         }).await
+    }).await
     }
     /// Trusted sender worker only: retrieve metadata then fetch live gateway facts.
     /// Do not expose this endpoint to user/device credentials.
@@ -1157,9 +1516,11 @@ impl TransportStore {
         if limit == 0 || limit > self.limits.max_batch {
             return Err(Error::Invalid("invalid_batch_limit"));
         }
-        let mut db = self.db.lock().await?;
+        self.db.with_connection(async |db| {
+
         Ok(sql_query("SELECT id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,delivery_blocked,worker_token,worker_until_ms,matrix_event_id,(SELECT requester_mxid FROM hagency_agent_v1.owner_events WHERE id=owner_event_id) AS requester_mxid FROM hagency_agent_v1.reply_outbox o WHERE state IN ('pending','unknown','sending') AND NOT delivery_blocked AND EXISTS(SELECT 1 FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id JOIN hagency_agent_v1.execution_leases l ON l.agent_id=a.id JOIN hagency_agent_v1.devices d ON d.id=l.device_id JOIN hagency_agent_v1.sessions s ON s.id=d.session_id WHERE b.id=o.binding_id AND b.generation=o.binding_generation AND b.state='active' AND a.state='active' AND u.active AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id)) AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND l.epoch=o.delivery_epoch AND a.execution_device_id=l.device_id AND l.device_generation=d.generation AND NOT d.revoked AND NOT s.revoked AND d.user_id=o.owner_user_id AND s.user_id=o.owner_user_id AND l.expires_at_ms>greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint) AND s.valid_until_ms>greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint)) AND worker_until_ms<=greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint) ORDER BY (id<=$3),id LIMIT $2")
             .bind::<BigInt,_>(now).bind::<BigInt,_>(limit as i64).bind::<Text,_>(cursor).load(&mut *db).await?)
+    }).await
     }
     /// Trusted routing worker scan over the existing durable AS inbox. No body
     /// is exposed through a public DTO, and no retry is acknowledged as routed.
@@ -1171,11 +1532,13 @@ impl TransportStore {
         if limit == 0 || limit > 100 {
             return Err(Error::Invalid("invalid_batch_limit"));
         }
-        let mut db = self.db.lock().await?;
+        self.db.with_connection(async |db| {
+
         // Bound both halves of the circular cursor before joining payloads.
         // Sorting every pending row by a cursor-dependent boolean prevents an
         // index from satisfying the order as the queue grows.
         Ok(sql_query("WITH candidates AS ((SELECT transaction_id,0 AS wrap FROM hagency_agent_v1.routing_jobs WHERE state='pending' AND transaction_id>$1 ORDER BY transaction_id LIMIT $2) UNION ALL (SELECT transaction_id,1 AS wrap FROM hagency_agent_v1.routing_jobs WHERE state='pending' AND transaction_id<=$1 ORDER BY transaction_id LIMIT $2)) SELECT t.id,t.body,t.received_at_ms FROM candidates c JOIN hagency_agent_v1.inbound_transactions t ON t.id=c.transaction_id ORDER BY c.wrap,c.transaction_id LIMIT $2").bind::<Text,_>(cursor).bind::<BigInt,_>(limit as i64).load(&mut *db).await?)
+    }).await
     }
     /// Durable send intent before network I/O. Retrying unknown/sending uses the
     /// original sender, room, payload and Matrix transaction ID unchanged.
@@ -1190,8 +1553,9 @@ impl TransportStore {
         gate: Option<&crate::worker_runtime::ClaimGate>,
     ) -> Result<ReplyIntent> {
         let candidate = {
-            let mut guard = self.db.lock().await?;
-            Self::reply(&mut guard, id).await?
+            self.db
+                .with_connection(async |db| Self::reply(&mut *db, id).await)
+                .await?
         };
         self.observe_delivery_authority(
             None,
@@ -1202,16 +1566,33 @@ impl TransportStore {
             now,
         )
         .await?;
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
+        self.db.with_connection(async |db| {
+
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
-            sql_query("SELECT true AS matched FROM hagency_agent_v1.reply_outbox WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<Flag>(db).await?;
+            {
+                use crate::schema::agent_tables::reply_outbox as q;
+                let params = (id,);
+                q::table
+                    .select((true.into_sql::<diesel::sql_types::Bool>(),))
+                    .filter((q::id).eq(&params.0))
+                    .for_update()
+                    .get_result::<Flag>(db)
+                    .await
+            }?;
             let now=Self::clock(db,now).await?;let intent=Self::reply(db,id).await?;
             if intent.delivery_blocked||intent.state=="sent"||intent.state=="cancelled" {return Err(Error::Conflict("reply_not_sendable"));}
             if intent.worker_until_ms>now {return Err(Error::Conflict("reply_sender_busy"));}
             let scope=Self::scope(db,&intent.binding_id).await?;
-            let requester=sql_query("SELECT requester_mxid AS id,digest FROM hagency_agent_v1.owner_events WHERE id=$1").bind::<Text,_>(&intent.owner_event_id).get_result::<Existing>(db).await?;
+            let requester={
+                use crate::schema::agent_tables::owner_events as q;
+                let params = (&intent.owner_event_id,);
+                q::table
+                    .select((q::requester_mxid, q::digest))
+                    .filter((q::id).eq(&params.0))
+                    .get_result::<Existing>(db)
+                    .await
+            }?;
             facts(&scope,&requester.id,f,now)?;
             if scope.binding_generation!=intent.binding_generation||scope.owner_user_id!=intent.owner_user_id||scope.agent_id!=intent.agent_id||scope.puppet_mxid!=intent.puppet_mxid {return Err(Error::Unauthorized("reply_scope_revoked"));}
             // Revalidate the underlying device/session when actually sending.
@@ -1223,8 +1604,21 @@ impl TransportStore {
             facts(&scope,&requester.id,f,Self::clock(db,now).await?)?;
             let _admission=gate.map(crate::worker_runtime::ClaimGate::admit).transpose()?;
             let worker=secret_token();
-            sql_query("UPDATE hagency_agent_v1.reply_outbox SET state='sending',worker_token=$1,worker_until_ms=$2 WHERE id=$3").bind::<Text,_>(worker).bind::<BigInt,_>(now+self.limits.worker_lease_ms).bind::<Text,_>(id).execute(db).await?;Self::reply(db,id).await
+            {
+                use crate::schema::agent_tables::reply_outbox as q;
+                let params = (worker, now + self.limits.worker_lease_ms, id);
+                diesel::update(q::table)
+                    .filter((q::id).eq(&params.2))
+                    .set((
+                        q::state.eq("sending"),
+                        q::worker_token.eq(&params.0),
+                        q::worker_until_ms.eq(&params.1),
+                    ))
+                    .execute(db)
+                    .await
+            }?;Self::reply(db,id).await
         }).await
+    }).await
     }
     /// Trusted recovery worker only. Recording verified historical network effect
     /// is permitted after revocation; this performs no send, never unblocks delivery,
@@ -1236,17 +1630,66 @@ impl TransportStore {
         now: i64,
     ) -> Result<ReplyIntent> {
         matrix_id(&observed.event_id, '$')?;
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?;let now=Self::clock(db,now).await?;let intent=Self::reply(db,id).await?;
-            if observed.observed_at_ms<0||observed.observed_at_ms>now||now-observed.observed_at_ms>30_000 {return Err(Error::Unavailable("matrix_state_unavailable"));}
-            if intent.matrix_txn_id!=observed.matrix_txn_id||intent.puppet_mxid!=observed.sender_mxid||intent.room_id!=observed.room_id||intent.thread_root!=observed.thread_root||intent.body!=observed.body {return Err(Error::Conflict("matrix_reply_observation_mismatch"));}
-            if intent.state=="sent" {if intent.matrix_event_id.as_deref()!=Some(&observed.event_id) {return Err(Error::Conflict("matrix_reply_identity_changed"));}return Ok(intent);}
-            if !matches!(intent.state.as_str(),"unknown"|"sending") {return Err(Error::Conflict("reply_has_no_uncertain_send"));}
-            sql_query("UPDATE hagency_agent_v1.reply_outbox SET state='sent',matrix_event_id=$1,worker_until_ms=$2 WHERE id=$3").bind::<Text,_>(&observed.event_id).bind::<BigInt,_>(now).bind::<Text,_>(id).execute(db).await?;
-            sql_query("INSERT INTO hagency_agent_v1.domain_audit(actor_user_id,operation,object_id,at_ms) VALUES($1,'worker.reply.reconciled',$2,$3)").bind::<Text,_>(&intent.owner_user_id).bind::<Text,_>(id).bind::<BigInt,_>(now).execute(db).await?;Self::reply(db,id).await
-        }).await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::lock(db).await?;
+                    let now = Self::clock(db, now).await?;
+                    let intent = Self::reply(db, id).await?;
+                    if observed.observed_at_ms < 0
+                        || observed.observed_at_ms > now
+                        || now - observed.observed_at_ms > 30_000
+                    {
+                        return Err(Error::Unavailable("matrix_state_unavailable"));
+                    }
+                    if intent.matrix_txn_id != observed.matrix_txn_id
+                        || intent.puppet_mxid != observed.sender_mxid
+                        || intent.room_id != observed.room_id
+                        || intent.thread_root != observed.thread_root
+                        || intent.body != observed.body
+                    {
+                        return Err(Error::Conflict("matrix_reply_observation_mismatch"));
+                    }
+                    if intent.state == "sent" {
+                        if intent.matrix_event_id.as_deref() != Some(&observed.event_id) {
+                            return Err(Error::Conflict("matrix_reply_identity_changed"));
+                        }
+                        return Ok(intent);
+                    }
+                    if !matches!(intent.state.as_str(), "unknown" | "sending") {
+                        return Err(Error::Conflict("reply_has_no_uncertain_send"));
+                    }
+                    {
+                        use crate::schema::agent_tables::reply_outbox as q;
+                        let params = (&observed.event_id, now, id);
+                        diesel::update(q::table)
+                            .filter((q::id).eq(&params.2))
+                            .set((
+                                q::state.eq("sent"),
+                                q::matrix_event_id.eq(&params.0),
+                                q::worker_until_ms.eq(&params.1),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;
+                    {
+                        use crate::schema::agent_tables::domain_audit as q;
+                        let params = (&intent.owner_user_id, id, now);
+                        diesel::insert_into(q::table)
+                            .values((
+                                q::actor_user_id.eq(&params.0),
+                                q::operation.eq("worker.reply.reconciled"),
+                                q::object_id.eq(&params.1),
+                                q::at_ms.eq(&params.2),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;
+                    Self::reply(db, id).await
+                })
+                .await
+            })
+            .await
     }
     /// Exact sender observed Matrix HTTP 403 after the pre-send observation.
     /// Keep possible earlier network effects unknown, but prohibit every resend.
@@ -1256,18 +1699,39 @@ impl TransportStore {
         worker: &str,
         now: i64,
     ) -> Result<ReplyIntent> {
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-            Self::lock(db).await?;
-            let current = Self::clock(db, now).await?;
-            let intent = Self::reply(db, id).await?;
-            if intent.worker_token.as_deref() != Some(worker) { return Err(Error::Conflict("stale_reply_worker")); }
-            if intent.state == "unknown" && intent.delivery_blocked { return Ok(intent); }
-            if intent.state != "sending" { return Err(Error::Conflict("reply_not_sending")); }
-            sql_query("UPDATE hagency_agent_v1.reply_outbox SET state='unknown',delivery_blocked=true,worker_until_ms=$1 WHERE id=$2")
-                .bind::<BigInt,_>(current).bind::<Text,_>(id).execute(db).await?;
-            Self::reply(db,id).await
-        }).await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::lock(db).await?;
+                    let current = Self::clock(db, now).await?;
+                    let intent = Self::reply(db, id).await?;
+                    if intent.worker_token.as_deref() != Some(worker) {
+                        return Err(Error::Conflict("stale_reply_worker"));
+                    }
+                    if intent.state == "unknown" && intent.delivery_blocked {
+                        return Ok(intent);
+                    }
+                    if intent.state != "sending" {
+                        return Err(Error::Conflict("reply_not_sending"));
+                    }
+                    {
+                        use crate::schema::agent_tables::reply_outbox as q;
+                        let params = (current, id);
+                        diesel::update(q::table)
+                            .filter((q::id).eq(&params.1))
+                            .set((
+                                q::state.eq("unknown"),
+                                q::delivery_blocked.eq(true),
+                                q::worker_until_ms.eq(&params.0),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;
+                    Self::reply(db, id).await
+                })
+                .await
+            })
+            .await
     }
     /// Record actual send outcome even if authority was revoked while HTTP was in
     /// flight. Revocation cannot physically undo an already issued Matrix send.
@@ -1281,15 +1745,50 @@ impl TransportStore {
         if let Some(event) = event_id {
             matrix_id(event, '$')?;
         }
-        let mut guard = self.db.lock().await?;
-        let db = &mut *guard;
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?;let intent=Self::reply(db,id).await?;
-            if intent.worker_token.as_deref()!=Some(worker_token) {return Err(Error::Conflict("stale_reply_worker"));}
-            if intent.state=="sent" {if intent.matrix_event_id.as_deref()!=event_id {return Err(Error::Conflict("matrix_reply_identity_changed"));}return Ok(intent);}
-            if intent.state!="sending" {return Err(Error::Conflict("reply_not_sending"));}
-            sql_query("UPDATE hagency_agent_v1.reply_outbox SET state=$1,matrix_event_id=$2,worker_until_ms=$3 WHERE id=$4").bind::<Text,_>(if event_id.is_some(){"sent"}else{"unknown"}).bind::<Nullable<Text>,_>(event_id).bind::<BigInt,_>(Self::clock(db,now).await?).bind::<Text,_>(id).execute(db).await?;Self::reply(db,id).await
-        }).await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::lock(db).await?;
+                    let intent = Self::reply(db, id).await?;
+                    if intent.worker_token.as_deref() != Some(worker_token) {
+                        return Err(Error::Conflict("stale_reply_worker"));
+                    }
+                    if intent.state == "sent" {
+                        if intent.matrix_event_id.as_deref() != event_id {
+                            return Err(Error::Conflict("matrix_reply_identity_changed"));
+                        }
+                        return Ok(intent);
+                    }
+                    if intent.state != "sending" {
+                        return Err(Error::Conflict("reply_not_sending"));
+                    }
+                    {
+                        use crate::schema::agent_tables::reply_outbox as q;
+                        let params = (
+                            if event_id.is_some() {
+                                "sent"
+                            } else {
+                                "unknown"
+                            },
+                            event_id,
+                            Self::clock(db, now).await?,
+                            id,
+                        );
+                        diesel::update(q::table)
+                            .filter((q::id).eq(&params.3))
+                            .set((
+                                q::state.eq(&params.0),
+                                q::matrix_event_id.eq(&params.1),
+                                q::worker_until_ms.eq(&params.2),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;
+                    Self::reply(db, id).await
+                })
+                .await
+            })
+            .await
     }
 }
 fn device(p: &Principal) -> Result<(&str, i64)> {

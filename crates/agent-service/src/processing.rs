@@ -1,5 +1,6 @@
 //! Fixed, durable processing reactions. Never accepts a Matrix target from a device.
 use super::*;
+use diesel::{BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl};
 use diesel::{QueryableByName, sql_types::Jsonb};
 use serde_json::{Value, json};
 
@@ -12,7 +13,7 @@ pub struct ProcessingReceipt {
     pub state: String,
     pub matrix_event_id: Option<String>,
 }
-#[derive(QueryableByName)]
+#[derive(diesel::Queryable, QueryableByName)]
 pub(crate) struct ProcessingIntent {
     #[diesel(sql_type=Text)]
     pub id: String,
@@ -75,8 +76,9 @@ impl TransportStore {
     ) -> Result<ProcessingReceipt> {
         key(execution_id)?;
         self.observe_event_authority(p, dispatch_id, f, now).await?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;
             let e=Self::dispatch(db,p,dispatch_id).await?;
             let scope=Self::dispatch_scope(db,p,lease,&e,f,now).await?;
@@ -95,14 +97,50 @@ impl TransportStore {
             let current=Self::clock(db,now).await?;
             Self::lease(db,p,lease,current).await?;
             facts(&scope,&e.requester_mxid,f,current)?;
-            sql_query("INSERT INTO hagency_agent_v1.processing_outbox(id,owner_event_id,execution_id,agent_id,binding_id,owner_user_id,room_id,event_id,puppet_mxid,binding_generation,dispatch_epoch,dispatch_device_id,content,matrix_txn_id,state,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15)")
-                .bind::<Text,_>(&id).bind::<Text,_>(dispatch_id).bind::<Text,_>(execution_id)
-                .bind::<Text,_>(&e.agent_id).bind::<Text,_>(&e.binding_id).bind::<Text,_>(&p.user_id)
-                .bind::<Text,_>(&e.room_id).bind::<Text,_>(&e.event_id).bind::<Text,_>(&scope.puppet_mxid)
-                .bind::<BigInt,_>(e.binding_generation).bind::<BigInt,_>(lease.epoch).bind::<Text,_>(device(p)?.0)
-                .bind::<Jsonb,_>(content).bind::<Text,_>(txn).bind::<BigInt,_>(current).execute(db).await?;
+            {
+                use crate::schema::agent_tables::processing_outbox as q;
+                let params = (
+                    &id,
+                    dispatch_id,
+                    execution_id,
+                    &e.agent_id,
+                    &e.binding_id,
+                    &p.user_id,
+                    &e.room_id,
+                    &e.event_id,
+                    &scope.puppet_mxid,
+                    e.binding_generation,
+                    lease.epoch,
+                    device(p)?.0,
+                    content,
+                    txn,
+                    current,
+                );
+                diesel::insert_into(q::table)
+                    .values((
+                        q::id.eq(&params.0),
+                        q::owner_event_id.eq(&params.1),
+                        q::execution_id.eq(&params.2),
+                        q::agent_id.eq(&params.3),
+                        q::binding_id.eq(&params.4),
+                        q::owner_user_id.eq(&params.5),
+                        q::room_id.eq(&params.6),
+                        q::event_id.eq(&params.7),
+                        q::puppet_mxid.eq(&params.8),
+                        q::binding_generation.eq(&params.9),
+                        q::dispatch_epoch.eq(&params.10),
+                        q::dispatch_device_id.eq(&params.11),
+                        q::content.eq(&params.12),
+                        q::matrix_txn_id.eq(&params.13),
+                        q::state.eq("pending"),
+                        q::created_at_ms.eq(&params.14),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             Ok(Self::processing(db,&id).await?.receipt())
         }).await
+    }).await
     }
     /// Circular trusted scan; failed Rooms do not monopolize the bounded batch.
     pub(crate) async fn processing_candidates(
@@ -114,13 +152,15 @@ impl TransportStore {
         if limit == 0 || limit > self.limits.max_batch {
             return Err(Error::Invalid("invalid_batch_limit"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
             sql_query("UPDATE hagency_agent_v1.processing_outbox o SET state='cancelled' WHERE state='pending' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.processing_sendable v WHERE v.id=o.id)").execute(db).await?;
             Ok(sql_query(format!("{SELECT} WHERE o.state IN ('pending','unknown','sending') AND NOT o.delivery_blocked AND o.worker_until_ms<=greatest($1,(extract(epoch from clock_timestamp())*1000)::bigint) AND EXISTS(SELECT 1 FROM hagency_agent_v1.processing_sendable v WHERE v.id=o.id) ORDER BY (o.id<=$2),o.id LIMIT $3"))
                 .bind::<BigInt,_>(now).bind::<Text,_>(cursor).bind::<BigInt,_>(limit as i64).load(db).await?)
         }).await
+    }).await
     }
     #[cfg(test)]
     pub(crate) async fn claim_processing(
@@ -139,8 +179,9 @@ impl TransportStore {
         gate: Option<&crate::worker_runtime::ClaimGate>,
     ) -> Result<ProcessingIntent> {
         let candidate = {
-            let mut db = self.db.lock().await?;
-            Self::processing(&mut db, id).await?
+            self.db
+                .with_connection(async |db| Self::processing(&mut *db, id).await)
+                .await?
         };
         self.observe_delivery_authority(
             None,
@@ -151,10 +192,20 @@ impl TransportStore {
             now,
         )
         .await?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
-            sql_query("SELECT true AS matched FROM hagency_agent_v1.processing_outbox WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<Flag>(db).await?;
+            {
+                use crate::schema::agent_tables::processing_outbox as q;
+                let params = (id,);
+                q::table
+                    .select((true.into_sql::<diesel::sql_types::Bool>(),))
+                    .filter((q::id).eq(&params.0))
+                    .for_update()
+                    .get_result::<Flag>(db)
+                    .await
+            }?;
             let current=Self::clock(db,now).await?;
             let intent=Self::processing(db,id).await?;
             if intent.delivery_blocked||!matches!(intent.state.as_str(),"pending"|"unknown"|"sending") {return Err(Error::Conflict("processing_not_sendable"));}
@@ -164,10 +215,22 @@ impl TransportStore {
             let live=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.processing_sendable WHERE id=$1) AS matched").bind::<Text,_>(id).get_result::<Flag>(db).await?;
             if !live.matched {return Err(Error::Unauthorized("processing_authority_expired"));}
             let _admission=gate.map(crate::worker_runtime::ClaimGate::admit).transpose()?;
-            sql_query("UPDATE hagency_agent_v1.processing_outbox SET state='sending',worker_token=$1,worker_until_ms=$2 WHERE id=$3")
-                .bind::<Text,_>(secret_token()).bind::<BigInt,_>(current+self.limits.worker_lease_ms).bind::<Text,_>(id).execute(db).await?;
+            {
+                use crate::schema::agent_tables::processing_outbox as q;
+                let params = (secret_token(), current + self.limits.worker_lease_ms, id);
+                diesel::update(q::table)
+                    .filter((q::id).eq(&params.2))
+                    .set((
+                        q::state.eq("sending"),
+                        q::worker_token.eq(&params.0),
+                        q::worker_until_ms.eq(&params.1),
+                    ))
+                    .execute(db)
+                    .await
+            }?;
             Self::processing(db,id).await
         }).await
+    }).await
     }
     /// A valid negative observation permanently prevents reaction retries.
     pub(crate) async fn block_processing(
@@ -177,8 +240,9 @@ impl TransportStore {
         now: i64,
     ) -> Result<()> {
         let candidate = {
-            let mut db = self.db.lock().await?;
-            Self::processing(&mut db, id).await?
+            self.db
+                .with_connection(async |db| Self::processing(&mut *db, id).await)
+                .await?
         };
         self.observe_delivery_authority(
             None,
@@ -199,8 +263,9 @@ impl TransportStore {
         f: &DeliveryFacts,
         now: i64,
     ) -> Result<()> {
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let current=Self::clock(db,now).await?;
             let candidate=Self::processing(db,id).await?;
             let scope=Self::scope(db,&candidate.binding_id).await?;
@@ -209,6 +274,7 @@ impl TransportStore {
             sql_query("UPDATE hagency_agent_v1.processing_outbox SET delivery_blocked=true,state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END WHERE id=$1 AND state<>'sent'")
                 .bind::<Text,_>(id).execute(db).await?;Ok(())
         }).await
+    }).await
     }
     /// Recording an already issued HTTP result never grants new delivery authority.
     pub(crate) async fn confirm_processing(
@@ -222,15 +288,45 @@ impl TransportStore {
         if let Some(event) = event {
             matrix_id(event, '$')?;
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?;let intent=Self::processing(db,id).await?;
-            if intent.worker_token.as_deref()!=Some(worker) {return Err(Error::Conflict("stale_processing_worker"));}
-            if intent.state=="sent"&&intent.matrix_event_id.as_deref()==event {return Ok(());}
-            if intent.state!="sending" {return Err(Error::Conflict("processing_not_sending"));}
-            sql_query("UPDATE hagency_agent_v1.processing_outbox SET state=$1,matrix_event_id=$2,delivery_blocked=delivery_blocked OR $3,worker_until_ms=$4 WHERE id=$5")
-                .bind::<Text,_>(if event.is_some(){"sent"}else{"unknown"}).bind::<Nullable<Text>,_>(event)
-                .bind::<Bool,_>(permission_denied).bind::<BigInt,_>(Self::clock(db,now).await?).bind::<Text,_>(id).execute(db).await?;Ok(())
-        }).await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::lock(db).await?;
+                    let intent = Self::processing(db, id).await?;
+                    if intent.worker_token.as_deref() != Some(worker) {
+                        return Err(Error::Conflict("stale_processing_worker"));
+                    }
+                    if intent.state == "sent" && intent.matrix_event_id.as_deref() == event {
+                        return Ok(());
+                    }
+                    if intent.state != "sending" {
+                        return Err(Error::Conflict("processing_not_sending"));
+                    }
+                    {
+                        use crate::schema::agent_tables::processing_outbox as q;
+                        let params = (
+                            if event.is_some() { "sent" } else { "unknown" },
+                            event,
+                            permission_denied,
+                            Self::clock(db, now).await?,
+                            id,
+                        );
+                        diesel::update(q::table)
+                            .filter((q::id).eq(&params.4))
+                            .set((
+                                q::state.eq(&params.0),
+                                q::matrix_event_id.eq(&params.1),
+                                q::delivery_blocked.eq((q::delivery_blocked)
+                                    .or(params.2.into_sql::<diesel::sql_types::Bool>())),
+                                q::worker_until_ms.eq(&params.3),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;
+                    Ok(())
+                })
+                .await
+            })
+            .await
     }
 }

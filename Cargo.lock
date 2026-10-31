@@ -2341,9 +2341,9 @@ dependencies = [
 
 [[package]]
 name = "diesel"
-version = "2.3.13"
+version = "2.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3b934ddbdcb2abb9f9fc9c30bd47bcc5618b615eea1d334cda5fdf8ff9b072a"
+checksum = "ebe9f7eaef33febd60290c5a9f3b0571d03c4c04a24739cd64808ce30e65a5d3"
 dependencies = [
  "bigdecimal",
  "bitflags 2.13.2",
@@ -3881,6 +3881,7 @@ dependencies = [
  "base64 0.23.1",
  "diesel",
  "diesel-async",
+ "hagency-db-runtime",
  "hex",
  "percent-encoding",
  "rand 0.10.3",
@@ -3896,6 +3897,18 @@ dependencies = [
  "tracing",
  "ulid",
  "url",
+]
+
+[[package]]
+name = "hagency-db-runtime"
+version = "0.1.0"
+dependencies = [
+ "deadpool",
+ "diesel",
+ "diesel-async",
+ "horme",
+ "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]
@@ -4168,6 +4181,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
  "digest 0.11.3",
+]
+
+[[package]]
+name = "horme"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03f12bd171012a6b73d4ab11dc6ad1fd5e528103b88ff545afd8d13a33616493"
+dependencies = [
+ "deadpool",
+ "diesel",
+ "diesel-async",
 ]
 
 [[package]]

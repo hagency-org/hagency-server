@@ -72,7 +72,7 @@ async fn postgres_removed_attachment_bytes_release_quota_without_reviving_old_in
         board.mutate(&alice, &access, changed).await,
         Err(Error::Conflict("board_idempotency_conflict"))
     ));
-    let mut db = board.connection().await.unwrap();
+    let mut db = board.pool.test_connection().await.unwrap();
     let tombstones = sql_query("SELECT jsonb_build_object('rows',count(*),'retainedBytes',coalesce(sum(octet_length(data)),0),'sizes',min(byte_size),'digests',bool_and(content_sha256=$3)) AS value FROM hagency_project_v1.attachments WHERE project_id=$1 AND task_id=$2 AND removed_at IS NOT NULL")
         .bind::<Text,_>(&access.project).bind::<Text,_>(task).bind::<Text,_>(hex::encode(Sha256::digest(&bytes)))
         .get_result::<Row>(&mut *db).await.unwrap().value;
@@ -150,7 +150,7 @@ async fn postgres_v6_attachment_migration_retains_metadata_and_discards_only_rem
         .unwrap();
     let task = created["task"]["id"].as_str().unwrap();
     let bytes = b"legacy fixture bytes";
-    let mut db = domain.board.connection().await.unwrap();
+    let mut db = domain.board.pool.test_connection().await.unwrap();
     // Reconstruct the exact v6 attachment shape inside a transaction. Roll back
     // the whole fixture afterward so other serial tests retain the v7 schema.
     let result = (*db).transaction::<(), Error, _>(async |db| {

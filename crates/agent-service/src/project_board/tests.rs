@@ -280,7 +280,7 @@ async fn postgres_board_permission_revocation_and_cross_project_are_refused() {
         board.mutate(&alice, &access, input).await,
         Err(Error::Invalid("board_assignee_not_member"))
     ));
-    let mut db = domain.db.lock().await.unwrap();
+    let mut db = domain.db.test_connection().await.unwrap();
     sql_query("UPDATE hagency_agent_v1.sessions SET revoked=true WHERE id=$1")
         .bind::<Text, _>(&alice.session_id)
         .execute(&mut *db)
@@ -726,9 +726,12 @@ async fn postgres_custom_columns_wip_races_and_config_replay() {
         .unwrap();
     assert_eq!(snapshot["lanes"][1]["title"], "验证");
     assert_eq!(snapshot["lanes"][1]["wipLimit"], 1);
-    let mut ordered = BoardStore::columns(&mut board.connection().await.unwrap(), &access.project)
-        .await
-        .unwrap();
+    let mut ordered = BoardStore::columns(
+        &mut board.pool.test_connection().await.unwrap(),
+        &access.project,
+    )
+    .await
+    .unwrap();
     ordered.push(ColumnDefinition {
         archived: false,
         id: "temporary_empty".into(),
@@ -1700,7 +1703,7 @@ async fn postgres_navigation_defaults_are_shared_versioned_authorized_and_scope_
     let saved = reopened.navigation(&access.project).await.unwrap();
     assert_eq!(saved["revision"], 3);
     let old_room = saved["roomId"].as_str().unwrap();
-    let mut db = board.connection().await.unwrap();
+    let mut db = board.pool.test_connection().await.unwrap();
     sql_query("UPDATE hagency_agent_v1.rooms SET active=false WHERE project_id=$1 AND room_id=$2")
         .bind::<Text, _>(&access.project)
         .bind::<Text, _>(old_room)

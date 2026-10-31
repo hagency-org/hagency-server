@@ -1,10 +1,11 @@
 //! Automatic feedback for an explicitly paused binding. Uses its own durable
 //! outbox: a paused request must never become an inference after resuming.
 use super::*;
+use diesel::{BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl};
 
 pub(crate) const BODY: &str = "Agent service is paused in this Room. Ask its owner to resume it.";
 const SELECT: &str = "SELECT id,binding_id,requester_mxid,digest,binding_generation,matrix_txn_id,thread_root,state,worker_token FROM hagency_agent_v1.pause_notice_outbox";
-#[derive(Debug, diesel::QueryableByName)]
+#[derive(Debug, diesel::Queryable, diesel::QueryableByName)]
 pub(crate) struct PauseNotice {
     #[diesel(sql_type=Text)]
     pub id: String,
@@ -90,15 +91,48 @@ impl TransportStore {
             "hg-paused-{}",
             hash(&format!("{}:{}", scope.binding_id, event.event_id))
         );
-        sql_query("INSERT INTO hagency_agent_v1.pause_notice_outbox(id,binding_id,event_id,requester_mxid,digest,binding_generation,matrix_txn_id,thread_root,created_at_ms,state,queued_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
-            .bind::<Text,_>(&id).bind::<Text,_>(&scope.binding_id).bind::<Text,_>(&event.event_id)
-            .bind::<Text,_>(&event.sender_mxid).bind::<Text,_>(digest)
-            .bind::<BigInt,_>(scope.binding_generation).bind::<Text,_>(txn)
-            .bind::<Text,_>(root).bind::<BigInt,_>(received)
-            .bind::<Text,_>(if throttled {"cancelled"} else {"pending"}).bind::<BigInt,_>(now).execute(db).await?;
+        {
+            use crate::schema::agent_tables::pause_notice_outbox as q;
+            let params = (
+                &id,
+                &scope.binding_id,
+                &event.event_id,
+                &event.sender_mxid,
+                digest,
+                scope.binding_generation,
+                txn,
+                root,
+                received,
+                if throttled { "cancelled" } else { "pending" },
+                now,
+            );
+            diesel::insert_into(q::table)
+                .values((
+                    q::id.eq(&params.0),
+                    q::binding_id.eq(&params.1),
+                    q::event_id.eq(&params.2),
+                    q::requester_mxid.eq(&params.3),
+                    q::digest.eq(&params.4),
+                    q::binding_generation.eq(&params.5),
+                    q::matrix_txn_id.eq(&params.6),
+                    q::thread_root.eq(&params.7),
+                    q::created_at_ms.eq(&params.8),
+                    q::state.eq(&params.9),
+                    q::queued_at_ms.eq(&params.10),
+                ))
+                .execute(db)
+                .await
+        }?;
         if !throttled {
-            sql_query("INSERT INTO hagency_agent_v1.agent_threads(binding_id,thread_root) VALUES($1,$2) ON CONFLICT DO NOTHING")
-                .bind::<Text,_>(&scope.binding_id).bind::<Text,_>(root).execute(db).await?;
+            {
+                use crate::schema::agent_tables::agent_threads as q;
+                let params = (&scope.binding_id, root);
+                diesel::insert_into(q::table)
+                    .values((q::binding_id.eq(&params.0), q::thread_root.eq(&params.1)))
+                    .on_conflict_do_nothing()
+                    .execute(db)
+                    .await
+            }?;
         }
         Ok(RouteResult::Ignored)
     }
@@ -107,27 +141,41 @@ impl TransportStore {
         cursor: &str,
         now: i64,
     ) -> Result<Vec<PauseNotice>> {
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
             let now = Self::clock(db,now).await?;
             sql_query("UPDATE hagency_agent_v1.pause_notice_outbox n SET state='cancelled' WHERE n.state IN ('pending','sending','unknown') AND (n.created_at_ms<=$1 OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.id=n.binding_id AND b.generation=n.binding_generation AND b.state='suspended' AND b.owner_service_paused AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND a.state='active' AND u.active AND ((b.scope_kind='project' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))))")
                 .bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).execute(db).await?;
             // All transactions older than this time are rejected at ingest. Keep
             // recent final rows to make AS replay deterministic after a restart.
-            sql_query("DELETE FROM hagency_agent_v1.pause_notice_outbox WHERE state IN ('sent','cancelled') AND created_at_ms<=$1 AND worker_until_ms<=$2")
-                .bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).bind::<BigInt,_>(now).execute(db).await?;
+            {
+                use crate::schema::agent_tables::pause_notice_outbox as q;
+                let params = (now.saturating_sub(self.limits.event_ttl_ms), now);
+                diesel::delete(q::table)
+                    .filter(
+                        ((q::state.eq_any(vec!["sent", "cancelled"])).and((q::created_at_ms).le(&params.0)))
+                            .and((q::worker_until_ms).le(&params.1)),
+                    )
+                    .execute(db)
+                    .await
+            }?;
             Ok(sql_query(format!("{SELECT} WHERE state IN ('pending','unknown','sending') AND worker_until_ms<=$1 ORDER BY (id<=$2),id LIMIT 20"))
                 .bind::<BigInt,_>(now).bind::<Text,_>(cursor).load(db).await?)
         }).await
+    }).await
     }
     pub(crate) async fn pause_notice_scope(&self, binding: &str) -> Result<RoutingScope> {
-        let mut guard = self.db.lock().await?;
-        let scope = Self::scope(&mut guard, binding).await?;
-        if !scope.service_paused {
-            return Err(Error::Unauthorized("binding_not_paused"));
-        }
-        Ok(scope)
+        self.db
+            .with_connection(async |db| {
+                let scope = Self::scope(&mut *db, binding).await?;
+                if !scope.service_paused {
+                    return Err(Error::Unauthorized("binding_not_paused"));
+                }
+                Ok(scope)
+            })
+            .await
     }
     #[cfg(test)]
     pub(crate) async fn claim_pause_notice(
@@ -145,10 +193,20 @@ impl TransportStore {
         now: i64,
         gate: Option<&crate::worker_runtime::ClaimGate>,
     ) -> Result<PauseNotice> {
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.with_connection(async |db| {
+
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
-            sql_query("SELECT true AS matched FROM hagency_agent_v1.pause_notice_outbox WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<Flag>(db).await?;
+            {
+                use crate::schema::agent_tables::pause_notice_outbox as q;
+                let params = (id,);
+                q::table
+                    .select((true.into_sql::<diesel::sql_types::Bool>(),))
+                    .filter((q::id).eq(&params.0))
+                    .for_update()
+                    .get_result::<Flag>(db)
+                    .await
+            }?;
             let now = Self::clock(db,now).await?;
             let n = sql_query(format!("{SELECT} WHERE id=$1"))
                 .bind::<Text,_>(id).get_result::<PauseNotice>(db).await?;
@@ -162,8 +220,18 @@ impl TransportStore {
                 }
             } else {false};
             if !authorized {
-                sql_query("UPDATE hagency_agent_v1.pause_notice_outbox SET state='cancelled' WHERE id=$1 AND state NOT IN ('sent','cancelled')")
-                    .bind::<Text,_>(id).execute(db).await?;
+                {
+                    use crate::schema::agent_tables::pause_notice_outbox as q;
+                    let params = (id,);
+                    diesel::update(q::table)
+                        .filter(
+                            ((q::id).eq(&params.0))
+                                .and(diesel::dsl::not(q::state.eq_any(vec!["sent", "cancelled"]))),
+                        )
+                        .set((q::state.eq("cancelled"),))
+                        .execute(db)
+                        .await
+                }?;
                 return Ok(None);
             }
             if !matches!(n.state.as_str(),"pending"|"unknown"|"sending") {return Ok(None);}
@@ -173,6 +241,7 @@ impl TransportStore {
                 .bind::<Text,_>(id).bind::<Text,_>(worker).bind::<BigInt,_>(now+self.limits.worker_lease_ms).bind::<BigInt,_>(now)
                 .get_result::<PauseNotice>(db).await.optional()?)
         }).await?.ok_or(Error::Conflict("pause_notice_not_sendable"))
+    }).await
     }
     pub(crate) async fn confirm_pause_notice(
         &self,
@@ -181,7 +250,8 @@ impl TransportStore {
         outcome: &Result<String>,
         now: i64,
     ) -> Result<()> {
-        let mut guard = self.db.lock().await?;
+        self.db.with_connection(async |db| {
+
         let state = match outcome {
             Ok(_) => "sent",
             Err(Error::Conflict("matrix_permission_missing")) => "cancelled",
@@ -190,7 +260,8 @@ impl TransportStore {
         sql_query("UPDATE hagency_agent_v1.pause_notice_outbox SET state=$3,matrix_event_id=$4,worker_token=NULL,worker_until_ms=$5 WHERE id=$1 AND worker_token=$2 AND state='sending'")
             .bind::<Text,_>(id).bind::<Text,_>(worker).bind::<Text,_>(state)
             .bind::<Nullable<Text>,_>(outcome.as_ref().ok().map(String::as_str))
-            .bind::<BigInt,_>(if state=="unknown" {now+5000} else {0}).execute(&mut *guard).await?;
+            .bind::<BigInt,_>(if state=="unknown" {now+5000} else {0}).execute(&mut *db).await?;
         Ok(())
+    }).await
     }
 }

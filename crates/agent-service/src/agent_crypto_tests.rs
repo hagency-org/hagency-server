@@ -664,6 +664,16 @@ async fn identity_expiry_is_resampled_after_a_real_agent_row_lock_wait() {
     let f = fixture().await;
     let until = now_ms() + 4000;
     let mut blocker = AsyncPgConnection::establish(&f.url).await.unwrap();
+    #[derive(diesel::QueryableByName)]
+    struct Backend {
+        #[diesel(sql_type = diesel::sql_types::Integer)]
+        pid: i32,
+    }
+    let blocker_pid = sql_query("SELECT pg_backend_pid() AS pid")
+        .get_result::<Backend>(&mut blocker)
+        .await
+        .unwrap()
+        .pid;
     sql_query("UPDATE hagency_agent_v1.sessions SET valid_until_ms=$2 WHERE id=$1")
         .bind::<Text, _>(&f.p.session_id)
         .bind::<BigInt, _>(until)
@@ -688,7 +698,8 @@ async fn identity_expiry_is_resampled_after_a_real_agent_row_lock_wait() {
     let mut observer = AsyncPgConnection::establish(&f.url).await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(2),async {
         loop {
-            let waiting=sql_query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT true AS matched FROM hagency_agent_v1.agents WHERE id=%FOR SHARE') AS matched").get_result::<Flag>(&mut observer).await.unwrap();
+            let waiting=sql_query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid))) AS matched")
+                .bind::<diesel::sql_types::Integer,_>(blocker_pid).get_result::<Flag>(&mut observer).await.unwrap();
             if waiting.matched {break;}
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }

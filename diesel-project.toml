@@ -1,0 +1,3 @@
+[print_schema]
+file = "crates/agent-service/src/schema/project.rs"
+schema = "hagency_project_v1"

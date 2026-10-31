@@ -3,6 +3,7 @@ use super::*;
 use crate::matrix_client::MatrixClient;
 use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
 use diesel::QueryableByName;
+use diesel::{BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl};
 use serde_json::{Value, json};
 
 pub(crate) const CAPABILITY: &str = "agent-crypto-identity-v1";
@@ -67,7 +68,7 @@ impl Operation {
     }
 }
 
-#[derive(QueryableByName)]
+#[derive(diesel::Queryable, QueryableByName)]
 struct Deadline {
     #[diesel(sql_type=BigInt)]
     valid_until_ms: i64,
@@ -79,7 +80,7 @@ struct Scope {
     device_generation: i64,
     matrix_device: String,
 }
-#[derive(QueryableByName)]
+#[derive(diesel::Queryable, QueryableByName)]
 struct Pin {
     #[diesel(sql_type=Nullable<Text>)]
     digest: Option<String>,
@@ -295,8 +296,17 @@ impl DomainStore {
         let device_generation = p
             .device_generation
             .ok_or(Error::Unauthorized("device_authorization_required"))?;
-        sql_query("SELECT true AS matched FROM hagency_agent_v1.agents WHERE id=$1 AND owner_user_id=$2 FOR SHARE")
-            .bind::<Text,_>(agent).bind::<Text,_>(&p.user_id).get_result::<Flag>(db).await.map_err(hidden)?;
+        {
+            use crate::schema::agent_tables::agents as q;
+            let params = (agent, &p.user_id);
+            q::table
+                .select((true.into_sql::<diesel::sql_types::Bool>(),))
+                .filter(((q::id).eq(&params.0)).and((q::owner_user_id).eq(&params.1)))
+                .for_share()
+                .get_result::<Flag>(db)
+                .await
+        }
+        .map_err(hidden)?;
         let a = Self::agent_db(db, p, agent).await?;
         if a.generation != generation {
             return Err(Error::Conflict("stale_agent_generation"));
@@ -310,11 +320,15 @@ impl DomainStore {
         // Resample after the Agent row lock; an expired session cannot gain IO.
         Self::authorize_identity(db, p, crate::api::now_ms()).await?;
         let matrix_device = format!("HAGENCY_{}", digest(&("agent-crypto-v1", &a.id, device))?);
-        let deadline =
-            sql_query("SELECT valid_until_ms FROM hagency_agent_v1.sessions WHERE id=$1")
-                .bind::<Text, _>(&p.session_id)
+        let deadline = {
+            use crate::schema::agent_tables::sessions as q;
+            let params = (&p.session_id,);
+            q::table
+                .select((q::valid_until_ms,))
+                .filter((q::id).eq(&params.0))
                 .get_result::<Deadline>(db)
-                .await?;
+                .await
+        }?;
         Ok(Scope {
             valid_until_ms: deadline.valid_until_ms,
             agent: a,
@@ -346,11 +360,40 @@ impl DomainStore {
             let s=Self::crypto_scope(db,p,agent,generation).await?;
             let pins=receive::fingerprints(op,&body,&s.agent.puppet_mxid,&s.matrix_device,&p.mxid)?;
             if let Some(expected)=receive::signing_digest(op,&body,&s.agent.puppet_mxid,&p.mxid)? {
-                let pins=sql_query("SELECT user_signing_key_digest AS digest FROM hagency_agent_v1.agent_crypto_identities WHERE agent_id=$1 ORDER BY matrix_device_id FOR SHARE").bind::<Text,_>(agent).load::<Pin>(db).await?;
+                let pins={
+                    use crate::schema::agent_tables::agent_crypto_identities as q;
+                    let params = (agent,);
+                    q::table
+                        .select((q::user_signing_key_digest,))
+                        .filter((q::agent_id).eq(&params.0))
+                        .order((q::matrix_device_id.asc(),))
+                        .for_share()
+                        .load::<Pin>(db)
+                        .await
+                }?;
                 if !pins.iter().any(|p|p.digest.as_ref()==Some(&expected)) || pins.iter().any(|p|p.digest.as_ref().is_some_and(|d|d!=&expected)){return Err(Error::Conflict("agent_crypto_identity_changed"));}
             }
-            sql_query("INSERT INTO hagency_agent_v1.agent_crypto_identities(agent_id,first_agent_generation,execution_device_id,first_device_generation,matrix_device_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING")
-                .bind::<Text,_>(agent).bind::<BigInt,_>(generation).bind::<Text,_>(&s.execution_device).bind::<BigInt,_>(s.device_generation).bind::<Text,_>(&s.matrix_device).execute(db).await?;
+            {
+                use crate::schema::agent_tables::agent_crypto_identities as q;
+                let params = (
+                    agent,
+                    generation,
+                    &s.execution_device,
+                    s.device_generation,
+                    &s.matrix_device,
+                );
+                diesel::insert_into(q::table)
+                    .values((
+                        q::agent_id.eq(&params.0),
+                        q::first_agent_generation.eq(&params.1),
+                        q::execution_device_id.eq(&params.2),
+                        q::first_device_generation.eq(&params.3),
+                        q::matrix_device_id.eq(&params.4),
+                    ))
+                    .on_conflict_do_nothing()
+                    .execute(db)
+                    .await
+            }?;
             for (column,digest) in pins {
                 // Column comes only from the closed fingerprints implementation.
                 let query=if column=="device_keys_digest" {

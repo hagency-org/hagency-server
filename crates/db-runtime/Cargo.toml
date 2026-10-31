@@ -1,0 +1,21 @@
+[package]
+name = "hagency-db-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+horme.workspace = true
+diesel.workspace = true
+diesel-async.workspace = true
+deadpool.workspace = true
+tokio.workspace = true
+tokio-postgres = "0.7"
+
+[features]
+postgres-tests = []
+
+[[test]]
+name = "postgres"
+required-features = ["postgres-tests"]
