@@ -165,9 +165,21 @@ pub struct SharedRuntimeAcknowledgement {
     pub activity: Option<SharedActivityLease>,
     pub state: String,
 }
+/// Authenticated server evidence for an additional owner-bound Project Room.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedRoomBinding {
+    pub id: String,
+    pub generation: i64,
+    pub assignment_id: String,
+    pub room_id: String,
+    pub space_id: String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SharedWorkItem {
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub room_binding: Option<SharedRoomBinding>,
     #[serde(default, skip_serializing_if="std::ops::Not::not")]
     pub encrypted: bool,
     pub id: String,
@@ -184,6 +196,11 @@ pub struct SharedWorkItem {
 }
 impl SharedWorkItem {
     pub fn validate(&self) -> Result<()> {
+        if let Some(b)=&self.room_binding {
+            key(&b.id)?;
+            if b.generation<=0 || b.assignment_id!=self.assignment_id || b.room_id!=self.room_id
+                || !b.space_id.starts_with('!') || b.space_id.len()>255 { return Err(Error::Invalid("invalid_shared_room_binding")); }
+        }
         key(&self.id)?;
         key(&self.assignment_id)?;
         key(&self.execution_id)?;

@@ -149,6 +149,7 @@ async fn fixture() -> Fixture {
     let p = auth.authenticate(&first.token, now, true).await.unwrap();
     let second = auth.authenticate(&second.token, now, true).await.unwrap();
     let facts = DeliveryFacts {
+                requires_mention: true,
         owner_direct_valid: false,
         owner_mxid: user.mxid,
         requester_mxid: "@requester:example.test".into(),
@@ -279,7 +280,7 @@ async fn postgres_queue_ack_execution_reply_and_unknown_retry_are_distinct() {
             )
             .await
             .unwrap(),
-        RouteResult::Queued { .. }
+        RouteResult::Ignored
     ));
     let lease = f
         .transport
@@ -2418,6 +2419,7 @@ async fn postgres_paused_owner_direct_notices_require_the_exact_owner_and_privat
     let now = crate::api::now_ms();
     let room = format!("!pause_direct_{}:example.test", secret_token());
     let direct = DeliveryFacts {
+        requires_mention: false,
         requester_mxid: f.p.mxid.clone(),
         room_id: room.clone(),
         space_id: String::new(),
@@ -2463,6 +2465,7 @@ async fn postgres_paused_owner_direct_notices_require_the_exact_owner_and_privat
     assert_eq!(n.thread_root, room, "private notice remains a normal DM");
     let mut outsider = direct.clone();
     outsider.requester_mxid = "@outsider:example.test".into();
+    outsider.requester_in_room = false;
     let mut outsiders_event = e.clone();
     outsiders_event.event_id = "$private-outsider".into();
     outsiders_event.sender_mxid = outsider.requester_mxid.clone();
@@ -2491,7 +2494,7 @@ async fn postgres_paused_owner_direct_notices_require_the_exact_owner_and_privat
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
-async fn postgres_thread_auto_reply_is_owner_opt_in_and_binding_scoped() {
+async fn postgres_group_mentions_override_legacy_thread_auto_reply() {
     let f = fixture().await;
     let now = crate::api::now_ms();
     enqueue(&f, "reply-policy-root").await;
@@ -2559,7 +2562,7 @@ async fn postgres_thread_auto_reply_is_owner_opt_in_and_binding_scoped() {
             )
             .await
             .unwrap(),
-        RouteResult::Queued { .. }
+        RouteResult::Ignored
     ));
     let mut member_event = event(&f, "member-followup", false, Some("$reply-policy-root"));
     let mut member_facts = f.facts.clone();
@@ -2570,7 +2573,7 @@ async fn postgres_thread_auto_reply_is_owner_opt_in_and_binding_scoped() {
             .ingest_routed(&f.binding, member_event, &member_facts, now)
             .await
             .unwrap(),
-        RouteResult::Queued { .. }
+        RouteResult::Ignored
     ));
     assert!(matches!(
         f.transport

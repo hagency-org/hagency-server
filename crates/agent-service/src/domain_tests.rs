@@ -1388,6 +1388,7 @@ async fn postgres_membership_loss_is_durable_and_old_dispatch_cannot_revive() {
     };
     let (b, good) = &bindings[0];
     let delivery = DeliveryFacts {
+                requires_mention: true,
         owner_direct_valid: false,
         owner_mxid: p.mxid.clone(),
         requester_mxid: p.mxid.clone(),

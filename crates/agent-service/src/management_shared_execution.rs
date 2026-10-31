@@ -59,6 +59,10 @@ struct Runtime {
 }
 #[derive(QueryableByName)]
 struct Membership {
+    #[diesel(sql_type=Nullable<Text>)]
+    binding_id: Option<String>,
+    #[diesel(sql_type=Nullable<BigInt>)]
+    binding_generation: Option<i64>,
     #[diesel(sql_type=Text)]
     room_id: String,
     #[diesel(sql_type=Text)]
@@ -75,8 +79,8 @@ impl Membership {
     // mention. Only the manager of an assignment created directly from a pool
     // is addressed without one, in that assignment's dedicated conversation.
     // Callers also verify the room and fresh Matrix membership of the sender.
-    fn addressed_by(&self, sender: &str, mentions: &std::collections::BTreeSet<String>) -> bool {
-        (self.pool_agent && self.space_id.is_empty() && sender == self.manager_mxid)
+    fn addressed_by(&self, sender: &str, mentions: &std::collections::BTreeSet<String>, requires_mention: bool) -> bool {
+        (!requires_mention && self.pool_agent && self.space_id.is_empty() && sender == self.manager_mxid)
             || mentions.contains(&self.puppet_mxid)
     }
 }
@@ -219,7 +223,19 @@ async fn current(
     Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_requests r ON r.id=a.request_id LEFT JOIN hagency_agent_v1.management_projects p ON p.id=r.plan_id JOIN hagency_agent_v1.management_contributions c ON c.id=COALESCE(r.pool_contribution_id,p.contribution_id) WHERE a.id=$1 AND a.state='pending_native' AND c.runtime='codex') AS matched").bind::<Text,_>(&r.assignment_id).get_result::<Flag>(db).await?.matched)
 }
 async fn membership(db: &mut AsyncPgConnection, r: &Runtime) -> Result<Membership> {
-    sql_query("SELECT m.room_id,m.space_id,m.puppet_mxid,u.mxid AS manager_mxid,q.pool_contribution_id IS NOT NULL AS pool_agent FROM hagency_agent_v1.management_agent_matrix m JOIN hagency_agent_v1.management_shared_assignments a ON a.id=m.assignment_id JOIN hagency_agent_v1.management_agent_requests q ON q.id=a.request_id JOIN hagency_agent_v1.users u ON u.id=a.manager_user_id WHERE m.assignment_id=$1 AND m.state='matrix_verified'").bind::<Text,_>(&r.assignment_id).get_result(db).await.map_err(hidden)
+    sql_query("SELECT m.binding_id,m.binding_generation,m.room_id,m.space_id,m.puppet_mxid,u.mxid AS manager_mxid,q.pool_contribution_id IS NOT NULL AS pool_agent FROM hagency_agent_v1.shared_room_memberships m JOIN hagency_agent_v1.management_shared_assignments a ON a.id=m.assignment_id JOIN hagency_agent_v1.management_agent_requests q ON q.id=a.request_id JOIN hagency_agent_v1.users u ON u.id=a.manager_user_id WHERE m.assignment_id=$1 AND m.binding_id IS NULL AND m.state='matrix_verified'").bind::<Text,_>(&r.assignment_id).get_result(db).await.map_err(hidden)
+}
+async fn membership_for(db:&mut AsyncPgConnection,r:&Runtime,room:&str)->Result<Membership> {
+    intake::member_for(db,&r.assignment_id,room).await
+}
+fn room_binding(m:&Membership,assignment:&str)->Option<SharedRoomBinding> {
+    Some(SharedRoomBinding {id:m.binding_id.clone()?,generation:m.binding_generation?,
+        assignment_id:assignment.into(),room_id:m.room_id.clone(),space_id:m.space_id.clone()})
+}
+async fn work_membership(db:&mut AsyncPgConnection,r:&Runtime,w:&SharedWorkItem)->Result<Membership> {
+    let m=membership_for(db,r,&w.room_id).await?;
+    if w.room_binding!=room_binding(&m,&r.assignment_id) {return Err(Error::Unauthorized("shared_room_binding_changed"));}
+    Ok(m)
 }
 fn facts(m: &Membership, f: &DeliveryFacts) -> Result<()> {
     // Gateway stamps its observations with this process clock. Comparing that
@@ -695,6 +711,7 @@ mod clock_tests {
     #[test]
     fn matrix_observation_freshness_uses_its_host_clock_without_accepting_stale_or_future_facts() {
         let m = Membership {
+            binding_id:None,binding_generation:None,
             room_id: "!r:example.test".into(),
             space_id: "!s:example.test".into(),
             puppet_mxid: "@_hagency_a:example.test".into(),
@@ -702,6 +719,7 @@ mod clock_tests {
             pool_agent: false,
         };
         let mut f = DeliveryFacts {
+                requires_mention: true,
             owner_mxid: m.manager_mxid.clone(),
             requester_mxid: m.manager_mxid.clone(),
             puppet_mxid: m.puppet_mxid.clone(),
@@ -728,6 +746,7 @@ mod clock_tests {
     #[test]
     fn joined_room_members_address_the_shared_agent_by_mention() {
         let mut m = Membership {
+            binding_id:None,binding_generation:None,
             room_id: "!r:example.test".into(),
             space_id: String::new(),
             puppet_mxid: "@_hagency_a:example.test".into(),
@@ -737,14 +756,15 @@ mod clock_tests {
         let none = std::collections::BTreeSet::new();
         let mention = std::collections::BTreeSet::from([m.puppet_mxid.clone()]);
         // A pool conversation needs no mention from its manager, only from others.
-        assert!(m.addressed_by("@manager:example.test", &none));
-        assert!(!m.addressed_by("@member:example.test", &none));
-        assert!(m.addressed_by("@member:example.test", &mention));
+        assert!(m.addressed_by("@manager:example.test", &none, false));
+        assert!(!m.addressed_by("@member:example.test", &none, false));
+        assert!(m.addressed_by("@member:example.test", &mention, true));
         m.space_id = "!s:example.test".into();
-        assert!(!m.addressed_by("@manager:example.test", &none));
-        assert!(m.addressed_by("@member:example.test", &mention));
+        assert!(!m.addressed_by("@manager:example.test", &none, false));
+        assert!(m.addressed_by("@member:example.test", &mention, true));
         m.space_id.clear();
         let mut f = DeliveryFacts {
+                requires_mention: false,
             owner_mxid: m.manager_mxid.clone(),
             requester_mxid: "@member:example.test".into(),
             puppet_mxid: m.puppet_mxid.clone(),

@@ -59,7 +59,7 @@ impl Gateway {
         if space.is_empty() {
             let state = self.state(room).await?;
             let puppet = puppet.ok_or(Error::Invalid("direct_puppet_required"))?;
-            let valid = direct_private(&state, owner, puppet);
+            let valid = agent_conversation(&state, owner, puppet);
             return Ok(RoomFacts {
                 owner_direct_valid: valid,
                 owner_mxid: owner.into(),
@@ -197,7 +197,8 @@ impl Gateway {
         if space.is_empty() {
             let state = self.state(room).await?;
             return Ok(crate::transport::DeliveryFacts {
-                owner_direct_valid: direct_private(&state, owner, puppet)
+                requires_mention: !one_to_one(&state, owner, puppet, &self.service_mxid),
+                owner_direct_valid: agent_conversation(&state, owner, puppet)
                     || pool && pool_conversation(&state, owner),
                 owner_mxid: owner.into(),
                 requester_mxid: requester.into(),
@@ -219,6 +220,7 @@ impl Gateway {
         }
         let (room_state, space_state) = tokio::try_join!(self.state(room), self.state(space))?;
         Ok(crate::transport::DeliveryFacts {
+                requires_mention: true,
             owner_direct_valid: false,
             owner_mxid: owner.into(),
             requester_mxid: requester.into(),
@@ -270,29 +272,18 @@ fn pool_conversation(state: &[Value], owner: &str) -> bool {
         && content(state, "m.room.history_visibility", "").is_some_and(|c| matches!(c["history_visibility"].as_str(), Some("joined" | "invited" | "shared")))
         && joined(state, owner)
 }
-fn direct_private(state: &[Value], owner: &str, puppet: &str) -> bool {
-    content(state, "m.room.create", "").is_some_and(|c| c["type"] != "m.space")
-        && content(state, "m.room.join_rules", "").is_some_and(|c| c["join_rule"] == "invite")
-        && !content(state, "m.room.guest_access", "")
-            .is_some_and(|c| c["guest_access"] == "can_join")
-        && content(state, "m.room.history_visibility", "").is_some_and(|c| {
-            matches!(
-                c["history_visibility"].as_str(),
-                Some("joined" | "invited" | "shared")
-            )
-        })
-        && joined(state, owner)
+fn agent_conversation(state: &[Value], owner: &str, puppet: &str) -> bool {
+    pool_conversation(state, owner)
         && content(state, "m.room.member", puppet)
-            .is_some_and(|c| c["membership"] == "join" || c["membership"] == "invite")
-        && state
-            .iter()
-            .filter(|e| {
-                e["type"] == "m.room.member"
-                    && (e["content"]["membership"] == "join"
-                        || e["content"]["membership"] == "invite")
-            })
-            .all(|e| e["state_key"] == owner || e["state_key"] == puppet)
+            .is_some_and(|c| matches!(c["membership"].as_str(), Some("join" | "invite")))
 }
+fn one_to_one(state: &[Value], owner: &str, puppet: &str, service: &str) -> bool {
+    joined(state, owner) && state.iter()
+        .filter(|e| e["type"] == "m.room.member"
+            && matches!(e["content"]["membership"].as_str(), Some("join" | "invite")))
+        .all(|e| e["state_key"] == owner || e["state_key"] == puppet || e["state_key"] == service)
+}
+
 fn content<'a>(state: &'a [Value], kind: &str, key: &str) -> Option<&'a Value> {
     state
         .iter()

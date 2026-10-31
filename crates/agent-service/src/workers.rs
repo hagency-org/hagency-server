@@ -600,6 +600,7 @@ pub(crate) fn start_cleanup(
         let mut cleanup_cursor = (String::new(), String::new());
         let mut identity_cursor = String::new();
         let mut managed_matrix_cursor = String::new();
+        let mut shared_room_cursor = String::new();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -608,6 +609,10 @@ pub(crate) fn start_cleanup(
             // and release its session lock. Never cache leadership across ticks.
             if !domain.try_membership_controller().await.unwrap_or(false) {
                 continue;
+            }
+            if let Ok(ids)=domain.shared_room_candidates(&shared_room_cursor).await {
+                if ids.is_empty(){shared_room_cursor.clear();}
+                for id in ids {shared_room_cursor=id.clone();let _=domain.reconcile_shared_room(&id,&g,&m).await;}
             }
             let _ = domain.revoke_shared_crypto_devices(&m).await;
             let _ = domain.sweep_managed_runtime().await;

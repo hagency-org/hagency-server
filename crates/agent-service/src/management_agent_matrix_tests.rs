@@ -7,6 +7,9 @@ use std::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
     runtime::remove_migration(db).await;
+    // Restore the historical v9 schema explicitly, including the additive
+    // additional-room objects that depend on the Matrix identity table.
+    db.batch_execute("DROP VIEW IF EXISTS hagency_agent_v1.shared_room_memberships;ALTER TABLE hagency_agent_v1.management_shared_e2ee_candidates DROP COLUMN IF EXISTS room_binding_id;ALTER TABLE hagency_agent_v1.management_shared_e2ee_candidates DROP COLUMN IF EXISTS room_binding_generation;DROP TABLE IF EXISTS hagency_agent_v1.shared_agent_room_commands,hagency_agent_v1.shared_agent_rooms;DROP FUNCTION IF EXISTS hagency_agent_v1.guard_shared_room()").await.unwrap();
     db.batch_execute("DROP TRIGGER queue_managed_matrix_identity ON hagency_agent_v1.agents;DROP TRIGGER queue_managed_matrix ON hagency_agent_v1.management_shared_assignments;DROP TABLE hagency_agent_v1.management_agent_matrix_checks,hagency_agent_v1.management_agent_matrix;DROP FUNCTION hagency_agent_v1.queue_managed_matrix(),hagency_agent_v1.retain_managed_matrix();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=9;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=9)").await.unwrap();
 }
 

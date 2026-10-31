@@ -507,7 +507,7 @@ impl DomainStore {
         key(id)?;
         fresh(policy)?;
         let observed = self
-            .shared_work_facts(p, policy, &input.authority, gateway, protocol)
+            .shared_work_facts(p, policy, &input.authority, gateway, protocol, Some(id))
             .await?;
         let mut guard = self.db.lock().await?;
         (*guard)
@@ -523,9 +523,9 @@ impl DomainStore {
                     return Err(Error::Unavailable("shared_execution_issuance_unavailable"));
                 }
                 require_activity(db, p, &r, &input.authority, &self.server, now).await?;
-                facts(&membership(db, &r).await?, &observed)?;
                 let row = work_row(db, id).await?;
                 let w = item(&row, &r)?;
+                facts(&work_membership(db,&r,&w).await?, &observed)?;
                 if row.digest != input.work_digest || mode(db, id).await? != "thread_context_v1" {
                     return Err(Error::Conflict("shared_context_binding_changed"));
                 }
@@ -586,15 +586,15 @@ impl DomainStore {
         key(id)?;
         fresh(policy)?;
         let observed = self
-            .shared_work_facts(p, policy, &input.authority, gateway, protocol)
+            .shared_work_facts(p, policy, &input.authority, gateway, protocol, Some(id))
             .await?;
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;
             if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_execution_issuance_unavailable"));}
-            let original=require_activity(db,p,&r,&input.authority,&self.server,now).await?;facts(&membership(db,&r).await?,&observed)?;
-            let row=work_row(db,id).await?;let w=item(&row,&r)?;
+            let original=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
+            let row=work_row(db,id).await?;let w=item(&row,&r)?;facts(&work_membership(db,&r,&w).await?,&observed)?;
             if row.digest!=input.work_digest || mode(db,id).await?!="thread_context_v1" {return Err(Error::Conflict("shared_context_binding_changed"));}
             refusals::ensure_unfenced(db,id).await?;let saved=saved_context(db,&w).await?.ok_or(Error::Conflict("shared_context_required"))?;
             if saved.context_digest!=input.context_digest || saved.input_digest!=input.input_digest {return Err(Error::Conflict("shared_context_changed"));}

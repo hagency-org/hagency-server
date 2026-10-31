@@ -13,6 +13,8 @@ pub struct CryptoInput {
     #[serde(default)]
     pub addressed: Option<bool>,
     #[serde(default)]
+    pub mentioned: Option<bool>,
+    #[serde(default)]
     pub thread_root: Option<String>,
 }
 #[derive(QueryableByName)]
@@ -109,13 +111,13 @@ impl DomainStore {
             return Ok(());
         }
         sql_query("DELETE FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE received_at_ms<=$1").bind::<BigInt,_>(now-86_400_000).execute(&mut *db).await?;
-        let full=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_e2ee_candidates c JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=c.assignment_id WHERE m.room_id=$1 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_e2ee_candidates old WHERE old.assignment_id=c.assignment_id AND old.event_id=$2) GROUP BY c.assignment_id HAVING count(*)>=10000) AS matched").bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.event_id).get_result::<Flag>(&mut *db).await?.matched;
+        let full=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_e2ee_candidates c JOIN hagency_agent_v1.shared_room_memberships m ON m.assignment_id=c.assignment_id WHERE m.room_id=$1 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_e2ee_candidates old WHERE old.assignment_id=c.assignment_id AND old.event_id=$2) GROUP BY c.assignment_id HAVING count(*)>=10000) AS matched").bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.event_id).get_result::<Flag>(&mut *db).await?.matched;
         if full {
             return Err(Error::Unavailable("encrypted_candidate_capacity"));
         }
         // Binding identity, not a model process, selects the candidate. The
         // executor must confirm addressing before durable demand intake.
-        sql_query("INSERT INTO hagency_agent_v1.management_shared_e2ee_candidates(assignment_id,event_id,payload,received_at_ms) SELECT m.assignment_id,$2,$3,$4 FROM hagency_agent_v1.management_agent_matrix m JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=m.assignment_id WHERE m.room_id=$1 AND m.state='matrix_verified' AND c.mode='running' AND m.puppet_mxid<>$5 ON CONFLICT DO NOTHING")
+        sql_query("INSERT INTO hagency_agent_v1.management_shared_e2ee_candidates(assignment_id,event_id,payload,received_at_ms,room_binding_id,room_binding_generation) SELECT m.assignment_id,$2,$3,$4,m.binding_id,m.binding_generation FROM hagency_agent_v1.shared_room_memberships m JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=m.assignment_id WHERE m.room_id=$1 AND m.state='matrix_verified' AND c.mode='running' AND m.puppet_mxid<>$5 ON CONFLICT DO NOTHING")
             .bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.event_id).bind::<Text,_>(&payload).bind::<BigInt,_>(received).bind::<Text,_>(&event.sender_mxid).execute(&mut *db).await?;
         Ok(())
     }
@@ -127,6 +129,7 @@ impl DomainStore {
         let mut db = self.db.lock().await?;
         Self::authorize(&mut db, p, 0).await?;
         let (device, generation) = device(p)?;
+        sql_query("UPDATE hagency_agent_v1.management_shared_e2ee_candidates c SET state='ignored' WHERE state<>'ignored' AND room_binding_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m WHERE m.binding_id=c.room_binding_id AND m.binding_generation=c.room_binding_generation)").execute(&mut *db).await?;
         let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND a.state='pending_native' AND m.state='matrix_verified' AND a.id>$4 ORDER BY a.id LIMIT 17")
             .bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(after.unwrap_or("")).load::<Id>(&mut *db).await?;
         let next = (ids.len() == 17).then(|| ids[15].id.clone());
@@ -142,11 +145,13 @@ impl DomainStore {
             for row in &rows {
                 sql_query("UPDATE hagency_agent_v1.management_shared_e2ee_candidates SET last_polled_ms=$3 WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&id.id).bind::<Text,_>(&row.event_id).bind::<BigInt,_>(clock(&mut db).await?).execute(&mut *db).await?;
             }
-            let events = rows
-                .iter()
-                .map(|r| decode::<RoutedEvent>(&r.payload))
-                .collect::<Result<Vec<_>>>()?;
-            scopes.push(json!({"assignmentId":id.id,"puppetMxid":m.puppet_mxid,"roomId":m.room_id,"managerMxid":m.manager_mxid,"direct":m.pool_agent&&m.space_id.is_empty(),"events":events}));
+            let mut by_room=std::collections::BTreeMap::<String,Vec<RoutedEvent>>::new();
+            for row in &rows {let event: RoutedEvent=decode(&row.payload)?;by_room.entry(event.room_id.clone()).or_default().push(event);}
+            if by_room.is_empty() {by_room.insert(m.room_id.clone(),Vec::new());}
+            for (room,events) in by_room {
+                let m=match intake::member_for(&mut db,&id.id,&room).await {Ok(m)=>m,Err(Error::NotFound(_))=>continue,Err(e)=>return Err(e)};
+                scopes.push(json!({"assignmentId":id.id,"puppetMxid":m.puppet_mxid,"roomId":m.room_id,"managerMxid":m.manager_mxid,"direct":m.pool_agent&&m.space_id.is_empty(),"events":events}));
+            }
         }
         Ok(json!({"scopes":scopes,"nextAfter":next}))
     }
@@ -203,16 +208,19 @@ impl DomainStore {
             .ok_or(Error::Invalid("addressing_required"))?;
         let (mut event, received, m) = {
             let mut db = self.db.lock().await?;
-            let m = authorized(&mut db, p, &input.assignment_id, &self.server).await?;
+            authorized(&mut db, p, &input.assignment_id, &self.server).await?;
             let c=sql_query("SELECT * FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE assignment_id=$1 AND event_id=$2")
                 .bind::<Text,_>(&input.assignment_id).bind::<Text,_>(event_id).get_result::<Candidate>(&mut *db).await.map_err(hidden)?;
             if c.received_at_ms <= clock(&mut db).await? - 86_400_000 {
                 return Err(Error::Conflict("encrypted_candidate_expired"));
             }
+            let current=sql_query("SELECT (room_binding_id IS NULL OR EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m WHERE m.binding_id=c.room_binding_id AND m.binding_generation=c.room_binding_generation)) AS matched FROM hagency_agent_v1.management_shared_e2ee_candidates c WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&input.assignment_id).bind::<Text,_>(event_id).get_result::<Flag>(&mut *db).await?.matched;
+            if !current {return Err(Error::Conflict("shared_room_binding_changed"));}
             if c.state == "ignored" {
                 return Ok(json!({"confirmed":false}));
             }
-            (decode::<RoutedEvent>(&c.payload)?, c.received_at_ms, m)
+            {let event=decode::<RoutedEvent>(&c.payload)?;let room=intake::member_for(&mut db,&input.assignment_id,&event.room_id).await?;
+                (event,c.received_at_ms,room)}
         };
         let f = gateway
             .shared_delivery(
@@ -234,7 +242,12 @@ impl DomainStore {
         }
         event.body = event.event_id.clone();
         event.thread_root = input.thread_root.clone();
-        event.mentioned_mxids.insert(m.puppet_mxid.clone());
+        // Old clients conflate a private reply with an explicit mention. In
+        // groups only new, explicit mention evidence may authorize a turn.
+        let mentioned = input.mentioned.unwrap_or(false);
+        let addressed = addressed && (mentioned || (!f.requires_mention
+            && m.pool_agent && m.space_id.is_empty() && event.sender_mxid == m.manager_mxid));
+        if mentioned { event.mentioned_mxids.insert(m.puppet_mxid.clone()); }
         let confirmed_payload =
             serde_json::to_string(&event).map_err(|_| Error::Invalid("invalid_event"))?;
         {

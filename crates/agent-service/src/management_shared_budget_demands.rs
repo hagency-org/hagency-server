@@ -323,16 +323,17 @@ pub(in super::super) async fn promote(
         return Ok(());
     }
     let event: RetainedEvent = decode(&q.event_payload)?;
-    let m = membership(db, r).await?;
+    let m = membership_for(db, r, &event.room_id).await?;
     if allocation_digest(&event)? != q.event_digest
         || event.event_id != q.event_id
         || event.room_id != m.room_id
-        || !m.addressed_by(&event.sender_mxid, &event.mentioned_mxids)
+        || !m.addressed_by(&event.sender_mxid, &event.mentioned_mxids, false)
         || event.is_edit
     {
         return Err(Error::Conflict("shared_event_changed"));
     }
     let v = SharedWorkItem {
+        room_binding: room_binding(&m,&r.assignment_id),
         encrypted: event.encrypted,
         id: format!("swork_{}", entity_id()?),
         assignment_id: r.assignment_id.clone(),

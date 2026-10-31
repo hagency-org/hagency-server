@@ -24,6 +24,8 @@ mod execution_configuration;
 mod execution_devices;
 #[path = "owner_direct.rs"]
 mod owner_direct;
+#[path = "shared_rooms.rs"]
+mod shared_rooms;
 pub(crate) use execution_devices::require_assigned;
 pub use execution_devices::{OwnerDevice, SetExecutionDevice};
 
@@ -501,6 +503,7 @@ impl DomainStore {
             let management=sql_query("SELECT version=29 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
             if !management.matched { return Err(Error::Conflict("management_schema_incompatible")); }
             db.batch_execute(include_str!("management_shared_e2ee_schema.sql")).await?;
+            db.batch_execute(include_str!("shared_rooms_schema.sql")).await?;
             db.batch_execute("CREATE INDEX IF NOT EXISTS management_command_recovery ON hagency_agent_v1.management_commands(actor_user_id,device_id,command_id)").await?;
 
             let pause_initialized=sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='bindings' AND column_name='owner_service_paused') AS matched").get_result::<Flag>(db).await?;
@@ -802,6 +805,7 @@ impl DomainStore {
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;
+            if operation=="agent.bind" {if let Some(saved)=Self::shared_room_command(db,p,command_key).await? {return Ok(saved);}}
             let command=sql_query("SELECT digest,agent_id,binding_id FROM hagency_agent_v1.domain_commands WHERE actor_user_id=$1 AND operation=$2 AND key=$3").bind::<Text,_>(&p.user_id).bind::<Text,_>(operation).bind::<Text,_>(command_key).get_result::<Command>(db).await.optional()?.ok_or(Error::NotFound("command_not_found"))?;
             Ok(AgentCommand {agent:Self::agent_db(db,p,&command.agent_id).await?,binding:match command.binding_id {Some(id)=>Some(Self::binding_db(db,p,&id).await?),None=>None}})
         }).await
@@ -813,6 +817,9 @@ impl DomainStore {
         k: &str,
         digest: &str,
     ) -> Result<Option<AgentBinding>> {
+        if op=="agent.bind" && Self::shared_room_command(db,p,k).await?.is_some() {
+            return Err(Error::Conflict("idempotency_key_reused"));
+        }
         let c=sql_query("SELECT digest,agent_id,binding_id FROM hagency_agent_v1.domain_commands WHERE actor_user_id=$1 AND operation=$2 AND key=$3").bind::<Text,_>(&p.user_id).bind::<Text,_>(op).bind::<Text,_>(k).get_result::<Command>(db).await.optional()?;
 
         match c {

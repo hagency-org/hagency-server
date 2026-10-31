@@ -277,7 +277,7 @@ async fn shared_intake_filters_authority_expiry_and_preserves_reason() {
         match *kind {
             // Joined members may mention the Agent; someone outside the Room may not.
             "foreign" => e.sender_mxid = "@stranger:example.test".into(),
-            "encrypted" => e.encrypted = true,
+            "encrypted" => {e.encrypted = true;e.body.clear();e.mentioned_mxids.clear();},
             "edit" => e.is_edit = true,
             "mention" => e.mentioned_mxids.clear(),
             _ => e.body = "x".repeat(4097),

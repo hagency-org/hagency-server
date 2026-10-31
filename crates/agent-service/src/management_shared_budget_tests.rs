@@ -1285,7 +1285,7 @@ async fn encrypted_shared_budget_work_keeps_plaintext_out_of_results_and_sends()
     let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();
     let now=sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now").get_result::<Clock>(&mut db).await.unwrap().now;
     f.domain.route_shared_event(&f.policy,&e,now,&m.gateway).await.unwrap();
-    f.domain.shared_crypto_confirm(&f.owner.p,serde_json::from_value(json!({"assignmentId":d.command.assignment_id,"eventId":e.event_id,"addressed":true})).unwrap(),&m.gateway).await.unwrap();
+    f.domain.shared_crypto_confirm(&f.owner.p,serde_json::from_value(json!({"assignmentId":d.command.assignment_id,"eventId":e.event_id,"addressed":true,"mentioned":true})).unwrap(),&m.gateway).await.unwrap();
     let w=f.domain.poll_shared_budget_work(&f.owner.p,&f.policy,a.authority.clone(),&m.gateway).await.unwrap().unwrap();
     assert!(w.encrypted);assert_eq!(w.body,w.event_id);
     let mode=f.domain.shared_budget_work_input_mode(&f.owner.p,&w.id,crate::management_shared_context_types::SharedWorkEvidenceInput{runtime_command_digest:d.command_digest.clone(),work_digest:allocation_digest(&w).unwrap()}).await.unwrap();

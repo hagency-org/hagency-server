@@ -49,7 +49,7 @@ impl DomainStore {
             if !Self::project_db(db, project).await?.active || !Self::room_db(db, room, project).await?.active {
                 return Err(Error::Unauthorized("room_not_active"));
             }
-            Ok(sql_query("SELECT a.id AS agent_id,a.puppet_mxid,a.display_name,u.mxid AS owner_mxid,b.state AS binding_state FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id WHERE b.project_id=$1 AND b.room_id=$2 AND b.state IN ('active','suspended') AND a.state IN ('active','suspended') ORDER BY a.id")
+            Ok(sql_query("SELECT a.id AS agent_id,a.puppet_mxid,a.display_name,u.mxid AS owner_mxid,b.state AS binding_state FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id WHERE b.project_id=$1 AND b.room_id=$2 AND b.state IN ('active','suspended') AND a.state IN ('active','suspended') UNION ALL SELECT a.id AS agent_id,a.puppet_mxid,a.display_name,u.mxid AS owner_mxid,b.state AS binding_state FROM hagency_agent_v1.shared_agent_rooms b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id JOIN hagency_agent_v1.shared_room_memberships m ON m.binding_id=b.id WHERE b.project_id=$1 AND b.room_id=$2 ORDER BY agent_id")
                 .bind::<Text,_>(project).bind::<Text,_>(room).load(db).await?)
         }).await
     }

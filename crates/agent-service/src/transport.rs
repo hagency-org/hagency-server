@@ -110,6 +110,8 @@ pub struct DeliveryFacts {
     pub puppet_can_send_message: bool,
     pub encrypted: bool,
     pub owner_direct_valid: bool,
+    /// Fresh room membership, independent of m.direct and binding scope.
+    pub requires_mention: bool,
 }
 #[derive(Debug, Serialize, diesel::QueryableByName)]
 #[serde(rename_all = "camelCase")]
@@ -689,15 +691,17 @@ impl TransportStore {
             if let Some(duplicate)=Self::existing_pause_notice(db,binding,&event.event_id,&digest).await? {return Ok(duplicate);}
             let puppet_sender=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agents WHERE puppet_mxid=$1) AS matched").bind::<Text,_>(&event.sender_mxid).get_result::<Flag>(db).await?;
             if puppet_sender.matched || event.sender_mxid.starts_with("@_hagency_") {return Ok(RouteResult::Ignored);}
-            if event.encrypted && !scope.space_id.is_empty() && !confirmed {
+            if event.encrypted && (f.requires_mention || event.sender_mxid != scope.owner_mxid) && !confirmed {
                 sql_query("DELETE FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1 AND received_at_ms<=$2").bind::<Text,_>(binding).bind::<BigInt,_>(now-self.limits.event_ttl_ms).execute(db).await?;
                 if sql_query("SELECT count(*)>=10000 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1 AND event_id=$2) AS matched FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1").bind::<Text,_>(binding).bind::<Text,_>(&event.event_id).get_result::<Flag>(db).await?.matched {return Err(Error::Unavailable("encrypted_candidate_capacity"));}
                 let payload=serde_json::to_string(&event).map_err(|_|Error::Invalid("invalid_event"))?;
                 sql_query("INSERT INTO hagency_agent_v1.personal_e2ee_candidates(binding_id,event_id,payload,received_at_ms) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind::<Text,_>(binding).bind::<Text,_>(&event.event_id).bind::<Text,_>(payload).bind::<BigInt,_>(received_at_ms).execute(db).await?;
                 return Ok(RouteResult::Ignored);
             }
-            let known=match &event.thread_root {Some(root)=>sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agent_threads WHERE binding_id=$1 AND thread_root=$2) AS matched").bind::<Text,_>(binding).bind::<Text,_>(root).get_result::<Flag>(db).await?.matched,None=>false};
-            if !scope.space_id.is_empty()&&!event.mentioned_mxids.contains(&scope.puppet_mxid)&&!(scope.thread_auto_reply && known) {return Ok(RouteResult::Ignored);}
+            if (f.requires_mention || event.sender_mxid != scope.owner_mxid)
+                && !event.mentioned_mxids.contains(&scope.puppet_mxid) {
+                return Ok(RouteResult::Ignored);
+            }
             if scope.service_paused {
                 return self.queue_pause_notice(db,&scope,&event,&digest,received_at_ms,now).await;
             }
@@ -1344,7 +1348,7 @@ fn facts(scope: &RoutingScope, requester: &str, f: &DeliveryFacts, now: i64) -> 
         || requester != f.requester_mxid
         || !f.owner_in_room
         || (if scope.space_id.is_empty() {
-            !f.owner_direct_valid || requester != scope.owner_mxid
+            !f.owner_direct_valid
         } else {
             !f.owner_in_space || !f.room_in_space
         })

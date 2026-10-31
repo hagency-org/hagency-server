@@ -199,6 +199,9 @@ async fn authorize(
 ) -> Result<Work> {
     let w = intake::assignment(db, &q.assignment_id).await?;
     owner(&w, p)?;
+    if fresh && !sql_query("SELECT (room_binding_id IS NULL OR EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m WHERE m.binding_id=q.room_binding_id AND m.binding_generation=q.room_binding_generation)) AS matched FROM hagency_agent_v1.management_shared_intake q WHERE id=$1").bind::<Text,_>(&q.id).get_result::<Flag>(db).await?.matched {
+        return Err(Error::Conflict("shared_room_binding_changed"));
+    }
     if fresh
         && (p.device_generation != Some(w.executor_generation)
             || !intake::retainable(db, &q.assignment_id, &w, server, now).await?
@@ -388,16 +391,17 @@ pub(super) async fn promote(
         return Ok(());
     }
     let event: RetainedEvent = decode(&q.event_payload)?;
-    let m = membership(db, r).await?;
+    let m = membership_for(db, r, &event.room_id).await?;
     if allocation_digest(&event)? != q.event_digest
         || event.event_id != q.event_id
         || event.room_id != m.room_id
-        || !m.addressed_by(&event.sender_mxid, &event.mentioned_mxids)
+        || !m.addressed_by(&event.sender_mxid, &event.mentioned_mxids, false)
         || event.is_edit
     {
         return Err(Error::Conflict("shared_event_changed"));
     }
     let v = SharedWorkItem {
+        room_binding: room_binding(&m,&r.assignment_id),
         encrypted: event.encrypted,
         id: format!("swork_{}", entity_id()?),
         assignment_id: r.assignment_id.clone(),

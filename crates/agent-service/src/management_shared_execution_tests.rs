@@ -1404,3 +1404,6 @@ async fn encrypted_pool_intake_requires_assigned_executor_before_any_model_work(
     assert_eq!(f.domain.shared_crypto_poll(&f.owner.p,None).await.unwrap()["scopes"],json!([]));
     assert!(f.domain.shared_crypto_confirm(&f.owner.p,serde_json::from_value(input).unwrap(),&matrix.gateway).await.is_err());
 }
+
+#[path="shared_rooms_tests.rs"]
+mod room_tests;

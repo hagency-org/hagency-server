@@ -393,6 +393,9 @@ impl App {
             .authenticate(&credential, now, device_management)
             .await?;
         if let Some((domain, gateway)) = &self.domain {
+            if path == "/hagency/api/v1/room-agents" && method == salvo::http::Method::GET {
+                return Ok(json!({"agents":domain.room_agents(&principal,now).await?}));
+            }
             if path == "/hagency/api/v1/agents" && method == salvo::http::Method::GET {
                 return Ok(json!({"agents":domain.agents(&principal,now).await?}));
             }
@@ -850,6 +853,14 @@ impl App {
                         .parse_json()
                         .await
                         .map_err(|_| Error::Invalid("invalid_arguments"))?;
+                    domain.room_agent(&principal,parts[5],now_ms()).await?;
+                    domain.project(&principal,&body.project_id,now_ms()).await?;
+                    self.accept_service_invitation(gateway, &body.room_id).await?;
+                    if let Some(matrix)=&self.matrix_client {
+                        if let Some(creation)=domain.try_bind_shared_room(&principal,parts[5],&body,gateway,matrix).await? {
+                            return Ok(json!({"creation":creation}));
+                        }
+                    }
                     let agent = domain.agent(&principal, parts[5], now_ms()).await?;
                     let project = domain
                         .project(&principal, &body.project_id, now_ms())
