@@ -14,9 +14,10 @@ At most twice the pool size can be admitted, including waiters and cleanup. Chec
 is bounded to 5 seconds; the callback plus session reset to 30 seconds. PostgreSQL
 statement, lock and idle-transaction timeouts also apply. Successful callbacks roll
 back leftover transactions, release session advisory locks and reset session state.
-Errors discard the session. Cancellation, deadline expiry and panic detach it,
-issue PostgreSQL Cancel, attempt rollback and close it. Cleanup retains admission
-and has its own deadline.
+Errors, cancellation, deadline expiry and panic detach the session, issue
+PostgreSQL Cancel, attempt rollback and close it. An errored callback can abandon
+a row stream while PostgreSQL is still executing; closing its transport alone
+does not stop that SQL promptly. Cleanup retains admission and has its own deadline.
 
 Agent business pools default to 8 connections **per Store/Domain/Transport/Inbox
 handle family**; clones share their pool. `HAGENCY_AGENT_DB_POOL_SIZE` overrides

@@ -189,3 +189,74 @@ async fn terminated_idle_connection_is_replaced_before_the_next_query() {
     assert_ne!(previous, replacement);
     assert_eq!(db.status().available, 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_callback_with_abandoned_stream_stops_sql_and_releases_locks() {
+    // Flush an initial result batch before the backend sleeps, so load_stream
+    // returns while SQL is still executing rather than waiting for its first row.
+    const QUERY: &str = "SELECT true AS acquired FROM generate_series(1,1000) UNION ALL SELECT true AS acquired FROM pg_sleep(20) /* callback_error_probe */";
+    #[derive(QueryableByName)]
+    struct Acquired {
+        #[diesel(sql_type = Bool)]
+        acquired: bool,
+    }
+    let db = Database::connect(&url(), 1).unwrap();
+    let task_db = db.clone();
+    let (ready, started) = tokio::sync::oneshot::channel();
+    let (finish, released) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        task_db
+            .with_connection(async |connection| {
+                connection
+                    .batch_execute("BEGIN; SELECT pg_advisory_xact_lock(5210750088328996)")
+                    .await?;
+                let stream = diesel::sql_query(QUERY)
+                    .load_stream::<Acquired>(connection)
+                    .await?;
+                ready.send(()).unwrap();
+                released.await.unwrap();
+                drop(stream);
+                Err::<(), _>(diesel::result::Error::QueryBuilderError(Box::new(
+                    std::io::Error::other("callback failed"),
+                )))
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), started)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut observer = AsyncPgConnection::establish(&url()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let running = diesel::sql_query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND state='active' AND wait_event='PgSleep' AND query=$1) AS acquired")
+                .bind::<diesel::sql_types::Text,_>(QUERY).get_result::<Acquired>(&mut observer).await.unwrap().acquired;
+            if running { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("observe SQL execution before abandoning the stream");
+    finish.send(()).unwrap();
+    assert!(
+        task.await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("callback failed")
+    );
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if diesel::sql_query("SELECT pg_try_advisory_xact_lock(5210750088328996) AS acquired")
+                .get_result::<Acquired>(&mut observer)
+                .await
+                .unwrap()
+                .acquired
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("an error must cancel unfinished SQL and release its transaction lock");
+    ping(&db).await;
+}

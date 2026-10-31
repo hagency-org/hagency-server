@@ -40,7 +40,6 @@ fn failure(message: impl Into<String>) -> Error {
 struct CheckedOut {
     connection: Option<Object<AsyncPgConnection>>,
     completed: bool,
-    finished: bool,
     cleanup_timeout: Duration,
     admission: Option<tokio::sync::OwnedSemaphorePermit>,
 }
@@ -50,11 +49,9 @@ impl Drop for CheckedOut {
             && let Some(connection) = self.connection.take()
         {
             let connection = Object::take(connection);
-            if self.finished {
-                drop(connection);
-            } else {
-                cancel_and_discard(connection, self.admission.take(), self.cleanup_timeout);
-            }
+            // A callback error does not prove SQL has finished: dropping an
+            // unfinished row stream can leave its query executing on PostgreSQL.
+            cancel_and_discard(connection, self.admission.take(), self.cleanup_timeout);
         }
     }
 }
@@ -201,7 +198,6 @@ impl Database {
             let mut checked = CheckedOut {
                 connection: Some(connection),
                 completed: false,
-                finished: false,
                 cleanup_timeout: self
                     .0
                     .operation_timeout
@@ -226,7 +222,6 @@ impl Database {
             .map_err(|_| failure("database operation timed out"))?;
             // An error can leave a transaction or protocol state behind: discard conservatively.
             checked.completed = result.is_ok();
-            checked.finished = true;
             drop(checked);
             result
         }
