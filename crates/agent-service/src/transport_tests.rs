@@ -2727,6 +2727,51 @@ async fn postgres_failed_request_feedback_is_idempotent_and_next_request_runs() 
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_delivery_feedback_uses_reply_age_and_suppresses_sent_answers() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    let lease = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: f.transport.acquire_for_test(&f.p, &f.agent, 30_000, false, now).await.unwrap().epoch,
+    };
+    let id = enqueue(&f, "delivery-after-slow-model").await;
+    running(&f, &lease, &id, "slow-model-run").await;
+    {
+        let mut db = f.transport.db.lock().await.unwrap();
+        sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=$1 WHERE id=$2")
+            .bind::<BigInt, _>(now - 60_000).bind::<Text, _>(&id).execute(&mut *db).await.unwrap();
+        sql_query("UPDATE hagency_agent_v1.request_notice_deployment SET since_ms=$1")
+            .bind::<BigInt, _>(now - 61_000).execute(&mut *db).await.unwrap();
+        // Exercise an upgrade of the already initialized transport too.
+        let old = include_str!("request_notice_needed.sql").replace(
+            "AND r.created_at_ms<=", "AND e.created_at_ms<=",
+        );
+        db.batch_execute(&old).await.unwrap();
+    }
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    TransportStore::open(&url, Limits::default()).await.unwrap();
+    let reply = f.transport.submit_reply(&f.p, &lease, SubmitReply {
+        dispatch_id: id.clone(), execution_id: "slow-model-run".into(), body: "The answer is ready".into(),
+    }, &f.facts, now).await.unwrap();
+    assert!(f.transport.request_notice_candidates("", now).await.unwrap().iter().all(|n| n.owner_event_id != id),
+        "model time must not make a newly created answer look undeliverable");
+    {
+        let mut db = f.transport.db.lock().await.unwrap();
+        sql_query("UPDATE hagency_agent_v1.reply_outbox SET created_at_ms=$1 WHERE id=$2")
+            .bind::<BigInt, _>(now - 31_000).bind::<Text, _>(&reply.id).execute(&mut *db).await.unwrap();
+    }
+    let candidates = f.transport.request_notice_candidates("", now).await.unwrap();
+    let notice = candidates.iter().find(|n| n.owner_event_id == id).unwrap();
+    assert_eq!(notice.kind, "delivery", "genuinely delayed delivery still gets feedback");
+    let sending = f.transport.claim_reply(&reply.id, &f.facts, now).await.unwrap();
+    f.transport.confirm_reply(&reply.id, sending.worker_token.as_deref().unwrap(), Some("$delivered-answer:test"), now).await.unwrap();
+    assert!(f.transport.claim_request_notice(&notice.id, &f.facts, now).await.is_err(),
+        "a queued warning must not be sent after the answer is confirmed");
+    assert!(f.transport.request_notice_candidates("", now).await.unwrap().iter().all(|n| n.owner_event_id != id));
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_offline_feedback_keeps_request_queued_and_stale_notice_is_suppressed() {
     let f = fixture().await;
     let now = crate::api::now_ms();

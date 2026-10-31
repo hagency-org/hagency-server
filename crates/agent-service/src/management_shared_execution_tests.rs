@@ -228,6 +228,7 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
     let value = f.domain.shared_approvals(&f.outsider.p, serde_json::from_value(query.clone()).unwrap()).await.unwrap();
     assert_eq!(value["executions"][0]["state"], "started");
     attempts::stop(&f, &runtime, 103).await;
+    assert_eq!(f.domain.pool_agent_request(&f.outsider.p,&request.id).await.unwrap().runtime_state.as_deref(),Some("stopped"));
     let value = f.domain.shared_approvals(&f.outsider.p, serde_json::from_value(query.clone()).unwrap()).await.unwrap();
     assert_eq!(value["executions"][0]["state"], "unknown");
     event.event_id = "$budget_block_status".into();
@@ -1371,7 +1372,19 @@ async fn encrypted_pool_intake_requires_assigned_executor_before_any_model_work(
     assert_eq!(f.domain.shared_intake_history(&f.outsider.p,&assignment.id,crate::management_shared_intake_types::SharedIntakeQuery{after:None}).await.unwrap().items.len(),1);
     let puppet=poll["scopes"][0]["puppetMxid"].as_str().unwrap();
     sql_query("INSERT INTO hagency_agent_v1.executor_matrix_devices VALUES($1,$2,'HAGE2EETEST',$3,$4,'shared',false)").bind::<Text,_>(&assignment.id).bind::<Text,_>(puppet).bind::<Text,_>(f.owner.p.device_id.as_deref().unwrap()).bind::<BigInt,_>(f.owner.p.device_generation.unwrap()).execute(&mut db).await.unwrap();
+    // Arrange natural expiry, not the separate explicit-shortening revocation.
+    db.batch_execute("ALTER TABLE hagency_agent_v1.sessions DISABLE TRIGGER USER").await.unwrap();
+    sql_query("UPDATE hagency_agent_v1.sessions SET valid_until_ms=1 WHERE id=(SELECT session_id FROM hagency_agent_v1.devices WHERE id=$1)")
+        .bind::<Text,_>(f.owner.p.device_id.as_deref().unwrap()).execute(&mut db).await.unwrap();
+    db.batch_execute("ALTER TABLE hagency_agent_v1.sessions ENABLE TRIGGER USER").await.unwrap();
+    assert!(f.domain.pool_agent_request(&f.outsider.p,&request.id).await.unwrap().blocking_reason.is_some());
+    assert!(f.domain.shared_crypto_poll(&f.owner.p,None).await.is_err());
     let before=matrix.calls.lock().unwrap().len();
+    f.domain.revoke_shared_crypto_devices(&matrix.matrix).await.unwrap();
+    assert_eq!(matrix.calls.lock().unwrap().len(),before);
+    assert_eq!(crate::executor_matrix_device::select(&mut db,&assignment.id,f.owner.p.device_id.as_deref().unwrap(),f.owner.p.device_generation.unwrap(),"HAGE2EETEST").await.unwrap(),"HAGE2EETEST");
+    sql_query("UPDATE hagency_agent_v1.sessions SET valid_until_ms=$2 WHERE id=(SELECT session_id FROM hagency_agent_v1.devices WHERE id=$1)")
+        .bind::<Text,_>(f.owner.p.device_id.as_deref().unwrap()).bind::<BigInt,_>(received+3600000).execute(&mut db).await.unwrap();
     f.domain.revoke_shared_crypto_devices(&matrix.matrix).await.unwrap();
     assert_eq!(matrix.calls.lock().unwrap().len(),before);
     f.domain.stop_pool_agent(&f.owner.p,&request.id,RevokeInput{command_id:"encrypted_pool_stop".into(),expected_revision:2}).await.unwrap();

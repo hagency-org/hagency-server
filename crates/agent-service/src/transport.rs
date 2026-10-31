@@ -347,6 +347,8 @@ impl TransportStore {
             if !notices_initialized.matched {
                 db.batch_execute(include_str!("request_notices_schema.sql")).await?;
             }
+            // Refresh the derived view for existing installations without changing journals.
+            db.batch_execute(include_str!("request_notice_needed.sql")).await?;
             db.batch_execute("SELECT id FROM hagency_agent_v1.processing_sendable LIMIT 0").await
                 .map_err(|_| Error::Conflict("processing_schema_incompatible"))?;
             db.batch_execute("SELECT delivery_epoch FROM hagency_agent_v1.reply_outbox LIMIT 0")

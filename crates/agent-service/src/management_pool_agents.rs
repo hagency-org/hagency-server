@@ -46,6 +46,9 @@ pub(super) async fn effective_grant(
     r: &Row,
     now: i64,
 ) -> Result<ResourceGrantView> {
+    effective_grant_for(db, r, now, false).await
+}
+async fn effective_grant_for(db: &mut AsyncPgConnection, r: &Row, now: i64, retention: bool) -> Result<ResourceGrantView> {
     let pool = r
         .pool_contribution_id
         .as_deref()
@@ -54,8 +57,8 @@ pub(super) async fn effective_grant(
         .pool_grant_id
         .as_deref()
         .ok_or(Error::Conflict("pool_agent_required"))?;
-    let grant = allocations::live_grant_for_pool(db, pool, now)
-        .await?
+    let grant = if retention { allocations::retained_grant_for_pool(db, pool, now).await? }
+        else { allocations::live_grant_for_pool(db, pool, now).await? }
         .ok_or(Error::Conflict("pool_capacity_unavailable"))?;
     let persons = people(db, r).await?;
     if !persons.active
@@ -97,10 +100,16 @@ pub(super) async fn command_live(
     c: &ManagedAgentReserveCommand,
     now: i64,
 ) -> Result<bool> {
+    command_valid(db, r, c, now, false).await
+}
+pub(super) async fn command_retained(db: &mut AsyncPgConnection, r: &Row, c: &ManagedAgentReserveCommand, now: i64) -> Result<bool> {
+    command_valid(db, r, c, now, true).await
+}
+async fn command_valid(db: &mut AsyncPgConnection, r: &Row, c: &ManagedAgentReserveCommand, now: i64, retention: bool) -> Result<bool> {
     let Some(original) = &c.pool_grant else {
         return Ok(false);
     };
-    let current = match effective_grant(db, r, now).await {
+    let current = match effective_grant_for(db, r, now, retention).await {
         Ok(g) => g,
         Err(Error::Conflict(_) | Error::NotFound(_)) => return Ok(false),
         Err(e) => return Err(e),
@@ -193,7 +202,7 @@ async fn view_pool(
     } else {
         None
     };
-    let progress=sql_query("SELECT json_build_object('assignment',a.id,'membership',m.state,'runtime',CASE WHEN x.permanent_fence THEN 'cleanup_pending' ELSE x.state END)::text AS payload FROM hagency_agent_v1.management_shared_assignments a LEFT JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id LEFT JOIN LATERAL (SELECT state,permanent_fence FROM hagency_agent_v1.management_shared_runtimes WHERE assignment_id=a.id ORDER BY created_at_ms DESC,id DESC LIMIT 1) x ON true WHERE a.request_id=$1").bind::<Text,_>(&r.id).get_result::<AgentPerson>(db).await.optional()?.map(|r|decode::<Value>(&r.payload)).transpose()?.unwrap_or(Value::Null);
+    let progress=sql_query("SELECT json_build_object('assignment',a.id,'membership',m.state,'runtime',CASE WHEN x.state='stopped' THEN 'stopped' WHEN x.permanent_fence THEN 'cleanup_pending' ELSE x.state END)::text AS payload FROM hagency_agent_v1.management_shared_assignments a LEFT JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id LEFT JOIN LATERAL (SELECT state,permanent_fence FROM hagency_agent_v1.management_shared_runtimes WHERE assignment_id=a.id ORDER BY created_at_ms DESC,id DESC LIMIT 1) x ON true WHERE a.request_id=$1").bind::<Text,_>(&r.id).get_result::<AgentPerson>(db).await.optional()?.map(|r|decode::<Value>(&r.payload)).transpose()?.unwrap_or(Value::Null);
     let reservation=sql_query("SELECT w.receipt AS payload FROM hagency_agent_v1.management_agent_executor_commands w JOIN hagency_agent_v1.management_agent_intents i ON i.id=w.intent_id WHERE i.request_id=$1 AND w.operation='agent.reserve' AND w.receipt IS NOT NULL").bind::<Text,_>(&r.id).get_result::<AgentPerson>(db).await.optional()?.map(|r|decode::<Value>(&r.payload)).transpose()?.unwrap_or(Value::Null);
     Ok(PoolAgentRequest {
         id: r.id,

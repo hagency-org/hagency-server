@@ -173,6 +173,9 @@ fn grant_view(row: &GrantRow, now: i64) -> Result<ResourceGrantView> {
     })
 }
 async fn grant_live(db: &mut AsyncPgConnection, g: &GrantRow, now: i64) -> Result<bool> {
+    grant_valid(db, g, now, true).await
+}
+async fn grant_valid(db: &mut AsyncPgConnection, g: &GrantRow, now: i64, require_session: bool) -> Result<bool> {
     let receipt: NativeGrantReceipt = decode(&g.receipt)?;
     let (owner, c) = contribution(db, &receipt.contribution_id).await?;
     // A scheduled renewal authorizes nothing before its UTC month starts.
@@ -195,8 +198,8 @@ async fn grant_live(db: &mut AsyncPgConnection, g: &GrantRow, now: i64) -> Resul
     {
         return Ok(false);
     }
-    Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.devices d JOIN hagency_agent_v1.sessions s ON s.id=d.session_id JOIN hagency_agent_v1.users u ON u.id=d.user_id WHERE d.id=$1 AND d.user_id=$2 AND d.generation=$3 AND NOT d.revoked AND NOT s.revoked AND u.active AND s.valid_until_ms>$4) AS matched")
-        .bind::<Text,_>(&g.executor_device_id).bind::<Text,_>(&g.owner_user_id).bind::<BigInt,_>(g.executor_generation).bind::<BigInt,_>(now).get_result::<Flag>(db).await?.matched)
+    Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.devices d JOIN hagency_agent_v1.sessions s ON s.id=d.session_id JOIN hagency_agent_v1.users u ON u.id=d.user_id WHERE d.id=$1 AND d.user_id=$2 AND d.generation=$3 AND NOT d.revoked AND NOT s.revoked AND u.active AND (NOT $5 OR s.valid_until_ms>$4)) AS matched")
+        .bind::<Text,_>(&g.executor_device_id).bind::<Text,_>(&g.owner_user_id).bind::<BigInt,_>(g.executor_generation).bind::<BigInt,_>(now).bind::<Bool,_>(require_session).get_result::<Flag>(db).await?.matched)
 }
 async fn allocation_live(
     db: &mut AsyncPgConnection,
@@ -398,11 +401,19 @@ pub(super) async fn live_grant_for_pool(
     contribution: &str,
     now: i64,
 ) -> Result<Option<ResourceGrantView>> {
+    grant_for_pool(db, contribution, now, true).await
+}
+/// Retain existing encrypted history across temporary login expiry. This is
+/// never execution authority; revocation, generation and grant pins still apply.
+pub(super) async fn retained_grant_for_pool(db: &mut AsyncPgConnection, contribution: &str, now: i64) -> Result<Option<ResourceGrantView>> {
+    grant_for_pool(db, contribution, now, false).await
+}
+async fn grant_for_pool(db: &mut AsyncPgConnection, contribution: &str, now: i64, require_session: bool) -> Result<Option<ResourceGrantView>> {
     let rows = sql_query("SELECT * FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND state='active' AND period_start_ms<=$2 AND expires_at_ms>$2 ORDER BY id DESC LIMIT 2")
         .bind::<Text,_>(contribution).bind::<BigInt,_>(now).load::<GrantRow>(db).await?;
     let mut current = None;
     for row in rows {
-        if grant_live(db, &row, now).await? {
+        if grant_valid(db, &row, now, require_session).await? {
             let view = grant_view(&row, now)?;
             if !matches!(view.receipt.version, 2 | 3) { continue; }
             if current.is_some() { return Err(Error::Conflict("resource_grant_conflict")); }
