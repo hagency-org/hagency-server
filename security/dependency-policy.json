@@ -3,7 +3,7 @@
   "reviewed_on": "2026-10-30",
   "expires_on": "2026-11-29",
   "reviewed_sources": {
-    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?branch=main#1ee630933af6f117a559487e9d536adfc4c87357"
+    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?branch=main#83e52e53a9305165f55fa22602dbf01787c45656"
   },
   "findings": [
     {

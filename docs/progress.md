@@ -257,6 +257,6 @@ were visible after building and serving the current assets. Container smoke
 now checks the registration shell and the HTTP responses for those assets.
 
 Pinned the embedded Pasion backend and browser build to upstream main
-`1ee6309` after #122 merged. The fresh native Server build and branded assets
+`83e52e5` after #122 merged. The fresh native Server build and branded assets
 passed a new-account registration, original consent, PKCE exchange and Matrix
 whoami check against a fresh PostgreSQL fixture; no separate login was sent.
