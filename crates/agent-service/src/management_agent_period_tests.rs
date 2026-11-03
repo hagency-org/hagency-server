@@ -24,15 +24,27 @@ async fn recurring_with_limits(mode: RenewalMode, cap: Option<i64>) -> (
 async fn recurring_with_managers(mode: RenewalMode, cap: Option<i64>, large: bool) -> (
     Fixture, Admission, ResourceGrantView, PoolAgentRequest, PendingManagedAssignment, i64,
 ) {
-    let f = succession_fixture().await;
-    let a = admitted(&f).await;
     let now = crate::api::now_ms();
     let old = now - 4 * 86400000;
-    time(&f, old).await;
     let calendar = Calendar {
         cadence: Cadence::Daily,
         time_zone: "America/Los_Angeles".into(),
     };
+    recurring_on_calendar(mode, cap, large, calendar, old, now).await
+}
+async fn recurring_on_calendar(
+    mode: RenewalMode,
+    cap: Option<i64>,
+    large: bool,
+    calendar: Calendar,
+    old: i64,
+    now: i64,
+) -> (
+    Fixture, Admission, ResourceGrantView, PoolAgentRequest, PendingManagedAssignment, i64,
+) {
+    let f = succession_fixture().await;
+    let a = admitted(&f).await;
+    time(&f, old).await;
     let period = calendar.period_at(old as u64).unwrap();
     let mut g = grant_input(&f, &a, &f.outsider.p).await;
     g.receipt.version = if cap.is_some() { 5 } else { 4 };
@@ -131,6 +143,196 @@ async fn acknowledge_period(f: &Fixture, d: &AgentExecutorDelivery, ledger: i64)
         .unwrap();
     assert_eq!(ack.receipt_digest, replay.receipt_digest);
 }
+
+/// The same persistent approval/receipt path must respect each owner calendar,
+/// including the exact boundary and the short/long periods around DST.
+async fn calendar_boundary_renewal(cadence: Cadence, boundary: &str, end: &str) {
+    let ms = |value: &str| {
+        chrono::DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .timestamp_millis()
+    };
+    let boundary = ms(boundary);
+    let end = ms(end);
+    let calendar = Calendar {
+        cadence,
+        time_zone: "America/Los_Angeles".into(),
+    };
+    let expected = calendar.period_at(boundary as u64).unwrap();
+    assert_eq!(expected.start_ms, boundary as u64);
+    assert_eq!(expected.end_ms, end as u64);
+    for mode in [RenewalMode::Owner, RenewalMode::Automatic] {
+        let (f, a, g, r, assignment, _) = recurring_on_calendar(
+            mode,
+            Some(100),
+            false,
+            calendar.clone(),
+            boundary - 60_000,
+            boundary,
+        )
+        .await;
+        assert_eq!(g.receipt.period_end_ms, boundary);
+        time(&f, boundary - 1).await;
+        let before = f
+            .domain
+            .pool_agent_request(&f.owner.p, &r.id)
+            .await
+            .unwrap();
+        assert_eq!(before.current_period.unwrap().state, "available");
+        assert!(!before.can_renew);
+        assert!(
+            f.domain
+                .poll_managed_agent_executor(
+                    &f.owner.p,
+                    &f.policy,
+                    ExecutorPollInput { after: None },
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        time(&f, boundary).await;
+        let paused = f
+            .domain
+            .pool_agent_request(&f.owner.p, &r.id)
+            .await
+            .unwrap();
+        let paused_period = paused.current_period.unwrap();
+        assert_eq!(paused_period.key, expected.key);
+        assert_eq!(paused_period.state, "awaiting_capacity");
+        assert_eq!(paused_period.remaining_tokens, Some(0));
+        assert_eq!(
+            paused.assignment_id.as_deref(),
+            Some(assignment.id.as_str())
+        );
+        assert!(!paused.can_renew);
+
+        let current = current_grant(&f, &a, &g, boundary).await;
+        assert_eq!(current.receipt.period_end_ms, end);
+        if mode == RenewalMode::Owner {
+            assert!(
+                f.domain
+                    .poll_managed_agent_executor(
+                        &f.owner.p,
+                        &f.policy,
+                        ExecutorPollInput { after: None },
+                    )
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let input = RenewPoolAgent {
+                command_id: "calendar_boundary_owner_renewal".into(),
+                expected_revision: r.revision,
+                expected_period_key: expected.key.clone(),
+            };
+            assert_eq!(
+                code(
+                    f.domain
+                        .renew_pool_agent(&f.outsider.p, &f.policy, &r.id, input.clone(),)
+                        .await
+                ),
+                "pool_resource_owner_required"
+            );
+            f.domain
+                .renew_pool_agent(&f.owner.p, &f.policy, &r.id, input)
+                .await
+                .unwrap();
+        }
+        let delivery = f
+            .domain
+            .poll_managed_agent_executor(&f.owner.p, &f.policy, ExecutorPollInput { after: None })
+            .await
+            .unwrap()
+            .unwrap();
+        let AgentExecutorCommand::RenewPeriod(command) = &delivery.command else {
+            panic!("expected a calendar period renewal");
+        };
+        assert_eq!(command.period, expected);
+        assert_eq!(command.reserve_command.requested_tokens, 100);
+        assert_eq!(command.assignment_id, assignment.id);
+        assert_eq!(
+            command.agent_reservation_id,
+            assignment.agent_reservation_id
+        );
+        acknowledge_period(&f, &delivery, 102).await;
+
+        // A second poll and the replayed native receipt cannot add allowance.
+        let funded = f
+            .domain
+            .pool_agent_request(&f.owner.p, &r.id)
+            .await
+            .unwrap();
+        let funded_period = funded.current_period.unwrap();
+        assert_eq!(funded_period.state, "available");
+        assert_eq!(funded_period.remaining_tokens, Some(100));
+        assert_eq!(funded_period.next_reset_ms, end as u64);
+        assert_eq!(funded.agent_id, r.agent_id);
+        assert_eq!(funded.room_id, r.room_id);
+        assert_eq!(funded.assignment_id, Some(assignment.id));
+        assert!(!funded.can_renew);
+        assert!(
+            f.domain
+                .poll_managed_agent_executor(
+                    &f.owner.p,
+                    &f.policy,
+                    ExecutorPollInput { after: None },
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        assert_eq!(sql_query("SELECT count(*)::bigint AS count FROM hagency_agent_v1.management_agent_executor_commands WHERE operation='agent.period.renew'")
+            .get_result::<Count>(&mut db).await.unwrap().count, 1);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL"]
+async fn calendar_boundary_daily_spring_renews_exactly_23_hours_in_both_modes() {
+    calendar_boundary_renewal(
+        Cadence::Daily,
+        "2026-03-08T08:00:00Z",
+        "2026-03-09T07:00:00Z",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL"]
+async fn calendar_boundary_daily_autumn_renews_exactly_25_hours_in_both_modes() {
+    calendar_boundary_renewal(
+        Cadence::Daily,
+        "2026-11-01T07:00:00Z",
+        "2026-11-02T08:00:00Z",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL"]
+async fn calendar_boundary_weekly_renews_monday_through_dst_in_both_modes() {
+    calendar_boundary_renewal(
+        Cadence::Weekly,
+        "2026-10-26T07:00:00Z",
+        "2026-11-02T08:00:00Z",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL"]
+async fn calendar_boundary_monthly_renews_owner_midnight_through_dst_in_both_modes() {
+    calendar_boundary_renewal(
+        Cadence::Monthly,
+        "2026-11-01T07:00:00Z",
+        "2026-12-01T08:00:00Z",
+    )
+    .await;
+}
+
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL"]
 async fn automatic_calendar_renewal_skips_offline_days_and_preserves_identity() {
