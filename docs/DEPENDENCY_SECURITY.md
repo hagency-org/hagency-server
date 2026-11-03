@@ -47,6 +47,10 @@ changes are the registration handler and browser routing. The reviewed source
 pin follows that revision. Findings, dispositions, and the original expiration
 are unchanged.
 
+The subsequent update to Pasion main `1ee6309` keeps the same JOSE and
+keystore source trees. The Server lockfile updates `cron` to 0.17.0 and
+already contains `hyper-util` 0.1.21. The reviewed source pin follows the new
+revision without changing dispositions or the expiration.
 
 The `Dependency risk policy` workflow runs on PRs, main pushes, weekly and manual
 dispatch. Cargo Dependabot updates run weekly. Local offline reproduction may use
