@@ -223,7 +223,7 @@ impl ManagedAgentPeriodRenewCommand {
             || self.reserve_command_digest != allocation_digest(c)?
             || self.current_grant_digest != allocation_digest(g)?
             || self.assignment_generation != 1
-            || c.renewal_mode != Some(self.renewal_mode)
+            || g.renewal_mode.or(c.renewal_mode) != Some(self.renewal_mode)
             || g.calendar.is_none()
             || g.calendar.as_ref() != Some(calendar)
             || g.contribution_id != original.contribution_id

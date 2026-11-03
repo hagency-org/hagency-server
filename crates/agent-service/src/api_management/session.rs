@@ -37,7 +37,7 @@ pub(super) async fn call(
 
             if policy.agent_admission() && policy.project_reservations() {
                 features.push(crate::management_pool_types::POOL_AGENTS_FEATURE);
-                if policy.pool_grant_succession() { features.push("calendar-grants-v1"); features.push("pool-grant-limits-v1"); features.push("pool-publication-first-v1"); }
+                if policy.pool_grant_succession() { features.push("calendar-grants-v1"); features.push("pool-grant-limits-v1"); features.push("pool-publication-first-v1"); features.push("pool-renewal-policy-v1"); }
                 features.push(crate::management_agent_types::AGENT_ADMISSION_FEATURE);
             }
             if policy.shared_execution() {

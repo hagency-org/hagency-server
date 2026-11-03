@@ -85,12 +85,12 @@ pub(super) async fn projection(
     let attempt = latest_attempt(db, original.as_ref().map(|c| c.command_id.as_str()), &period.key).await?;
     let refused = attempt.as_ref().is_some_and(|a| a.state.as_deref() == Some("refused"));
     let already_authorized = attempt.as_ref().is_some_and(|a| a.state.as_deref() == Some("authorized"));
-    let (has_capacity, limit_exceeded) = match pool::effective_grant(db, r, now).await {
+    let (has_capacity, limit_exceeded, pool_mode) = match pool::effective_grant(db, r, now).await {
         Ok(g) => (g.receipt.request_limit() >= r.requested_tokens
             && g.receipt.calendar.as_ref() == Some(&t.calendar)
             && g.receipt.period_key == period.key,
-            g.receipt.request_limit() < r.requested_tokens),
-        Err(Error::Conflict(_) | Error::NotFound(_)) => (false, false),
+            g.receipt.request_limit() < r.requested_tokens, g.receipt.renewal_mode),
+        Err(Error::Conflict(_) | Error::NotFound(_)) => (false, false, None),
         Err(e) => return Err(e),
     };
     let consumed = known(db, &r.id, &period).await?;
@@ -118,7 +118,7 @@ pub(super) async fn projection(
         "ended"
     } else if !pending && refused {
         "renewal_refused"
-    } else if has_reservation && new_period && !pending && t.renewal_mode == RenewalMode::Owner {
+    } else if has_reservation && new_period && !pending && pool_mode.is_none() && t.renewal_mode == RenewalMode::Owner {
         "awaiting_owner"
     } else {
         "awaiting_executor"
@@ -131,10 +131,10 @@ pub(super) async fn projection(
         && !already_authorized
         && has_capacity
         && p.user_id == r.administrator_user_id
-        && (t.renewal_mode == RenewalMode::Owner || refused);
+        && (pool_mode.is_none() && t.renewal_mode == RenewalMode::Owner || refused);
     Ok((
         Some(t.calendar),
-        Some(t.renewal_mode),
+        Some(pool_mode.unwrap_or(t.renewal_mode)),
         Some(PoolAgentPeriod {
             key: period.key,
             start_ms: period.start_ms,
@@ -175,13 +175,10 @@ pub(super) async fn enqueue(
     let t = terms(db, &r.id)
         .await?
         .ok_or(Error::Conflict("agent_not_recurring"))?;
-    if !owner_action && t.renewal_mode != RenewalMode::Automatic {
-        return Ok(false);
-    }
     let period = period(&t, now)?;
     let original=sql_query("SELECT payload FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1 AND state<>'fenced'").bind::<Text,_>(&r.id).get_result::<AgentPerson>(db).await.optional()?.ok_or(Error::Conflict("agent_allocation_fenced"))?;
     let c: ManagedAgentReserveCommand = decode(&original.payload)?;
-    if c.renewal_mode != Some(t.renewal_mode)
+    if c.renewal_mode != c.pool_grant.as_ref().and_then(|g|g.renewal_mode).or(Some(t.renewal_mode))
         || c.pool_grant.as_ref().and_then(|g| g.calendar.as_ref()) != Some(&t.calendar)
     {
         return Err(Error::Conflict("agent_period_terms_changed"));
@@ -199,6 +196,12 @@ pub(super) async fn enqueue(
         return Ok(false);
     }
     let g = pool::effective_grant(db, r, now).await?;
+    // V6 consent belongs to the pool. Publishing its next period authorizes
+    // existing Agents in that period, including when the owner renewed the
+    // pool manually. Legacy per-Agent consent remains immutable.
+    if !owner_action && g.receipt.renewal_mode.is_none() && t.renewal_mode != RenewalMode::Automatic {
+        return Ok(false);
+    }
     // Automatic mode waits for changed authority after a definitive refusal.
     // An explicit owner action may retry without changing the approved terms.
     if !owner_action && attempt.is_some() && sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands WHERE intent_id=$1 AND operation='agent.period.renew' AND period_key=$2 AND receipt::jsonb->>'state'='refused' AND command_payload::jsonb->>'currentGrantDigest'=$3) AS matched")
@@ -215,6 +218,7 @@ pub(super) async fn enqueue(
     }
     let a=sql_query("SELECT json_build_object('id',id,'generation',generation,'child',agent_reservation_id)::text AS payload FROM hagency_agent_v1.management_shared_assignments WHERE request_id=$1 AND state='pending_native'").bind::<Text,_>(&r.id).get_result::<AgentPerson>(db).await.optional()?.ok_or(Error::Conflict("agent_assignment_unavailable"))?;
     let a: Value = decode(&a.payload)?;
+    let renewal_mode = g.receipt.renewal_mode.unwrap_or(t.renewal_mode);
     let command = ManagedAgentPeriodRenewCommand {
         version: 1,
         capability: "hagency.agent_periods.v1".into(),
@@ -232,7 +236,7 @@ pub(super) async fn enqueue(
             .min(g.receipt.delegation_expires_at_ms),
         current_grant: g.receipt,
         period,
-        renewal_mode: t.renewal_mode,
+        renewal_mode,
         issued_at_ms: now,
         reserve_command: c,
     };
@@ -255,7 +259,7 @@ pub(super) async fn automatic(
         .bind::<Nullable<Text>,_>(p.device_id.as_deref()).get_result::<AgentPerson>(db).await.optional()?.map(|r| r.payload).unwrap_or_default();
     // Rotate a bounded page even when every candidate in it is unavailable.
     // This prevents early live/invalid intents from starving later Agents.
-    let query = "SELECT i.id,i.request_id FROM hagency_agent_v1.management_agent_intents i JOIN hagency_agent_v1.management_agent_recurring_terms t ON t.request_id=i.request_id JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=i.request_id WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND i.state<>'fenced' AND a.state='pending_native' AND t.renewal_mode='automatic' AND i.id>$3 ORDER BY i.id LIMIT 1000";
+    let query = "SELECT i.id,i.request_id FROM hagency_agent_v1.management_agent_intents i JOIN hagency_agent_v1.management_agent_recurring_terms t ON t.request_id=i.request_id JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=i.request_id WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND i.state<>'fenced' AND a.state='pending_native' AND i.id>$3 ORDER BY i.id LIMIT 1000";
     let mut ids = sql_query(query).bind::<Text,_>(&p.user_id).bind::<Nullable<Text>,_>(p.device_id.as_deref()).bind::<Text,_>(&cursor).load::<Candidate>(db).await?;
     if ids.is_empty() && !cursor.is_empty() {
         ids = sql_query(query).bind::<Text,_>(&p.user_id).bind::<Nullable<Text>,_>(p.device_id.as_deref()).bind::<Text,_>("").load::<Candidate>(db).await?;
@@ -393,6 +397,7 @@ impl DomainStore {
             let grant=recovery_grant(db,&old,p,now).await?.ok_or(Error::Conflict("agent_reallocation_unavailable"))?;
             let g=&grant.receipt;
             if g.grant_revision!=input.expected_grant_revision {return Err(Error::Conflict("management_revision_changed"))}
+            if g.renewal_mode.is_some_and(|mode| mode != input.renewal_mode) {return Err(Error::Conflict("pool_renewal_policy_changed"));}
             let previous=sql_query("SELECT payload FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1").bind::<Text,_>(&old.id).get_result::<AgentPerson>(db).await?;
             let previous:ManagedAgentReserveCommand=decode(&previous.payload)?;
             let generation=previous.allocation_generation.unwrap_or(1).checked_add(1).filter(|n|*n<=crate::management_allocation_types::MAX_EXACT).ok_or(Error::Conflict("agent_generation_overflow"))?;

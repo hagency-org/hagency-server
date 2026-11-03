@@ -144,6 +144,32 @@ async fn acknowledge_period(f: &Fixture, d: &AgentExecutorDelivery, ledger: i64)
     assert_eq!(ack.receipt_digest, replay.receipt_digest);
 }
 
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn pool_renewal_policy_manual_pool_publication_renews_existing_agents_without_a_second_decision() {
+    for mode in [RenewalMode::Owner, RenewalMode::Automatic] {
+        let (f, a, g, r, _, now) = recurring(RenewalMode::Owner).await;
+        time(&f, now).await;
+        assert!(f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput {after:None}).await.unwrap().is_none());
+        // The resource owner publishes the next pool period with its chosen
+        // rule. Existing immutable Agent terms and IDs are not rewritten.
+        let mut selected = g.clone();
+        selected.receipt.version = 6;
+        selected.receipt.renewal_mode = Some(mode);
+        selected.receipt.per_request_tokens = Some(g.receipt.allocated_tokens);
+        current_grant(&f, &a, &selected, now).await;
+        let delivery = f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput {after:None}).await.unwrap().unwrap();
+        let AgentExecutorCommand::RenewPeriod(c) = &delivery.command else {panic!("expected period renewal")};
+        assert_eq!(c.renewal_mode, mode);
+        assert_eq!(c.reserve_command.request_id, r.id);
+        c.validate("example.test").unwrap();
+        acknowledge_period(&f, &delivery, 200).await;
+        let updated=f.domain.pool_agent_request(&f.owner.p,&r.id).await.unwrap();
+        assert_eq!(updated.renewal_mode,Some(mode));
+        assert_eq!(updated.current_period.unwrap().state,"available");
+    }
+}
+
 /// The same persistent approval/receipt path must respect each owner calendar,
 /// including the exact boundary and the short/long periods around DST.
 async fn calendar_boundary_renewal(cadence: Cadence, boundary: &str, end: &str) {

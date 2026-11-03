@@ -38,6 +38,31 @@ async fn visible_pool(f: &Fixture, id: &str) -> bool {
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn pool_renewal_policy_is_owner_authority_and_requesters_cannot_override_it() {
+    for mode in [crate::recurring_quota::RenewalMode::Owner, crate::recurring_quota::RenewalMode::Automatic] {
+        let f = configured().await;
+        let a = draft(&f).await;
+        let mut input = terms(&f, &a).await;
+        input.receipt.version = 6;
+        input.receipt.renewal_mode = Some(mode);
+        f.domain.publish_management_grant(&f.owner.p, &f.policy, &a.contribution.id, input).await.unwrap();
+        let a = f.domain.decide_management_request(&f.admin.p, &f.policy, &a.request.id, approve("admit", 1)).await.unwrap();
+        let catalog = f.domain.resource_pools(&f.outsider.p, &f.policy, CatalogQuery {after:None,capability:None}).await.unwrap();
+        assert_eq!(catalog.items[0].renewal_mode, Some(mode));
+        let request = pool_agents::input(&a, "inherit_policy");
+        assert!(request.renewal_mode.is_none());
+        let r = f.domain.request_pool_agent(&f.outsider.p, &f.policy, &a.contribution.id, request.clone()).await.unwrap();
+        assert_eq!(r.renewal_mode, Some(mode));
+        assert_eq!(f.domain.request_pool_agent(&f.outsider.p, &f.policy, &a.contribution.id, request).await.unwrap().id, r.id);
+        let mut forged = pool_agents::input(&a, "override_policy");
+        forged.renewal_mode = Some(if mode == crate::recurring_quota::RenewalMode::Owner {crate::recurring_quota::RenewalMode::Automatic} else {crate::recurring_quota::RenewalMode::Owner});
+        assert!(matches!(f.domain.request_pool_agent(&f.outsider.p, &f.policy, &a.contribution.id, forged).await,
+            Err(crate::Error::Conflict("pool_renewal_policy_changed"))));
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn publication_first_one_owner_confirmation_then_admin_approval_makes_capacity_requestable() {
     let f = configured().await;
     let a = draft(&f).await;

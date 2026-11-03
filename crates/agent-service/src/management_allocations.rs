@@ -422,7 +422,7 @@ async fn grant_for_pool(db: &mut AsyncPgConnection, contribution: &str, now: i64
     for row in rows {
         if grant_valid(db, &row, now, require_session).await? {
             let view = grant_view(&row, now)?;
-            if !matches!(view.receipt.version, 2..=5) { continue; }
+            if !matches!(view.receipt.version, 2..=6) { continue; }
             if current.is_some() { return Err(Error::Conflict("resource_grant_conflict")); }
             current = Some(view);
         }
@@ -873,7 +873,7 @@ impl DomainStore {
             .receipt
             .succession
             .clone()
-            .filter(|s| matches!(input.receipt.version, 3 | 4 | 5) && s.predecessor_grant_id == id)
+            .filter(|s| matches!(input.receipt.version, 3 | 4 | 5 | 6) && s.predecessor_grant_id == id)
             .ok_or(Error::Invalid("invalid_grant_succession"))?;
         let (executor, generation) = device(p)?;
         if input.expected_contribution_revision <= 0 || input.expected_predecessor_revision <= 0 {

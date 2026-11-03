@@ -44,6 +44,9 @@ impl GrantSuccession {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeGrantReceipt {
+    /// V6 pool-wide renewal authority, chosen by the resource owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renewal_mode: Option<crate::recurring_quota::RenewalMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_request_tokens: Option<i64>,
 
@@ -124,10 +127,12 @@ impl NativeGrantReceipt {
                 self.admission_request_id.as_ref(),
                 self.succession.as_ref()
             ),
-            (1, None, None) | (2 | 4 | 5, Some(_), None) | (3 | 4 | 5, Some(_), Some(_))
+            (1, None, None) | (2 | 4 | 5 | 6, Some(_), None) | (3 | 4 | 5 | 6, Some(_), Some(_))
         )
             || (self.version < 5 && (self.version == 4) != self.calendar.is_some())
-            || (self.version == 5) != self.per_request_tokens.is_some()
+            || (self.version >= 5) != self.per_request_tokens.is_some()
+            || (self.version == 6) != self.renewal_mode.is_some()
+            || (self.version == 6 && self.calendar.is_none())
             || self.per_request_tokens.is_some_and(|n| n < 1 || n > self.allocated_tokens || n > MAX_EXACT)
             || self.capability != ALLOCATION_CAPABILITY
         {

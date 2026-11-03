@@ -259,8 +259,9 @@ impl ManagedAgentReserveCommand {
                     || !self.allocation_receipt_digest.is_empty()
                     || self.project_revision != 0
                     || self.setup_binding_revision != 0
-                    || !matches!(grant.version, 2..=5)
+                    || !matches!(grant.version, 2..=6)
                     || grant.calendar.is_some() != self.renewal_mode.is_some()
+                    || grant.renewal_mode.is_some_and(|mode| self.renewal_mode != Some(mode))
                     || grant.admission_request_id.is_none()
                     || grant.owner_mxid != grant.coordinator_mxid
                     || self.decision_actor_mxid != grant.owner_mxid

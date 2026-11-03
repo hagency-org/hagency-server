@@ -62,6 +62,8 @@ pub struct PoolAgentQuery {
 #[serde(rename_all = "camelCase")]
 pub struct ResourcePool {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renewal_mode: Option<crate::recurring_quota::RenewalMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_request_tokens: Option<i64>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]

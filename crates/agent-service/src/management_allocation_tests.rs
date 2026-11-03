@@ -81,7 +81,7 @@ async fn grant_input(f: &Fixture, a: &Admission, manager: &Principal) -> Publish
     PublishGrantInput {
         command_id: "publish_native_grant".into(),
         expected_contribution_revision: a.contribution.revision,
-        receipt: NativeGrantReceipt { per_request_tokens: None,
+        receipt: NativeGrantReceipt { renewal_mode: None, per_request_tokens: None,
             version: 1,
             calendar: None,
             capability: ALLOCATION_CAPABILITY.into(),
