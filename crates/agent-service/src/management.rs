@@ -59,7 +59,7 @@ fn device(p: &Principal) -> Result<(&str, i64)> {
 }
 async fn clock(db: &mut AsyncPgConnection) -> Result<i64> {
     Ok(
-        sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now")
+        sql_query(if cfg!(test) {"SELECT COALESCE(NULLIF(current_setting('hagency.test_clock_ms',true),'')::bigint,(extract(epoch from clock_timestamp())*1000)::bigint) AS now"} else {"SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now"})
             .get_result::<Clock>(db)
             .await?
             .now,

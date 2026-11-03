@@ -87,6 +87,15 @@ pub(in crate::management_tests::allocations) async fn seed_short_chain(
     manager: &Principal,
     boundary_ms: i64,
 ) -> (NativeGrantReceipt, NativeGrantReceipt) {
+    seed_short_chain_with_tail(f, a, manager, boundary_ms, 3_600_000).await
+}
+async fn seed_short_chain_with_tail(
+    f: &Fixture,
+    a: &Admission,
+    manager: &Principal,
+    boundary_ms: i64,
+    tail_ms: i64,
+) -> (NativeGrantReceipt, NativeGrantReceipt) {
     let now = crate::api::now_ms();
     let mut root = grant_input(f, a, manager).await.receipt;
     root.version = 2;
@@ -102,7 +111,7 @@ pub(in crate::management_tests::allocations) async fn seed_short_chain(
     renewal.ledger_revision = 11;
     renewal.period_key = format!("{}-{:02}", &root.period_key[..4], root.period_key[5..].parse::<u8>().unwrap() % 12 + 1);
     renewal.period_start_ms = root.period_end_ms;
-    renewal.period_end_ms = root.period_end_ms + 3_600_000;
+    renewal.period_end_ms = root.period_end_ms + tail_ms;
     renewal.delegation_expires_at_ms = renewal.period_end_ms;
     renewal.succession = Some(GrantSuccession {
         kind: "renewal".into(),
@@ -135,6 +144,25 @@ pub(in crate::management_tests::allocations) async fn seed_short_chain(
     }
     (root, renewal)
 }
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn calendar_grants_publish_using_the_owner_calendar() {
+    let f = succession_fixture().await;
+    let a = admitted(&f).await;
+    let mut input = grant_input(&f, &a, &f.outsider.p).await;
+    input.receipt.version = 4;
+    input.receipt.admission_request_id = Some(a.request.id.clone());
+    input.receipt.calendar = Some(crate::recurring_quota::Calendar {
+        cadence: crate::recurring_quota::Cadence::Monthly,
+        time_zone: "UTC".into(),
+    });
+    input.receipt.validate("example.test").unwrap();
+    let published=f.domain.publish_management_grant(&f.owner.p, &f.policy, &a.contribution.id, input).await.unwrap();
+    assert_eq!(published.receipt.version,4);
+    assert_eq!(published.receipt.calendar.unwrap().time_zone,"UTC");
+    assert_eq!(chain(&f, &a.contribution.id).await.len(),1);
+}
+
 /// A v2 pool grant, as `pool` publishes it, with its server view.
 async fn pool_grant(f: &Fixture, manager: &Principal) -> (Admission, ResourceGrantView) {
     let a = admitted(f).await;
@@ -731,6 +759,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
     reserve(&f, &carried.id, 100).await;
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     // Back to schema 28 with the committed lossy downgrade (no v3 rows yet).
+    db.batch_execute(include_str!("management_agent_periods_down.sql")).await.unwrap();
     db.batch_execute(include_str!("../../../deploy/pool-succession-downgrade-to-28.sql")).await.unwrap();
     let downgraded = schema_state(&mut db).await;
     assert_eq!((downgraded.version, downgraded.columns), (28, false));
@@ -738,7 +767,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
     // Opening the store migrates the populated database to 29 again.
     let reopened = crate::domain::DomainStore::open(&f.url, "example.test", "_hagency_test_").await.unwrap();
     let upgraded = schema_state(&mut db).await;
-    assert_eq!((upgraded.version, upgraded.columns), (29, true));
+    assert_eq!((upgraded.version, upgraded.columns), (30, true));
     let rows = chain(&f, &a.contribution.id).await;
     assert_eq!(rows.len(), 1);
     assert_eq!((rows[0].chain_root_id.as_str(), rows[0].predecessor_grant_id.as_deref(), rows[0].period_start_ms), (root.id.as_str(), None, root.receipt.period_start_ms));
@@ -751,6 +780,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
         .publish_management_grant_successor(&f.owner.p, &f.policy, &root.id, succeed(&a, &root, successor(&root, "amendment", 800_000, 20)))
         .await
         .unwrap();
+    db.batch_execute(include_str!("management_agent_periods_down.sql")).await.unwrap();
     db.batch_execute(include_str!("../../../deploy/pool-succession-downgrade-to-28.sql")).await.unwrap();
     #[derive(QueryableByName)]
     struct States {
@@ -764,7 +794,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
     assert_eq!(states.states, expected.join(","));
     assert_eq!(intent_state(&f, &carried.id).await, "fenced");
     crate::domain::DomainStore::open(&f.url, "example.test", "_hagency_test_").await.unwrap();
-    assert_eq!(schema_state(&mut db).await.version, 29);
+    assert_eq!(schema_state(&mut db).await.version, 30);
 }
 
 #[tokio::test]
@@ -847,17 +877,18 @@ async fn carried_agent_crosses_a_renewal_boundary_only_with_chain_lifetimes() {
     assert_eq!((current.id.as_str(), current.state.as_str()), (assignment.id.as_str(), "pending_native"));
     let d = f.domain.pool_agent_request(&f.outsider.p, &r.id).await.unwrap();
     assert_eq!((d.blocking_reason, d.authority_until_ms), (None, Some(renewal.period_end_ms)));
-    // Without chain lifetimes the same Agent ends with its reserve command,
-    // exactly as before: the next liveness check fences it.
+    // Turning execution succession off pauses authority; it must not delete
+    // the already created identity or turn a feature toggle into revocation.
     f.domain.set_pool_grant_succession(false);
-    let fenced = f.domain.managed_agent_assignment(&f.owner.p, &f.policy, &r.id).await.unwrap().unwrap();
-    assert_eq!(fenced.state, "fenced");
-    assert_eq!(intent_state(&f, &r.id).await, "fenced");
+    let paused = f.domain.managed_agent_assignment(&f.owner.p, &f.policy, &r.id).await.unwrap().unwrap();
+    assert_eq!(paused.state, "pending_native");
+    assert_eq!(paused.id, assignment.id);
+    assert_ne!(intent_state(&f, &r.id).await, "fenced");
 }
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
-async fn chain_lifetimes_off_keep_the_reserve_expiry_and_the_sweep_fences_at_the_boundary() {
+async fn chain_lifetimes_off_keep_the_reserve_expiry_without_fencing_identity() {
     let f = succession_fixture().await;
     f.domain.set_pool_grant_succession(false);
     let a = admitted(&f).await;
@@ -869,9 +900,56 @@ async fn chain_lifetimes_off_keep_the_reserve_expiry_and_the_sweep_fences_at_the
     assert_eq!(d.authority_until_ms, Some(root.period_end_ms));
     assert!(renewal.period_end_ms > root.period_end_ms);
     tokio::time::sleep(std::time::Duration::from_millis((root.period_end_ms - crate::api::now_ms()).max(0) as u64 + 1_500)).await;
-    // The executor sweep alone fences the expired reservation.
+    // The sweep must distinguish ended authority from explicit revocation.
     let _ = f.domain.poll_managed_agent_executor(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap();
+    assert_ne!(intent_state(&f, &r.id).await, "fenced");
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn ended_pool_authority_preserves_identity_and_membership_until_explicit_revocation() {
+    let mut f = succession_fixture().await;
+    f.policy = f.policy.with_agent_matrix_provisioning(true);
+    let a = admitted(&f).await;
+    let (root, renewal) = seed_short_chain_with_tail(&f, &a, &f.outsider.p, 6_000, 1_000).await;
+    let r = request_agent(&f, &a, "period_pause", 100, 1).await;
+    decide(&f, &r, true).await.unwrap();
+    let assignment = reserve(&f, &r.id, 100).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let raw = sql_query("SELECT payload AS value FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1")
+        .bind::<Text, _>(&r.id).get_result::<Stored>(&mut db).await.unwrap();
+    let original: crate::management_agent_types::ManagedAgentReserveCommand = serde_json::from_str(&raw.value).unwrap();
+    let command_digest = allocation_digest(&AgentExecutorCommand::Reserve(original.clone())).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis((renewal.period_end_ms - crate::api::now_ms()).max(0) as u64 + 200)).await;
+    assert_eq!(live_count(&f, &a.contribution.id, crate::api::now_ms()).await, 0);
+    let _ = f.domain.poll_managed_agent_executor(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap();
+    let paused = f.domain.managed_agent_assignment(&f.owner.p, &f.policy, &r.id).await.unwrap().unwrap();
+    assert_eq!(paused.id, assignment.id);
+    assert_eq!(paused.agent_id, assignment.agent_id);
+    assert_eq!(paused.state, "pending_native");
+    assert!(!paused.execution_available);
+    assert_ne!(intent_state(&f, &r.id).await, "fenced");
+    // Matrix polling/readiness must not enqueue an automatic leave either.
+    assert!(f.domain.poll_managed_agent_matrix(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
+    let m = f.domain.managed_agent_matrix(&f.outsider.p, &f.policy, &r.id).await.unwrap().unwrap();
+    assert_ne!(m.state, "fenced");
+    assert_ne!(intent_state(&f, &r.id).await, "fenced");
+    let recovered = f.domain.recover_managed_agent_executor(&f.owner.p, &f.policy,
+        &original.command_id, ExecutorRecoverInput { command_digest })
+        .await.unwrap();
+    assert!(!recovered.execution_allowed);
+    assert!(recovered.recorded.is_some());
+    assert_ne!(intent_state(&f, &r.id).await, "fenced");
+    let d = f.domain.pool_agent_request(&f.outsider.p, &r.id).await.unwrap();
+    assert_eq!(d.blocking_reason.as_deref(), Some("agent_period_ended"));
+    // Explicit owner revocation still fences the same identity and its rooms.
+    let old = grant_view(&f, &root.grant_id).await;
+    f.domain.revoke_management_grant(&f.owner.p, &f.policy, &old.id,
+        RevokeInput { command_id: "revoke_paused".into(), expected_revision: old.revision })
+        .await.unwrap();
     assert_eq!(intent_state(&f, &r.id).await, "fenced");
+    let revoked = f.domain.managed_agent_assignment(&f.owner.p, &f.policy, &r.id).await.unwrap().unwrap();
+    assert_eq!(revoked.state, "fenced");
 }
 
 #[tokio::test]
@@ -1077,3 +1155,6 @@ async fn a_cancelled_renewal_leaves_its_month_open_for_one_regrant() {
     let blocked = this_month_root(grant_input(&f, &b, &f.outsider.p).await, &b, "regrant_after_used_renewal");
     assert_eq!(code(f.domain.publish_management_grant(&f.owner.p, &f.policy, &b.contribution.id, blocked).await), "resource_grant_already_exists");
 }
+
+#[path="management_agent_period_tests.rs"]
+mod periods;

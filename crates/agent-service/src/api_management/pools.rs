@@ -33,6 +33,10 @@ pub(super) async fn call(
         (&Method::POST, ["pool-agent-requests", id, "stop"]) => json!({
             "request": domain.stop_pool_agent(p, id, body(req).await?).await?
         }),
+        (&Method::POST, ["pool-agents" | "pool-agent-requests", id, "renew"]) => json!({
+            "request": Box::pin(domain.renew_pool_agent(p, policy, id, body(req).await?)).await?
+        }),
+        (&Method::POST, ["pool-agents" | "pool-agent-requests", id, "reallocate"]) => json!({"request":Box::pin(domain.reallocate_pool_agent(p,policy,id,body(req).await?)).await?}),
         _ => return Ok(None),
     }))
 }

@@ -419,7 +419,7 @@ impl DomainStore {
             // that an unresolved process cannot permanently starve its siblings.
             let ids=sql_query("SELECT a.id AS assignment_id,r.id AS runtime_id
                 FROM hagency_agent_v1.management_shared_assignments a
-                LEFT JOIN hagency_agent_v1.management_shared_runtimes r ON r.assignment_id=a.id AND r.payload::jsonb->>'version'='1'
+                LEFT JOIN hagency_agent_v1.management_shared_runtimes r ON r.assignment_id=a.id AND r.payload::jsonb->>'version'='1' AND NOT r.issuance_void
                 LEFT JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id
                 WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND (
                     (r.id IS NOT NULL AND r.state<>'stopped' AND
@@ -517,6 +517,7 @@ impl DomainStore {
                 let old:SharedProcessReceipt=decode(&old.payload)?;
                 if allocation_digest(&old)?!=digest {return Err(Error::Conflict("shared_process_receipt_changed"));}
             } else {
+                if input.receipt.state=="not_started" && (ticket_mode!="cleanup" || now<c.expires_at_ms || !r.permanent_fence || !matches!(r.state.as_str(),"pending"|"issued") || r.activity_epoch!=0 || r.process_digest.is_some()) {return Err(Error::Conflict("shared_original_not_unstarted"));}
                 validate_receipt(db,&r,&w,&input.receipt).await?;
                 sql_query("INSERT INTO hagency_agent_v1.management_shared_process_receipts VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(&input.receipt.observation_id).bind::<Text,_>(id).bind::<Text,_>(wire(&input.receipt)?).bind::<Text,_>(&digest).bind::<BigInt,_>(input.receipt.ledger_revision).execute(db).await?;
             }
@@ -525,8 +526,8 @@ impl DomainStore {
                     let live=current(db,&r,&w,&c,now).await?;
                     let pending=input.receipt.state=="qualified"&&ticket_mode!="execute"&&r.activity_epoch==0&&!r.permanent_fence&&now<c.expires_at_ms&&live&&tickets::has_execute(db,p,id,now).await?;
                     let fenced=r.permanent_fence||!pending&&(ticket_mode!="execute"&&r.activity_epoch==0||input.receipt.state!="qualified"||now>=c.expires_at_ms&&r.activity_epoch==0||!live);
-                    let state=if pending {&r.state}else{&input.receipt.state};
-                    sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET state=$2,process_digest=coalesce(process_digest,$3),permanent_fence=permanent_fence OR $4,activity_until_ms=CASE WHEN $4 THEN 0 ELSE activity_until_ms END WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(state).bind::<Nullable<Text>,_>(&input.receipt.process_digest).bind::<Bool,_>(fenced).execute(db).await?;
+                    let state=if input.receipt.state=="not_started" {"stopped"}else if pending {&r.state}else{&input.receipt.state};
+                    sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET state=$2,issuance_void=issuance_void OR $5,process_digest=coalesce(process_digest,$3),permanent_fence=permanent_fence OR $4,activity_until_ms=CASE WHEN $4 THEN 0 ELSE activity_until_ms END WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(state).bind::<Nullable<Text>,_>(&input.receipt.process_digest).bind::<Bool,_>(fenced).bind::<Bool,_>(input.receipt.state=="not_started").execute(db).await?;
                 }
             let r=runtime(db,id).await?;
             let activity=if runtime_issuing(db,policy,&r).await?&&input.receipt.state=="qualified"&&ticket_mode=="execute" {let current=clock(db).await?;mint_activity(db,p,&r,&c,current).await?}else{None};
@@ -621,7 +622,7 @@ impl DomainStore {
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {
             Self::authorize(db,p,0).await?;let request=super::super::row(db,request).await?;
             super::super::visible(db,&request,p).await?;
-            let id=sql_query("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE a.request_id=$1 ORDER BY coalesce((r.payload::jsonb->>'processAttempt')::bigint,1) DESC LIMIT 1").bind::<Text,_>(&request.id).get_result::<Id>(db).await.optional()?;
+            let id=sql_query("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE a.request_id=$1 AND NOT r.issuance_void ORDER BY coalesce((r.payload::jsonb->>'processAttempt')::bigint,1) DESC LIMIT 1").bind::<Text,_>(&request.id).get_result::<Id>(db).await.optional()?;
             let Some(id)=id else{return Ok(None)};let r=runtime(db,&id.id).await?;let now=clock(db).await?;
             let w=original(db,&r).await?;let c=command(&r,&self.server)?;let live=current(db,&r,&w,&c,now).await?;
             let state=if r.state=="stopped" {"stopped"}else if !live||r.permanent_fence||r.state=="qualified"&&r.activity_until_ms<=now {"cleanup_pending"}else if r.state=="unknown" {"outcome_unknown"}else{&r.state};
@@ -690,7 +691,9 @@ async fn validate_receipt(
     }
     for old in old {
         let old: SharedProcessReceipt = decode(&old.payload)?;
-        if old.ledger_revision == v.ledger_revision
+        if old.state == "not_started"
+            || v.state == "not_started"
+            || old.ledger_revision == v.ledger_revision
             || old.state == "stopped"
                 && v.state == "qualified"
                 && v.ledger_revision > old.ledger_revision

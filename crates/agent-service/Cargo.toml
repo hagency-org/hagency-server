@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+chrono.workspace = true
+chrono-tz = { version = "=0.10.4", default-features = false, features = ["std"] }
 diesel.workspace = true
 diesel-async = { workspace = true, features = ["deadpool"] }
 tokio.workspace = true

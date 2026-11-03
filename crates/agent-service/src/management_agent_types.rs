@@ -163,6 +163,10 @@ pub struct ManagedAgentRequest {
 pub struct ManagedAgentReserveCommand {
     pub version: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renewal_mode: Option<crate::recurring_quota::RenewalMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allocation_generation: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool_grant: Option<crate::management_allocation_types::NativeGrantReceipt>,
     pub capability: String,
     pub operation: String,
@@ -255,7 +259,8 @@ impl ManagedAgentReserveCommand {
                     || !self.allocation_receipt_digest.is_empty()
                     || self.project_revision != 0
                     || self.setup_binding_revision != 0
-                    || !matches!(grant.version, 2 | 3)
+                    || !matches!(grant.version, 2..=5)
+                    || grant.calendar.is_some() != self.renewal_mode.is_some()
                     || grant.admission_request_id.is_none()
                     || grant.owner_mxid != grant.coordinator_mxid
                     || self.decision_actor_mxid != grant.owner_mxid
@@ -280,7 +285,9 @@ impl ManagedAgentReserveCommand {
         }
         if self.operation != "agent.reserve"
             || self.expires_at_ms <= self.issued_at_ms
-            || !period(&self.period_key)
+            || (self.pool_grant.as_ref().is_none_or(|g| g.calendar.is_none()) && !period(&self.period_key))
+            || self.allocation_generation.is_some_and(|g| !(1..=MAX_EXACT).contains(&g))
+            || (self.version != 2 && (self.renewal_mode.is_some() || self.allocation_generation.is_some()))
             || (!self.room_id.is_empty()
                 && (!self.room_id.starts_with('!')
                     || self.room_id.len() > 255

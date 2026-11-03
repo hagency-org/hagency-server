@@ -90,7 +90,9 @@ async fn current(db: &mut AsyncPgConnection, m: &Membership, w: &Work, now: i64)
         return Ok(false);
     }
     if m.state == "fenced" || !live(db, w, &c, now).await? {
-        fence(db, &w.intent_id).await?;
+        if m.state == "fenced" || !identity_retained(db, w, &c, now).await? {
+            fence(db, &w.intent_id).await?;
+        }
         return Ok(false);
     }
     Ok(true)
@@ -408,7 +410,9 @@ impl DomainStore {
         (*db)
             .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
                 lock(db).await?;
-                Ok(membership(db, id).await?.state == "fenced")
+                let m=membership(db,id).await?;
+                let replacement=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments WHERE agent_id=$1 AND id<>$2 AND state='pending_native') AS matched").bind::<Text,_>(&m.agent_id).bind::<Text,_>(id).get_result::<Flag>(db).await?.matched;
+                Ok(m.state=="fenced" && !replacement)
             })
             .await
     }

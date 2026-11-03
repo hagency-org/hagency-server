@@ -107,7 +107,12 @@ impl DomainStore {
         if received <= now - 86_400_000 {
             return Ok(());
         }
-        if received > now || event.sender_mxid.starts_with("@_hagency_") {
+        // `received` is stamped by this server's ingress clock. PostgreSQL may
+        // lag that host clock slightly; comparing the two silently drops valid
+        // encrypted events. Keep the original timestamp and validate future
+        // input against its source clock; later authorization still uses the
+        // database's period, control-generation, and expiry checks.
+        if received > crate::api::now_ms() || event.sender_mxid.starts_with("@_hagency_") {
             return Ok(());
         }
         sql_query("DELETE FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE received_at_ms<=$1").bind::<BigInt,_>(now-86_400_000).execute(&mut *db).await?;

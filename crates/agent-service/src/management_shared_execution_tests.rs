@@ -18,14 +18,30 @@ mod intake_tests;
 mod demand_tests;
 
 async fn prepared_pool(durable: bool) -> (Fixture, crate::management_pool_types::PoolAgentRequest, PendingManagedAssignment, MatrixFixture) {
+    prepared_pool_calendar(durable,false).await
+}
+async fn prepared_pool_calendar(durable: bool, recurring: bool) -> (Fixture, crate::management_pool_types::PoolAgentRequest, PendingManagedAssignment, MatrixFixture) {
+    prepared_pool_limits(durable, recurring, None).await
+}
+async fn prepared_pool_limits(durable: bool, recurring: bool, cap: Option<i64>) -> (Fixture, crate::management_pool_types::PoolAgentRequest, PendingManagedAssignment, MatrixFixture) {
     use crate::management_pool_types::DecidePoolAgent;
     use crate::management_tests::allocations::pool_agents;
     let mut f=pool_agents::isolated_fixture().await;
     f.policy=f.policy.with_agent_admission(true).with_agent_executor(true)
         .with_agent_matrix_provisioning(true).with_shared_execution(true).with_shared_successors(true)
         .with_shared_durable_intake(durable).with_shared_demands(durable);
-    let pool=pool_agents::pool(&f,&f.outsider.p).await;
-    let request=f.domain.request_pool_agent(&f.outsider.p,&f.policy,&pool.contribution.id,pool_agents::input(&pool,"pool_runtime")).await.unwrap();
+    let pool=if recurring {
+        f.policy=f.policy.with_pool_grant_succession(true);f.domain.set_pool_grant_succession(true);
+        let pool=admitted(&f).await;
+        let mut grant=grant_input(&f,&pool,&f.outsider.p).await;
+        let calendar=crate::recurring_quota::Calendar{cadence:crate::recurring_quota::Cadence::Daily,time_zone:"America/Los_Angeles".into()};
+        let period=calendar.period_at(now_ms() as u64).unwrap();
+        grant.receipt.version=if cap.is_some(){5}else{4};grant.receipt.per_request_tokens=cap;grant.receipt.admission_request_id=Some(pool.request.id.clone());grant.receipt.calendar=Some(calendar);
+        grant.receipt.period_key=period.key;grant.receipt.period_start_ms=period.start_ms as i64;grant.receipt.period_end_ms=period.end_ms as i64;grant.receipt.delegation_expires_at_ms=period.end_ms as i64;
+        f.domain.publish_management_grant(&f.owner.p,&f.policy,&pool.contribution.id,grant).await.unwrap();pool
+    }else{pool_agents::pool(&f,&f.outsider.p).await};
+    let mut input=pool_agents::input(&pool,"pool_runtime");if recurring{input.renewal_mode=Some(crate::recurring_quota::RenewalMode::Automatic);}
+    let request=f.domain.request_pool_agent(&f.outsider.p,&f.policy,&pool.contribution.id,input).await.unwrap();
     f.domain.decide_pool_agent(&f.owner.p,&f.policy,&request.id,DecidePoolAgent {command_id:"pool_runtime_approve".into(),expected_revision:1,decision:Decision::Approve}).await.unwrap();
     let delivery=poll(&f).await;
     assert!(delivery.execution_allowed);
@@ -958,7 +974,7 @@ async fn shared_runtime_v11_migration_is_atomic_preserves_original_v1() {
             .is_none()
     );
     assert!(
-        sql_query("SELECT version=29 AS matched FROM hagency_agent_v1.management_deployment")
+        sql_query("SELECT version=30 AS matched FROM hagency_agent_v1.management_deployment")
             .get_result::<Check>(&mut db)
             .await
             .unwrap()
@@ -1407,3 +1423,57 @@ async fn encrypted_pool_intake_requires_assigned_executor_before_any_model_work(
 
 #[path="shared_rooms_tests.rs"]
 mod room_tests;
+
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn recurring_initial_command_requires_native_no_issue_proof_before_retry() {
+    initial_command_no_issue_proof(None).await;
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn split_pool_limits_initial_command_requires_native_no_issue_proof_before_retry() {
+    initial_command_no_issue_proof(Some(100000)).await;
+}
+async fn initial_command_no_issue_proof(cap: Option<i64>) {
+    let (f,request,assignment,matrix)=prepared_pool_limits(true,true,cap).await;
+    let queued=crate::transport::RoutedEvent{event_id:"$before-first-process".into(),room_id:request.room_id.clone(),sender_mxid:f.outsider.p.mxid.clone(),body:"Hello after startup".into(),mentioned_mxids:Default::default(),thread_root:None,encrypted:false,is_edit:false};
+    f.domain.route_shared_event(&f.policy,&queued,now_ms(),&matrix.gateway).await.unwrap();
+    let first=shared_poll(&f).await;
+    assert!(first.execution_allowed);
+    let mut proof=evidence(&first,"not_started",101);
+    proof.receipt.process_digest=None;
+    assert!(f.domain.record_shared_process(&f.owner.p,&f.policy,&first.command.command_id,proof.clone()).await.is_err(),"execute ticket cannot retire a command before its deadline");
+    // Result-ticket deletion is protected by PostgreSQL's real clock, so this
+    // end-to-end deadline test waits for the actual one-shot lease to expire.
+    tokio::time::sleep(std::time::Duration::from_millis((first.command.expires_at_ms-now_ms()+30).max(1) as u64)).await;
+    let cleanup=shared_poll(&f).await;
+    assert_eq!(cleanup.command.command_id,first.command.command_id);
+    assert!(!cleanup.execution_allowed&&cleanup.cleanup_allowed);
+    proof.token=cleanup.token.clone();
+    let ack=f.domain.record_shared_process(&f.owner.p,&f.policy,&first.command.command_id,proof.clone()).await.unwrap();
+    assert_eq!(ack.state,"stopped");assert!(ack.activity.is_none());
+    assert_eq!(f.domain.record_shared_process(&f.owner.p,&f.policy,&first.command.command_id,proof).await.unwrap().receipt_digest,ack.receipt_digest);
+    // Clock rollback cannot reactivate the tombstoned command or its ticket.
+    f.domain.set_management_test_clock(first.command.issued_at_ms+1).await.unwrap();
+    let old=history(&f,&first).await;
+    assert!(!old.execution_allowed&&!old.cleanup_allowed);
+    assert_eq!(old.recorded.as_ref().unwrap().state,"not_started");
+    assert!(save(&f,&old,"qualified",102).await.is_err());
+    f.domain.reset_management_test_clock().await.unwrap();
+    f.domain.reconcile_managed_agent_matrix(&assignment.id,&matrix.gateway,&matrix.matrix,Some(&f.policy)).await.unwrap();
+    let second=shared_poll(&f).await;
+    assert!(second.execution_allowed);
+    assert_ne!(second.command.command_id,first.command.command_id);
+    assert_eq!(second.command.assignment_id,assignment.id);
+    assert_eq!(second.command.reserve_command_digest,first.command.reserve_command_digest);
+    let running=save(&f,&second,"qualified",103).await.unwrap();
+    let activity=running.activity.unwrap();
+    let queued_work=f.domain.poll_shared_work(&f.owner.p,&f.policy,activity.authority,&matrix.gateway).await.unwrap().unwrap();
+    assert_eq!(queued_work.event_id,queued.event_id,"queued first message survives never-started recovery");
+    let mut impossible=evidence(&second,"not_started",104);impossible.receipt.process_digest=None;
+    assert!(f.domain.record_shared_process(&f.owner.p,&f.policy,&second.command.command_id,impossible).await.is_err(),"actual or unknown issuance cannot be reset as never started");
+    let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();
+    assert!(sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET issuance_void=false WHERE id=$1").bind::<Text,_>(&first.command.command_id).execute(&mut db).await.is_err(),"proof and fence cannot be erased");
+    assert!(history(&f,&first).await.recorded.is_some(),"old command remains recoverable after replacement");
+}

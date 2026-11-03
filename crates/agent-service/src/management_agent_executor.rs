@@ -24,6 +24,8 @@ struct Work {
     #[diesel(sql_type=BigInt)]
     created_at_ms: i64,
     #[diesel(sql_type=Nullable<Text>)]
+    command_payload: Option<String>,
+    #[diesel(sql_type=Nullable<Text>)]
     lease_hash: Option<String>,
     #[diesel(sql_type=BigInt)]
     lease_until_ms: i64,
@@ -85,6 +87,11 @@ fn command(w: &Work, server: &str) -> Result<(AgentExecutorCommand, String)> {
     }
     let command = if w.operation == "agent.reserve" {
         AgentExecutorCommand::Reserve(reserve)
+    } else if w.operation == "agent.period.renew" {
+        let c:ManagedAgentPeriodRenewCommand=decode(w.command_payload.as_deref().ok_or(Error::Conflict("agent_period_command_missing"))?)?;
+        c.validate(server)?;
+        if c.command_id!=w.id || c.reserve_command_digest!=w.digest {return Err(Error::Conflict("agent_executor_command_conflict"));}
+        AgentExecutorCommand::RenewPeriod(Box::new(c))
     } else {
         let c = ManagedAgentFenceCommand {
             version: 1,
@@ -128,7 +135,7 @@ pub(super) async fn reserve_lifetime(
         .bind::<Text,_>(&c.request_id).bind::<Text,_>(&grant.contribution_id).bind::<BigInt,_>(now).get_result::<Chain>(db).await?;
     match chain.effective {
         Some(effective)
-            if chain.enabled
+            if (chain.enabled || c.renewal_mode.is_some())
                 && chain.reserved
                 && super::super::allocations::chain_contains(db, &grant.grant_id, &effective).await? =>
         {
@@ -181,6 +188,26 @@ async fn live(
         && cx.capacity.grant.executor_generation == w.executor_generation
         && cx.capacity.grant.resource_revision == c.resource_revision)
 }
+/// A paused authorization cannot execute, but remains a room member so the
+/// owner can renew it without recreating the Agent. Revocation is irreversible.
+async fn identity_retained(
+    db: &mut AsyncPgConnection,
+    w: &Work,
+    c: &ManagedAgentReserveCommand,
+    now: i64,
+) -> Result<bool> {
+    if w.intent_state == "fenced" { return Ok(false); }
+    let r = row(db, &w.request_id).await?;
+    if r.state != "approved_waiting_executor"
+        || r.revision != c.request_revision
+        || r.authority_revision != c.authority_revision
+    { return Ok(false); }
+    if c.pool_grant.is_some() && super::pool::reserved(db, &r.id).await?
+        && (super::pool::command_retained(db, &r, c, now).await?
+            || super::pool::period_paused(db, &r, c, now).await?)
+    { return Ok(true); }
+    live(db, w, c, now).await
+}
 async fn session_temporarily_expired(db: &mut AsyncPgConnection, w: &Work, now: i64) -> Result<bool> {
     Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.devices d JOIN hagency_agent_v1.sessions s ON s.id=d.session_id JOIN hagency_agent_v1.users u ON u.id=d.user_id WHERE d.id=$1 AND d.generation=$2 AND NOT d.revoked AND NOT s.revoked AND u.active AND s.valid_until_ms<=$3) AS matched")
         .bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(w.executor_generation).bind::<BigInt,_>(now).get_result::<Flag>(db).await?.matched)
@@ -189,7 +216,7 @@ async fn fence(db: &mut AsyncPgConnection, intent: &str) -> Result<()> {
     sql_query("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE id=$1 AND state<>'fenced'").bind::<Text,_>(intent).execute(db).await?;
     Ok(())
 }
-const POOL_SWEEP: &str = "UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE id IN (SELECT i.id FROM hagency_agent_v1.management_agent_intents i JOIN hagency_agent_v1.management_agent_requests r ON r.id=i.request_id AND r.pool_grant_id IS NOT NULL JOIN hagency_agent_v1.management_resource_grants c ON c.id=i.payload::jsonb->'poolGrant'->>'grantId' JOIN hagency_agent_v1.devices d ON d.id=i.executor_device_id JOIN hagency_agent_v1.sessions ds ON ds.id=d.session_id LEFT JOIN LATERAL (SELECT g.id FROM hagency_agent_v1.management_resource_grants g WHERE g.contribution_id=r.pool_contribution_id AND g.state='active' AND g.period_start_ms<=$3 AND g.expires_at_ms>$3 ORDER BY g.id LIMIT 1) e ON true WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND i.state<>'fenced' AND (r.state<>'approved_waiting_executor' OR ((i.payload::jsonb->>'expiresAtMs')::bigint<=$3 AND NOT (coalesce(current_setting('hagency.pool_chain_lifetime',true),'off')='on' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands x WHERE x.intent_id=i.id AND x.operation='agent.reserve' AND x.receipt::jsonb->>'state'='reserved'))) OR e.id IS NULL OR d.generation<>i.executor_generation OR d.revoked OR ds.revoked OR (e.id<>c.id AND NOT (EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands w WHERE w.intent_id=i.id AND w.operation='agent.reserve' AND w.receipt::jsonb->>'state'='reserved') AND EXISTS(WITH RECURSIVE up(id,predecessor,depth) AS (SELECT u.id,u.predecessor_grant_id,0 FROM hagency_agent_v1.management_resource_grants u WHERE u.id=e.id UNION ALL SELECT u.id,u.predecessor_grant_id,up.depth+1 FROM hagency_agent_v1.management_resource_grants u JOIN up ON u.id=up.predecessor WHERE up.depth<4096) SELECT 1 FROM up WHERE up.id=c.id)))) ORDER BY i.id LIMIT 64)";
+const POOL_SWEEP: &str = "UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE id IN (SELECT i.id FROM hagency_agent_v1.management_agent_intents i JOIN hagency_agent_v1.management_agent_requests r ON r.id=i.request_id AND r.pool_grant_id IS NOT NULL JOIN hagency_agent_v1.management_resource_grants c ON c.id=i.payload::jsonb->'poolGrant'->>'grantId' JOIN hagency_agent_v1.devices d ON d.id=i.executor_device_id JOIN hagency_agent_v1.sessions ds ON ds.id=d.session_id LEFT JOIN LATERAL (SELECT g.id FROM hagency_agent_v1.management_resource_grants g WHERE g.contribution_id=r.pool_contribution_id AND g.state='active' AND g.period_start_ms<=$3 AND g.expires_at_ms>$3 ORDER BY g.id LIMIT 1) e ON true WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND i.state<>'fenced' AND (r.state<>'approved_waiting_executor' OR (((i.payload::jsonb->>'expiresAtMs')::bigint<=$3 OR e.id IS NULL) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands x WHERE x.intent_id=i.id AND x.operation='agent.reserve' AND x.receipt::jsonb->>'state'='reserved')) OR d.generation<>i.executor_generation OR d.revoked OR ds.revoked OR (e.id<>c.id AND NOT (EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands w WHERE w.intent_id=i.id AND w.operation='agent.reserve' AND w.receipt::jsonb->>'state'='reserved') AND EXISTS(WITH RECURSIVE up(id,predecessor,depth) AS (SELECT u.id,u.predecessor_grant_id,0 FROM hagency_agent_v1.management_resource_grants u WHERE u.id=e.id UNION ALL SELECT u.id,u.predecessor_grant_id,up.depth+1 FROM hagency_agent_v1.management_resource_grants u JOIN up ON u.id=up.predecessor WHERE up.depth<4096) SELECT 1 FROM up WHERE up.id=c.id)))) ORDER BY i.id LIMIT 64)";
 async fn sweep(db: &mut AsyncPgConnection, p: &Principal, now: i64) -> Result<()> {
     // Pool intents follow their pool's chain. `c` is the command's own grant and
     // `e` the pool's effective grant: a reserved Agent stays while `c` is `e` or
@@ -238,8 +265,20 @@ async fn deliver(
     let current = match &c {
         AgentExecutorCommand::Reserve(c) => live(db, w, c, now).await?,
         AgentExecutorCommand::Fence(_) => true,
+        AgentExecutorCommand::RenewPeriod(c) => {
+            let r=row(db,&w.request_id).await?;
+            w.intent_state!="fenced" && now<c.expires_at_ms && now>=c.period.start_ms as i64
+                && super::pool::command_retained(db,&r,&c.reserve_command,now).await?
+                && if let Some(g)=super::super::allocations::live_grant_for_pool(db,&c.current_grant.contribution_id,now).await? {
+                    g.receipt.calendar.is_some() && g.receipt.period_key==c.period.key && g.receipt.calendar==c.current_grant.calendar
+                        && g.receipt.allocated_tokens>=c.reserve_command.requested_tokens
+                        && super::super::allocations::chain_contains(db,&c.current_grant.grant_id,&g.id).await?
+                } else {false}
+        },
     };
-    if !current {
+    if !current && let AgentExecutorCommand::Reserve(reserve) = &c
+        && !identity_retained(db, w, reserve, now).await?
+    {
         fence(db, &w.intent_id).await?;
     }
     let executable = !historical
@@ -260,6 +299,7 @@ async fn deliver(
     if executable && let AgentExecutorCommand::Reserve(c) = &c {
         until = until.min(c.expires_at_ms);
     }
+    if executable && let AgentExecutorCommand::RenewPeriod(c)=&c {until=until.min(c.expires_at_ms);}
     let token = secret_token();
     sql_query("UPDATE hagency_agent_v1.management_agent_executor_commands SET state=CASE WHEN state='pending' THEN 'issued' ELSE state END,lease_hash=$2,lease_until_ms=$3 WHERE id=$1").bind::<Text,_>(&w.id).bind::<Text,_>(hash(&token)).bind::<BigInt,_>(until).execute(db).await?;
     DomainStore::authorize(db, p, crate::api::now_ms()).await?;
@@ -283,6 +323,7 @@ async fn validate_result(
             r.validate_for(c)?
         }
         (AgentExecutorCommand::Fence(c), AgentExecutorReceipt::Fence(r)) => r.validate_for(c)?,
+        (AgentExecutorCommand::RenewPeriod(c), AgentExecutorReceipt::RenewPeriod(r)) => r.validate_for(c)?,
         _ => return Err(Error::Invalid("invalid_agent_executor_result")),
     }
     if let AgentExecutorReceipt::Fence(receipt) = r
@@ -302,6 +343,7 @@ async fn validate_result(
     let fence_revision = match r {
         AgentExecutorReceipt::Reserve(r) => r.ledger_revision,
         AgentExecutorReceipt::Fence(r) => r.fence_revision,
+        AgentExecutorReceipt::RenewPeriod(r) => r.ledger_revision,
     };
     if r.revision() <= base_revision
         || r.revision() > MAX_EXACT
@@ -309,6 +351,13 @@ async fn validate_result(
     {
         return Err(Error::Conflict("agent_executor_ledger_revision_changed"));
     }
+    let period_fence_conflict=match r {
+        AgentExecutorReceipt::RenewPeriod(r) if r.state=="authorized" => sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands WHERE intent_id=$1 AND operation='agent.fence' AND receipt IS NOT NULL AND (receipt::jsonb->>'fenceRevision')::bigint<=$2) AS matched").bind::<Text,_>(&w.intent_id).bind::<BigInt,_>(r.ledger_revision).get_result::<Flag>(db).await?.matched,
+        AgentExecutorReceipt::Fence(r) => sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands WHERE intent_id=$1 AND operation='agent.period.renew' AND receipt::jsonb->>'state'='authorized' AND (receipt::jsonb->>'ledgerRevision')::bigint>=$2) AS matched").bind::<Text,_>(&w.intent_id).bind::<BigInt,_>(r.fence_revision).get_result::<Flag>(db).await?.matched,
+        _=>false,
+    };
+    if period_fence_conflict {return Err(Error::Conflict("agent_executor_fence_conflict"));}
+    validate_external_ledger_receipt(db,&w.executor_owner_user_id,&w.executor_device_id,r.revision(),fence_revision).await?;
     let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND ((receipt::jsonb->>'ledgerRevision')::bigint IN ($3,$4) OR (receipt::jsonb->>'fenceRevision')::bigint IN ($3,$4)) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_agent_runtime_observations o JOIN hagency_agent_v1.management_agent_runtime_commands c ON c.id=o.command_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=c.assignment_id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND o.ledger_revision IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_shared_process_receipts o JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=o.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND o.ledger_revision IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_shared_work_receipts o JOIN hagency_agent_v1.management_shared_work w ON w.id=o.work_id JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND o.ledger_revision IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_agent_budget_results o JOIN hagency_agent_v1.management_agent_budget_commands c ON c.id=o.command_id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND o.ledger_revision IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_agent_settlement_results o JOIN hagency_agent_v1.management_agent_settlement_commands c ON c.id=o.command_id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND o.ledger_revision IN ($3,$4)) AS matched").bind::<Text,_>(&w.executor_owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(r.revision()).bind::<BigInt,_>(fence_revision).get_result::<Flag>(db).await?.matched;
     if collision {
         return Err(Error::Conflict("agent_executor_ledger_revision_changed"));
@@ -316,6 +365,7 @@ async fn validate_result(
     let child = match r {
         AgentExecutorReceipt::Reserve(r) => r.agent_reservation_id.as_deref(),
         AgentExecutorReceipt::Fence(r) => r.agent_reservation_id.as_deref(),
+        AgentExecutorReceipt::RenewPeriod(r) => Some(r.agent_reservation_id.as_str()),
     };
     let others=sql_query(format!("{WORK} WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND w.receipt IS NOT NULL AND w.id<>$3 AND ((w.receipt::jsonb->>'ledgerRevision')::bigint IN ($4,$7) OR (w.receipt::jsonb->>'fenceRevision')::bigint IN ($4,$7) OR w.intent_id=$5 OR w.receipt::jsonb->>'agentReservationId'=$6) ORDER BY w.id LIMIT 4")).bind::<Text,_>(&w.executor_owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<Text,_>(&w.id).bind::<BigInt,_>(r.revision()).bind::<Text,_>(&w.intent_id).bind::<Nullable<Text>,_>(child).bind::<BigInt,_>(fence_revision).load::<Work>(db).await?;
     for other in others {
@@ -323,6 +373,7 @@ async fn validate_result(
         let old_fence = match &old {
             AgentExecutorReceipt::Reserve(r) => r.ledger_revision,
             AgentExecutorReceipt::Fence(r) => r.fence_revision,
+            AgentExecutorReceipt::RenewPeriod(r) => r.ledger_revision,
         };
         if [old.revision(), old_fence]
             .iter()
@@ -333,6 +384,7 @@ async fn validate_result(
         let old_child = match &old {
             AgentExecutorReceipt::Reserve(r) => r.agent_reservation_id.as_deref(),
             AgentExecutorReceipt::Fence(r) => r.agent_reservation_id.as_deref(),
+            AgentExecutorReceipt::RenewPeriod(r) => Some(r.agent_reservation_id.as_str()),
         };
         if other.intent_id != w.intent_id && child.is_some() && old_child == child {
             return Err(Error::Conflict("agent_executor_child_reused"));
@@ -369,8 +421,8 @@ impl DomainStore {
         }
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
-   Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;sweep(db,p,now).await?;
-   let w=sql_query(format!("{WORK} WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND w.receipt IS NULL AND w.lease_until_ms<=$3 ORDER BY (w.operation='agent.fence') DESC,(w.id<=$4),w.id LIMIT 1")).bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(now).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<Work>(db).await.optional()?;
+   Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;sweep(db,p,now).await?;Box::pin(super::periods::automatic(db,p,now,&self.server)).await?;
+   let w=sql_query(format!("{WORK} WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND w.receipt IS NULL AND w.lease_until_ms<=$3 AND (w.operation<>'agent.period.renew' OR (w.command_payload::jsonb->>'expiresAtMs')::bigint>$3) ORDER BY (w.operation='agent.fence') DESC,(w.id<=$4),w.id LIMIT 1")).bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(now).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<Work>(db).await.optional()?;
    match w {Some(w)=>Ok(Some(deliver(db,p,policy,&w,&self.server,false).await?)),None=>Ok(None)}
   }).await
     }
@@ -419,13 +471,18 @@ impl DomainStore {
     validate_result(db,&w,&c,&input.receipt).await?;
     sql_query("UPDATE hagency_agent_v1.management_agent_executor_commands SET state='recorded',receipt=$2,receipt_digest=$3 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(wire(&input.receipt)?).bind::<Text,_>(&receipt_digest).execute(db).await?;
     if let (AgentExecutorCommand::Reserve(c),AgentExecutorReceipt::Reserve(r))=(&c,&input.receipt) && r.state=="reserved" {
-     if live(db,&w,c,now).await? {
+     if identity_retained(db,&w,c,now).await? {
       let request=row(db,&w.request_id).await?;
       let assignment=format!("mas_{}",entity_id()?);
       sql_query("INSERT INTO hagency_agent_v1.management_shared_assignments(id,request_id,agent_id,manager_user_id,executor_owner_user_id,executor_device_id,executor_generation,agent_reservation_id,reserve_receipt_digest,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending_native')").bind::<Text,_>(&assignment).bind::<Text,_>(&w.request_id).bind::<Text,_>(&c.proposed_agent_id).bind::<Text,_>(&request.manager_user_id).bind::<Text,_>(&w.executor_owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(w.executor_generation).bind::<Text,_>(r.agent_reservation_id.as_ref().unwrap()).bind::<Text,_>(&receipt_digest).execute(db).await?;
       shared::intake::initialize(db,&assignment,policy,now).await?;
       let mxid=format!("@{}{}:{}",self.namespace,c.proposed_agent_id,self.server);
-      sql_query("INSERT INTO hagency_agent_v1.agents(id,owner_user_id,puppet_mxid,display_name,state,execution_kind) VALUES($1,$2,$3,$4,'suspended','shared_project')").bind::<Text,_>(&c.proposed_agent_id).bind::<Text,_>(&request.manager_user_id).bind::<Text,_>(&mxid).bind::<Text,_>(&c.definition.name).execute(db).await?;
+      sql_query("INSERT INTO hagency_agent_v1.agents(id,owner_user_id,puppet_mxid,display_name,state,execution_kind) VALUES($1,$2,$3,$4,'suspended','shared_project') ON CONFLICT(id) DO NOTHING").bind::<Text,_>(&c.proposed_agent_id).bind::<Text,_>(&request.manager_user_id).bind::<Text,_>(&mxid).bind::<Text,_>(&c.definition.name).execute(db).await?;
+      if c.allocation_generation.is_some_and(|g|g>1) {
+       let rooms=sql_query("SELECT json_build_object('project',b.project_id,'room',b.room_id,'requiresMembership',b.state='active' OR (b.state='joining' AND b.restoration_requires_membership))::text AS payload FROM hagency_agent_v1.management_agent_reallocations x JOIN hagency_agent_v1.management_shared_assignments previous ON previous.request_id=x.previous_request_id JOIN hagency_agent_v1.shared_agent_rooms b ON b.assignment_id=previous.id WHERE x.request_id=$1 AND (b.state IN ('joining','active') OR b.departure_reason='allocation_ended') ORDER BY b.id").bind::<Text,_>(&w.request_id).load::<Json>(db).await?;
+       for room in rooms {let room:Value=decode(&room.payload)?;sql_query("INSERT INTO hagency_agent_v1.shared_agent_rooms(id,assignment_id,agent_id,project_id,room_id,state,generation,restoration_requires_membership) VALUES($1,$2,$3,$4,$5,'joining',1,$6) ON CONFLICT(assignment_id,room_id) DO NOTHING").bind::<Text,_>(format!("srb_{}",entity_id()?)).bind::<Text,_>(&assignment).bind::<Text,_>(&c.proposed_agent_id).bind::<Text,_>(room["project"].as_str().unwrap()).bind::<Text,_>(room["room"].as_str().unwrap()).bind::<Bool,_>(room["requiresMembership"].as_bool().unwrap()).execute(db).await?;}
+
+      }
      }else{fence(db,&w.intent_id).await?;}
     }
     if matches!(input.receipt, AgentExecutorReceipt::Fence(_)) { super::settlement::enqueue_initial(db, &w.request_id, &self.server).await?; }
@@ -433,9 +490,9 @@ impl DomainStore {
    }
    // Exact historical acknowledgement does not preserve stale readiness.
    let current=clock(db).await?;
-   if let AgentExecutorCommand::Reserve(c)=&c && !live(db,&w,c,current).await? {fence(db,&w.intent_id).await?;}
+   if let AgentExecutorCommand::Reserve(c)=&c && !identity_retained(db,&w,c,current).await? {fence(db,&w.intent_id).await?;}
    Self::authorize(db,p,crate::api::now_ms()).await?;
-   Ok(AgentExecutorAcknowledgement {command_id:id.into(),command_digest:digest,receipt_digest,assignment:projection(db,&w.request_id).await?})
+   Ok(AgentExecutorAcknowledgement {command_id:id.into(),command_digest:digest,receipt_digest,assignment:if matches!(c,AgentExecutorCommand::RenewPeriod(_)){None}else{projection(db,&w.request_id).await?}})
   }).await
     }
     pub async fn managed_agent_assignment(
@@ -452,7 +509,7 @@ impl DomainStore {
    let executor=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1 AND executor_owner_user_id=$2 AND executor_device_id=$3) AS matched").bind::<Text,_>(request).bind::<Text,_>(&p.user_id).bind::<Nullable<Text>,_>(p.device_id.as_deref()).get_result::<Flag>(db).await?.matched;
    if !executor {visible(db,&r,p).await?;}
    let w=sql_query(format!("{WORK} WHERE i.request_id=$1 AND w.operation='agent.reserve'")).bind::<Text,_>(request).get_result::<Work>(db).await.optional()?;
-   if let Some(w)=w {let c:ManagedAgentReserveCommand=decode(&w.payload)?;let now=clock(db).await?;if !live(db,&w,&c,now).await? {fence(db,&w.intent_id).await?;}}
+   if let Some(w)=w {let c:ManagedAgentReserveCommand=decode(&w.payload)?;let now=clock(db).await?;if !identity_retained(db,&w,&c,now).await? {fence(db,&w.intent_id).await?;}}
    projection(db,request).await
   }).await
     }

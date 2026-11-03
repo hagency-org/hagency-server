@@ -79,8 +79,9 @@ async fn grant_input(f: &Fixture, a: &Admission, manager: &Principal) -> Publish
     PublishGrantInput {
         command_id: "publish_native_grant".into(),
         expected_contribution_revision: a.contribution.revision,
-        receipt: NativeGrantReceipt {
+        receipt: NativeGrantReceipt { per_request_tokens: None,
             version: 1,
+            calendar: None,
             capability: ALLOCATION_CAPABILITY.into(),
             admission_request_id: None,
             enrollment_id: format!("men_{}", secret_token()),
@@ -1089,7 +1090,7 @@ async fn v3_allocation_migration_is_atomic_and_preserves_existing_project_intent
         db.batch_execute("DROP TABLE hagency_agent_v1.management_allocations").await.unwrap();
         let domain=DomainStore::open(url.as_str(),"example.test","_hagency_test_").await.unwrap();
         let p=domain.management_project(&owner.p,&policy,"legacy_project").await.unwrap();assert_eq!(p.state,"approved");assert_eq!(p.requested_tokens,1234);assert_eq!(p.request.revision,2);assert!(p.request.allocation_id.is_none());
-        assert!(sql_query("SELECT version=29 AS matched FROM hagency_agent_v1.management_deployment").get_result::<State>(&mut db).await.unwrap().matched);
+        assert!(sql_query("SELECT version=30 AS matched FROM hagency_agent_v1.management_deployment").get_result::<State>(&mut db).await.unwrap().matched);
         let again=DomainStore::open(url.as_str(),"example.test","_hagency_test_").await.unwrap();assert_eq!(again.management_project(&owner.p,&policy,"legacy_project").await.unwrap().revision,2);
     }).await;
     control

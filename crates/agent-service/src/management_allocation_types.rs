@@ -44,6 +44,9 @@ impl GrantSuccession {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeGrantReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_request_tokens: Option<i64>,
+
     pub version: u16,
     pub capability: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,8 +73,12 @@ pub struct NativeGrantReceipt {
     /// Present exactly on v3 successors; omitted so v1/v2 digests are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub succession: Option<GrantSuccession>,
+    /// V4 owner calendar. Omitted from historical receipt digests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<crate::recurring_quota::Calendar>,
 }
 impl NativeGrantReceipt {
+    pub(crate) fn request_limit(&self) -> i64 { self.per_request_tokens.unwrap_or(self.allocated_tokens) }
     pub(crate) fn validate(&self, server: &str) -> Result<()> {
         // Reserve envelope headroom below the 16 KiB management command cap.
         // Native must apply the same limit before committing the parent hold.
@@ -117,14 +124,26 @@ impl NativeGrantReceipt {
                 self.admission_request_id.as_ref(),
                 self.succession.as_ref()
             ),
-            (1, None, None) | (2, Some(_), None) | (3, Some(_), Some(_))
+            (1, None, None) | (2 | 4 | 5, Some(_), None) | (3 | 4 | 5, Some(_), Some(_))
         )
+            || (self.version < 5 && (self.version == 4) != self.calendar.is_some())
+            || (self.version == 5) != self.per_request_tokens.is_some()
+            || self.per_request_tokens.is_some_and(|n| n < 1 || n > self.allocated_tokens || n > MAX_EXACT)
             || self.capability != ALLOCATION_CAPABILITY
         {
             return Err(Error::Invalid("unsupported_allocation_capability"));
         }
         if let Some(request) = &self.admission_request_id {
             key(request)?;
+        }
+        if let Some(calendar) = &self.calendar {
+            let period = crate::recurring_quota::Period {
+                key: self.period_key.clone(),
+                start_ms: self.period_start_ms as u64,
+                end_ms: self.period_end_ms as u64,
+            };
+            calendar.validate_period(&period)
+                .map_err(|_| Error::Invalid("invalid_resource_grant_calendar"))?;
         }
         if let Some(s) = &self.succession {
             key(&s.predecessor_grant_id)?;
@@ -148,7 +167,7 @@ impl NativeGrantReceipt {
                 .into_iter()
                 .ne(self.eligible_managers.iter())
             || !valid_digest(&self.resource_revision)
-            || self.period_key.len() != 7
+            || self.calendar.is_none() && self.period_key.len() != 7
             || self.period_end_ms <= self.period_start_ms
         {
             return Err(Error::Invalid("invalid_resource_grant"));
@@ -406,6 +425,27 @@ pub struct ProjectAllocationPage {
 #[cfg(test)]
 mod succession_vector_tests {
     use super::*;
+    #[test]
+    fn calendar_v4_receipt_vectors_match_native_and_reject_calendar_tampering() {
+        let vectors: Vec<Value> = serde_json::from_str(include_str!("../tests/fixtures/pool-grant-calendar-v4.json")).unwrap();
+        for vector in vectors {
+            let receipt: NativeGrantReceipt = serde_json::from_value(vector["receipt"].clone()).unwrap();
+            receipt.validate("example.test").unwrap();
+            assert_eq!(allocation_digest(&receipt).unwrap(), vector["digest"]);
+            let mut bad = receipt.clone();
+            bad.period_end_ms += 1;
+            assert!(bad.validate("example.test").is_err());
+            bad = receipt.clone();
+            bad.version = 2;
+            assert!(bad.validate("example.test").is_err());
+            bad = receipt.clone();
+            bad.calendar = None;
+            assert!(bad.validate("example.test").is_err());
+            bad = receipt;
+            bad.calendar.as_mut().unwrap().time_zone = "UTC".into();
+            assert!(bad.validate("example.test").is_err());
+        }
+    }
     /// The same file and digests are asserted by hagency-client: both stores
     /// must hash v2 and v3 receipts to identical bytes.
     #[test]
@@ -501,4 +541,22 @@ mod succession_vector_tests {
         raw["succession"]["note"] = serde_json::json!("x");
         assert!(serde_json::from_value::<NativeGrantReceipt>(raw).is_err());
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct ExpireGrantPublication {
+    pub operation: String,
+    pub target_id: String,
+    pub publication: serde_json::Value,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct GrantPublicationExpiry {
+    pub status: String,
+    pub command_id: String,
+    pub publication_digest: String,
+    pub receipt_digest: String,
+    pub observed_at_ms: i64,
+    pub grant: Option<ResourceGrantView>,
 }

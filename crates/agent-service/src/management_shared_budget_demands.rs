@@ -134,8 +134,9 @@ async fn status(db: &mut AsyncPgConnection, d: &Demand) -> Result<SharedBudgetDe
     })
 }
 async fn oldest(db: &mut AsyncPgConnection, id: &str, revision: i64) -> Result<Option<Queued>> {
-    Ok(sql_query("SELECT q.* FROM hagency_agent_v1.management_shared_intake q LEFT JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=q.id WHERE q.assignment_id=$1 AND q.control_revision=$2 AND (q.state='pending' OR q.state='blocked') AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=d.id) ORDER BY q.received_at_ms,q.id LIMIT 1")
-        .bind::<Text,_>(id).bind::<BigInt,_>(revision).get_result(db).await.optional()?)
+    let start=super::period_start(db,id).await?;
+    Ok(sql_query("SELECT q.* FROM hagency_agent_v1.management_shared_intake q LEFT JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=q.id WHERE q.assignment_id=$1 AND q.control_revision=$2 AND q.received_at_ms>=$3 AND (q.state='pending' OR q.state='blocked') AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=d.id) ORDER BY q.received_at_ms,q.id LIMIT 1")
+        .bind::<Text,_>(id).bind::<BigInt,_>(revision).bind::<BigInt,_>(start).get_result(db).await.optional()?)
 }
 async fn block(
     db: &mut AsyncPgConnection,

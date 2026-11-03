@@ -28,7 +28,7 @@ pub(super) async fn pool(f: &Fixture, manager: &Principal) -> Admission {
     a
 }
 pub(super) fn input(a: &Admission, id: &str) -> RequestPoolAgent {
-    RequestPoolAgent {
+    RequestPoolAgent { renewal_mode: None,
         command_id: id.into(),
         room_id: format!("!pool_{id}:test.local"),
         expected_pool_revision: a.contribution.revision,
@@ -40,6 +40,37 @@ pub(super) fn input(a: &Admission, id: &str) -> RequestPoolAgent {
             tool_mode: "none".into(),
         },
         requested_tokens: 100,
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn split_pool_limits_publish_total_and_enforce_agent_cap() {
+    let mut f = isolated_fixture().await;
+    f.policy = f.policy.with_agent_admission(true).with_agent_executor(true).with_pool_grant_succession(true);
+    let a = admitted(&f).await;
+    let mut grant = grant_input(&f, &a, &f.outsider.p).await;
+    grant.receipt.version = 5;
+    grant.receipt.admission_request_id = Some(a.request.id.clone());
+    grant.receipt.allocated_tokens = 20_000_000;
+    grant.receipt.per_request_tokens = Some(5_000_000);
+    f.domain.publish_management_grant(&f.owner.p, &f.policy, &a.contribution.id, grant).await.unwrap();
+    let pools = f.domain.resource_pools(&f.outsider.p, &f.policy, CatalogQuery {after: None, capability: None}).await.unwrap();
+    let pool = pools.items.iter().find(|p|p.id == a.contribution.id).unwrap();
+    assert_eq!(pool.published_tokens, Some(20_000_000));
+    assert_eq!(pool.per_request_tokens, Some(5_000_000));
+    let mut too_large = input(&a, "above_agent_limit");
+    too_large.requested_tokens = 5_000_001;
+    assert!(f.domain.request_pool_agent(&f.outsider.p, &f.policy, &a.contribution.id, too_large).await.is_err());
+    for index in 0..4 {
+        let mut request = input(&a, &format!("within_agent_limit_{index}"));
+        request.requested_tokens = 5_000_000;
+        let original = f.domain.request_pool_agent(&f.outsider.p, &f.policy, &a.contribution.id, request.clone()).await.unwrap();
+        let replay = f.domain.request_pool_agent(&f.outsider.p, &f.policy, &a.contribution.id, request).await.unwrap();
+        assert_eq!(original.id, replay.id);
+        f.domain.decide_pool_agent(&f.coordinator.p, &f.policy, &original.id, DecidePoolAgent {
+            command_id: format!("approve_limit_{index}"), expected_revision: 1, decision: Decision::Approve,
+        }).await.unwrap();
     }
 }
 

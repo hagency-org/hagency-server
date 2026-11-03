@@ -53,7 +53,7 @@ async fn original_runtime(
     assignment: &str,
     server: &str,
 ) -> Result<SharedRuntimeCommand> {
-    let id=sql_query("SELECT id FROM hagency_agent_v1.management_shared_runtimes WHERE assignment_id=$1 AND payload::jsonb->>'version'='1'").bind::<Text,_>(assignment).get_result::<Id>(db).await.map_err(hidden)?;
+    let id=sql_query("SELECT id FROM hagency_agent_v1.management_shared_runtimes WHERE assignment_id=$1 AND payload::jsonb->>'version'='1' AND NOT issuance_void").bind::<Text,_>(assignment).get_result::<Id>(db).await.map_err(hidden)?;
     original_command(&runtime(db, &id.id).await?, server)
 }
 async fn recorded(
@@ -208,6 +208,7 @@ pub(super) async fn ready(
     // Native observation can include work not yet uploaded; it cannot erase
     // positive consumption already accepted centrally for any old attempt.
     let known=sql_query("SELECT LEAST(coalesce(sum(w.known_consumed_tokens),0),9007199254740992)::bigint AS now FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1").bind::<Text,_>(&r.assignment_id).get_result::<Clock>(db).await?.now;
+    let known=Box::pin(super::super::super::periods::current_known(db,&original.reserve_command.request_id,now)).await?.unwrap_or(known);
     if b.known_consumed_tokens < known {
         return Err(Error::Conflict("shared_budget_observation_changed"));
     }

@@ -254,6 +254,11 @@ impl DomainStore {
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&a.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}require_activity(db,p,&r,&a,&self.server,now).await?;facts(&membership(db,&r).await?,&observed)?;
             if matches!(protocol,WorkProtocol::Legacy) { demands::promote(db,p,policy,&r,&self.server,now).await?; } else {demands::budget::promote(db,p,policy,&r,&self.server,now).await?;}
+            let scope=command(&r,&self.server)?;
+            if let Some(calendar)=scope.reserve_command.pool_grant.as_ref().and_then(|g|g.calendar.as_ref()) {
+                let period=calendar.period_at(now as u64).map_err(|_|Error::Conflict("agent_period_changed"))?;
+                sql_query("UPDATE hagency_agent_v1.management_shared_work SET state='cancelled' WHERE runtime_id=$1 AND state IN ('queued','acknowledged') AND started_at_ms IS NULL AND created_at_ms<$2").bind::<Text,_>(&r.id).bind::<BigInt,_>(period.start_ms as i64).execute(db).await?;
+            }
             let row=sql_query("SELECT * FROM hagency_agent_v1.management_shared_work WHERE runtime_id=$1 AND state IN('queued','acknowledged') ORDER BY created_at_ms,id LIMIT 1").bind::<Text,_>(&r.id).get_result::<WorkRow>(db).await.optional()?;row.map(|w|item(&w,&r)).transpose()
         }).await
     }
@@ -292,6 +297,11 @@ impl DomainStore {
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}require_activity(db,p,&r,&input.authority,&self.server,now).await?;let w=work_row(db,&input.work_id).await?;let v=item(&w,&r)?;facts(&work_membership(db,&r,&v).await?,&observed)?;
             if w.digest!=input.work_digest {return Err(Error::Conflict("shared_work_changed"));}
+            let scope=command(&r,&self.server)?;
+            if let Some(calendar)=scope.reserve_command.pool_grant.as_ref().and_then(|g|g.calendar.as_ref()) {
+                let period=calendar.period_at(now as u64).map_err(|_|Error::Conflict("agent_period_changed"))?;
+                if v.created_at_ms<period.start_ms as i64 || v.created_at_ms>=period.end_ms as i64 {return Err(Error::Conflict("agent_period_changed"));}
+            }
             if w.state=="queued" {sql_query("UPDATE hagency_agent_v1.management_shared_work SET state='acknowledged',acknowledged_at_ms=$2 WHERE id=$1").bind::<Text,_>(&w.id).bind::<BigInt,_>(now).execute(db).await?;}Ok(())
         }).await
     }
@@ -330,6 +340,11 @@ impl DomainStore {
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}require_activity(db,p,&r,&input.authority,&self.server,now).await?;let w=work_row(db,&input.work_id).await?;let v=item(&w,&r)?;facts(&work_membership(db,&r,&v).await?,&observed)?;context::require_plain(db,&w.id).await?;refusals::ensure_unfenced(db,&w.id).await?;
             if w.digest!=input.work_digest {return Err(Error::Conflict("shared_work_changed"));}
+            let scope=command(&r,&self.server)?;
+            if let Some(calendar)=scope.reserve_command.pool_grant.as_ref().and_then(|g|g.calendar.as_ref()) {
+                let period=calendar.period_at(now as u64).map_err(|_|Error::Conflict("agent_period_changed"))?;
+                if v.created_at_ms<period.start_ms as i64 || v.created_at_ms>=period.end_ms as i64 {return Err(Error::Conflict("agent_period_changed"));}
+            }
             if w.state=="queued" {return Err(Error::Conflict("shared_work_not_acknowledged"));}
             let newly=w.state=="acknowledged";
             if newly {let busy=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work WHERE runtime_id=$1 AND (state IN('started','unknown') OR (started_at_ms IS NOT NULL AND NOT usage_complete))) AS matched").bind::<Text,_>(&r.id).get_result::<Flag>(db).await?.matched;if busy {return Err(Error::Conflict("shared_work_unsettled"));}
@@ -477,7 +492,7 @@ impl DomainStore {
             let mut rows=sql_query("SELECT w.* FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE a.request_id=$1 AND w.id>$2 ORDER BY w.id LIMIT $3").bind::<Text,_>(&request.id).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<BigInt,_>(i64::from(limit)+1).load::<WorkRow>(db).await?;
             let more=rows.len()>usize::from(limit);rows.truncate(usize::from(limit));let next_after=more.then(||rows.last().unwrap().id.clone());let mut items=Vec::new();
             for w in rows {let r=runtime(db,&w.runtime_id).await?;let c=command(&r,&self.server)?;let v=item(&w,&r)?;let reply=sql_query("SELECT state AS payload FROM hagency_agent_v1.management_shared_replies WHERE work_id=$1").bind::<Text,_>(&w.id).get_result::<Json>(db).await.optional()?;
-                items.push(SharedWorkHistoryItem {id:w.id,execution_id:v.execution_id,event_id:v.event_id,requester_mxid:v.requester_mxid,state:w.state,reply_state:reply.map(|v|v.payload),created_at_ms:v.created_at_ms,started_at_ms:w.started_at_ms,completed_at_ms:w.completed_at_ms,usage:w.latest_receipt.map(|_|SharedObservedUsage {known_consumed_tokens:w.known_consumed_tokens,retained_tokens:w.retained_tokens,complete:w.usage_complete,period_key:c.reserve_command.period_key.clone()})});
+                items.push(SharedWorkHistoryItem {id:w.id,execution_id:v.execution_id,event_id:v.event_id,requester_mxid:v.requester_mxid,state:w.state,reply_state:reply.map(|v|v.payload),created_at_ms:v.created_at_ms,started_at_ms:w.started_at_ms,completed_at_ms:w.completed_at_ms,usage:w.latest_receipt.map(|_|SharedObservedUsage {known_consumed_tokens:w.known_consumed_tokens,retained_tokens:w.retained_tokens,complete:w.usage_complete,period_key:if let Some(calendar)=c.reserve_command.pool_grant.as_ref().and_then(|g|g.calendar.as_ref()) {calendar.period_at(v.created_at_ms as u64).map(|p|p.key).unwrap_or_else(|_|c.reserve_command.period_key.clone())}else{c.reserve_command.period_key.clone()}})});
             }Ok(SharedWorkPage {items,next_after})
         }).await
     }

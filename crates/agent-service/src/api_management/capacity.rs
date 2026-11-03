@@ -74,6 +74,7 @@ pub(super) async fn call(
                 .await?,
         )
         .map_err(|_| Error::Unavailable("encoding_failed"))?,
+        (&Method::POST, ["grant-publications", id, "expire"]) => serde_json::to_value(Box::pin(domain.expire_management_grant_publication(p,policy,id,body(req).await?)).await?).map_err(|_|Error::Unavailable("encoding_failed"))?,
         (&Method::POST, ["contributions", id, "grants"]) => {
             json!({"grant":domain.publish_management_grant(p,policy,id,body(req).await?).await?})
         }

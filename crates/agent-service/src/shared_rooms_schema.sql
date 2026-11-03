@@ -10,6 +10,11 @@ CREATE TABLE IF NOT EXISTS hagency_agent_v1.shared_agent_rooms (
  UNIQUE(assignment_id,room_id),
  FOREIGN KEY(room_id,project_id) REFERENCES hagency_agent_v1.rooms(room_id,project_id)
 );
+-- Retain the actual departure cause. Legacy NULL means unknown, never proof
+-- that it is safe to restore a membership that somebody deliberately removed.
+ALTER TABLE hagency_agent_v1.shared_agent_rooms ADD COLUMN IF NOT EXISTS departure_reason text
+ CHECK(departure_reason IN ('allocation_ended','membership_removed','room_authority_changed'));
+ALTER TABLE hagency_agent_v1.shared_agent_rooms ADD COLUMN IF NOT EXISTS restoration_requires_membership boolean NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS hagency_agent_v1.shared_agent_room_commands (
  actor_user_id text NOT NULL REFERENCES hagency_agent_v1.users(id),
  key text NOT NULL,
@@ -37,6 +42,13 @@ BEGIN
      (OLD.id,OLD.assignment_id,OLD.agent_id,OLD.project_id,OLD.room_id) THEN
    RAISE EXCEPTION 'shared room identity is immutable';
   END IF;
+  IF NEW.restoration_requires_membership IS DISTINCT FROM OLD.restoration_requires_membership AND NOT
+   (OLD.state='left' AND NEW.state='joining' AND NOT NEW.restoration_requires_membership)
+  THEN RAISE EXCEPTION 'immutable shared room restoration'; END IF;
+  IF NEW.departure_reason IS DISTINCT FROM OLD.departure_reason AND NOT
+   ((OLD.state IN ('joining','active') AND NEW.state='leaving') OR
+    (OLD.state='left' AND NEW.state='joining' AND NEW.departure_reason IS NULL))
+  THEN RAISE EXCEPTION 'immutable shared room departure'; END IF;
   IF NOT ((NEW.state=OLD.state AND NEW.generation=OLD.generation)
    OR (OLD.state='joining' AND NEW.state='active' AND NEW.generation=OLD.generation)
    OR (OLD.state IN ('joining','active') AND NEW.state='leaving' AND NEW.generation=OLD.generation+1)

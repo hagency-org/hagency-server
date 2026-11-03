@@ -1,4 +1,5 @@
 use super::*;
+use diesel::OptionalExtension;
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
@@ -378,4 +379,62 @@ async fn encrypted_pool_group_needs_explicit_mention_including_owner_and_threads
         .await
         .unwrap();
     assert_eq!(history.items.len(), 2);
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn recovered_active_room_requires_fresh_membership_and_never_undoes_a_kick() {
+    let (f, request, assignment, matrix) = prepared_pool(true).await;
+    let owner=&f.outsider.p;
+    let puppet=f.domain.managed_agent_matrix(owner,&f.policy,&request.id).await.unwrap().unwrap().puppet_mxid;
+    let space="!recovered_space:example.test";
+    let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute("INSERT INTO hagency_agent_v1.projects(id,space_id,creation_policy) VALUES('recovered_project','!recovered_space:example.test','{}')").await.unwrap();
+    for (name,requires_membership,present) in [("unobserved_kick",true,false),("still_member",true,true),("expired_cleanup",false,false)] {
+        let room=format!("!{name}:example.test");
+        {
+            let mut states=matrix.states.lock().unwrap();
+            let mut events=states[&request.room_id].clone();
+            events.retain(|e|e["state_key"]!=puppet);
+            events.push(json!({"type":"m.room.power_levels","state_key":"","content":{"users":{owner.mxid.clone():100,SERVICE:100}}}));
+            if present {events.push(json!({"type":"m.room.member","state_key":puppet,"content":{"membership":"join"}}));}
+            states.insert(room.clone(),events);
+            states.entry(space.into()).or_insert_with(||vec![json!({"type":"m.room.create","state_key":"","content":{"type":"m.space"}}),json!({"type":"m.room.member","state_key":owner.mxid,"content":{"membership":"join"}})]).push(json!({"type":"m.space.child","state_key":room,"content":{"via":["example.test"]}}));
+        }
+        sql_query("INSERT INTO hagency_agent_v1.rooms(room_id,project_id,creation_policy) VALUES($1,'recovered_project','{}')").bind::<Text,_>(&room).execute(&mut db).await.unwrap();
+        sql_query("INSERT INTO hagency_agent_v1.shared_agent_rooms(id,assignment_id,agent_id,project_id,room_id,state,restoration_requires_membership) VALUES($1,$2,$3,'recovered_project',$4,'joining',$5)").bind::<Text,_>(name).bind::<Text,_>(&assignment.id).bind::<Text,_>(&assignment.agent_id).bind::<Text,_>(&room).bind::<Bool,_>(requires_membership).execute(&mut db).await.unwrap();
+        let calls=matrix.calls.lock().unwrap().len();
+        f.domain.reconcile_shared_room(name,&matrix.gateway,&matrix.matrix).await.unwrap();
+        #[derive(QueryableByName)]
+        struct RoomState {#[diesel(sql_type=Text)] state:String,#[diesel(sql_type=diesel::sql_types::Nullable<Text>)] departure_reason:Option<String>}
+        let result=sql_query("SELECT state,departure_reason FROM hagency_agent_v1.shared_agent_rooms WHERE id=$1").bind::<Text,_>(name).get_result::<RoomState>(&mut db).await.unwrap();
+        match name {
+            "unobserved_kick"=>{assert_eq!(result.state,"left");assert_eq!(result.departure_reason.as_deref(),Some("membership_removed"));assert_eq!(matrix.calls.lock().unwrap().len(),calls,"recovery must not reinvite a removed Agent");},
+            "still_member"=>{assert_eq!(result.state,"active");assert_eq!(matrix.calls.lock().unwrap().len(),calls);},
+            _=>{assert_eq!(result.state,"joining");assert_eq!(matrix.calls.lock().unwrap().len(),calls+1,"proven expiry cleanup can invite again");}
+        }
+    }
+}
+
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn encrypted_ingress_uses_its_source_clock_without_rewriting_received_time() {
+    let (f,request,assignment,matrix)=prepared_pool(true).await;
+    matrix.states.lock().unwrap().get_mut(&request.room_id).unwrap().push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
+    let received=now_ms();
+    let event=crate::transport::RoutedEvent{event_id:"$clock-skew-ciphertext".into(),room_id:request.room_id.clone(),sender_mxid:f.outsider.p.mxid.clone(),body:String::new(),mentioned_mxids:Default::default(),thread_root:None,encrypted:true,is_edit:false};
+    // Reproduce the measured Docker PostgreSQL clock lag deterministically.
+    f.domain.set_management_test_clock(received-1).await.unwrap();
+    f.domain.route_shared_event(&f.policy,&event,received,&matrix.gateway).await.unwrap();
+    f.domain.reset_management_test_clock().await.unwrap();
+    let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();
+    #[derive(QueryableByName)] struct Received{#[diesel(sql_type=BigInt)] received_at_ms:i64}
+    let saved=sql_query("SELECT received_at_ms FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&assignment.id).bind::<Text,_>(&event.event_id).get_result::<Received>(&mut db).await.unwrap();
+    assert_eq!(saved.received_at_ms,received,"never restamp old messages across a control or quota boundary");
+    let input=json!({"assignmentId":assignment.id,"eventId":event.event_id,"addressed":true,"mentioned":false});
+    assert_eq!(f.domain.shared_crypto_confirm(&f.owner.p,serde_json::from_value(input).unwrap(),&matrix.gateway).await.unwrap()["confirmed"],true);
+    let future=crate::transport::RoutedEvent{event_id:"$future-ciphertext".into(),..event};
+    f.domain.route_shared_event(&f.policy,&future,now_ms()+60_000,&matrix.gateway).await.unwrap();
+    assert!(sql_query("SELECT received_at_ms FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&assignment.id).bind::<Text,_>(&future.event_id).get_result::<Received>(&mut db).await.optional().unwrap().is_none(),"genuinely future ingress is still rejected");
 }

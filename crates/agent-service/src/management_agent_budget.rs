@@ -263,8 +263,11 @@ pub(in crate::domain::management) async fn chain_reserved_total(
     let mut held: i64 = 0;
     for row in rows {
         let value = if row.assigned {
-            let (b, _, receipt) = base(db, &row.id, server).await?;
-            head(db, &row.id, &b, &receipt, server).await?.floor
+            let (b, c, receipt) = base(db, &row.id, server).await?;
+            if c.renewal_mode.is_some() {
+                let now=clock(db).await?;
+                if super::periods::authorized(db,&c,now).await? {row.requested_tokens.max(Box::pin(super::periods::current_known(db,&row.id,now)).await?.unwrap_or(0))}else{0}
+            } else {head(db, &row.id, &b, &receipt, server).await?.floor}
         } else if row.reserve_state != "refused" {
             row.requested_tokens
         } else {
@@ -425,7 +428,9 @@ impl DomainStore {
                 let (b, c, receipt) = base(db, id, &self.server).await?;
                 let h = head(db, id, &b, &receipt, &self.server).await?;
                 let owner_funding = r.pool_grant_id.is_some() && p.user_id == r.administrator_user_id;
-                let reason = if !policy.agent_budget_deltas() {
+                let reason = if c.renewal_mode.is_some() {
+                    Some("agent_period_allowance_fixed")
+                } else if !policy.agent_budget_deltas() {
                     Some("agent_budget_issuance_unavailable")
                 } else if r.manager_user_id != p.user_id && !owner_funding {
                     Some("project_manager_required")
@@ -484,10 +489,12 @@ impl DomainStore {
         device(p)?;
         let d = digest(id, &input)?;
         let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;if let Some(a)=replay(db,p,&input.command_id,"agent.topup.request",&d).await?{return reply(db,p,policy,a,now).await}enabled(policy)?;let r=visible(db,p,id).await?;if input.owner_funded {
+        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;if let Some(a)=replay(db,p,&input.command_id,"agent.topup.request",&d).await?{return reply(db,p,policy,a,now).await}enabled(policy)?;let r=visible(db,p,id).await?;if super::periods::terms(db,id).await?.is_some() {return Err(Error::Conflict("agent_period_allowance_fixed"));}
+   if input.owner_funded {
  if r.pool_grant_id.is_none() || p.user_id!=r.administrator_user_id {return Err(Error::Unauthorized("pool_resource_owner_required"))}
 } else if r.manager_user_id!=p.user_id{return Err(Error::Unauthorized("project_manager_required"))}let(b,c,receipt)=base(db,id,&self.server).await?;let cx=fresh_base(db,&r,&b,&c,now).await?;let h=head(db,id,&b,&receipt,&self.server).await?;if r.revision!=input.expected_request_revision||b.assignment_generation!=input.expected_assignment_generation||h.revision!=input.expected_budget_revision||h.digest!=input.expected_budget_digest{return Err(Error::Conflict("management_revision_changed"))}
-if pending(db,id).await?{return Err(Error::Conflict("agent_topup_pending"))}if !input.owner_funded {fits_parent(db,&r,&cx,&h,input.add_tokens,&self.server).await?;}
+if pending(db,id).await?{return Err(Error::Conflict("agent_topup_pending"))}
+   if !input.owner_funded {fits_parent(db,&r,&cx,&h,input.add_tokens,&self.server).await?;}
 if h.ceiling.checked_add(input.add_tokens).is_none_or(|v|v>MAX_EXACT){return Err(Error::Invalid("invalid_agent_budget"))}
  let full=sql_query("SELECT count(*)>=10000 AS matched FROM hagency_agent_v1.management_agent_topups WHERE manager_user_id=$1").bind::<Text,_>(&p.user_id).get_result::<Flag>(db).await?.matched;if full{return Err(Error::Conflict("agent_topup_capacity"))}
  let target=format!("mat_{}",entity_id()?);let expires=(now+TTL).min(cx.grant.period_end_ms).min(cx.grant.delegation_expires_at_ms).min(super::executor::reserve_lifetime(db,&c,now).await?);
@@ -535,7 +542,8 @@ if h.ceiling.checked_add(input.add_tokens).is_none_or(|v|v>MAX_EXACT){return Err
 if t.revision!=input.expected_revision||roles.authority_revision!=input.expected_authority_revision{return Err(Error::Conflict("management_revision_changed"))}
 if t.state!="pending"||now>=t.expires_at_ms{return Err(Error::Conflict("agent_topup_closed"))}
  let request_input:RequestAgentTopUp=decode(&t.payload)?;
- let approved=matches!(input.decision,Decision::Approve);if approved{let(b,c,receipt)=base(db,&r.id,&self.server).await?;let cx=fresh_base(db,&r,&b,&c,now).await?;let h=head(db,&r.id,&b,&receipt,&self.server).await?;if h.revision!=t.expected_budget_revision||h.digest!=t.expected_budget_digest||h.ceiling!=t.expected_ceiling_tokens{return Err(Error::Conflict("agent_budget_changed"))}if request_input.owner_funded {
+ let approved=matches!(input.decision,Decision::Approve);if approved{let(b,c,receipt)=base(db,&r.id,&self.server).await?;let cx=fresh_base(db,&r,&b,&c,now).await?;let h=head(db,&r.id,&b,&receipt,&self.server).await?;if h.revision!=t.expected_budget_revision||h.digest!=t.expected_budget_digest||h.ceiling!=t.expected_ceiling_tokens{return Err(Error::Conflict("agent_budget_changed"))}
+   if request_input.owner_funded {
  if r.pool_grant_id.is_none() || t.manager_user_id!=r.administrator_user_id {return Err(Error::Unauthorized("pool_resource_owner_required"))}
  } else {fits_parent(db,&r,&cx,&h,t.add_tokens,&self.server).await?;}
  let cmd=AgentBudgetCommand{owner_funded:request_input.owner_funded,version:if request_input.owner_funded{2}else{1},capability:BUDGET_CAPABILITY.into(),operation:"agent.budget.increase".into(),command_id:format!("mab_{}",entity_id()?),top_up_id:t.id.clone(),top_up_request_digest:t.digest.clone(),approval_command_id:input.command_id.clone(),approval_digest:d.clone(),approving_administrator_mxid:p.mxid.clone(),authority_revision:roles.authority_revision,assignment_id:b.assignment_id.clone(),assignment_generation:b.assignment_generation,reserve_command:c,reserve_command_digest:b.command_digest,reserve_receipt:receipt,reserve_receipt_digest:b.receipt_digest,expected_budget_revision:h.revision,expected_budget_digest:h.digest,expected_ceiling_tokens:h.ceiling,add_tokens:t.add_tokens,issued_at_ms:now,expires_at_ms:t.expires_at_ms};cmd.validate(&self.server)?;
@@ -656,7 +664,9 @@ pub(super) async fn execution_head(
         applied_receipt_digest: last.receipt_digest,
     };
     pin.validate()?;
-    Ok((pin, h.ledger, h.known))
+    let now=clock(db).await?;
+    let known=Box::pin(super::periods::current_known(db,request,now)).await?.unwrap_or(h.known);
+    Ok((pin, h.ledger, known))
 }
 
 #[derive(QueryableByName)]

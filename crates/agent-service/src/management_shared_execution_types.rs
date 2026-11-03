@@ -89,7 +89,7 @@ impl SharedProcessReceipt {
             || self.assignment_id != c.assignment_id
             || self.agent_reservation_id != c.agent_reservation_id
             || !exact(self.ledger_revision)
-            || !matches!(self.state.as_str(), "qualified" | "stopped" | "unknown")
+            || !matches!(self.state.as_str(), "qualified" | "stopped" | "unknown" | "not_started")
             || self
                 .process_digest
                 .as_deref()
@@ -98,6 +98,7 @@ impl SharedProcessReceipt {
                 .policy_digest
                 .as_deref()
                 .is_some_and(|v| !valid_digest(v))
+            || (self.state == "not_started" && (self.process_digest.is_some() || !c.reserve_command.pool_grant.as_ref().is_some_and(|g|g.calendar.is_some())))
             || (self.state == "qualified"
                 && (self.process_digest.is_none() || self.policy_digest.is_none()))
             || (self.state != "qualified" && self.policy_digest.is_some())

@@ -56,7 +56,7 @@ async fn original_runtime(
     assignment: &str,
     server: &str,
 ) -> Result<SharedRuntimeCommand> {
-    let id=sql_query("SELECT id FROM hagency_agent_v1.management_shared_runtimes WHERE assignment_id=$1 AND payload::jsonb->>'version'='1'").bind::<Text,_>(assignment).get_result::<Id>(db).await.map_err(hidden)?;
+    let id=sql_query("SELECT id FROM hagency_agent_v1.management_shared_runtimes WHERE assignment_id=$1 AND payload::jsonb->>'version'='1' AND NOT issuance_void").bind::<Text,_>(assignment).get_result::<Id>(db).await.map_err(hidden)?;
     original_command(&runtime(db, &id.id).await?, server)
 }
 async fn recorded(

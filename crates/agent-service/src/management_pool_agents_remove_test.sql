@@ -1,3 +1,26 @@
+-- Test-only teardown of schema 30 before exercising older migrations.
+DO $$ BEGIN
+ IF to_regclass('hagency_agent_v1.management_agent_recurring_terms') IS NOT NULL THEN
+DROP TRIGGER IF EXISTS require_agent_allocation_generation ON hagency_agent_v1.management_agent_requests;
+DROP FUNCTION IF EXISTS hagency_agent_v1.require_agent_allocation_generation();
+DROP TABLE IF EXISTS hagency_agent_v1.management_grant_publication_tombstones;
+DROP TABLE hagency_agent_v1.management_agent_reallocations;
+DROP TABLE hagency_agent_v1.management_agent_recurring_terms;
+DROP FUNCTION hagency_agent_v1.retain_agent_recurring_terms();
+DROP INDEX hagency_agent_v1.management_shared_assignment_live;
+ALTER TABLE hagency_agent_v1.management_shared_assignments ADD CONSTRAINT management_shared_assignments_agent_id_key UNIQUE(agent_id);
+ALTER TABLE hagency_agent_v1.management_agent_requests ADD CONSTRAINT management_agent_requests_proposed_agent_id_key UNIQUE(proposed_agent_id);
+CREATE UNIQUE INDEX pool_agent_room_unique ON hagency_agent_v1.management_agent_requests(room_id) WHERE pool_contribution_id IS NOT NULL;
+DROP INDEX hagency_agent_v1.management_agent_executor_initial;
+DROP INDEX hagency_agent_v1.management_agent_executor_period;
+ALTER TABLE hagency_agent_v1.management_agent_executor_commands
+ DROP CONSTRAINT management_agent_executor_operation,
+ DROP CONSTRAINT management_agent_executor_period,
+ DROP COLUMN command_payload,DROP COLUMN period_key,
+ ADD CONSTRAINT management_agent_executor_commands_operation_check CHECK(operation IN ('agent.reserve','agent.fence')),
+ ADD CONSTRAINT management_agent_executor_commands_intent_id_operation_key UNIQUE(intent_id,operation);
+ END IF;
+END $$;
 -- Schema 29 objects that an older schema never had.
 DROP TRIGGER IF EXISTS retain_resource_grant_chain ON hagency_agent_v1.management_resource_grants;
 DROP FUNCTION IF EXISTS hagency_agent_v1.retain_resource_grant_chain();

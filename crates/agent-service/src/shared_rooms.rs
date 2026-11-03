@@ -19,6 +19,8 @@ struct SharedRoom {
     state: String,
     #[diesel(sql_type=BigInt)]
     generation: i64,
+    #[diesel(sql_type=Bool)]
+    restoration_requires_membership: bool,
 }
 impl SharedRoom {
     fn binding(&self) -> Binding {
@@ -50,9 +52,11 @@ struct RoomMeta {
     space: String,
     #[diesel(sql_type=Bool)]
     live: bool,
+    #[diesel(sql_type=Bool)]
+    allocation_ended: bool,
 }
 async fn meta(db: &mut AsyncPgConnection, b: &SharedRoom) -> Result<RoomMeta> {
-    sql_query("SELECT u.mxid AS owner,p.space_id AS space,(u.active AND p.active AND r.active AND a.owner_user_id=s.manager_user_id AND a.execution_kind='shared_project' AND s.state='pending_native' AND mm.state='matrix_verified' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.scope_pauses sp WHERE sp.paused AND ((sp.kind='project' AND sp.scope_id=b.project_id) OR (sp.kind='room' AND sp.scope_id=b.room_id)))) AS live FROM hagency_agent_v1.shared_agent_rooms b JOIN hagency_agent_v1.projects p ON p.id=b.project_id JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.management_shared_assignments s ON s.id=b.assignment_id AND s.agent_id=b.agent_id JOIN hagency_agent_v1.management_agent_matrix mm ON mm.assignment_id=s.id JOIN hagency_agent_v1.users u ON u.id=s.manager_user_id WHERE b.id=$1 AND b.assignment_id=$2")
+    sql_query("SELECT u.mxid AS owner,p.space_id AS space,(u.active AND p.active AND r.active AND a.owner_user_id=s.manager_user_id AND a.execution_kind='shared_project' AND s.state='pending_native' AND mm.state='matrix_verified' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.scope_pauses sp WHERE sp.paused AND ((sp.kind='project' AND sp.scope_id=b.project_id) OR (sp.kind='room' AND sp.scope_id=b.room_id)))) AS live,(s.state='fenced') AS allocation_ended FROM hagency_agent_v1.shared_agent_rooms b JOIN hagency_agent_v1.projects p ON p.id=b.project_id JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.management_shared_assignments s ON s.id=b.assignment_id AND s.agent_id=b.agent_id JOIN hagency_agent_v1.management_agent_matrix mm ON mm.assignment_id=s.id JOIN hagency_agent_v1.users u ON u.id=s.manager_user_id WHERE b.id=$1 AND b.assignment_id=$2")
         .bind::<Text,_>(&b.id).bind::<Text,_>(&b.assignment_id).get_result(db).await.map_err(hidden)
 }
 impl DomainStore {
@@ -154,7 +158,7 @@ impl DomainStore {
             let old=sql_query("SELECT * FROM hagency_agent_v1.shared_agent_rooms WHERE assignment_id=$1 AND room_id=$2").bind::<Text,_>(&assignment).bind::<Text,_>(&input.room_id).get_result::<SharedRoom>(db).await.optional()?;
             let b=if let Some(old)=old {
                 if old.project_id!=input.project_id || old.state=="leaving" {return Err(Error::Conflict("room_binding_scope_conflict"));}
-                if old.state=="left" {sql_query("UPDATE hagency_agent_v1.shared_agent_rooms SET state='joining',generation=generation+1 WHERE id=$1 RETURNING *").bind::<Text,_>(&old.id).get_result(db).await?} else {old}
+                if old.state=="left" {sql_query("UPDATE hagency_agent_v1.shared_agent_rooms SET state='joining',generation=generation+1,departure_reason=NULL,restoration_requires_membership=false WHERE id=$1 RETURNING *").bind::<Text,_>(&old.id).get_result(db).await?} else {old}
             } else {sql_query("INSERT INTO hagency_agent_v1.shared_agent_rooms(id,assignment_id,agent_id,project_id,room_id,state) VALUES($1,$2,$3,$4,$5,'joining') RETURNING *").bind::<Text,_>(format!("srb_{}",entity_id()?)).bind::<Text,_>(&assignment).bind::<Text,_>(agent).bind::<Text,_>(&input.project_id).bind::<Text,_>(&input.room_id).get_result(db).await?};
             sql_query("INSERT INTO hagency_agent_v1.shared_agent_room_commands VALUES($1,$2,$3,$4)").bind::<Text,_>(&p.user_id).bind::<Text,_>(&input.idempotency_key).bind::<Text,_>(&digest).bind::<Text,_>(&b.id).execute(db).await?;
             Self::audit(db,p,"agent.bind_shared_room",&b.id,crate::api::now_ms()).await?;Ok(b)
@@ -200,6 +204,13 @@ impl DomainStore {
             let scope = meta(&mut db, &b).await?;
             (b, a, scope)
         };
+        // A recovered binding waits for its new assignment's original room
+        // verification. Lack of that proof is temporary, not a room removal.
+        if b.state=="joining" {
+            let mut db=self.db.lock().await?;
+            let waiting=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id WHERE a.id=$1 AND a.state='pending_native' AND m.state IN ('waiting_native','authorized')) AS matched").bind::<Text,_>(&b.assignment_id).get_result::<Flag>(&mut *db).await?.matched;
+            if waiting {return Ok(())}
+        }
         let f = g
             .room(&b.room_id, &scope.space, &scope.owner, Some(&a.puppet_mxid))
             .await?;
@@ -217,9 +228,13 @@ impl DomainStore {
                 let fresh=meta(db,&current).await?;
                 let invalid=!fresh.live||fresh.owner!=scope.owner||fresh.space!=scope.space
                     ||!f.owner_in_room||!f.owner_in_space||!f.room_in_space
-                    ||(current.state=="active"&&!f.puppet_in_room);
+                    ||(current.state=="active"&&!f.puppet_in_room)
+                    ||(current.restoration_requires_membership&&!f.puppet_in_room&&!invited);
                 if invalid&&matches!(current.state.as_str(),"joining"|"active") {
-                    sql_query("UPDATE hagency_agent_v1.shared_agent_rooms SET state='leaving',generation=generation+1 WHERE id=$1").bind::<Text,_>(id).execute(db).await?;
+                    let reason=if current.restoration_requires_membership && !f.puppet_in_room && !invited {"membership_removed"}
+                        else if fresh.allocation_ended && fresh.owner==scope.owner && fresh.space==scope.space && f.owner_in_room && f.owner_in_space && f.room_in_space && (current.state=="joining" || f.puppet_in_room || invited) {"allocation_ended"}
+                        else if current.state=="active" && !f.puppet_in_room {"membership_removed"}else{"room_authority_changed"};
+                    sql_query("UPDATE hagency_agent_v1.shared_agent_rooms SET state='leaving',generation=generation+1,departure_reason=$2 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(reason).execute(db).await?;
                 }
                 let current=row(db,id).await?;
                 if matches!(current.state.as_str(),"leaving"|"left") {
@@ -241,7 +256,8 @@ impl DomainStore {
                 let current = row(&mut db, id).await?;
                 current.generation == generation
                     && if effect == "leave" {
-                        matches!(current.state.as_str(), "leaving" | "left")
+                        let replacement=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.shared_agent_rooms b JOIN hagency_agent_v1.management_shared_assignments a ON a.id=b.assignment_id WHERE b.agent_id=$1 AND b.room_id=$2 AND b.assignment_id<>$3 AND b.state IN ('joining','active') AND a.state='pending_native') AS matched").bind::<Text,_>(&current.agent_id).bind::<Text,_>(&current.room_id).bind::<Text,_>(&current.assignment_id).get_result::<Flag>(&mut *db).await?.matched;
+                        matches!(current.state.as_str(), "leaving" | "left") && !replacement
                     } else {
                         current.state == "joining" && meta(&mut db, &current).await?.live
                     }

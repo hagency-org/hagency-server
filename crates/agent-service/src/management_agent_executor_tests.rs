@@ -87,6 +87,7 @@ fn id(d: &AgentExecutorDelivery) -> &str {
     match &d.command {
         AgentExecutorCommand::Reserve(c) => &c.command_id,
         AgentExecutorCommand::Fence(c) => &c.command_id,
+        AgentExecutorCommand::RenewPeriod(c) => &c.command_id,
     }
 }
 fn fence_result(d: &AgentExecutorDelivery, reserved: bool) -> AgentExecutorResultInput {

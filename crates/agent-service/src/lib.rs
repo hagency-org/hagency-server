@@ -37,6 +37,7 @@ pub mod management_setup_types;
 mod management_tests;
 pub mod management_types;
 pub mod management_pool_types;
+pub mod recurring_quota;
 pub mod matrix_client;
 pub mod store;
 pub mod transport;

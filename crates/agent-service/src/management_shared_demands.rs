@@ -118,17 +118,23 @@ pub(super) async fn binding(
     Ok(Some(value))
 }
 async fn head(db: &mut AsyncPgConnection, id: &str) -> Result<Option<Runtime>> {
-    let i=sql_query("SELECT id FROM hagency_agent_v1.management_shared_runtimes WHERE assignment_id=$1 ORDER BY coalesce((payload::jsonb->>'processAttempt')::bigint,1) DESC LIMIT 1").bind::<Text,_>(id).get_result::<Id>(db).await.optional()?;
+    let i=sql_query("SELECT id FROM hagency_agent_v1.management_shared_runtimes WHERE assignment_id=$1 AND NOT issuance_void ORDER BY coalesce((payload::jsonb->>'processAttempt')::bigint,1) DESC LIMIT 1").bind::<Text,_>(id).get_result::<Id>(db).await.optional()?;
     match i {
         Some(i) => Ok(Some(runtime(db, &i.id).await?)),
         None => Ok(None),
     }
 }
+async fn period_start(db:&mut AsyncPgConnection,id:&str)->Result<i64> {
+    let now=clock(db).await?;
+    Ok(super::super::super::periods::assignment_period(db,id,now).await?.map_or(0,|p|p.start_ms as i64))
+}
 async fn oldest(db: &mut AsyncPgConnection, id: &str, revision: i64) -> Result<Option<Queued>> {
-    Ok(sql_query("SELECT q.* FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=$1 AND q.control_revision=$2 AND (q.state='pending' OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demands d JOIN hagency_agent_v1.management_shared_demand_blocks b ON b.demand_id=d.id WHERE d.intake_id=q.id)) ORDER BY received_at_ms,id LIMIT 1").bind::<Text,_>(id).bind::<BigInt,_>(revision).get_result(db).await.optional()?)
+    let start=period_start(db,id).await?;
+    Ok(sql_query("SELECT q.* FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=$1 AND q.control_revision=$2 AND q.received_at_ms>=$3 AND (q.state='pending' OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demands d JOIN hagency_agent_v1.management_shared_demand_blocks b ON b.demand_id=d.id WHERE d.intake_id=q.id)) ORDER BY received_at_ms,id LIMIT 1").bind::<Text,_>(id).bind::<BigInt,_>(revision).bind::<BigInt,_>(start).get_result(db).await.optional()?)
 }
 async fn known(db: &mut AsyncPgConnection, id: &str) -> Result<i64> {
-    Ok(sql_query("SELECT LEAST(coalesce(sum(w.known_consumed_tokens),0),9007199254740992)::bigint AS now FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1").bind::<Text,_>(id).get_result::<Clock>(db).await?.now)
+    let start=period_start(db,id).await?;
+    Ok(sql_query("SELECT LEAST(coalesce(sum(w.known_consumed_tokens),0),9007199254740992)::bigint AS now FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1 AND w.created_at_ms>=$2").bind::<Text,_>(id).bind::<BigInt,_>(start).get_result::<Clock>(db).await?.now)
 }
 async fn block(
     db: &mut AsyncPgConnection,

@@ -2,6 +2,8 @@
 //! that capacity was reserved without the enrolled executor's exact receipt.
 #[path = "management_allocation_ui.rs"]
 mod ui;
+#[path="management_grant_publications.rs"]
+mod publications;
 use super::*;
 use crate::management_allocation_types::*;
 use crate::secret_token;
@@ -415,7 +417,7 @@ async fn grant_for_pool(db: &mut AsyncPgConnection, contribution: &str, now: i64
     for row in rows {
         if grant_valid(db, &row, now, require_session).await? {
             let view = grant_view(&row, now)?;
-            if !matches!(view.receipt.version, 2 | 3) { continue; }
+            if !matches!(view.receipt.version, 2..=5) { continue; }
             if current.is_some() { return Err(Error::Conflict("resource_grant_conflict")); }
             current = Some(view);
         }
@@ -779,6 +781,7 @@ impl DomainStore {
         key(id)?;
         key(&input.command_id)?;
         input.receipt.validate(&self.server)?;
+        if (input.receipt.calendar.is_some() || input.receipt.version == 5) && !policy.pool_grant_succession() {return Err(Error::Unavailable("calendar_grants_unavailable"));}
         // A successor names its predecessor and is published only through it.
         if input.receipt.succession.is_some() {
             return Err(Error::Invalid("invalid_grant_succession"));
@@ -794,6 +797,7 @@ impl DomainStore {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let (owner,c)=contribution(db,id).await?;
             if owner!=p.user_id || executor!=c.executor_device_id || generation!=c.executor_generation{return Err(Error::Unauthorized("contribution_executor_required"));}
+            publications::require_unexpired_publication(db,p,&input.command_id,"grant.publish",&payload_digest).await?;
             if let Some(saved)=replay::<ResourceGrantView>(db,p,&input.command_id,"grant.publish",&payload_digest).await? {return grant_view(&grant(db,&saved.id).await?,now);}
             let r=&input.receipt;
             if c.state!="admitted" {return Err(Error::Conflict("contribution_not_admitted"));}
@@ -801,13 +805,17 @@ impl DomainStore {
             if r.contribution_id!=id || r.owner_mxid!=p.mxid || r.executor_device_id!=executor || r.executor_generation!=generation || r.resource_id!=c.resource_id || r.resource_revision!=c.resource_revision || r.coordinator_mxid!=p.mxid || c.coordinator_mxid!=p.mxid{return Err(Error::Invalid("resource_grant_binding_mismatch"));}
             if r.admission_request_id.as_ref().is_some_and(|request| request!=&c.request_id) {return Err(Error::Invalid("resource_grant_binding_mismatch"));}
             executor_live(db,&owner,&c,now).await?;
-            let period=sql_query("SELECT to_char(to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC','YYYY-MM') AS key,(extract(epoch FROM (date_trunc('month',to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))*1000)::bigint AS start_ms,(extract(epoch FROM ((date_trunc('month',to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'))*1000)::bigint AS end_ms").bind::<BigInt,_>(now).get_result::<PeriodRow>(db).await?;
+            let period=if let Some(calendar)=&r.calendar {
+                let period=calendar.period_at(now as u64).map_err(|_| Error::Invalid("invalid_grant_period"))?;
+                PeriodRow {key:period.key,start_ms:period.start_ms as i64,end_ms:period.end_ms as i64}
+            } else {sql_query("SELECT to_char(to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC','YYYY-MM') AS key,(extract(epoch FROM (date_trunc('month',to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))*1000)::bigint AS start_ms,(extract(epoch FROM ((date_trunc('month',to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'))*1000)::bigint AS end_ms").bind::<BigInt,_>(now).get_result::<PeriodRow>(db).await?};
             if r.period_key!=period.key || r.period_start_ms!=period.start_ms || r.period_end_ms!=period.end_ms || r.delegation_expires_at_ms<=now || r.delegation_expires_at_ms>now+366*86400000 {return Err(Error::Invalid("invalid_grant_period"));}
             let existing=sql_query("SELECT * FROM hagency_agent_v1.management_resource_grants WHERE id=$1").bind::<Text,_>(&r.grant_id).get_result::<GrantRow>(db).await.optional()?;
             if let Some(existing)=existing {
                 if existing.owner_user_id!=p.user_id || existing.receipt_digest!=receipt_digest {return Err(Error::Conflict("resource_grant_conflict"));}
                 let result=grant_view(&existing,now)?;receipt(db,p,&input.command_id,"grant.publish",&payload_digest,&result).await?;return Ok(result);
             }
+            if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND period_start_ms<$3 AND (receipt::jsonb->>'periodEndMs')::bigint>$2 AND ($4 OR receipt::jsonb->'calendar' IS NOT NULL)) AS matched").bind::<Text,_>(id).bind::<BigInt,_>(r.period_start_ms).bind::<BigInt,_>(r.period_end_ms).bind::<Bool,_>(r.calendar.is_some()).get_result::<Flag>(db).await?.matched {return Err(Error::Conflict("resource_grant_already_exists"));}
             let duplicate=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND period_key=$2 AND state='active') AS matched").bind::<Text,_>(id).bind::<Text,_>(&r.period_key).get_result::<Flag>(db).await?.matched;
             if duplicate{return Err(Error::Conflict("resource_grant_already_exists"));}
             // authorize() holds the domain advisory transaction lock across
@@ -852,7 +860,7 @@ impl DomainStore {
             .receipt
             .succession
             .clone()
-            .filter(|s| input.receipt.version == 3 && s.predecessor_grant_id == id)
+            .filter(|s| matches!(input.receipt.version, 3 | 4 | 5) && s.predecessor_grant_id == id)
             .ok_or(Error::Invalid("invalid_grant_succession"))?;
         let (executor, generation) = device(p)?;
         if input.expected_contribution_revision <= 0 || input.expected_predecessor_revision <= 0 {
@@ -868,6 +876,7 @@ impl DomainStore {
             let pr:NativeGrantReceipt=decode(&pred.receipt)?;
             let (owner,c)=contribution(db,&pred.contribution_id).await?;
             if owner!=p.user_id || executor!=c.executor_device_id || generation!=c.executor_generation{return Err(Error::Unauthorized("contribution_executor_required"));}
+            publications::require_unexpired_publication(db,p,&input.command_id,"grant.succeed",&payload_digest).await?;
             if let Some(saved)=replay::<ResourceGrantView>(db,p,&input.command_id,"grant.succeed",&payload_digest).await? {return grant_view(&grant(db,&saved.id).await?,now);}
             let r=&input.receipt;
             if c.state!="admitted" {return Err(Error::Conflict("contribution_not_admitted"));}
@@ -881,6 +890,7 @@ impl DomainStore {
                 || r.resource_revision!=c.resource_revision || r.resource_revision!=pr.resource_revision
                 || r.coordinator_mxid!=p.mxid || c.coordinator_mxid!=p.mxid || r.coordinator_mxid!=pr.coordinator_mxid
                 || r.enrollment_id!=pr.enrollment_id || r.allow_self_approval!=pr.allow_self_approval
+                || r.calendar!=pr.calendar
                 || r.admission_request_id.is_none() || r.admission_request_id!=pr.admission_request_id
                 || r.admission_request_id.as_deref()!=Some(c.request_id.as_str())
             {return Err(Error::Invalid("resource_grant_binding_mismatch"));}
@@ -899,12 +909,17 @@ impl DomainStore {
                 if existing.owner_user_id!=p.user_id || existing.receipt_digest!=receipt_digest {return Err(Error::Conflict("resource_grant_conflict"));}
                 let result=grant_view(&existing,now)?;receipt(db,p,&input.command_id,"grant.succeed",&payload_digest,&result).await?;return Ok(result);
             }
-            if pred.state!="active" || !grant_live(db,&pred,now).await? {return Err(Error::Conflict("grant_predecessor_not_effective"));}
+            if pred.state!="active" || !grant_valid(db,&pred,if r.calendar.is_some() && succession.renewal() { now.min(pred.expires_at_ms-1) }else{now},true).await? {return Err(Error::Conflict("grant_predecessor_not_effective"));}
             // One live successor per grant. While a renewal is scheduled the
             // owner cancels (revokes) it before amending this month (Q7).
             if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE predecessor_grant_id=$1 AND state<>'revoked') AS matched").bind::<Text,_>(id).get_result::<Flag>(db).await?.matched
             {return Err(Error::Conflict("grant_successor_exists"));}
-            if succession.renewal() {
+            if succession.renewal() && r.calendar.is_some() {
+                let calendar=r.calendar.as_ref().ok_or(Error::Invalid("invalid_grant_period"))?;
+                let target=calendar.period_at(now.max(pr.period_end_ms) as u64).map_err(|_| Error::Invalid("invalid_grant_period"))?;
+                if r.period_key!=target.key || r.period_start_ms!=target.start_ms as i64 || r.period_end_ms!=target.end_ms as i64
+                    || r.period_start_ms < pr.period_end_ms {return Err(Error::Invalid("invalid_grant_period"));}
+            } else if succession.renewal() {
                 let next=sql_query("SELECT to_char(to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC','YYYY-MM') AS key,(extract(epoch FROM (date_trunc('month',to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))*1000)::bigint AS start_ms,(extract(epoch FROM ((date_trunc('month',to_timestamp($1::double precision / 1000) AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'))*1000)::bigint AS end_ms").bind::<BigInt,_>(pr.period_end_ms).get_result::<PeriodRow>(db).await?;
                 if r.period_start_ms!=pr.period_end_ms || r.period_key!=next.key || r.period_start_ms!=next.start_ms || r.period_end_ms!=next.end_ms {return Err(Error::Invalid("invalid_grant_period"));}
                 if now<pr.period_end_ms-RENEWAL_WINDOW_MS || now>=pr.period_end_ms {return Err(Error::Conflict("grant_succession_window_closed"));}
@@ -915,7 +930,7 @@ impl DomainStore {
             {return Err(Error::Conflict("resource_grant_already_exists"));}
             // The native ledger is the authority for the floor; the server
             // still refuses to publish below what it knows the chain holds.
-            let reserved=super::agents::chain_reserved_total(db,&pred.chain_root_id,&self.server).await?;
+            let reserved=if r.calendar.is_some() && succession.renewal() {0}else{super::agents::chain_reserved_total(db,&pred.chain_root_id,&self.server).await?};
             if r.allocated_tokens<reserved {return Err(Error::Conflict("grant_successor_below_reserved"));}
             if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(r.ledger_revision).get_result::<Flag>(db).await?.matched
             {return Err(Error::Conflict("agent_executor_ledger_revision_changed"));}
