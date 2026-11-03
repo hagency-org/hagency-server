@@ -34,6 +34,14 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - name: Reclaim unused SDK space on disposable hosted Linux runners
+        shell: bash
+        run: |
+          if [[ "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]]; then
+            df -h "$GITHUB_WORKSPACE"
+            sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android
+            df -h "$GITHUB_WORKSPACE"
+          fi
       - uses: docker/setup-buildx-action@v4
       - name: Build the reviewed image locally without publishing
         uses: docker/build-push-action@v7
