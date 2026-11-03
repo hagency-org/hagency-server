@@ -11224,7 +11224,7 @@
       "get": {
         "operationId": "syncAgentCryptoOwnerReceive",
         "summary": "getAgentCryptoWhoami",
-        "description": "Receive only to-device crypto updates for the exact Agent device. Broker fixes timeout=0, offline presence and an empty-room/presence/account-data filter. Arbitrary filter, identity and token query parameters are rejected. Successful response is limited to 1 MiB; no room history or messages. No execution/admission/ACK grant.",
+        "description": "Receive only to-device crypto updates for the exact Agent device. Broker fixes timeout=0, offline presence and an empty-room/presence/account-data filter. Arbitrary filter, identity and token query parameters are rejected. The upstream response is limited to 1 MiB. The broker strips room, presence and account-data sections before sending only the validated crypto mailbox. No execution/admission/ACK grant.",
         "security": [
           {
             "deviceBearer": []
@@ -11344,54 +11344,6 @@
                     },
                     "device_one_time_keys_count": {
                       "type": "object"
-                    },
-                    "rooms": {
-                      "type": "object",
-                      "properties": {
-                        "join": {
-                          "type": "object",
-                          "maxProperties": 0
-                        },
-                        "invite": {
-                          "type": "object",
-                          "maxProperties": 0
-                        },
-                        "leave": {
-                          "type": "object",
-                          "maxProperties": 0
-                        },
-                        "knock": {
-                          "type": "object",
-                          "maxProperties": 0
-                        }
-                      },
-                      "additionalProperties": false
-                    },
-                    "presence": {
-                      "type": "object",
-                      "required": [
-                        "events"
-                      ],
-                      "properties": {
-                        "events": {
-                          "type": "array",
-                          "maxItems": 0
-                        }
-                      },
-                      "additionalProperties": false
-                    },
-                    "account_data": {
-                      "type": "object",
-                      "required": [
-                        "events"
-                      ],
-                      "properties": {
-                        "events": {
-                          "type": "array",
-                          "maxItems": 0
-                        }
-                      },
-                      "additionalProperties": false
                     },
                     "device_unused_fallback_key_types": {
                       "type": "array",
@@ -11527,7 +11479,7 @@
           "anchors": [
             "(\"GET\", \"/_matrix/client/v3/sync\")",
             "pub(crate) fn sync_query",
-            "pub(crate) fn sync_response"
+            "pub(crate) fn crypto_sync_response"
           ]
         }
       }
@@ -21133,8 +21085,8 @@
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
     "crates/agent-service/src/api_project_board.rs": "315e3c9359438a28c04694b68d9619f281c1b3fcdabc557d4a6971373110cc47",
     "crates/agent-service/src/agent_crypto.rs": "2f74ef9465ac627a727d142e9ebffbe9af2ad39eef08117b97434bf7e11ad975",
-    "crates/agent-service/src/matrix_crypto.rs": "efeb19edada56af0866c7716f84bbf74e1d701db7a0c9319572b2f5d9fd59043",
-    "crates/agent-service/src/agent_crypto_receive.rs": "20e437890a3cca872e810bfbcb1f5dc696567caff53a8bdb684b34e9c142566a",
+    "crates/agent-service/src/matrix_crypto.rs": "f234c8707661c31d1265cc8c29621452abe0d4802f0361f1f81a023d89677f47",
+    "crates/agent-service/src/agent_crypto_receive.rs": "ab953385061b318dbefca41c01203b240c40fa9dcfd763f5e3984ee450605850",
     "crates/agent-service/src/transport_ciphertexts.rs": "c3db5bd5d59da1f5b42302d3b623bd19633ebdd87295dc7c860ad472bb751224",
     "crates/agent-service/src/ciphertext_schema.sql": "ea43c360e60a316d3cd15e16494bee1b5c60f5482b4d0ad9bbe0883c2f07ad29",
     "crates/agent-service/src/workers.rs": "3d0cd43f9ba5d6460b527812ab47f03d34fee8a79f0d58fc023d20fd8fc26456",
