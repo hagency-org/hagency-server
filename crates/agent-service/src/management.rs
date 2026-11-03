@@ -18,8 +18,8 @@ mod setup;
 #[path = "management_usage.rs"]
 mod usage;
 
-const CONTRIBUTIONS: &str = "SELECT c.owner_user_id,json_build_object('id',c.id,'ownerMxid',u.mxid,'executorDeviceId',c.executor_device_id,'executorGeneration',c.executor_generation,'resourceId',c.resource_id,'resourceRevision',c.resource_revision,'label',c.label,'runtime',c.runtime,'capabilities',c.capabilities::json,'coordinatorMxid',c.coordinator_mxid,'state',c.state,'revision',c.revision,'requestId',c.request_id,'createdAtMs',c.created_at_ms,'updatedAtMs',c.updated_at_ms,'verification',CASE WHEN v.contribution_id IS NULL THEN NULL ELSE json_build_object('status',CASE WHEN c.state='admitted' AND v.contribution_revision=c.revision AND v.executor_generation=c.executor_generation AND v.resource_revision=c.resource_revision AND v.fresh_until_ms>(extract(epoch from clock_timestamp())*1000)::bigint AND EXISTS(SELECT 1 FROM hagency_agent_v1.devices d JOIN hagency_agent_v1.sessions s ON s.id=d.session_id WHERE d.id=c.executor_device_id AND d.user_id=c.owner_user_id AND d.generation=c.executor_generation AND NOT d.revoked AND NOT s.revoked AND s.valid_until_ms>(extract(epoch from clock_timestamp())*1000)::bigint AND u.active) THEN 'verified' ELSE 'stale' END,'verifiedAtMs',v.verified_at_ms,'freshUntilMs',v.fresh_until_ms) END)::text AS payload FROM hagency_agent_v1.management_contributions c JOIN hagency_agent_v1.users u ON u.id=c.owner_user_id LEFT JOIN hagency_agent_v1.management_verifications v ON v.contribution_id=c.id";
-const REQUESTS: &str = "SELECT r.requester_user_id,(r.kind='resource_admission' OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_contributions available WHERE available.id=r.contribution_id AND available.state='admitted')) AS resource_available,json_build_object('id',r.id,'kind',r.kind,'contributionId',r.contribution_id,'projectId',r.project_id,'allocationId',r.allocation_id,'projectName',(SELECT m.name FROM hagency_agent_v1.management_projects m WHERE m.id=r.project_id),'resourceLabel',(SELECT c.label FROM hagency_agent_v1.management_contributions c WHERE c.id=r.contribution_id),'requesterMxid',u.mxid,'approverMxid',r.approver_mxid,'state',r.state,'revision',r.revision,'createdAtMs',r.created_at_ms,'expiresAtMs',r.expires_at_ms,'decidedAtMs',r.decided_at_ms,'canDecide',false)::text AS payload FROM hagency_agent_v1.management_requests r JOIN hagency_agent_v1.users u ON u.id=r.requester_user_id";
+const CONTRIBUTIONS: &str = "SELECT c.owner_user_id,json_build_object('publicationFirst',c.publication_first,'id',c.id,'ownerMxid',u.mxid,'executorDeviceId',c.executor_device_id,'executorGeneration',c.executor_generation,'resourceId',c.resource_id,'resourceRevision',c.resource_revision,'label',c.label,'runtime',c.runtime,'capabilities',c.capabilities::json,'coordinatorMxid',c.coordinator_mxid,'state',c.state,'revision',c.revision,'requestId',c.request_id,'createdAtMs',c.created_at_ms,'updatedAtMs',c.updated_at_ms,'verification',CASE WHEN v.contribution_id IS NULL THEN NULL ELSE json_build_object('status',CASE WHEN c.state='admitted' AND v.contribution_revision=c.revision AND v.executor_generation=c.executor_generation AND v.resource_revision=c.resource_revision AND v.fresh_until_ms>(extract(epoch from clock_timestamp())*1000)::bigint AND EXISTS(SELECT 1 FROM hagency_agent_v1.devices d JOIN hagency_agent_v1.sessions s ON s.id=d.session_id WHERE d.id=c.executor_device_id AND d.user_id=c.owner_user_id AND d.generation=c.executor_generation AND NOT d.revoked AND NOT s.revoked AND s.valid_until_ms>(extract(epoch from clock_timestamp())*1000)::bigint AND u.active) THEN 'verified' ELSE 'stale' END,'verifiedAtMs',v.verified_at_ms,'freshUntilMs',v.fresh_until_ms) END)::text AS payload FROM hagency_agent_v1.management_contributions c JOIN hagency_agent_v1.users u ON u.id=c.owner_user_id LEFT JOIN hagency_agent_v1.management_verifications v ON v.contribution_id=c.id";
+const REQUESTS: &str = "SELECT r.requester_user_id,((r.kind='resource_admission' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_contributions offered WHERE offered.id=r.contribution_id AND offered.state<>'draft')) OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_contributions available WHERE available.id=r.contribution_id AND available.state='admitted')) AS resource_available,json_build_object('id',r.id,'kind',r.kind,'contributionId',r.contribution_id,'projectId',r.project_id,'allocationId',r.allocation_id,'projectName',(SELECT m.name FROM hagency_agent_v1.management_projects m WHERE m.id=r.project_id),'resourceLabel',(SELECT c.label FROM hagency_agent_v1.management_contributions c WHERE c.id=r.contribution_id),'requesterMxid',u.mxid,'approverMxid',r.approver_mxid,'state',r.state,'revision',r.revision,'createdAtMs',r.created_at_ms,'expiresAtMs',r.expires_at_ms,'decidedAtMs',r.decided_at_ms,'canDecide',false)::text AS payload FROM hagency_agent_v1.management_requests r JOIN hagency_agent_v1.users u ON u.id=r.requester_user_id";
 const TTL: i64 = 7 * 24 * 60 * 60 * 1000;
 #[derive(QueryableByName)]
 struct ContributionRow {
@@ -129,7 +129,7 @@ async fn contribution(db: &mut AsyncPgConnection, id: &str) -> Result<(String, C
     Ok((row.owner_user_id, decode(&row.payload)?))
 }
 fn visible(p: &Principal, policy: &ManagementPolicy, owner: &str, c: &Contribution) -> bool {
-    p.user_id == owner || p.mxid == c.coordinator_mxid || p.mxid == policy.administrator()
+    p.user_id == owner || p.mxid == c.coordinator_mxid || (c.state != "draft" && p.mxid == policy.administrator())
 }
 fn project_request(
     mut r: ManagementRequest,
@@ -361,6 +361,7 @@ impl DomainStore {
         input: ContributionInput,
     ) -> Result<Admission> {
         input.validate(&self.server)?;
+        if input.publication_first && !(policy.agent_admission() && policy.project_reservations() && policy.pool_grant_succession()) { return Err(Error::Unavailable("pool_publication_first_unavailable")); }
         let (executor, generation) = device(p)?;
         let payload_digest = digest("", &input)?;
         let mut db = self.db.lock().await?;
@@ -376,12 +377,12 @@ impl DomainStore {
             if duplicate { return Err(Error::Conflict("contribution_already_exists")); }
             let id=format!("con_{}",entity_id()?); let request_id=format!("req_{}",entity_id()?);
             let runtime=match input.runtime { Runtime::Codex=>"codex",Runtime::Claude=>"claude",Runtime::Octos=>"octos" };
-            sql_query("INSERT INTO hagency_agent_v1.management_contributions(id,owner_user_id,executor_device_id,executor_generation,resource_id,resource_revision,label,runtime,capabilities,coordinator_mxid,state,request_id,created_at_ms,updated_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending_admission',$11,$12,$12)")
-                .bind::<Text,_>(&id).bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(generation).bind::<Text,_>(&input.resource_id).bind::<Text,_>(&input.resource_revision).bind::<Text,_>(&input.label).bind::<Text,_>(runtime).bind::<Text,_>(encode(&input.capabilities)?).bind::<Text,_>(&input.coordinator_mxid).bind::<Text,_>(&request_id).bind::<BigInt,_>(now).execute(db).await?;
-            sql_query("INSERT INTO hagency_agent_v1.management_requests(id,kind,contribution_id,requester_user_id,approver_mxid,state,created_at_ms,expires_at_ms) VALUES($1,'resource_admission',$2,$3,$4,'pending',$5,$6)")
-                .bind::<Text,_>(&request_id).bind::<Text,_>(&id).bind::<Text,_>(&p.user_id).bind::<Text,_>(policy.administrator()).bind::<BigInt,_>(now).bind::<BigInt,_>(now+TTL).execute(db).await?;
+            sql_query("INSERT INTO hagency_agent_v1.management_contributions(id,owner_user_id,executor_device_id,executor_generation,resource_id,resource_revision,label,runtime,capabilities,coordinator_mxid,state,request_id,created_at_ms,updated_at_ms,publication_first) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$13,$11,$12,$12,$14)")
+                .bind::<Text,_>(&id).bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(generation).bind::<Text,_>(&input.resource_id).bind::<Text,_>(&input.resource_revision).bind::<Text,_>(&input.label).bind::<Text,_>(runtime).bind::<Text,_>(encode(&input.capabilities)?).bind::<Text,_>(&input.coordinator_mxid).bind::<Text,_>(&request_id).bind::<BigInt,_>(now).bind::<Text,_>(if input.publication_first {"draft"} else {"pending_admission"}).bind::<Bool,_>(input.publication_first).execute(db).await?;
+            sql_query("INSERT INTO hagency_agent_v1.management_requests(id,kind,contribution_id,requester_user_id,approver_mxid,state,created_at_ms,expires_at_ms) VALUES($1,'resource_admission',$2,$3,$4,$7,$5,$6)")
+                .bind::<Text,_>(&request_id).bind::<Text,_>(&id).bind::<Text,_>(&p.user_id).bind::<Text,_>(policy.administrator()).bind::<BigInt,_>(now).bind::<BigInt,_>(now+TTL).bind::<Text,_>(if input.publication_first {"draft"} else {"pending"}).execute(db).await?;
             let result=admission(db,&id,p,policy,now).await?;
-            notify(db,&result.request,[policy.administrator().to_owned()],now).await?;
+            if !input.publication_first { notify(db,&result.request,[policy.administrator().to_owned()],now).await?; }
             Self::audit(db,p,"contribution.create",&id,now).await?;
             receipt(db,p,&input.command_id,"contribution.create",&payload_digest,&result).await?;
             Ok(result)
@@ -401,7 +402,7 @@ impl DomainStore {
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
-            let rows=sql_query(format!("{CONTRIBUTIONS} WHERE (c.owner_user_id=$1 OR c.coordinator_mxid=$2 OR $2=$3) AND c.id>$4 ORDER BY c.id LIMIT $5"))
+            let rows=sql_query(format!("{CONTRIBUTIONS} WHERE (c.owner_user_id=$1 OR c.coordinator_mxid=$2 OR $2=$3 AND c.state<>'draft') AND c.id>$4 ORDER BY c.id LIMIT $5"))
                 .bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(policy.administrator()).bind::<Text,_>(query.after.as_deref().unwrap_or("")).bind::<BigInt,_>(MAX_PAGE+1).load::<ContributionRow>(db).await?;
             let more=rows.len()>MAX_PAGE as usize;
             let items=rows.into_iter().take(MAX_PAGE as usize).map(|row|decode(&row.payload)).collect::<Result<Vec<Contribution>>>()?;
@@ -452,7 +453,7 @@ impl DomainStore {
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
-            let rows=sql_query(format!("{REQUESTS} JOIN hagency_agent_v1.management_contributions c ON c.id=r.contribution_id WHERE (r.requester_user_id=$1 OR c.owner_user_id=$1 OR c.coordinator_mxid=$2 OR r.approver_mxid=$2 AND ($2=$3 OR $9 AND r.kind='project_allocation') OR $9 AND r.kind='project_allocation' AND $2=$3 OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_project_authorities pa WHERE pa.plan_id=r.project_id AND pa.administrator_user_id=$1)) AND (NOT $4 OR r.approver_mxid=$2 AND ($2=$3 OR $9 AND r.kind='project_allocation') AND r.state='pending' AND r.expires_at_ms>$5 AND (r.kind='resource_admission' OR c.state='admitted')) AND (r.kind='resource_admission' OR $8 AND r.kind='project_capacity' OR $9 AND r.kind='project_allocation') AND r.id>$6 ORDER BY r.id LIMIT $7"))
+            let rows=sql_query(format!("{REQUESTS} JOIN hagency_agent_v1.management_contributions c ON c.id=r.contribution_id WHERE (r.requester_user_id=$1 OR c.owner_user_id=$1 OR c.coordinator_mxid=$2 OR r.approver_mxid=$2 AND ($2=$3 OR $9 AND r.kind='project_allocation') OR $9 AND r.kind='project_allocation' AND $2=$3 OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_project_authorities pa WHERE pa.plan_id=r.project_id AND pa.administrator_user_id=$1)) AND (c.state<>'draft' OR c.owner_user_id=$1) AND (NOT $4 OR r.approver_mxid=$2 AND ($2=$3 OR $9 AND r.kind='project_allocation') AND r.state='pending' AND r.expires_at_ms>$5 AND (r.kind='resource_admission' OR c.state='admitted')) AND (r.kind='resource_admission' OR $8 AND r.kind='project_capacity' OR $9 AND r.kind='project_allocation') AND r.id>$6 ORDER BY r.id LIMIT $7"))
                 .bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(policy.administrator()).bind::<Bool,_>(query.needs_my_action).bind::<BigInt,_>(now).bind::<Text,_>(query.after.as_deref().unwrap_or("")).bind::<BigInt,_>(MAX_PAGE+1).bind::<Bool,_>(query.include_projects).bind::<Bool,_>(query.include_allocations && policy.project_reservations()).load::<RequestRow>(db).await?;
             let more=rows.len()>MAX_PAGE as usize;
             let mut items=Vec::new();let mut last_scanned=None;
@@ -493,13 +494,20 @@ impl DomainStore {
             if !r.can_decide {return Err(Error::Conflict("management_action_closed"));}
             let (owner,c)=contribution(db,&r.contribution_id).await?;
             if c.state!="pending_admission" {return Err(Error::Conflict("management_action_closed"));}
-            if matches!(input.decision,Decision::Approve) {executor_live(db,&owner,&c,now).await?;}
+            if matches!(input.decision,Decision::Approve) {
+                executor_live(db,&owner,&c,now).await?;
+                if c.publication_first && !sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND state='active' AND receipt::jsonb->>'admissionRequestId'=$2) AS matched").bind::<Text,_>(&c.id).bind::<Text,_>(&c.request_id).get_result::<Flag>(db).await?.matched {return Err(Error::Conflict("resource_publication_required"));}
+            }
             let (state,contribution_state)=match input.decision {Decision::Approve=>("approved","admitted"),Decision::Reject=>("rejected","rejected")};
             sql_query("UPDATE hagency_agent_v1.management_requests SET state=$2,revision=revision+1,decided_at_ms=$3 WHERE id=$1")
                 .bind::<Text,_>(id).bind::<Text,_>(state).bind::<BigInt,_>(now).execute(db).await?;
             sql_query("UPDATE hagency_agent_v1.management_contributions SET state=$2,revision=revision+1,updated_at_ms=$3 WHERE id=$1")
                 .bind::<Text,_>(&c.id).bind::<Text,_>(contribution_state).bind::<BigInt,_>(now).execute(db).await?;
             sql_query("UPDATE hagency_agent_v1.management_outbox SET state='cancelled' WHERE request_id=$1 AND state='pending'").bind::<Text,_>(id).execute(db).await?;
+            if c.publication_first && matches!(input.decision,Decision::Reject) {
+                allocations::revoke_for_contribution(db,p,policy,&c.id,now).await?;
+                parents::close_for_contribution(db,p,policy,&c.id,now).await?;
+            }
             let result=admission(db,&c.id,p,policy,now).await?;
             notify(db,&result.request,[c.owner_mxid,c.coordinator_mxid],now).await?;
             Self::audit(db,p,"request.decide",id,now).await?;

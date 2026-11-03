@@ -395,3 +395,25 @@ existing large `__eh_frame` warning. Local evidence:
 These results validate central durability/authority and synthetic receipt
 handling. They do not replace native resource enrollment, provider/account
 conservation, actual mini-app end-to-end allocation or production acceptance.
+
+
+## Publication before admission (2026-11-03)
+
+Servers advertising `pool-publication-first-v1` accept `publicationFirst: true`
+when the owner creates a contribution. The initial contribution/request is a
+private `draft`; it is absent from the administrator inbox and cannot be approved.
+One native owner confirmation reserves the exact capacity and uploads its
+admission-bound calendar receipt. The server commits that receipt, the transition
+to `pending_admission`, and the administrator notification in one transaction.
+Administrator approval then makes that existing grant available; there is no
+second owner confirmation or implicit funding by the administrator.
+
+Cancellation leaves a resumable draft. A failed transaction leaves no grant or
+administrator request; an uncertain upload recovers/retries its original ID.
+Rejection revokes submitted capacity and queues native parent settlement. Catalog,
+allocation and execution still require an admitted contribution. Only publication
+and its calendar successors may inspect capacity awaiting admission.
+
+Schema 31 adds the private state and the opt-in flag. Omitted/false flags preserve
+legacy command bytes and digests; existing connections and quotas are not silently
+converted. The guarded downgrade to schema 30 refuses any publication-first row.

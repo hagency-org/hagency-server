@@ -182,6 +182,10 @@ pub enum Runtime {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContributionInput {
+    /// Owner confirms capacity before this offer enters the administrator inbox.
+    /// Omitted on legacy commands so their replay digest remains unchanged.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub publication_first: bool,
     pub command_id: String,
     pub resource_id: String,
     pub resource_revision: String,
@@ -190,6 +194,7 @@ pub struct ContributionInput {
     pub capabilities: BTreeSet<String>,
     pub coordinator_mxid: String,
 }
+fn is_false(value: &bool) -> bool { !*value }
 impl ContributionInput {
     pub(crate) fn validate(&self, server: &str) -> Result<()> {
         key(&self.command_id)?;
@@ -282,6 +287,8 @@ impl ManagementQuery {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Contribution {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub publication_first: bool,
     pub id: String,
     pub owner_mxid: String,
     pub executor_device_id: String,

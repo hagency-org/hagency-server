@@ -178,6 +178,11 @@ async fn grant_live(db: &mut AsyncPgConnection, g: &GrantRow, now: i64) -> Resul
     grant_valid(db, g, now, true).await
 }
 async fn grant_valid(db: &mut AsyncPgConnection, g: &GrantRow, now: i64, require_session: bool) -> Result<bool> {
+    grant_bound(db, g, now, require_session, false).await
+}
+// Only successor publication may inspect capacity still awaiting admission.
+// Allocation, catalog and execution always use grant_valid (admitted only).
+async fn grant_bound(db: &mut AsyncPgConnection, g: &GrantRow, now: i64, require_session: bool, publication: bool) -> Result<bool> {
     let receipt: NativeGrantReceipt = decode(&g.receipt)?;
     let (owner, c) = contribution(db, &receipt.contribution_id).await?;
     // A scheduled renewal authorizes nothing before its UTC month starts.
@@ -186,7 +191,7 @@ async fn grant_valid(db: &mut AsyncPgConnection, g: &GrantRow, now: i64, require
         || g.period_start_ms > now
         || receipt.period_start_ms > now
         || receipt.period_end_ms <= now
-        || c.state != "admitted"
+        || !(c.state == "admitted" || publication && c.publication_first && c.state == "pending_admission")
         || owner != g.owner_user_id
         || c.executor_device_id != g.executor_device_id
         || c.executor_generation != g.executor_generation
@@ -800,7 +805,9 @@ impl DomainStore {
             publications::require_unexpired_publication(db,p,&input.command_id,"grant.publish",&payload_digest).await?;
             if let Some(saved)=replay::<ResourceGrantView>(db,p,&input.command_id,"grant.publish",&payload_digest).await? {return grant_view(&grant(db,&saved.id).await?,now);}
             let r=&input.receipt;
-            if c.state!="admitted" {return Err(Error::Conflict("contribution_not_admitted"));}
+            let initial_publication = c.publication_first && c.state=="draft";
+            if c.state!="admitted" && !initial_publication {return Err(Error::Conflict("contribution_not_admitted"));}
+            if initial_publication && (r.calendar.is_none() || r.admission_request_id.as_deref()!=Some(c.request_id.as_str())) {return Err(Error::Invalid("calendar_grant_required"));}
             if c.revision!=input.expected_contribution_revision{return Err(Error::Conflict("management_revision_changed"));}
             if r.contribution_id!=id || r.owner_mxid!=p.mxid || r.executor_device_id!=executor || r.executor_generation!=generation || r.resource_id!=c.resource_id || r.resource_revision!=c.resource_revision || r.coordinator_mxid!=p.mxid || c.coordinator_mxid!=p.mxid{return Err(Error::Invalid("resource_grant_binding_mismatch"));}
             if r.admission_request_id.as_ref().is_some_and(|request| request!=&c.request_id) {return Err(Error::Invalid("resource_grant_binding_mismatch"));}
@@ -830,6 +837,12 @@ impl DomainStore {
             super::agents::executor::validate_external_ledger_receipt(db,&p.user_id,executor,r.ledger_revision,r.ledger_revision).await?;
             sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms,chain_root_id,period_start_ms) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$1,$11)")
                 .bind::<Text,_>(&r.grant_id).bind::<Text,_>(id).bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(generation).bind::<Text,_>(wire(r)?).bind::<Text,_>(&receipt_digest).bind::<Text,_>(&r.period_key).bind::<BigInt,_>(r.delegation_expires_at_ms.min(r.period_end_ms)).bind::<BigInt,_>(now).bind::<BigInt,_>(r.period_start_ms).execute(db).await?;
+            if initial_publication {
+                sql_query("UPDATE hagency_agent_v1.management_contributions SET state='pending_admission',revision=revision+1,updated_at_ms=$2 WHERE id=$1").bind::<Text,_>(id).bind::<BigInt,_>(now).execute(db).await?;
+                sql_query("UPDATE hagency_agent_v1.management_requests SET state='pending',created_at_ms=$2,expires_at_ms=$3 WHERE id=$1 AND state='draft'").bind::<Text,_>(&c.request_id).bind::<BigInt,_>(now).bind::<BigInt,_>(now+TTL).execute(db).await?;
+                let submitted=admission(db,id,p,policy,now).await?;
+                notify(db,&submitted.request,[policy.administrator().to_owned()],now).await?;
+            }
             let rows=sql_query("SELECT m.id,m.contribution_id,m.manager_user_id,u.mxid AS manager_mxid,m.state,m.revision,m.requested_tokens,m.name,m.purpose FROM hagency_agent_v1.management_projects m JOIN hagency_agent_v1.users u ON u.id=m.manager_user_id WHERE m.contribution_id=$1 AND m.state='approved' ORDER BY m.id").bind::<Text,_>(id).load::<PlanRow>(db).await?;
             for m in rows {seed_for_project(db,policy,&m.id,now).await?;}
             let result=grant_view(&grant(db,&r.grant_id).await?,now)?;
@@ -879,7 +892,7 @@ impl DomainStore {
             publications::require_unexpired_publication(db,p,&input.command_id,"grant.succeed",&payload_digest).await?;
             if let Some(saved)=replay::<ResourceGrantView>(db,p,&input.command_id,"grant.succeed",&payload_digest).await? {return grant_view(&grant(db,&saved.id).await?,now);}
             let r=&input.receipt;
-            if c.state!="admitted" {return Err(Error::Conflict("contribution_not_admitted"));}
+            if c.state!="admitted" && !(c.publication_first && c.state=="pending_admission") {return Err(Error::Conflict("contribution_not_admitted"));}
             if c.revision!=input.expected_contribution_revision || pred.revision!=input.expected_predecessor_revision {return Err(Error::Conflict("management_revision_changed"));}
             // Same pool, executor, owner, admission and policy as the predecessor.
             if r.contribution_id!=pred.contribution_id || r.contribution_id!=c.id || r.capability!=pr.capability
@@ -909,7 +922,7 @@ impl DomainStore {
                 if existing.owner_user_id!=p.user_id || existing.receipt_digest!=receipt_digest {return Err(Error::Conflict("resource_grant_conflict"));}
                 let result=grant_view(&existing,now)?;receipt(db,p,&input.command_id,"grant.succeed",&payload_digest,&result).await?;return Ok(result);
             }
-            if pred.state!="active" || !grant_valid(db,&pred,if r.calendar.is_some() && succession.renewal() { now.min(pred.expires_at_ms-1) }else{now},true).await? {return Err(Error::Conflict("grant_predecessor_not_effective"));}
+            if pred.state!="active" || !grant_bound(db,&pred,if r.calendar.is_some() && succession.renewal() { now.min(pred.expires_at_ms-1) }else{now},true,true).await? {return Err(Error::Conflict("grant_predecessor_not_effective"));}
             // One live successor per grant. While a renewal is scheduled the
             // owner cancels (revokes) it before amending this month (Q7).
             if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE predecessor_grant_id=$1 AND state<>'revoked') AS matched").bind::<Text,_>(id).get_result::<Flag>(db).await?.matched

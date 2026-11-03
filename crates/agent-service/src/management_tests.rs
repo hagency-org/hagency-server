@@ -113,6 +113,7 @@ async fn fixture_at(url: String) -> Fixture {
 }
 fn offer(f: &Fixture, id: &str) -> ContributionInput {
     ContributionInput {
+        publication_first: false,
         command_id: format!("offer_{id}"),
         resource_id: id.into(),
         resource_revision: "a".repeat(64),
