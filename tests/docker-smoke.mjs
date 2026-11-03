@@ -50,27 +50,44 @@ async function adminLogin(){
  assert.equal((await fetch(base+'/_palpo/admin/v1/server_version',{headers:{Authorization:'Bearer '+upstream.access_token}})).status,200);
  return {cookie,csrf:value.csrf};
 }
-async function nativeOAuth(cookie){
+async function nativeOAuth(cookie, register){
  const {value:client}=await api('/auth/oauth2/registration',{method:'POST',body:{client_name:'Isolated Docker owner Agent PKCE smoke',client_uri:'https://github.com/chrislearn/hagency-client',application_type:'native',token_endpoint_auth_method:'none',grant_types:['authorization_code','refresh_token'],response_types:['code'],redirect_uris:['http://127.0.0.1/console/server-login/callback']},status:[200,201]});
  const verifier=randomBytes(48).toString('base64url'),state=randomBytes(24).toString('hex'),redirect=`http://127.0.0.1:${port}/console/server-login/callback`;
  const query=new URLSearchParams({client_id:client.client_id,response_type:'code',redirect_uri:redirect,state,scope:'urn:matrix:client:api:* urn:matrix:client:device:DockerOwnerSmoke',code_challenge:createHash('sha256').update(verifier).digest('base64url'),code_challenge_method:'S256'});
- const auth=await fetch(base+'/auth/authorize?'+query,{headers:{Cookie:cookie},redirect:'manual',signal:AbortSignal.timeout(15_000)});assert.ok([302,303].includes(auth.status));let next=new URL(auth.headers.get('location'),base);
+ if(register) query.set('prompt','create');
+ const auth=await fetch(base+'/auth/authorize?'+query,{headers:cookie?{Cookie:cookie}:{},redirect:'manual',signal:AbortSignal.timeout(15_000)});assert.ok([302,303].includes(auth.status));let next=new URL(auth.headers.get('location'),base);
+ if(register){
+  assert.equal(next.origin,base);
+  assert.equal(next.pathname,'/auth/register');
+  assert.equal(next.searchParams.get('kind'),'continue_authorization_grant');
+  const grant=next.searchParams.get('id');
+  assert.ok(grant);
+  cookie=await register(grant);
+  next=new URL('/auth/consent/'+grant,base);
+ }
  if(!next.pathname.endsWith('/console/server-login/callback')){
   const grant=next.pathname.split('/').pop();const consent=await api('/auth/api/v1/oauth2/consent/'+grant,{method:'POST',cookie,origin:base,body:{action:'consent'}});assert.equal(consent.value.status,'success');next=new URL(consent.value.redirect_url);
  }
- assert.equal(next.searchParams.get('state'),state);assert.ok(next.searchParams.get('code'));
+ assert.equal(next.origin+next.pathname,redirect);assert.equal(next.searchParams.get('state'),state);assert.ok(next.searchParams.get('code'));
  const token=await fetch(base+'/auth/oauth2/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'authorization_code',client_id:client.client_id,redirect_uri:redirect,code:next.searchParams.get('code'),code_verifier:verifier}),signal:AbortSignal.timeout(15_000)});assert.equal(token.status,200);const result=await token.json();assert.ok(result.access_token);return result.access_token;
 }
 let memberPassword=randomBytes(24).toString('base64url');
-async function memberLogin(register){
- if(register){const {value,response}=await api('/auth/api/v1/auth/register',{method:'POST',origin:base,body:{username:'member',password:memberPassword,password_confirm:memberPassword}});assert.equal(value.status,'success');assert.ok(value.id);
-  let registrationCookie=response.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
-  const display=await api('/auth/api/v1/auth/register/'+value.id+'/display-name',{method:'POST',origin:base,cookie:registrationCookie,body:{display_name:'Ordinary owner'}});
-  registrationCookie=display.response.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ')||registrationCookie;
-  const finish=await api('/auth/api/v1/auth/register/'+value.id+'/finish',{method:'POST',origin:base,cookie:registrationCookie,body:{}});assert.equal(finish.value.status,'success');
- }
+async function registerMember(grant){
+ const {value,response}=await api('/auth/api/v1/auth/register',{method:'POST',origin:base,body:{username:'member',password:memberPassword,password_confirm:memberPassword,authorization_grant_id:grant}});assert.equal(value.status,'success');assert.ok(value.id);
+ let registrationCookie=response.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
+ const display=await api('/auth/api/v1/auth/register/'+value.id+'/display-name',{method:'POST',origin:base,cookie:registrationCookie,body:{display_name:'Ordinary owner'}});
+ registrationCookie=display.response.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ')||registrationCookie;
+ const finish=await api('/auth/api/v1/auth/register/'+value.id+'/finish',{method:'POST',origin:base,cookie:registrationCookie,body:{}});assert.equal(finish.value.status,'success');
+ assert.deepEqual(finish.value.post_auth_action,{kind:'continue_authorization_grant',id:grant});
+ const browserCookie=finish.response.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
+ assert.ok(browserCookie,'Registration must establish a session without another login');
  await until(()=>sql('palpo',`SELECT is_admin FROM users WHERE id=${scalar('@member:'+name)}`)==='f','Ordinary member Matrix provisioning');
- const cookie=await browserLogin('member',memberPassword),upstream=await nativeOAuth(cookie);
+ return browserCookie;
+}
+async function memberLogin(register){
+ const upstream=register
+  ? await nativeOAuth(undefined,registerMember)
+  : await nativeOAuth(await browserLogin('member',memberPassword));
  const {value:session}=await api('/hagency/api/v1/sessions/pasion',{method:'POST',body:{accessToken:upstream}});assert.equal(session.mxid,'@member:'+name);assert.ok(session.token);assert.ok(session.validUntilMs>Date.now());
  assert.equal((await fetch(base+'/_palpo/admin/v1/server_version',{headers:{Authorization:'Bearer '+upstream}})).status,403,'Member grant cannot administer Palpo');
  return {upstream,session};
@@ -191,11 +208,24 @@ try{
  const wasmResponse=await fetch(new URL(frontWasm,base));assert.equal(wasmResponse.status,200);assert.match(wasmResponse.headers.get('content-type'),/application\/wasm/);assert.equal(Buffer.from(await wasmResponse.arrayBuffer()).subarray(0,4).toString('hex'),'0061736d');
  const runtime=await(await fetch(base+'/config.json')).json();assert.equal(runtime.pasion_enabled,true);assert.equal(runtime.oauth_enabled,true);
  assert.equal((await fetch(base+'/_matrix/client/versions')).status,200);assert.equal((await(await fetch(base+'/auth/.well-known/openid-configuration')).json()).issuer,base+'/auth/');assert.equal((await fetch(base+'/auth/login')).status,200);
+ const signupPage=await fetch(base+'/auth/register');
+ assert.equal(signupPage.status,200);
+ const signupHtml=await signupPage.text();
+ for(const [asset,type] of [
+  ['hagency-mark.svg',/^image\/svg\+xml/],
+  ['hagency-theme.css',/^text\/css/],
+  ['hagency-theme.js',/^(?:text|application)\/javascript/],
+ ]){
+  assert.ok(signupHtml.includes('/assets/'+asset),`Registration shell references ${asset}`);
+  const assetResponse=await fetch(base+'/assets/'+asset);
+  assert.equal(assetResponse.status,200,`Registration branding must serve ${asset}`);
+  assert.match(assetResponse.headers.get('content-type')??'',type);
+ }
  const keys=await(await fetch(base+'/auth/oauth2/keys.json')).json();assert.ok(keys.keys.length);
  for(const path of ['/api/fleets','/api/approvals','/api/accounts','/api/registrations'])assert.equal((await fetch(base+path,{headers:{Cookie:admin.cookie}})).status,404);
  const facts=run('exec','-T','server','sh','-c',"awk '/^Uid:/ {print $2}' /proc/1/status; stat -c %a /run/hagency/config/*.toml /run/hagency/config /app/data /app/data/agent-appservice.json /app/data/pasion-secrets.json").trim().split('\n');assert.deepEqual(facts,['10001','600','600','600','700','700','600','600']);
  console.log('PASS three databases, administrator auth, frontend, removed Fleet APIs and private non-root runtime');
- const member=await memberLogin(true);console.log('PASS ordinary member native Pasion DCR/PKCE and non-admin privileges');
+ const member=await memberLogin(true);console.log('PASS ordinary member registration resumes native DCR/PKCE without a second login and keeps non-admin privileges');
  const firstDevice=await exerciseOwner(member,true),identity=persistedIdentity();console.log('PASS ordinary owner Space/Room/Agent and actual puppet Matrix reply');
  await stopDuringFileReceipt(member,firstDevice);await writeFile(compose,definition(false));run('up','-d','server');await ready();assert.equal((await fetch(base+'/hagency/api/session',{headers:{Cookie:admin.cookie,Origin:base}})).status,401,'In-memory browser session is not revived after restart');await adminLogin();
  console.log('PASS restarted mandatory appservice ready and stale browser session rejection');
