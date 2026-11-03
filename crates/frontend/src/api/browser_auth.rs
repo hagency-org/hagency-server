@@ -33,6 +33,7 @@ pub async fn bind_current_token() -> Result<Session, HttpError> {
         Some(json!({})),
         None,
         Some(&token),
+        true,
     )
     .await?;
     let session: Session =
@@ -60,6 +61,7 @@ async fn fetch(
     body: Option<Value>,
     csrf: Option<&str>,
     token: Option<&str>,
+    fresh_oauth: bool,
 ) -> Result<Value, HttpError> {
     let mut request = match method {
         "POST" => Request::post(path),
@@ -75,6 +77,9 @@ async fn fetch(
     }
     if let Some(token) = token {
         request = request.header("Authorization", &format!("Bearer {token}"));
+    }
+    if fresh_oauth {
+        request = request.header("X-Hagency-Fresh-OAuth", "1");
     }
     let request = if let Some(body) = body {
         request
@@ -101,7 +106,7 @@ async fn fetch(
 
 /// Revalidate the browser session, rebuilding it after a host restart if needed.
 pub async fn ensure_session() -> Result<Session, HttpError> {
-    let value = match fetch("/hagency/api/session", "GET", None, None, None).await {
+    let value = match fetch("/hagency/api/session", "GET", None, None, None, false).await {
         Ok(value) => value,
         Err(e) if e.status == 401 => {
             let token = storage::get_item("access_token").ok_or(e)?;
@@ -111,6 +116,7 @@ pub async fn ensure_session() -> Result<Session, HttpError> {
                 Some(json!({})),
                 None,
                 Some(&token),
+                false,
             )
             .await?
         }
@@ -142,6 +148,7 @@ pub async fn call(path: &str, method: &str, body: Option<Value>) -> Result<Value
         body.clone(),
         Some(&session.csrf),
         None,
+        false,
     )
     .await;
     if matches!(&result, Err(e) if e.status == 401) {
@@ -153,6 +160,7 @@ pub async fn call(path: &str, method: &str, body: Option<Value>) -> Result<Value
             body,
             Some(&session.csrf),
             None,
+            false,
         )
         .await;
     }
@@ -167,6 +175,7 @@ pub async fn logout() {
             Some(json!({})),
             Some(&session.csrf),
             None,
+            false,
         )
         .await;
     }

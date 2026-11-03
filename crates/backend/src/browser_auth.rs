@@ -7,6 +7,9 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 use url::Url;
 
+#[path = "../../login_readiness.rs"]
+mod login_readiness;
+
 #[derive(Debug)]
 struct AuthError {
     status: u16,
@@ -128,6 +131,31 @@ impl BrowserAuth {
         let me = self
             .matrix("/_matrix/client/v3/account/whoami", token, false)
             .await?;
+        self.verified_identity(token, me).await
+    }
+    async fn login_identity(&self, token: &str) -> Result<(String, bool)> {
+        // Pasion can issue a valid token shortly before Matrix has provisioned
+        // its identity. Recheck only this read with the same token; regular
+        // session authorization remains one-shot and fail-closed.
+        let me = tokio::time::timeout(
+            Duration::from_millis(login_readiness::DEADLINE_MS.into()),
+            login_readiness::wait(
+                || self.matrix("/_matrix/client/v3/account/whoami", token, false),
+                |result| matches!(result, Err(error) if error.status == 401),
+                |ms| tokio::time::sleep(Duration::from_millis(ms.into())),
+            ),
+        )
+        .await
+        .map_err(|_| {
+            err(
+                504,
+                "authorization_timeout",
+                "Authorization verification timed out.",
+            )
+        })??;
+        self.verified_identity(token, me).await
+    }
+    async fn verified_identity(&self, token: &str, me: Value) -> Result<(String, bool)> {
         let user = me["user_id"]
             .as_str()
             .ok_or_else(|| err(502, "identity_invalid", "Matrix returned no identity."))?;
@@ -539,8 +567,24 @@ impl BrowserAuth {
                     )
                 })?
                 .to_owned();
+            // Only the callback that just exchanged an OAuth code requests
+            // provisioning tolerance. Cookie recovery keeps one-shot checks.
+            let fresh_oauth = req
+                .headers()
+                .get_all("x-hagency-fresh-oauth")
+                .iter()
+                .count()
+                == 1
+                && req
+                    .headers()
+                    .get("x-hagency-fresh-oauth")
+                    .is_some_and(|value| value == "1");
             let _guard = self.handover.lock().await;
-            let (user, admin) = self.identity(&token).await?;
+            let (user, admin) = if fresh_oauth {
+                self.login_identity(&token).await?
+            } else {
+                self.identity(&token).await?
+            };
             return self.browser_session(req, res, token, user, admin).await;
         }
         let sid = req
@@ -738,6 +782,11 @@ fn allowed_operation(method: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Default)]
+    struct Readiness {
+        statuses: std::sync::Mutex<std::collections::VecDeque<u16>>,
+        requests: std::sync::Mutex<Vec<(String, String)>>,
+    }
     #[test]
     fn closed_browser_capabilities() {
         for (method, path) in [
@@ -795,6 +844,15 @@ mod tests {
         std::sync::Arc<std::sync::atomic::AtomicBool>,
         tokio::task::JoinHandle<()>,
     ) {
+        fixture_with_readiness(Arc::new(Readiness::default())).await
+    }
+    async fn fixture_with_readiness(
+        readiness: Arc<Readiness>,
+    ) -> (
+        BrowserAuth,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        tokio::task::JoinHandle<()>,
+    ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
@@ -804,6 +862,7 @@ mod tests {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let admin = current.clone();
+                let readiness = readiness.clone();
                 tokio::spawn(async move {
                     let mut raw = Vec::new();
                     loop {
@@ -830,9 +889,25 @@ mod tests {
                         }
                     }
                     let request = String::from_utf8_lossy(&raw);
+                    let route = request.lines().next().unwrap().to_owned();
+                    let token = request
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("authorization: ")
+                                .or_else(|| line.strip_prefix("Authorization: "))
+                        })
+                        .unwrap_or_default()
+                        .to_owned();
+                    readiness.requests.lock().unwrap().push((route, token));
                     let (status, body) = if request.contains("/_matrix/client/v3/account/whoami") {
+                        let status = readiness
+                            .statuses
+                            .lock()
+                            .unwrap()
+                            .pop_front()
+                            .unwrap_or(200);
                         (
-                            200,
+                            status,
                             json!({"user_id":"@owner:example.test","is_guest":false}),
                         )
                     } else if request.contains("/_palpo/admin/v1/appservices") {
@@ -880,6 +955,142 @@ mod tests {
             oauth_revocation: None,
         };
         (auth, admin, worker)
+    }
+    fn login() -> salvo::test::RequestBuilder {
+        salvo::test::TestClient::post("http://example.test/hagency/api/login/token")
+            .add_header("host", "example.test", true)
+            .add_header("x-hagency-fresh-oauth", "1", true)
+            .bearer_auth("fresh-issued-token")
+            .json(&json!({}))
+    }
+    #[tokio::test]
+    async fn fresh_login_waits_for_same_token_identity_and_creates_only_one_session() {
+        let readiness = Arc::new(Readiness::default());
+        *readiness.statuses.lock().unwrap() = [401, 401, 401, 401, 401, 200].into();
+        let (mut auth, _, worker) = fixture_with_readiness(readiness.clone()).await;
+        auth.read_timeout = Duration::from_secs(8);
+        let service = Service::new(auth.router());
+        let reply = login().send(&service).await;
+        assert_eq!(reply.status_code, Some(StatusCode::OK));
+        assert!(reply.headers().contains_key(header::SET_COOKIE));
+        assert_eq!(auth.sessions.lock().await.len(), 1);
+        let requests = readiness.requests.lock().unwrap();
+        assert_eq!(requests.len(), 7); // Six identity reads, then one role read.
+        assert!(requests.iter().all(
+            |(route, token)| route.starts_with("GET ") && token == "Bearer fresh-issued-token"
+        ));
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(route, _)| route.contains("/whoami "))
+                .count(),
+            6
+        );
+        worker.abort();
+    }
+    #[tokio::test]
+    async fn permanent_login_unauthorized_is_bounded_and_never_creates_a_session() {
+        let readiness = Arc::new(Readiness::default());
+        *readiness.statuses.lock().unwrap() = [401; 9].into();
+        let (mut auth, _, worker) = fixture_with_readiness(readiness.clone()).await;
+        auth.read_timeout = Duration::from_secs(8);
+        let service = Service::new(auth.router());
+        let started = tokio::time::Instant::now();
+        let reply = login().send(&service).await;
+        assert_eq!(reply.status_code, Some(StatusCode::UNAUTHORIZED));
+        assert!(started.elapsed() < Duration::from_secs(8));
+        assert!(!reply.headers().contains_key(header::SET_COOKIE));
+        assert!(auth.sessions.lock().await.is_empty());
+        assert_eq!(readiness.requests.lock().unwrap().len(), 9);
+        worker.abort();
+    }
+    #[tokio::test]
+    async fn cancelled_login_stops_readiness_and_releases_handover_without_a_session() {
+        let readiness = Arc::new(Readiness::default());
+        *readiness.statuses.lock().unwrap() = [401; 9].into();
+        let (auth, _, worker) = fixture_with_readiness(readiness.clone()).await;
+        let service = Service::new(auth.router());
+        let mut attempt = Box::pin(login().send(&service));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::select! {
+                _ = &mut attempt => panic!("login must still be awaiting identity"),
+                _ = async {
+                    while readiness.requests.lock().unwrap().is_empty() {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                } => {}
+            }
+        })
+        .await
+        .unwrap();
+        drop(attempt);
+        let calls = readiness.requests.lock().unwrap().len();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(readiness.requests.lock().unwrap().len(), calls);
+        assert!(auth.sessions.lock().await.is_empty());
+        assert!(auth.handover.try_lock().is_ok());
+        worker.abort();
+    }
+    #[tokio::test]
+    async fn login_request_deadline_cancels_readiness_without_a_cookie_or_late_session() {
+        let readiness = Arc::new(Readiness::default());
+        *readiness.statuses.lock().unwrap() = [401; 9].into();
+        let (mut auth, _, worker) = fixture_with_readiness(readiness.clone()).await;
+        auth.read_timeout = Duration::from_millis(25);
+        let service = Service::new(auth.router());
+        let reply = login().send(&service).await;
+        assert_eq!(reply.status_code, Some(StatusCode::GATEWAY_TIMEOUT));
+        assert!(!reply.headers().contains_key(header::SET_COOKIE));
+        let calls = readiness.requests.lock().unwrap().len();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(readiness.requests.lock().unwrap().len(), calls);
+        assert!(auth.sessions.lock().await.is_empty());
+        assert!(auth.handover.try_lock().is_ok());
+        worker.abort();
+    }
+    #[tokio::test]
+    async fn existing_session_rejection_is_immediate_and_fresh_login_forbidden_is_not_retried() {
+        let readiness = Arc::new(Readiness::default());
+        let (auth, _, worker) = fixture_with_readiness(readiness.clone()).await;
+        let service = Service::new(auth.router());
+        let reply = login().send(&service).await;
+        let cookie = reply.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        *readiness.statuses.lock().unwrap() = [401, 200].into();
+        readiness.requests.lock().unwrap().clear();
+        let reply = salvo::test::TestClient::get("http://example.test/hagency/api/session")
+            .add_header("host", "example.test", true)
+            .add_header("cookie", cookie, true)
+            .send(&service)
+            .await;
+        assert_eq!(reply.status_code, Some(StatusCode::UNAUTHORIZED));
+        assert_eq!(readiness.requests.lock().unwrap().len(), 1);
+        assert!(auth.sessions.lock().await.is_empty());
+        *readiness.statuses.lock().unwrap() = [401, 200].into();
+        readiness.requests.lock().unwrap().clear();
+        let reply = salvo::test::TestClient::post("http://example.test/hagency/api/login/token")
+            .add_header("host", "example.test", true)
+            .bearer_auth("previously-issued-token")
+            .json(&json!({}))
+            .send(&service)
+            .await;
+        assert_eq!(reply.status_code, Some(StatusCode::UNAUTHORIZED));
+        assert_eq!(readiness.requests.lock().unwrap().len(), 1);
+        assert!(auth.sessions.lock().await.is_empty());
+        *readiness.statuses.lock().unwrap() = [403, 200].into();
+        readiness.requests.lock().unwrap().clear();
+        assert_eq!(
+            login().send(&service).await.status_code,
+            Some(StatusCode::FORBIDDEN)
+        );
+        assert_eq!(readiness.requests.lock().unwrap().len(), 1);
+        assert!(auth.sessions.lock().await.is_empty());
+        worker.abort();
     }
     #[tokio::test]
     async fn forwarded_headers_do_not_replace_browser_host_or_origin() {

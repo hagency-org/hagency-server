@@ -133,7 +133,7 @@ def browser_api_paths(origin, password):
             return json.load(reply)
 
     session = call("/hagency/api/login/token", "POST", {},
-                   extra={"Authorization": "Bearer " + token})
+                   extra={"Authorization": "Bearer " + token, "X-Hagency-Fresh-OAuth": "1"})
     assert session["userId"].startswith("@agent_smoke_owner:")
     assert any(cookie.name == "palpo_admin" and "HttpOnly" in cookie._rest for cookie in cookies)
     assert call("/hagency/api/session")["userId"] == session["userId"]
