@@ -124,7 +124,10 @@ impl MatrixClient {
         };
         let (status, value) = self.crypto_json(request, until, max).await?;
         if (200..300).contains(&status) && matches!(operation, Operation::ReceiveSync) {
-            crate::domain::agent_crypto::receive::sync_response(&value)?;
+            return Ok((
+                status,
+                crate::domain::agent_crypto::receive::crypto_sync_response(value)?,
+            ));
         }
         if (200..300).contains(&status)
             && matches!(operation, Operation::Whoami)

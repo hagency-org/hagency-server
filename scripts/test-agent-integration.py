@@ -498,6 +498,13 @@ try:
             assert sql(DBS[1], "SELECT count(*) FROM user_access_tokens WHERE token IN "
                 "(SELECT as_token FROM appservice_registrations WHERE id='hagency_agents_v1')", capture=True) == "0"
             print("PASS: actual embedded Palpo provisions the pinned Agent device in both broker scopes without creating a user token")
+            # Palpo may return room or global account data despite the restrictive
+            # filter. The device broker must expose only the crypto mailbox.
+            synced = request(origin, "GET", crypto_path + "/receive/_matrix/client/v3/sync?timeout=1&use_state_after=true", token=device_token)
+            assert isinstance(synced["next_batch"], str) and synced["next_batch"]
+            assert set(synced) <= {"next_batch", "to_device", "device_lists", "device_one_time_keys_count",
+                                   "device_unused_fallback_key_types", "org.matrix.msc2732.device_unused_fallback_key_types"}
+            print("PASS: embedded Palpo receiver sync exposes only its crypto mailbox")
             history = request(origin, "POST", "/hagency/api/v1/execution/history", {"agentId": agent["id"], "cursor": None, "snapshot": None}, device_token)["history"]
             assert history["snapshot"]["count"] == 0 and history["executions"] == []
             lease = request(origin, "POST", "/hagency/api/v1/execution/leases/acquire", {"agentId": agent["id"], "ttlMs": 20000, "takeover": False, "historySnapshot": history["snapshot"]}, device_token)["lease"]

@@ -181,7 +181,8 @@ pub(crate) fn signing_digest(
         .ok_or_else(invalid)?;
     Ok(Some(digest(&(user, "user_signing", key))?))
 }
-pub(crate) fn sync_response(value: &Value) -> Result<()> {
+/// Keep the crypto mailbox independent of upstream support for room filters.
+pub(crate) fn crypto_sync_response(mut value: Value) -> Result<Value> {
     let bad = || Error::Unavailable("invalid_agent_crypto_receive_response");
     let allowed = [
         "next_batch",
@@ -190,38 +191,23 @@ pub(crate) fn sync_response(value: &Value) -> Result<()> {
         "device_one_time_keys_count",
         "device_unused_fallback_key_types",
         "org.matrix.msc2732.device_unused_fallback_key_types",
-        "rooms",
-        "presence",
-        "account_data",
     ];
-    let o = value
-        .as_object()
-        .filter(|o| o.keys().all(|k| allowed.contains(&k.as_str())))
-        .ok_or_else(bad)?;
+    let o = value.as_object_mut().ok_or_else(bad)?;
+    // Palpo may return these standard sections even with an empty filter.
+    // They are never part of the execution device's crypto mailbox.
+    for section in ["rooms", "presence", "account_data"] {
+        o.remove(section);
+    }
+    if !o.keys().all(|key| allowed.contains(&key.as_str())) {
+        return Err(bad());
+    }
     if value["next_batch"]
         .as_str()
         .is_none_or(|s| s.is_empty() || s.len() > 4096 || s.chars().any(char::is_control))
     {
         return Err(bad());
     }
-    if let Some(rooms) = o.get("rooms") {
-        let rooms = rooms.as_object().ok_or_else(bad)?;
-        if rooms.iter().any(|(name, v)| {
-            !matches!(name.as_str(), "join" | "invite" | "leave" | "knock")
-                || v.as_object().is_none_or(|o| !o.is_empty())
-        }) {
-            return Err(bad());
-        }
-    }
-    for name in ["presence", "account_data"] {
-        if let Some(value) = o.get(name)
-            && (value.as_object().is_none_or(|o| o.len() != 1)
-                || value["events"].as_array().is_none_or(|e| !e.is_empty()))
-        {
-            return Err(bad());
-        }
-    }
-    if let Some(device) = o.get("to_device") {
+    if let Some(device) = value.get("to_device") {
         if device.as_object().is_none_or(|o| o.len() != 1) {
             return Err(bad());
         }
@@ -245,7 +231,7 @@ pub(crate) fn sync_response(value: &Value) -> Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -343,19 +329,20 @@ mod tests {
         );
     }
     #[test]
-    fn receiver_rejects_room_presence_account_history_and_malformed_sync_responses() {
-        let valid = json!({"next_batch":"s_opaque","to_device":{"events":[{"sender":"@owner:test","type":"m.room.encrypted","content":{"algorithm":"m.olm.v1.curve25519-aes-sha2"}}]},"rooms":{"join":{},"invite":{},"leave":{}},"presence":{"events":[]},"account_data":{"events":[]}});
-        sync_response(&valid).unwrap();
+    fn receiver_projects_crypto_mailbox_and_refuses_unknown_or_malformed_fields() {
+        let mailbox = json!({"next_batch":"s_opaque","to_device":{"events":[{"sender":"@owner:test","type":"m.room.encrypted","content":{"algorithm":"m.olm.v1.curve25519-aes-sha2"}}]},"device_one_time_keys_count":{"signed_curve25519":3}});
+        let mut upstream = mailbox.clone();
+        upstream["rooms"] = json!({"join":{"!private:test":{"timeline":{"events":[{"content":{"body":"private"}}]}}}});
+        upstream["presence"] = json!({"events":[{"type":"m.presence"}]});
+        upstream["account_data"] = json!({"events":[{"type":"m.push_rules"}]});
+        assert_eq!(crypto_sync_response(upstream).unwrap(), mailbox);
         for body in [
             json!({}),
             json!({"next_batch":""}),
-            json!({"next_batch":"s","rooms":{"join":{"!private:test":{}}}}),
-            json!({"next_batch":"s","presence":{"events":[{}]}}),
-            json!({"next_batch":"s","account_data":{"events":[{}]}}),
             json!({"next_batch":"s","unexpected":["secret"]}),
             json!({"next_batch":"s","to_device":{"events":[{"sender":"owner","type":"m.room.encrypted","content":{}}]}}),
         ] {
-            assert!(sync_response(&body).is_err());
+            assert!(crypto_sync_response(body).is_err());
         }
     }
     #[test]
