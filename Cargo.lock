@@ -6765,7 +6765,7 @@ dependencies = [
 [[package]]
 name = "palpo"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#296f6bdb55919f2bfef5fb7afc322b7c8fbde68d"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#60c25e6516fd72e8e64f9d7631ac060a35afd612"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6860,7 +6860,7 @@ dependencies = [
 [[package]]
 name = "palpo-core"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#296f6bdb55919f2bfef5fb7afc322b7c8fbde68d"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#60c25e6516fd72e8e64f9d7631ac060a35afd612"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -6925,7 +6925,7 @@ dependencies = [
 [[package]]
 name = "palpo-core-macros"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#296f6bdb55919f2bfef5fb7afc322b7c8fbde68d"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#60c25e6516fd72e8e64f9d7631ac060a35afd612"
 dependencies = [
  "as_variant",
  "palpo-identifiers-validation",
@@ -6940,7 +6940,7 @@ dependencies = [
 [[package]]
 name = "palpo-data"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#296f6bdb55919f2bfef5fb7afc322b7c8fbde68d"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#60c25e6516fd72e8e64f9d7631ac060a35afd612"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7010,7 +7010,7 @@ dependencies = [
 [[package]]
 name = "palpo-identifiers-validation"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#296f6bdb55919f2bfef5fb7afc322b7c8fbde68d"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#60c25e6516fd72e8e64f9d7631ac060a35afd612"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -7018,7 +7018,7 @@ dependencies = [
 [[package]]
 name = "palpo-server-macros"
 version = "0.4.0"
-source = "git+https://github.com/palpo-im/palpo.git?branch=main#296f6bdb55919f2bfef5fb7afc322b7c8fbde68d"
+source = "git+https://github.com/palpo-im/palpo.git?branch=main#60c25e6516fd72e8e64f9d7631ac060a35afd612"
 dependencies = [
  "palpo-identifiers-validation",
  "proc-macro-crate",
@@ -8119,9 +8119,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.5"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
 dependencies = [
  "bitflags 2.13.2",
  "memchr",

@@ -474,6 +474,30 @@ try:
             unchanged=request(origin,"PUT",device_path,{"expectedGeneration":agent["generation"]},device_token)["agent"]
             assert unchanged["generation"]==agent["generation"]
             assert any(d["id"]==device["deviceId"] for d in request(origin,"GET","/hagency/api/v1/devices",token=user_token)["devices"])
+            # Exercise the production broker against embedded Palpo, rather
+            # than assuming a Synapse or in-process Matrix double is equivalent.
+            crypto_path = f"/hagency/agent-crypto/{agent['id']}/{agent['generation']}"
+            expected_device = "HAGENCY_" + hashlib.sha256(json.dumps(
+                ["agent-crypto-v1", agent["id"], device["deviceId"]], separators=(",", ":")
+            ).encode()).hexdigest()
+            provision = request(origin, "POST", crypto_path + "/provision", token=device_token)
+            assert set(provision) == {"agentId", "agentGeneration", "executionDeviceId",
+                "deviceGeneration", "matrixUserId", "matrixDeviceId", "serverVersions", "homeserver"}
+            assert provision["agentId"] == agent["id"] and provision["agentGeneration"] == agent["generation"]
+            assert provision["executionDeviceId"] == device["deviceId"] and provision["deviceGeneration"] == device["generation"]
+            assert provision["matrixUserId"] == agent["puppetMxid"] and provision["matrixDeviceId"] == expected_device
+            assert provision["homeserver"] == origin + crypto_path and provision["serverVersions"]
+            assert request(origin, "POST", crypto_path + "/provision", token=device_token) == provision
+            receive = request(origin, "POST", crypto_path + "/receive", token=device_token)
+            assert receive == dict(provision, homeserver=provision["homeserver"] + "/receive")
+            for path in [crypto_path, crypto_path + "/receive"]:
+                who = request(origin, "GET", path + "/_matrix/client/v3/account/whoami", token=device_token)
+                assert who["user_id"] == agent["puppetMxid"] and who["device_id"] == expected_device
+                assert not who.get("is_guest", False)
+            request(origin, "POST", crypto_path + "/provision", token=user_token, expected_status=401)
+            assert sql(DBS[1], "SELECT count(*) FROM user_access_tokens WHERE token IN "
+                "(SELECT as_token FROM appservice_registrations WHERE id='hagency_agents_v1')", capture=True) == "0"
+            print("PASS: actual embedded Palpo provisions the pinned Agent device in both broker scopes without creating a user token")
             history = request(origin, "POST", "/hagency/api/v1/execution/history", {"agentId": agent["id"], "cursor": None, "snapshot": None}, device_token)["history"]
             assert history["snapshot"]["count"] == 0 and history["executions"] == []
             lease = request(origin, "POST", "/hagency/api/v1/execution/leases/acquire", {"agentId": agent["id"], "ttlMs": 20000, "takeover": False, "historySnapshot": history["snapshot"]}, device_token)["lease"]

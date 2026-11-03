@@ -1,14 +1,15 @@
 //! Mandatory service-level registration for the integrated Agent product.
-//! Uses Palpo's existing registration API; no per-user service installation.
-use crate::config::Config;
+//! Uses Palpo's registration store; no per-user service installation.
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
+use std::path::Path;
+
 use serde_json::json;
-use std::{
-    fs::{self, OpenOptions},
-    io::{Read, Write},
-    path::Path,
-};
+
+use crate::config::Config;
 
 const ID: &str = "hagency_agents_v1";
+mod device;
 
 pub async fn prepare(conf: &Config) -> anyhow::Result<palpo::core::appservice::Registration> {
     let registration = load_or_create(
@@ -16,24 +17,7 @@ pub async fn prepare(conf: &Config) -> anyhow::Result<palpo::core::appservice::R
         conf.matrix.server_name.as_str(),
         conf.internal_origin().as_str(),
     )?;
-    let existing = palpo::appservice::get_registration(ID).await?;
-    match existing {
-        Some(existing) => {
-            anyhow::ensure!(
-                serde_json::to_value(existing)? == serde_json::to_value(&registration)?,
-                "Agent Appservice registration conflicts with persisted deployment identity"
-            );
-            let disabled = palpo::appservice::list_all_registrations()
-                .await?
-                .iter()
-                .find(|(r, _)| r.id == ID)
-                .is_some_and(|(_, disabled)| *disabled);
-            anyhow::ensure!(!disabled, "Agent Appservice is disabled");
-        }
-        None => {
-            palpo::appservice::register_appservice(registration.clone()).await?;
-        }
-    }
+    device::prepare(&registration).await?;
     Ok(registration)
 }
 fn load_or_create(
@@ -54,7 +38,7 @@ fn load_or_create(
                 "hs_token":hex::encode(rand::random::<[u8;32]>()),
                 "sender_localpart":"_hagency_service",
                 "namespaces":{"users":[{"exclusive":true,"regex":format!("^@_hagency_[a-z0-9_]+:{}$",regex::escape(server))}],"aliases":[],"rooms":[]},
-                "rate_limited":true,"receive_ephemeral":false});
+                "rate_limited":true,"receive_ephemeral":false,"io.element.msc4190":true});
         file.write_all(&serde_json::to_vec(&body)?)?;
         file.as_file().sync_all()?;
         match file.persist_noclobber(path) {
@@ -106,7 +90,7 @@ fn load_or_create(
         );
     }
     file.take(16385).read_to_end(&mut raw)?;
-    let registration: palpo::core::appservice::Registration = serde_json::from_slice(&raw)?;
+    let mut registration: palpo::core::appservice::Registration = serde_json::from_slice(&raw)?;
     let expected = format!("^@_hagency_[a-z0-9_]+:{}$", regex::escape(server));
     let value = serde_json::to_value(&registration)?;
     anyhow::ensure!(
@@ -124,6 +108,10 @@ fn load_or_create(
                 .is_none_or(|v| v.is_empty()),
         "Appservice credentials belong to another deployment or namespace"
     );
+    // This built-in service already owns exactly the validated Agent namespace.
+    // Old private files retain their original tokens and bytes. The database
+    // capability upgrade compares the complete original identity under a lock.
+    registration.device_management = true;
     Ok(registration)
 }
 /// Palpo's state reader skips PDUs it cannot load. Authorization requires every
@@ -164,6 +152,20 @@ mod tests {
         assert_eq!(a.as_token, b.as_token);
         assert_eq!(a.hs_token, b.hs_token);
         assert_ne!(a.as_token, a.hs_token);
+        assert!(
+            a.device_management,
+            "Agent SDK identities require fixed appservice devices"
+        );
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("io.element.msc4190");
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let original = fs::read(&path).unwrap();
+        let upgraded = load_or_create(&path, "example.test", "http://127.0.0.1:8088/").unwrap();
+        assert!(upgraded.device_management);
+        assert_eq!(upgraded.as_token, a.as_token);
+        assert_eq!(upgraded.hs_token, a.hs_token);
+        assert_eq!(fs::read(&path).unwrap(), original);
         assert!(load_or_create(&path, "another.test", "http://127.0.0.1:8088/").is_err());
         assert!(load_or_create(&path, "example.test", "http://127.0.0.1:9090/").is_err());
         #[cfg(unix)]

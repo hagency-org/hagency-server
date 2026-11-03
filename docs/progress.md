@@ -231,3 +231,5 @@
   now locks all six packages to this official main and retains branch="main".
   Its final CI, stopped-backup cutover and original-key native recovery checks
   remain separate acceptance steps; no completed recovery claim is made here.
+
+- 2026-11-03：定位 Agent 加密初始化的设备注册 404；内置 Appservice 在启动时仅为原部署的完整注册身份启用设备能力，保留令牌、命名空间及既有私有文件。锁定正式 Palpo main 合并提交 `60c25e65`。独立的嵌入式回归覆盖固定设备、两种 broker scope 的 whoami、幂等重试和无普通令牌，未调用模型。

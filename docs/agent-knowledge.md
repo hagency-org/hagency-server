@@ -103,3 +103,5 @@ Client 插图应使用上传事务返回的 attachment ID，不能根据文件�
 - Pasion's current bootstrap/key-generation and password hashing use rand_chacha0.3, whose SeedableRng is rand_core0.6. Import the trait through rand_chacha::rand_core; a separate direct rand_core0.10 trait is incompatible even though both versions coexist. Removing the redundant direct dependency does not remove upstream0.6 or migrate permanent cryptographic identities.
 
 - Bootstrap-admin provisioning is asynchronous: pasion::bootstrap_admin commits a durable ProvisionUserJob, then the worker creates/mirrors the human Matrix identity and role after HTTP starts. Successful AS readiness alone is insufficient for fixture login. Wait for the actual Matrix users row and expected active/non-guest administrator role before minting fixture OAuth grants; never fix this timing race with direct role writes or permissive BFF authentication.
+
+- Agent 加密初始化使用固定的 Appservice 设备 ID。内置服务须有 `io.element.msc4190`，Palpo 须保存原 ID 且不得把 Appservice bearer 写进普通用户令牌表。升级只接受与原私有注册匹配且启用的内置服务；回滚旧二进制前应协调恢复升级前的数据库备份和私有部署状态。
