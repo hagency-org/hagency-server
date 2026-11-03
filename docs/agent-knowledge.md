@@ -105,3 +105,14 @@ Client 插图应使用上传事务返回的 attachment ID，不能根据文件�
 - Bootstrap-admin provisioning is asynchronous: pasion::bootstrap_admin commits a durable ProvisionUserJob, then the worker creates/mirrors the human Matrix identity and role after HTTP starts. Successful AS readiness alone is insufficient for fixture login. Wait for the actual Matrix users row and expected active/non-guest administrator role before minting fixture OAuth grants; never fix this timing race with direct role writes or permissive BFF authentication.
 
 - Agent 加密初始化使用固定的 Appservice 设备 ID。内置服务须有 `io.element.msc4190`，Palpo 须保存原 ID 且不得把 Appservice bearer 写进普通用户令牌表。升级只接受与原私有注册匹配且启用的内置服务；回滚旧二进制前应协调恢复升级前的数据库备份和私有部署状态。
+
+# Embedded Server tracing and local QA (2026-11-03)
+
+The integrated binary installs its subscriber before initializing the embedded
+services and does not install a global OpenTelemetry tracer provider. Avoid
+installing a tracing bridge against the default no-op tracer. It exports no spans,
+but still runs span lifecycle callbacks; a debug OAuth request hit a
+`tracing-opentelemetry` span-close assertion. Keep the normal logs and Palpo's
+capture layer. Re-run native PKCE and embedded integration when changing this
+boundary. Give the DB suite its own PostgreSQL instance when holding other
+embedded fixture servers; their pools can exhaust the default connection limit.

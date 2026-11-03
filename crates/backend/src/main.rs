@@ -75,10 +75,6 @@ async fn run() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(filter))
         .with(palpo::logging::capture_layer())
-        .with(
-            tracing_opentelemetry::layer()
-                .with_tracer(opentelemetry::global::tracer("hagency-server")),
-        )
         .init();
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()

@@ -237,3 +237,5 @@
 - 2026-11-03：真实原生客户端预检发现首次 Agent 账号注册另有 503。Palpo 的 `inhibit_login` 响应可含 `device_id: null`，broker 旧判定误将空值当作登录设备。新增真实 HTTP 回归，接受空值但继续拒绝非空设备及任何令牌字段。
 
 - 2026-11-03：用真实嵌入式 Palpo 复现接收密钥的 sync 返回 503。上游忽略部分空过滤器，返回房间、在线状态、账号数据。Hagency 在 broker 输出边界明确剔除这三种数据，只返回已知的加密 mailbox 字段；未知字段、无效游标或畸形设备事件仍拒绝。部署 smoke 新增真实 scoped sync 检查。
+
+- 2026-11-03：Salvo 候选统一锁定 1.1.0，保持嵌入式 Palpo/Pasion 的源提交。首次本地原生 OAuth 流程因 `tracing-opentelemetry` 的 span 关闭断言中断，随后诊断重跑通过。移除 Hagency 启动时未配置导出器的追踪层，保留格式化日志与 Palpo 捕获；修正后的二进制在独立 PostgreSQL 中通过 20 项嵌入式检查，涵盖原生登录、Agent 加密设备与消息、成员和执行权限、三库及媒体恢复。Linux 容器验收另由 GitHub Actions 验证。
