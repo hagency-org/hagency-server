@@ -105,6 +105,7 @@ type Calls = Arc<Mutex<Vec<(String, Value)>>>;
 struct Matrix {
     calls: Calls,
     fail: Arc<AtomicBool>,
+    unexpected_login_device: Arc<AtomicBool>,
 }
 #[handler]
 impl Matrix {
@@ -136,8 +137,13 @@ impl Matrix {
                 .lock()
                 .unwrap()
                 .push((req.uri().to_string(), body.clone()));
+            let device = self
+                .unexpected_login_device
+                .as_ref()
+                .load(Ordering::Acquire)
+                .then_some("unexpected");
             res.render(Json(
-                json!({"user_id":format!("@{}:example.test",body["username"].as_str().unwrap())}),
+                json!({"user_id":format!("@{}:example.test",body["username"].as_str().unwrap()),"device_id":device}),
             ));
             return;
         }
@@ -192,6 +198,7 @@ struct Fixture {
     matrix: MatrixClient,
     calls: Calls,
     fail: Arc<AtomicBool>,
+    unexpected_login_device: Arc<AtomicBool>,
     http: tokio::task::JoinHandle<()>,
     url: String,
 }
@@ -270,6 +277,7 @@ async fn fixture() -> Fixture {
         .id;
     let calls = Arc::new(Mutex::new(Vec::new()));
     let fail = Arc::new(AtomicBool::new(false));
+    let unexpected_login_device = Arc::new(AtomicBool::new(false));
     let acceptor = salvo::conn::TcpListener::new("127.0.0.1:0")
         .try_bind()
         .await
@@ -278,6 +286,7 @@ async fn fixture() -> Fixture {
     let router = Router::with_path("{**path}").goal(Matrix {
         calls: calls.clone(),
         fail: fail.clone(),
+        unexpected_login_device: unexpected_login_device.clone(),
     });
     let http = tokio::spawn(async move {
         Server::new(acceptor).serve(router).await;
@@ -300,6 +309,7 @@ async fn fixture() -> Fixture {
         matrix,
         calls,
         fail,
+        unexpected_login_device,
         http,
         url,
     }
@@ -531,6 +541,31 @@ async fn native_identity_proxy_rejects_scope_injection_and_message_endpoints_bef
         receive_manifest["matrixDeviceId"],
         manifest["matrixDeviceId"]
     );
+    // A registration that actually supplies a device must fail before PUT.
+    f.unexpected_login_device.store(true, Ordering::Release);
+    let before = f.calls.lock().unwrap().len();
+    let mut refused = TestClient::post(format!("{root}/receive"))
+        .add_header("host", "example.test", true)
+        .bearer_auth(&f.token)
+        .send(&service)
+        .await;
+    assert_eq!(refused.status_code, Some(StatusCode::SERVICE_UNAVAILABLE));
+    let refused: Value = refused.take_json().await.unwrap();
+    assert_eq!(refused["error"], "invalid_agent_crypto_response");
+    {
+        let calls = f.calls.lock().unwrap();
+        let base = url::Url::parse("http://example.test/").unwrap();
+        let paths = calls[before..]
+            .iter()
+            .map(|(path, _)| base.join(path).unwrap().path().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            ["/_matrix/client/versions", "/_matrix/client/v3/register"]
+        );
+    }
+    f.unexpected_login_device.store(false, Ordering::Release);
+
     let mut synced = TestClient::get(format!("{root}/receive/_matrix/client/v3/sync?since=opaque-test-token&timeout=5000&set_presence=online&full_state=false&use_state_after=true"))
         .add_header("host", "example.test", true).bearer_auth(&f.token).send(&service).await;
     assert_eq!(synced.status_code, Some(StatusCode::OK));

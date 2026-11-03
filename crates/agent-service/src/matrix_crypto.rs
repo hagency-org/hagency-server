@@ -54,7 +54,12 @@ impl MatrixClient {
             url.set_path("/_matrix/client/v3/register");
             let request=self.http.post(url).bearer_auth(&self.as_token).json(&json!({"type":"m.login.application_service","username":user.split_once(':').ok_or(Error::Invalid("invalid_puppet_identity"))?.0.trim_start_matches('@'),"inhibit_login":true}));
             let (status, value) = self.crypto_json(request, until, MAX_BYTES).await?;
-            if value.get("device_id").is_some() {
+            // Palpo can serialize the absent device as null for inhibit_login.
+            // An actual device (or any malformed non-null value) is still refused.
+            if value
+                .get("device_id")
+                .is_some_and(|device| !device.is_null())
+            {
                 return Err(Error::Unavailable("invalid_agent_crypto_response"));
             }
             if (200..300).contains(&status) {

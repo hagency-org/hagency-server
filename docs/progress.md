@@ -233,3 +233,5 @@
   remain separate acceptance steps; no completed recovery claim is made here.
 
 - 2026-11-03：定位 Agent 加密初始化的设备注册 404；内置 Appservice 在启动时仅为原部署的完整注册身份启用设备能力，保留令牌、命名空间及既有私有文件。锁定正式 Palpo main 合并提交 `60c25e65`。独立的嵌入式回归覆盖固定设备、两种 broker scope 的 whoami、幂等重试和无普通令牌，未调用模型。
+
+- 2026-11-03：真实原生客户端预检发现首次 Agent 账号注册另有 503。Palpo 的 `inhibit_login` 响应可含 `device_id: null`，broker 旧判定误将空值当作登录设备。新增真实 HTTP 回归，接受空值但继续拒绝非空设备及任何令牌字段。
