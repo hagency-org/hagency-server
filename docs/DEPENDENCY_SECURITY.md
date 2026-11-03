@@ -40,6 +40,14 @@ that date requires rechecking the call paths, affected operations, upstream fixe
 and source revisions; it is not an automatic renewal.
 Review dates explicitly use Asia/Shanghai, including on UTC GitHub runners.
 
+On 2026-11-03, the password registration continuation fix moved the locked
+Pasion revision from `881ae7a` to `7967064`. The Pasion JOSE and keystore trees
+and the resolved dependency graph are unchanged; the only upstream source
+changes are the registration handler and browser routing. The reviewed source
+pin follows that revision. Findings, dispositions, and the original expiration
+are unchanged.
+
+
 The `Dependency risk policy` workflow runs on PRs, main pushes, weekly and manual
 dispatch. Cargo Dependabot updates run weekly. Local offline reproduction may use
 `--no-fetch` only after the advisory database has already been fetched.
