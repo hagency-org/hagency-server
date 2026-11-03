@@ -234,7 +234,7 @@ impl ManagedAgentPeriodRenewCommand {
             || g.resource_id != c.resource_id
             || g.resource_revision != c.resource_revision
             || !g.eligible_managers.contains(&c.manager_mxid)
-            || g.allocated_tokens < c.requested_tokens
+            || g.request_limit() < c.requested_tokens
             || self.period != expected
             || self.period.start_ms < original.period_end_ms as u64
             || self.period.key != g.period_key

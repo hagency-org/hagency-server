@@ -76,14 +76,21 @@ pub(super) async fn projection(
     };
     let period = period(&t, now)?;
     let original=sql_query("SELECT payload FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1 AND state<>'fenced'").bind::<Text,_>(&r.id).get_result::<AgentPerson>(db).await.optional()?.map(|r|decode::<ManagedAgentReserveCommand>(&r.payload)).transpose()?;
+    let has_reservation = original.is_some() && pool::reserved(db, &r.id).await?;
     let live = match &original {
-        Some(c) => authorized(db, c, now).await? && pool::reserved(db, &r.id).await?,
+        Some(c) => has_reservation && authorized(db, c, now).await?,
         None => false,
     };
-    let pending=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands w JOIN hagency_agent_v1.management_agent_intents i ON i.id=w.intent_id WHERE i.request_id=$1 AND w.operation='agent.period.renew' AND w.period_key=$2) AS matched").bind::<Text,_>(&r.id).bind::<Text,_>(&period.key).get_result::<Flag>(db).await?.matched;
-    let has_capacity = match pool::effective_grant(db, r, now).await {
-        Ok(g) => g.receipt.allocated_tokens >= r.requested_tokens,
-        Err(Error::Conflict(_) | Error::NotFound(_)) => false,
+    let pending=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands w JOIN hagency_agent_v1.management_agent_intents i ON i.id=w.intent_id WHERE i.request_id=$1 AND w.operation='agent.period.renew' AND w.period_key=$2 AND w.receipt IS NULL) AS matched").bind::<Text,_>(&r.id).bind::<Text,_>(&period.key).get_result::<Flag>(db).await?.matched;
+    let attempt = latest_attempt(db, original.as_ref().map(|c| c.command_id.as_str()), &period.key).await?;
+    let refused = attempt.as_ref().is_some_and(|a| a.state.as_deref() == Some("refused"));
+    let already_authorized = attempt.as_ref().is_some_and(|a| a.state.as_deref() == Some("authorized"));
+    let (has_capacity, limit_exceeded) = match pool::effective_grant(db, r, now).await {
+        Ok(g) => (g.receipt.request_limit() >= r.requested_tokens
+            && g.receipt.calendar.as_ref() == Some(&t.calendar)
+            && g.receipt.period_key == period.key,
+            g.receipt.request_limit() < r.requested_tokens),
+        Err(Error::Conflict(_) | Error::NotFound(_)) => (false, false),
         Err(e) => return Err(e),
     };
     let consumed = known(db, &r.id, &period).await?;
@@ -93,26 +100,38 @@ pub(super) async fn projection(
         .and_then(|c| c.pool_grant.as_ref())
         .is_some_and(|g| period.start_ms >= g.period_end_ms as u64);
     let open = r.state == "approved_waiting_executor" && original.is_some();
-    let state = if !open && r.state != "pending_approval" {
+    let state = if r.state == "rejected" {
+        "rejected"
+    } else if r.state == "pending_approval" && r.expires_at_ms <= now {
+        "expired"
+    } else if !open && r.state != "pending_approval" {
         "revoked"
-    } else if !has_capacity {
-        "awaiting_capacity"
     } else if live && consumed >= r.requested_tokens {
         "exhausted"
     } else if live {
         "available"
-    } else if new_period && !pending && t.renewal_mode == RenewalMode::Owner {
+    } else if limit_exceeded {
+        "request_limit_exceeded"
+    } else if !has_capacity {
+        "awaiting_capacity"
+    } else if already_authorized {
+        "ended"
+    } else if !pending && refused {
+        "renewal_refused"
+    } else if has_reservation && new_period && !pending && t.renewal_mode == RenewalMode::Owner {
         "awaiting_owner"
     } else {
         "awaiting_executor"
     };
     let can_renew = open
+        && has_reservation
         && new_period
         && !pending
         && !live
+        && !already_authorized
         && has_capacity
         && p.user_id == r.administrator_user_id
-        && t.renewal_mode == RenewalMode::Owner;
+        && (t.renewal_mode == RenewalMode::Owner || refused);
     Ok((
         Some(t.calendar),
         Some(t.renewal_mode),
@@ -136,6 +155,15 @@ pub(super) async fn projection(
         }),
         can_renew,
     ))
+}
+#[derive(QueryableByName)]
+struct PeriodAttempt {
+    #[diesel(sql_type = Nullable<Text>)]
+    state: Option<String>,
+}
+async fn latest_attempt(db: &mut AsyncPgConnection, intent: Option<&str>, period: &str) -> Result<Option<PeriodAttempt>> {
+    Ok(sql_query("SELECT receipt::jsonb->>'state' AS state FROM hagency_agent_v1.management_agent_executor_commands WHERE intent_id=$1 AND operation='agent.period.renew' AND period_key=$2 ORDER BY (receipt::jsonb->>'state' IS DISTINCT FROM 'refused') DESC,created_at_ms DESC,id DESC LIMIT 1")
+        .bind::<Nullable<Text>,_>(intent).bind::<Text,_>(period).get_result(db).await.optional()?)
 }
 pub(super) async fn enqueue(
     db: &mut AsyncPgConnection,
@@ -164,11 +192,24 @@ pub(super) async fn enqueue(
     if period.start_ms < (c.pool_grant.as_ref().unwrap().period_end_ms as u64) {
         return Err(Error::Conflict("agent_period_already_authorized"));
     }
-    if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands WHERE intent_id=$1 AND period_key=$2) AS matched").bind::<Text,_>(&c.command_id).bind::<Text,_>(&period.key).get_result::<Flag>(db).await?.matched {return Ok(false)}
+    let attempt = latest_attempt(db, Some(&c.command_id), &period.key).await?;
+    // A missing receipt is an unknown native outcome. Only a durable refusal
+    // permits a fresh command; authorized periods never receive another credit.
+    if attempt.as_ref().is_some_and(|a| a.state.as_deref() != Some("refused")) {
+        return Ok(false);
+    }
     let g = pool::effective_grant(db, r, now).await?;
+    // Automatic mode waits for changed authority after a definitive refusal.
+    // An explicit owner action may retry without changing the approved terms.
+    if !owner_action && attempt.is_some() && sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands WHERE intent_id=$1 AND operation='agent.period.renew' AND period_key=$2 AND receipt::jsonb->>'state'='refused' AND command_payload::jsonb->>'currentGrantDigest'=$3) AS matched")
+        .bind::<Text,_>(&c.command_id).bind::<Text,_>(&period.key).bind::<Text,_>(&g.receipt_digest).get_result::<Flag>(db).await?.matched {
+        return Ok(false);
+    }
+    if g.receipt.request_limit() < r.requested_tokens {
+        return Err(Error::Conflict("pool_agent_request_limit_exceeded"));
+    }
     if g.receipt.calendar.as_ref() != Some(&t.calendar)
         || g.receipt.period_key != period.key
-        || g.receipt.request_limit() < r.requested_tokens
     {
         return Err(Error::Conflict("pool_capacity_unavailable"));
     }
@@ -205,14 +246,36 @@ pub(super) async fn automatic(
     now: i64,
     server: &str,
 ) -> Result<()> {
-    let ids=sql_query("SELECT i.request_id AS payload FROM hagency_agent_v1.management_agent_intents i JOIN hagency_agent_v1.management_agent_recurring_terms t ON t.request_id=i.request_id JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=i.request_id WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND i.state<>'fenced' AND a.state='pending_native' AND t.renewal_mode='automatic' ORDER BY i.id LIMIT 1000")
-        .bind::<Text,_>(&p.user_id).bind::<Nullable<Text>,_>(p.device_id.as_deref()).load::<AgentPerson>(db).await?;
-    for id in ids {
-        let r = row(db, &id.payload).await?;
-        match enqueue(db, &r, now, false, server).await {
+    #[derive(QueryableByName)]
+    struct Candidate {
+        #[diesel(sql_type = Text)] id: String,
+        #[diesel(sql_type = Text)] request_id: String,
+    }
+    let cursor = sql_query("SELECT after_intent_id AS payload FROM hagency_agent_v1.management_agent_renewal_cursors WHERE executor_device_id=$1")
+        .bind::<Nullable<Text>,_>(p.device_id.as_deref()).get_result::<AgentPerson>(db).await.optional()?.map(|r| r.payload).unwrap_or_default();
+    // Rotate a bounded page even when every candidate in it is unavailable.
+    // This prevents early live/invalid intents from starving later Agents.
+    let query = "SELECT i.id,i.request_id FROM hagency_agent_v1.management_agent_intents i JOIN hagency_agent_v1.management_agent_recurring_terms t ON t.request_id=i.request_id JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=i.request_id WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND i.state<>'fenced' AND a.state='pending_native' AND t.renewal_mode='automatic' AND i.id>$3 ORDER BY i.id LIMIT 1000";
+    let mut ids = sql_query(query).bind::<Text,_>(&p.user_id).bind::<Nullable<Text>,_>(p.device_id.as_deref()).bind::<Text,_>(&cursor).load::<Candidate>(db).await?;
+    if ids.is_empty() && !cursor.is_empty() {
+        ids = sql_query(query).bind::<Text,_>(&p.user_id).bind::<Nullable<Text>,_>(p.device_id.as_deref()).bind::<Text,_>("").load::<Candidate>(db).await?;
+    }
+    for id in &ids {
+        // Each Agent gets a savepoint: malformed/oversized durable input cannot
+        // poison the executor transaction or suppress unrelated delivery.
+        let result = db.transaction::<_,Error,_>(async |db: &mut AsyncPgConnection| {
+            let r = row(db, &id.request_id).await?;
+            enqueue(db, &r, now, false, server).await
+        }).await;
+        match result {
             Ok(_) | Err(Error::Conflict(_) | Error::NotFound(_)) => {}
+            Err(Error::Invalid(reason) | Error::Unavailable(reason)) => tracing::warn!(request_id=%id.request_id, reason, "automatic Agent renewal rejected"),
             Err(e) => return Err(e),
         }
+    }
+    if let Some(last) = ids.last() {
+        sql_query("INSERT INTO hagency_agent_v1.management_agent_renewal_cursors(executor_device_id,after_intent_id) VALUES($1,$2) ON CONFLICT(executor_device_id) DO UPDATE SET after_intent_id=EXCLUDED.after_intent_id")
+            .bind::<Nullable<Text>,_>(p.device_id.as_deref()).bind::<Text,_>(&last.id).execute(db).await?;
     }
     Ok(())
 }
@@ -301,7 +364,7 @@ pub(super) async fn recovery_grant(
     if funded {
         return Ok(None);
     }
-    let valid=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents i JOIN hagency_agent_v1.management_agent_executor_commands w ON w.intent_id=i.id AND w.operation='agent.fence' JOIN hagency_agent_v1.agents a ON a.id=$2 JOIN hagency_agent_v1.users u ON u.id=$3 WHERE i.request_id=$1 AND i.state='fenced' AND w.receipt::jsonb->>'state'='fenced' AND a.state='suspended' AND a.owner_user_id=$3 AND u.active AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_reallocations x WHERE x.previous_request_id=$1) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments x WHERE x.agent_id=$2 AND x.state='pending_native') AND i.payload::jsonb->>'resourceId'=$4 AND i.payload::jsonb->>'resourceRevision'=$5 AND $6::jsonb ? u.mxid) AS matched")
+    let valid=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents i JOIN hagency_agent_v1.management_agent_executor_commands w ON w.intent_id=i.id AND w.operation='agent.fence' JOIN hagency_agent_v1.agents a ON a.id=$2 JOIN hagency_agent_v1.users u ON u.id=$3 WHERE i.request_id=$1 AND i.state='fenced' AND w.receipt::jsonb->>'state' IN ('fenced','absent_fenced') AND a.state='suspended' AND a.owner_user_id=$3 AND u.active AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_reallocations x WHERE x.previous_request_id=$1) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments x WHERE x.agent_id=$2 AND x.state='pending_native') AND i.payload::jsonb->>'resourceId'=$4 AND i.payload::jsonb->>'resourceRevision'=$5 AND $6::jsonb ? u.mxid) AS matched")
         .bind::<Text,_>(&r.id).bind::<Text,_>(&r.proposed_agent_id).bind::<Text,_>(&r.manager_user_id).bind::<Text,_>(&g.receipt.resource_id).bind::<Text,_>(&g.receipt.resource_revision).bind::<Text,_>(wire(&g.receipt.eligible_managers)?).get_result::<Flag>(db).await?.matched;
     Ok(valid.then_some(g))
 }

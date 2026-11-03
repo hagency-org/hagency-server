@@ -12,7 +12,11 @@ ALTER TABLE hagency_agent_v1.management_shared_assignments ADD CONSTRAINT manage
 ALTER TABLE hagency_agent_v1.management_agent_requests ADD CONSTRAINT management_agent_requests_proposed_agent_id_key UNIQUE(proposed_agent_id);
 CREATE UNIQUE INDEX pool_agent_room_unique ON hagency_agent_v1.management_agent_requests(room_id) WHERE pool_contribution_id IS NOT NULL;
 DROP INDEX hagency_agent_v1.management_agent_executor_initial;
-DROP INDEX hagency_agent_v1.management_agent_executor_period;
+DROP INDEX IF EXISTS hagency_agent_v1.management_agent_executor_period;
+DROP INDEX IF EXISTS hagency_agent_v1.management_agent_executor_period_active;
+DROP INDEX IF EXISTS hagency_agent_v1.management_agent_executor_period_history;
+DROP FUNCTION IF EXISTS hagency_agent_v1.previous_agent_assignment(text);
+DROP TABLE IF EXISTS hagency_agent_v1.management_agent_renewal_cursors;
 ALTER TABLE hagency_agent_v1.management_agent_executor_commands
  DROP CONSTRAINT management_agent_executor_operation,
  DROP CONSTRAINT management_agent_executor_period,

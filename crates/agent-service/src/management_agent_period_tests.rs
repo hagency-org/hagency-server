@@ -19,6 +19,11 @@ async fn recurring(
 async fn recurring_with_limits(mode: RenewalMode, cap: Option<i64>) -> (
     Fixture, Admission, ResourceGrantView, PoolAgentRequest, PendingManagedAssignment, i64,
 ) {
+    recurring_with_managers(mode, cap, false).await
+}
+async fn recurring_with_managers(mode: RenewalMode, cap: Option<i64>, large: bool) -> (
+    Fixture, Admission, ResourceGrantView, PoolAgentRequest, PendingManagedAssignment, i64,
+) {
     let f = succession_fixture().await;
     let a = admitted(&f).await;
     let now = crate::api::now_ms();
@@ -38,6 +43,10 @@ async fn recurring_with_limits(mode: RenewalMode, cap: Option<i64>) -> (
     g.receipt.period_start_ms = period.start_ms as i64;
     g.receipt.period_end_ms = period.end_ms as i64;
     g.receipt.delegation_expires_at_ms = period.end_ms as i64;
+    if large {
+        g.receipt.eligible_managers.extend((0..45).map(|n| format!("@manager_{n:02}_{}:example.test", "x".repeat(180))));
+        g.receipt.eligible_managers.sort();
+    }
     let g = f
         .domain
         .publish_management_grant(&f.owner.p, &f.policy, &a.contribution.id, g)
@@ -704,4 +713,221 @@ async fn late_period_receipt_must_precede_the_permanent_native_fence() {
     receipt.ledger_revision=102;
     f.domain.record_managed_agent_executor_result(&f.owner.p,&f.policy,&c.command_id,AgentExecutorResultInput{command_digest:d.command_digest,token:d.token,receipt:AgentExecutorReceipt::RenewPeriod(receipt)}).await.unwrap();
     let view=f.domain.pool_agent_request(&f.owner.p,&r.id).await.unwrap();assert_eq!(view.current_period.unwrap().state,"revoked");assert!(!view.can_renew);assert!(!view.can_reallocate);
+}
+
+fn executor_id(c: &AgentExecutorCommand) -> &str {
+    match c {
+        AgentExecutorCommand::Reserve(c) => &c.command_id,
+        AgentExecutorCommand::Fence(c) => &c.command_id,
+        AgentExecutorCommand::RenewPeriod(c) => &c.command_id,
+    }
+}
+
+async fn amend_limit(f: &Fixture, a: &Admission, old: &ResourceGrantView, limit: i64, ledger: i64) -> ResourceGrantView {
+    let mut g = old.receipt.clone();
+    g.grant_id = format!("mgs_{}", &secret_token()[..32]);
+    g.grant_revision += 1;
+    g.ledger_revision = ledger;
+    g.per_request_tokens = Some(limit);
+    g.succession = Some(GrantSuccession {kind:"amendment".into(), predecessor_grant_id:old.id.clone(), predecessor_receipt_digest:old.receipt_digest.clone(), carried_children:0, carried_retained_tokens:0});
+    attempt(f,a,old,g).await.unwrap()
+}
+
+#[tokio::test]
+#[ignore="requires dedicated PostgreSQL"]
+async fn renewal_projection_enqueue_and_delivery_enforce_the_same_agent_limit() {
+    let(f,a,g,r,_,now)=recurring_with_limits(RenewalMode::Owner,Some(1000)).await;
+    let current=current_grant(&f,&a,&g,now).await;
+    let small=amend_limit(&f,&a,&current,99,102).await;
+    let view=f.domain.pool_agent_request(&f.owner.p,&r.id).await.unwrap();
+    assert_eq!(view.current_period.unwrap().state,"request_limit_exceeded");assert!(!view.can_renew);
+    let mut input=RenewPoolAgent{command_id:"limit_renew".into(),expected_revision:r.revision,expected_period_key:current.receipt.period_key};
+    assert_eq!(code(f.domain.renew_pool_agent(&f.owner.p,&f.policy,&r.id,input.clone()).await),"pool_agent_request_limit_exceeded");
+    let enough=amend_limit(&f,&a,&small,100,103).await;
+    assert!(f.domain.pool_agent_request(&f.owner.p,&r.id).await.unwrap().can_renew);
+    input.command_id="limit_renew_after_capacity".into();
+    f.domain.renew_pool_agent(&f.owner.p,&f.policy,&r.id,input).await.unwrap();
+    let d=f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput{after:None}).await.unwrap().unwrap();
+    assert!(d.execution_allowed);
+    amend_limit(&f,&a,&enough,99,104).await;
+    let c=executor_id(&d.command);
+    let recovered=f.domain.recover_managed_agent_executor(&f.owner.p,&f.policy,c,ExecutorRecoverInput{command_digest:d.command_digest.clone()}).await.unwrap();
+    assert!(!recovered.execution_allowed,"a queued renewal cannot bypass an amended request cap");
+}
+
+async fn refuse_period(f: &Fixture, d: &AgentExecutorDelivery, ledger: i64) {
+    let AgentExecutorCommand::RenewPeriod(c)=&d.command else {panic!("renew")};
+    let receipt=ManagedAgentPeriodReceipt{version:1,command_id:c.command_id.clone(),command_digest:d.command_digest.clone(),request_id:c.reserve_command.request_id.clone(),agent_id:c.reserve_command.proposed_agent_id.clone(),agent_reservation_id:c.agent_reservation_id.clone(),period:c.period.clone(),allocated_tokens:0,ledger_revision:ledger,state:"refused".into(),reason:Some("native_authority_unavailable".into())};
+    f.domain.record_managed_agent_executor_result(&f.owner.p,&f.policy,&c.command_id,AgentExecutorResultInput{command_digest:d.command_digest.clone(),token:d.token.clone(),receipt:AgentExecutorReceipt::RenewPeriod(receipt)}).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore="requires dedicated PostgreSQL"]
+async fn refused_renewals_allow_explicit_owner_retry_but_never_retry_unknown_or_authorized_outcomes() {
+    for mode in [RenewalMode::Owner,RenewalMode::Automatic] {
+        let(f,a,g,r,_,now)=recurring(mode).await;
+        let current=current_grant(&f,&a,&g,now).await;
+        let mut input=RenewPoolAgent{command_id:"first_renewal".into(),expected_revision:r.revision,expected_period_key:current.receipt.period_key};
+        f.domain.renew_pool_agent(&f.owner.p,&f.policy,&r.id,input.clone()).await.unwrap();
+        let d=f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput{after:None}).await.unwrap().unwrap();
+        input.command_id="unknown_outcome_retry".into();
+        assert!(!f.domain.renew_pool_agent(&f.owner.p,&f.policy,&r.id,input.clone()).await.unwrap().can_renew);
+        assert!(f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput{after:None}).await.unwrap().is_none());
+        refuse_period(&f,&d,102).await;
+        let failed=f.domain.pool_agent_request(&f.owner.p,&r.id).await.unwrap();
+        assert_eq!(failed.current_period.unwrap().state,"renewal_refused");assert!(failed.can_renew);
+        assert!(!f.domain.pool_agent_request(&f.outsider.p,&r.id).await.unwrap().can_renew);
+        assert!(f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput{after:None}).await.unwrap().is_none(),"unchanged authority must not automatically repeat a definitive refusal");
+        input.command_id="explicit_refusal_retry".into();
+        assert_eq!(f.domain.renew_pool_agent(&f.owner.p,&f.policy,&r.id,input.clone()).await.unwrap().current_period.unwrap().state,"awaiting_executor");
+        let retried=f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput{after:None}).await.unwrap().unwrap();
+        assert_ne!(executor_id(&d.command),executor_id(&retried.command));
+        acknowledge_period(&f,&retried,103).await;
+        input.command_id="never_double_fund".into();
+        assert!(!f.domain.renew_pool_agent(&f.owner.p,&f.policy,&r.id,input).await.unwrap().can_renew);
+        let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();
+        assert_eq!(sql_query("SELECT count(*)::bigint AS count FROM hagency_agent_v1.management_agent_executor_commands WHERE operation='agent.period.renew'").get_result::<Count>(&mut db).await.unwrap().count,2);
+        assert!(sql_query("INSERT INTO hagency_agent_v1.management_agent_executor_commands(id,intent_id,operation,created_at_ms,command_payload,period_key) SELECT 'duplicate_period',intent_id,operation,created_at_ms,command_payload,period_key FROM hagency_agent_v1.management_agent_executor_commands WHERE id=$1").bind::<Text,_>(executor_id(&retried.command)).execute(&mut db).await.is_err());
+    }
+}
+
+#[tokio::test]
+#[ignore="requires dedicated PostgreSQL"]
+async fn failed_unreserved_reallocation_can_advance_to_generation_three() {
+    for never_delivered in [true, false] {
+    let(f,a,g,r,assignment,now)=recurring(RenewalMode::Owner).await;
+    let current=current_grant(&f,&a,&g,now).await;
+    let old=f.domain.stop_pool_agent(&f.owner.p,&r.id,RevokeInput{command_id:"stop_first".into(),expected_revision:r.revision}).await.unwrap();
+    acknowledge_fence(&f,102).await;
+    let second=f.domain.reallocate_pool_agent(&f.owner.p,&f.policy,&old.id,ReallocatePoolAgent{command_id:"second_generation".into(),expected_revision:old.revision,expected_grant_revision:current.receipt.grant_revision,renewal_mode:RenewalMode::Owner}).await.unwrap();
+    let second=if never_delivered {
+        f.domain.stop_pool_agent(&f.owner.p,&second.id,RevokeInput{command_id:"stop_unreserved_second".into(),expected_revision:second.revision}).await.unwrap()
+    } else {
+        let d=reserve_delivery(&f,&second.id).await;
+        let AgentExecutorCommand::Reserve(c)=&d.command else {panic!("reserve")};
+        let receipt=ManagedAgentReservationReceipt{version:1,command_id:c.command_id.clone(),command_digest:d.command_digest.clone(),request_id:c.request_id.clone(),agent_id:c.proposed_agent_id.clone(),allocation_id:c.allocation_id.clone(),agent_reservation_id:None,definition_digest:c.definition_digest.clone(),state:"refused".into(),budget_revision:0,ledger_revision:103,allocated_tokens:0,retained_tokens:0,period_key:c.period_key.clone(),reason:Some("capacity_unavailable".into())};
+        f.domain.record_managed_agent_executor_result(&f.owner.p,&f.policy,&c.command_id,AgentExecutorResultInput{command_digest:d.command_digest,token:d.token,receipt:AgentExecutorReceipt::Reserve(receipt)}).await.unwrap();
+        f.domain.pool_agent_request(&f.owner.p,&second.id).await.unwrap()
+    };
+    assert!(!second.can_reallocate,"absence without native proof is not recovery authority");
+    let d=f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput{after:None}).await.unwrap().unwrap();
+    let AgentExecutorCommand::Fence(c)=&d.command else {panic!("fence")};
+    assert_eq!(c.reserve_command.allocation_generation,Some(2));
+    let receipt=ManagedAgentFenceReceipt{version:1,command_id:c.command_id.clone(),command_digest:d.command_digest.clone(),reserve_command_digest:c.reserve_command_digest.clone(),request_id:c.reserve_command.request_id.clone(),agent_id:c.reserve_command.proposed_agent_id.clone(),agent_reservation_id:None,state:"absent_fenced".into(),fence_revision:104,ledger_revision:104,known_consumed_tokens:0,retained_tokens:Some(0),usage_complete:true,process_state:"not_started".into()};
+    f.domain.record_managed_agent_executor_result(&f.owner.p,&f.policy,&c.command_id,AgentExecutorResultInput{command_digest:d.command_digest,token:d.token,receipt:AgentExecutorReceipt::Fence(receipt)}).await.unwrap();
+    assert!(f.domain.pool_agent_request(&f.owner.p,&second.id).await.unwrap().can_reallocate);
+    assert!(!f.domain.pool_agent_request(&f.owner.p,&old.id).await.unwrap().can_reallocate);
+    let third=f.domain.reallocate_pool_agent(&f.owner.p,&f.policy,&second.id,ReallocatePoolAgent{command_id:"third_generation".into(),expected_revision:second.revision,expected_grant_revision:current.receipt.grant_revision,renewal_mode:RenewalMode::Owner}).await.unwrap();
+    assert_eq!(third.agent_id,r.agent_id);
+    let d=reserve_delivery(&f,&third.id).await;
+    let AgentExecutorCommand::Reserve(c)=&d.command else {panic!("reserve")};
+    assert_eq!(c.allocation_generation,Some(3));assert!(d.execution_allowed);
+    let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();
+    let ancestor=sql_query("SELECT hagency_agent_v1.previous_agent_assignment($1) AS value").bind::<Text,_>(&third.id).get_result::<Stored>(&mut db).await.unwrap();
+    assert_eq!(ancestor.value,assignment.id,"failed generations preserve the prior room assignment");
+    }
+}
+
+#[tokio::test]
+#[ignore="requires dedicated PostgreSQL"]
+async fn automatic_renewal_isolates_invalid_agents_and_rotates_beyond_one_thousand() {
+    let(f,a,g,r,_,now)=recurring(RenewalMode::Automatic).await;
+    current_grant(&f,&a,&g,now).await;
+    let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();
+    // Disposable-fixture corruption simulates historical invalid durable inputs.
+    // Every early Agent fails command validation. None may starve the real Agent.
+    db.batch_execute("SET session_replication_role=replica").await.unwrap();
+    sql_query("INSERT INTO hagency_agent_v1.management_agent_requests SELECT (jsonb_populate_record(NULL::hagency_agent_v1.management_agent_requests,to_jsonb(r)||jsonb_build_object('id','invalid_request_'||n,'proposed_agent_id','invalid_agent_'||n,'room_id','!invalid_'||n||':example.test'))).* FROM hagency_agent_v1.management_agent_requests r CROSS JOIN generate_series(1,1000) n WHERE r.id=$1").bind::<Text,_>(&r.id).execute(&mut db).await.unwrap();
+    sql_query("INSERT INTO hagency_agent_v1.management_agent_intents SELECT (jsonb_populate_record(NULL::hagency_agent_v1.management_agent_intents,to_jsonb(i)||jsonb_build_object('id','aaa_invalid_'||n,'request_id','invalid_request_'||n,'payload',(i.payload::jsonb||jsonb_build_object('version',0))::text))).* FROM hagency_agent_v1.management_agent_intents i CROSS JOIN generate_series(1,1000) n WHERE i.request_id=$1").bind::<Text,_>(&r.id).execute(&mut db).await.unwrap();
+    sql_query("INSERT INTO hagency_agent_v1.management_agent_recurring_terms SELECT 'invalid_request_'||n,calendar,renewal_mode FROM hagency_agent_v1.management_agent_recurring_terms CROSS JOIN generate_series(1,1000) n WHERE request_id=$1").bind::<Text,_>(&r.id).execute(&mut db).await.unwrap();
+    sql_query("INSERT INTO hagency_agent_v1.management_shared_assignments SELECT (jsonb_populate_record(NULL::hagency_agent_v1.management_shared_assignments,to_jsonb(a)||jsonb_build_object('id','invalid_assignment_'||n,'request_id','invalid_request_'||n,'agent_id','invalid_agent_'||n,'agent_reservation_id','invalid_child_'||n))).* FROM hagency_agent_v1.management_shared_assignments a CROSS JOIN generate_series(1,1000) n WHERE a.request_id=$1").bind::<Text,_>(&r.id).execute(&mut db).await.unwrap();
+    sql_query("INSERT INTO hagency_agent_v1.management_agent_executor_commands SELECT (jsonb_populate_record(NULL::hagency_agent_v1.management_agent_executor_commands,to_jsonb(w)||jsonb_build_object('id','aaa_invalid_'||n,'intent_id','aaa_invalid_'||n))).* FROM hagency_agent_v1.management_agent_executor_commands w JOIN hagency_agent_v1.management_agent_intents i ON i.id=w.intent_id CROSS JOIN generate_series(1,1000) n WHERE i.request_id=$1 AND w.operation='agent.reserve'").bind::<Text,_>(&r.id).execute(&mut db).await.unwrap();
+    db.batch_execute("SET session_replication_role=origin").await.unwrap();
+    assert!(f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput{after:None}).await.unwrap().is_none());
+    let d=f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput{after:None}).await.unwrap().unwrap();
+    let AgentExecutorCommand::RenewPeriod(c)=d.command else {panic!("renew")};
+    assert_eq!(c.reserve_command.request_id,r.id);
+    assert!(d.execution_allowed);
+}
+
+#[tokio::test]
+#[ignore="requires dedicated PostgreSQL"]
+async fn publication_expiry_uses_the_earlier_delegation_deadline() {
+    let(f,a,mut input,_,_)=publication_case().await;
+    let deadline=input.receipt.period_end_ms-1000;
+    input.receipt.delegation_expires_at_ms=deadline;
+    time(&f,deadline).await;
+    let result=f.domain.expire_management_grant_publication(&f.owner.p,&f.policy,&input.command_id,expiration(&a,&input)).await.unwrap();
+    assert_eq!(result.status,"expired_unpublished");
+    assert_eq!(code(f.domain.publish_management_grant(&f.owner.p,&f.policy,&a.contribution.id,input).await),"grant_publication_expired");
+}
+
+#[tokio::test]
+#[ignore="requires dedicated PostgreSQL"]
+async fn split_limit_sql_constraint_and_recovery_migration_are_idempotent() {
+    let(f,_,g,_,_,_)=recurring_with_limits(RenewalMode::Owner,Some(1000)).await;
+    let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();
+    for _ in 0..2 {
+        db.batch_execute(include_str!("management_pool_limits_validation.sql")).await.unwrap();
+        db.batch_execute(include_str!("management_agent_periods_recovery.sql")).await.unwrap();
+    }
+    let mut receipt=g.receipt.clone();
+    for limit in [0,receipt.allocated_tokens+1] {
+        receipt.grant_id=format!("invalid_limit_{limit}");receipt.per_request_tokens=Some(limit);
+        let raw=serde_json::to_string(&receipt).unwrap();
+        let result=sql_query("INSERT INTO hagency_agent_v1.management_resource_grants SELECT (jsonb_populate_record(NULL::hagency_agent_v1.management_resource_grants,to_jsonb(g)||jsonb_build_object('id',$2,'chain_root_id',$2,'receipt',$3,'state','revoked'))).* FROM hagency_agent_v1.management_resource_grants g WHERE id=$1")
+            .bind::<Text,_>(&g.id).bind::<Text,_>(&receipt.grant_id).bind::<Text,_>(&raw).execute(&mut db).await;
+        assert!(result.unwrap_err().to_string().contains("management_pool_split_limits"));
+    }
+    assert!(db.batch_execute(include_str!("management_agent_periods_down.sql")).await.is_err(),"existing recurring authority cannot be downgraded away");
+}
+
+#[tokio::test]
+#[ignore="requires dedicated PostgreSQL"]
+async fn automatic_refusal_retries_only_after_the_grant_changes() {
+    let(f,a,g,r,_,now)=recurring_with_limits(RenewalMode::Automatic,Some(1000)).await;
+    let current=current_grant(&f,&a,&g,now).await;
+    let first=f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput{after:None}).await.unwrap().unwrap();
+    refuse_period(&f,&first,102).await;
+    assert!(f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput{after:None}).await.unwrap().is_none());
+    let amended=amend_limit(&f,&a,&current,2000,103).await;
+    let next=f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput{after:None}).await.unwrap().unwrap();
+    assert_ne!(executor_id(&first.command),executor_id(&next.command));
+    acknowledge_period(&f,&next,104).await;
+    assert_eq!(f.domain.pool_agent_request(&f.owner.p,&r.id).await.unwrap().current_period.unwrap().state,"available");
+    amend_limit(&f,&a,&amended,99,105).await;
+    let funded=f.domain.pool_agent_request(&f.owner.p,&r.id).await.unwrap();
+    assert_eq!(funded.current_period.unwrap().state,"available","a smaller future request maximum does not rescind this period's funded allowance");
+    assert!(!funded.can_renew);
+}
+
+#[tokio::test]
+#[ignore="requires dedicated PostgreSQL"]
+async fn oversized_automatic_renewal_cannot_block_another_agents_fence() {
+    let(f,a,g,r,_,now)=recurring_with_managers(RenewalMode::Automatic,None,true).await;
+    let current=current_grant(&f,&a,&g,now).await;
+    assert_eq!(code(f.domain.renew_pool_agent(&f.owner.p,&f.policy,&r.id,RenewPoolAgent{command_id:"oversized_manual".into(),expected_revision:r.revision,expected_period_key:current.receipt.period_key.clone()}).await),"management_payload_too_large");
+    let mut input=input(&a,"unrelated_stop");input.expected_grant_revision=current.receipt.grant_revision;input.renewal_mode=Some(RenewalMode::Automatic);
+    let other=f.domain.request_pool_agent(&f.outsider.p,&f.policy,&a.contribution.id,input).await.unwrap();
+    let other=decide(&f,&other,true).await.unwrap();
+    f.domain.stop_pool_agent(&f.owner.p,&other.id,RevokeInput{command_id:"stop_despite_oversized_neighbor".into(),expected_revision:other.revision}).await.unwrap();
+    let d=f.domain.poll_managed_agent_executor(&f.owner.p,&f.policy,ExecutorPollInput{after:None}).await.unwrap().unwrap();
+    let AgentExecutorCommand::Fence(c)=d.command else{panic!("fence")};
+    assert_eq!(c.reserve_command.request_id,other.id);assert!(d.execution_allowed);
+}
+
+#[tokio::test]
+#[ignore="requires dedicated PostgreSQL"]
+async fn recurring_request_projection_preserves_rejection_and_expiry() {
+    let(f,a,g,_,_,now)=recurring(RenewalMode::Owner).await;
+    let current=current_grant(&f,&a,&g,now).await;
+    let mut input=input(&a,"rejected_period");input.expected_grant_revision=current.receipt.grant_revision;input.renewal_mode=Some(RenewalMode::Owner);
+    let r=f.domain.request_pool_agent(&f.outsider.p,&f.policy,&a.contribution.id,input.clone()).await.unwrap();
+    let rejected=decide(&f,&r,false).await.unwrap();
+    assert_eq!(rejected.current_period.unwrap().state,"rejected");
+    input.command_id="expired_period".into();input.room_id="!expired_period:example.test".into();
+    let pending=f.domain.request_pool_agent(&f.outsider.p,&f.policy,&a.contribution.id,input).await.unwrap();
+    time(&f,pending.expires_at_ms).await;
+    let expired=f.domain.pool_agent_request(&f.owner.p,&pending.id).await.unwrap();
+    assert_eq!(expired.current_period.unwrap().state,"expired");assert!(!expired.can_renew);
 }

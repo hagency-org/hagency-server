@@ -108,7 +108,9 @@ pub(super) async fn command_retained(db: &mut AsyncPgConnection, r: &Row, c: &Ma
 /// Expiry stops execution, not the Agent's identity or room membership. Verify
 /// the last effective grant against *current* owners, devices and revocations;
 /// only its time window is evaluated at the last instant it covered. This is
-/// never spend authority and must not be used by work admission.
+/// never spend authority and must not be used by work admission. Legacy
+/// non-calendar allocations also retain identity here; they acquire recurring
+/// terms only through an explicit owner stop/fence and calendar reallocation.
 pub(super) async fn period_paused(
     db: &mut AsyncPgConnection,
     r: &Row,
@@ -192,7 +194,7 @@ pub(super) async fn view_pool(
     let (_, contribution) = contribution(db, pool_id).await?;
     let mut blocked = if r.state == "pending_approval" {
         match current_grant(db, &r, now).await {
-            Ok(g) if r.requested_tokens > g.receipt.allocated_tokens => {
+            Ok(g) if r.requested_tokens > g.receipt.request_limit() => {
                 Some("pool_agent_resource_mismatch".to_owned())
             }
             Ok(_) => None,
@@ -246,7 +248,7 @@ pub(super) async fn view_pool(
     let recovery=Box::pin(super::periods::recovery_grant(db,&r,p,now)).await?;
     let can_reallocate=recovery.is_some();
     if let Some(g)=recovery {calendar=g.receipt.calendar;}
-    let rooms_requiring_reinvite=sql_query("SELECT count(*)::bigint AS now FROM (SELECT b.room_id FROM hagency_agent_v1.management_agent_reallocations x JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=x.previous_request_id JOIN hagency_agent_v1.shared_agent_rooms b ON b.assignment_id=a.id WHERE x.request_id=$1 AND b.state IN ('left','leaving') AND b.departure_reason IS DISTINCT FROM 'allocation_ended' UNION SELECT b.room_id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.shared_agent_rooms b ON b.assignment_id=a.id WHERE a.request_id=$1 AND b.state IN ('left','leaving') AND b.restoration_requires_membership) skipped WHERE NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.shared_agent_rooms b ON b.assignment_id=a.id WHERE a.request_id=$1 AND b.room_id=skipped.room_id AND b.state IN ('joining','active'))").bind::<Text,_>(&r.id).get_result::<Clock>(db).await?.now;
+    let rooms_requiring_reinvite=sql_query("SELECT count(*)::bigint AS now FROM (SELECT b.room_id FROM hagency_agent_v1.shared_agent_rooms b WHERE b.assignment_id=hagency_agent_v1.previous_agent_assignment($1) AND b.state IN ('left','leaving') AND b.departure_reason IS DISTINCT FROM 'allocation_ended' UNION SELECT b.room_id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.shared_agent_rooms b ON b.assignment_id=a.id WHERE a.request_id=$1 AND b.state IN ('left','leaving') AND b.restoration_requires_membership) skipped WHERE NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.shared_agent_rooms b ON b.assignment_id=a.id WHERE a.request_id=$1 AND b.room_id=skipped.room_id AND b.state IN ('joining','active'))").bind::<Text,_>(&r.id).get_result::<Clock>(db).await?.now;
     Ok(PoolAgentRequest { calendar,renewal_mode,current_period,can_renew,can_reallocate,current_grant_revision,rooms_requiring_reinvite,
         id: r.id,
         pool_id: pool_id.into(),

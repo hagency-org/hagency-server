@@ -3,6 +3,10 @@ DO $$ BEGIN
  IF NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_deployment WHERE version=30) THEN RAISE EXCEPTION 'agent_period_downgrade_requires_schema_30'; END IF;
  IF EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes WHERE issuance_void) OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_grant_publication_tombstones) OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE receipt::jsonb->>'version' IN ('4','5')) OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_recurring_terms) OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_reallocations) OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands WHERE operation='agent.period.renew') THEN RAISE EXCEPTION 'agent_period_downgrade_has_authority'; END IF;
 END $$;
+DROP FUNCTION IF EXISTS hagency_agent_v1.previous_agent_assignment(text);
+DROP TABLE IF EXISTS hagency_agent_v1.management_agent_renewal_cursors;
+DROP INDEX IF EXISTS hagency_agent_v1.management_agent_executor_period_active;
+DROP INDEX IF EXISTS hagency_agent_v1.management_agent_executor_period_history;
 CREATE OR REPLACE FUNCTION hagency_agent_v1.retain_shared_runtime() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF TG_OP='DELETE' OR TG_TABLE_NAME<>'management_shared_runtimes' THEN RAISE EXCEPTION 'permanent_shared_runtime_history'; END IF;
@@ -98,7 +102,7 @@ ALTER TABLE hagency_agent_v1.management_shared_assignments ADD CONSTRAINT manage
 ALTER TABLE hagency_agent_v1.management_agent_requests ADD CONSTRAINT management_agent_requests_proposed_agent_id_key UNIQUE(proposed_agent_id);
 CREATE UNIQUE INDEX pool_agent_room_unique ON hagency_agent_v1.management_agent_requests(room_id) WHERE pool_contribution_id IS NOT NULL;
 DROP INDEX hagency_agent_v1.management_agent_executor_initial;
-DROP INDEX hagency_agent_v1.management_agent_executor_period;
+DROP INDEX IF EXISTS hagency_agent_v1.management_agent_executor_period;
 ALTER TABLE hagency_agent_v1.management_agent_executor_commands
  DROP CONSTRAINT management_agent_executor_operation,
  DROP CONSTRAINT management_agent_executor_period,

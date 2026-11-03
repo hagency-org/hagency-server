@@ -505,6 +505,7 @@ impl DomainStore {
             let management=sql_query("SELECT version=30 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
             if !management.matched { return Err(Error::Conflict("management_schema_incompatible")); }
             db.batch_execute(include_str!("management_pool_limits_validation.sql")).await?;
+            db.batch_execute(include_str!("management_agent_periods_recovery.sql")).await?;
             db.batch_execute(include_str!("management_shared_e2ee_schema.sql")).await?;
             db.batch_execute(include_str!("shared_rooms_schema.sql")).await?;
             db.batch_execute("CREATE INDEX IF NOT EXISTS management_command_recovery ON hagency_agent_v1.management_commands(actor_user_id,device_id,command_id)").await?;

@@ -78,3 +78,19 @@ BEGIN
  END IF; RETURN NEW;
 END;
 $$;
+
+-- Validate existing V5 rows before accepting the same bound for future writes.
+-- Older receipts retain their original, unsplit allocation limit.
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='hagency_agent_v1.management_resource_grants'::regclass AND conname='management_pool_split_limits') THEN
+  ALTER TABLE hagency_agent_v1.management_resource_grants ADD CONSTRAINT management_pool_split_limits CHECK (
+   receipt::jsonb->>'version' IS DISTINCT FROM '5' OR COALESCE(
+    jsonb_typeof(receipt::jsonb->'perRequestTokens')='number'
+    AND jsonb_typeof(receipt::jsonb->'allocatedTokens')='number'
+    AND (receipt::jsonb->>'perRequestTokens')::numeric BETWEEN 1 AND (receipt::jsonb->>'allocatedTokens')::numeric
+    AND (receipt::jsonb->>'allocatedTokens')::numeric BETWEEN 1 AND 9007199254740991
+    AND trunc((receipt::jsonb->>'perRequestTokens')::numeric)=(receipt::jsonb->>'perRequestTokens')::numeric
+    AND trunc((receipt::jsonb->>'allocatedTokens')::numeric)=(receipt::jsonb->>'allocatedTokens')::numeric, false)
+  );
+ END IF;
+END $$;
