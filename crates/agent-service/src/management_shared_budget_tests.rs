@@ -779,6 +779,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         .split("CREATE TRIGGER validate_shared_budget_demand_head")
         .next().unwrap();
     db.batch_execute(&format!("CREATE OR REPLACE FUNCTION hagency_agent_v1.validate_shared_budget_demand(){legacy_validator}")).await.unwrap();
+    db.batch_execute(include_str!("management_publication_first_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_agent_periods_down.sql")).await.unwrap();
     db.batch_execute("DROP FUNCTION hagency_agent_v1.canonical_shared_block_json(jsonb); ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check; UPDATE hagency_agent_v1.management_deployment SET version=25; ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=25)").await.unwrap();
     db.batch_execute("CREATE FUNCTION hagency_agent_v1.canonical_shared_block_json(jsonb) RETURNS text LANGUAGE sql AS 'SELECT ''migration_collision''' ").await.unwrap();

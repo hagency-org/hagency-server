@@ -520,11 +520,9 @@ async fn recurring_terms_and_same_period_early_renewal_are_immutable() {
     );
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     assert!(sql_query("UPDATE hagency_agent_v1.management_agent_recurring_terms SET renewal_mode='automatic' WHERE request_id=$1").bind::<Text,_>(&r.id).execute(&mut db).await.is_err());
-    assert!(
-        db.batch_execute(include_str!("management_agent_periods_down.sql"))
-            .await
-            .is_err()
-    );
+    db.batch_execute(include_str!("management_publication_first_down.sql")).await.unwrap();
+    assert!(db.batch_execute(include_str!("management_agent_periods_down.sql"))
+        .await.unwrap_err().to_string().contains("agent_period_downgrade_has_authority"));
 }
 
 async fn acknowledge_fence(f: &Fixture, ledger: i64) {
@@ -1081,7 +1079,8 @@ async fn split_limit_sql_constraint_and_recovery_migration_are_idempotent() {
             .bind::<Text,_>(&g.id).bind::<Text,_>(&receipt.grant_id).bind::<Text,_>(&raw).execute(&mut db).await;
         assert!(result.unwrap_err().to_string().contains("management_pool_split_limits"));
     }
-    assert!(db.batch_execute(include_str!("management_agent_periods_down.sql")).await.is_err(),"existing recurring authority cannot be downgraded away");
+    db.batch_execute(include_str!("management_publication_first_down.sql")).await.unwrap();
+    assert!(db.batch_execute(include_str!("management_agent_periods_down.sql")).await.unwrap_err().to_string().contains("agent_period_downgrade_has_authority"),"existing recurring authority cannot be downgraded away");
 }
 
 #[tokio::test]
