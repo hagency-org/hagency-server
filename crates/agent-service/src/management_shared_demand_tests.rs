@@ -708,6 +708,13 @@ async fn shared_demand_budget_block_retains_unknown_or_overflow_without_start_id
                 input.reason
             );
         }
+        if !unknown {
+            let room=read_matrix(&f,&r).await.room_id;
+            let status=f.domain.shared_approvals(&f.owner.p,serde_json::from_value(json!({"roomId":room})).unwrap()).await.unwrap();
+            assert_eq!(status["executions"][0]["reason"],"budget_blocked");
+            assert_eq!(status["executions"][0]["budgetState"],"usage_unresolved");
+            assert!(status["executions"][0].get("budgetBlock").is_none());
+        }
         retain(&f, &r, &m, &format!("demand_budget_later_{}", r.id)).await;
         assert!(
             f.domain
