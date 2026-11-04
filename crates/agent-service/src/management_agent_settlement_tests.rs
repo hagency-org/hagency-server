@@ -2,6 +2,7 @@ use super::*;
 use crate::management_agent_settlement_types::*;
 use crate::management_allocation_types::{ExecutorRecoverInput, allocation_digest};
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
+    db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_pool_agents_remove_test.sql")).await.unwrap();
     db.batch_execute(include_str!("management_project_manager_remove_test.sql")).await.unwrap();
     db.batch_execute("DROP VIEW IF EXISTS hagency_agent_v1.management_agent_settlement_evidence;DROP TABLE IF EXISTS hagency_agent_v1.management_agent_settlement_tickets,hagency_agent_v1.management_agent_settlement_issuance,hagency_agent_v1.management_agent_settlement_results,hagency_agent_v1.management_agent_settlement_commands;DROP FUNCTION IF EXISTS hagency_agent_v1.validate_agent_settlement();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=20;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=20)").await.unwrap();

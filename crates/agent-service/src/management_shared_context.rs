@@ -261,7 +261,56 @@ async fn delivery(
         }),
     })
 }
-async fn freeze(db: &mut AsyncPgConnection, w: &SharedWorkItem) -> Result<SharedContextRecord> {
+#[derive(QueryableByName)]
+struct EditRow {
+    #[diesel(sql_type=Text)]
+    revision_event_id: String,
+    #[diesel(sql_type=Nullable<Text>)]
+    body: Option<String>,
+    #[diesel(sql_type=Nullable<Text>)]
+    body_digest: Option<String>,
+}
+const PRIOR_PAIRS: &str = "FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_replies x ON x.work_id=w.id WHERE x.state='sent' AND w.payload::jsonb->>'assignmentId'=$1 AND w.payload::jsonb->>'roomId'=$2 AND w.payload::jsonb->>'threadRoot'=$3 AND (w.created_at_ms,w.id)<($4,$5)";
+/// A redaction of either side of a delivered pair removes the whole pair:
+/// the answer may quote the redacted request.
+const PAIR_REDACTED: &str = "EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_event_revisions v WHERE v.kind='redaction' AND v.room_id=$2 AND (v.target_event_id=w.event_id OR v.target_event_id=x.matrix_event_id))";
+async fn prior_pairs(db: &mut AsyncPgConnection, w: &SharedWorkItem, redacted: bool) -> Result<i64> {
+    Ok(sql_query(format!("SELECT COUNT(*) AS count {PRIOR_PAIRS} AND {PAIR_REDACTED}=$6"))
+        .bind::<Text, _>(&w.assignment_id)
+        .bind::<Text, _>(&w.room_id)
+        .bind::<Text, _>(&w.thread_root)
+        .bind::<BigInt, _>(w.created_at_ms)
+        .bind::<Text, _>(&w.id)
+        .bind::<Bool, _>(redacted)
+        .get_result::<Number>(db)
+        .await?
+        .count)
+}
+/// The requester's latest edit of a quoted request. Edits by anyone else are
+/// not Matrix edits of that message and stay out of the record.
+async fn latest_edit(db: &mut AsyncPgConnection, old: &SharedWorkItem) -> Result<Option<(String, String, String)>> {
+    let row = sql_query("SELECT revision_event_id,body,body_digest FROM hagency_agent_v1.management_shared_event_revisions WHERE kind='edit' AND room_id=$1 AND target_event_id=$2 AND sender_mxid=$3 ORDER BY received_at_ms DESC,revision_event_id DESC LIMIT 1")
+        .bind::<Text, _>(&old.room_id)
+        .bind::<Text, _>(&old.event_id)
+        .bind::<Text, _>(&old.requester_mxid)
+        .get_result::<EditRow>(db)
+        .await
+        .optional()?;
+    row.map(|r| {
+        let body = r.body.ok_or(Error::Conflict("shared_revision_body_missing"))?;
+        let digest = r.body_digest.ok_or(Error::Conflict("shared_revision_body_missing"))?;
+        if hash(&body) != digest {
+            return Err(Error::Conflict("shared_revision_changed"));
+        }
+        Ok((r.revision_event_id, body, digest))
+    })
+    .transpose()
+}
+async fn freeze(
+    db: &mut AsyncPgConnection,
+    w: &SharedWorkItem,
+    budget: Option<&SharedContextBudgetInput>,
+) -> Result<SharedContextRecord> {
     if let Some(saved) = saved_context(db, w).await? {
         return Ok(saved);
     }
@@ -294,11 +343,17 @@ async fn freeze(db: &mut AsyncPgConnection, w: &SharedWorkItem) -> Result<Shared
     } else {
         (None, None)
     };
-    let rows=sql_query("SELECT w.* FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_replies x ON x.work_id=w.id WHERE x.state='sent' AND w.payload::jsonb->>'assignmentId'=$1 AND w.payload::jsonb->>'roomId'=$2 AND w.payload::jsonb->>'threadRoot'=$3 AND (w.created_at_ms,w.id)<($4,$5) ORDER BY w.created_at_ms DESC,w.id DESC LIMIT 9")
+    // Version 1 pages one past its cap to learn whether anything was omitted.
+    // Version 2 counts the thread, excludes redacted pairs and pages its own cap.
+    let page = match budget {
+        None => format!("SELECT w.* {PRIOR_PAIRS} ORDER BY w.created_at_ms DESC,w.id DESC LIMIT {}", MAX_HISTORY_PAIRS + 1),
+        Some(_) => format!("SELECT w.* {PRIOR_PAIRS} AND NOT {PAIR_REDACTED} ORDER BY w.created_at_ms DESC,w.id DESC LIMIT {MAX_HISTORY_PAIRS_V2}"),
+    };
+    let rows=sql_query(page)
         .bind::<Text,_>(&w.assignment_id).bind::<Text,_>(&w.room_id).bind::<Text,_>(&w.thread_root).bind::<BigInt,_>(w.created_at_ms).bind::<Text,_>(&w.id).load::<WorkRow>(db).await?;
     let mut c = SharedThreadContext {
         version: 1,
-        input_profile: "shared_thread_text_v1".into(),
+        input_profile: INPUT_PROFILE_V1.into(),
         work_id: w.id.clone(),
         work_digest: allocation_digest(w)?,
         assignment_id: w.assignment_id.clone(),
@@ -310,18 +365,50 @@ async fn freeze(db: &mut AsyncPgConnection, w: &SharedWorkItem) -> Result<Shared
         event_id: w.event_id.clone(),
         received_at_ms: w.created_at_ms,
         context_ordinal: ordinal,
-        coverage: "prior_delivered_pairs_only".into(),
+        coverage: COVERAGE_PRIOR_DELIVERED_PAIRS.into(),
         omitted_earlier: false,
+        budget: None,
         history: vec![],
     };
-    let total = rows.len();
-    for old in rows.into_iter().take(MAX_HISTORY_PAIRS) {
+    let (total, max_pairs, max_bytes) = match budget {
+        None => (rows.len() as i64, MAX_HISTORY_PAIRS, MAX_HISTORY_BYTES),
+        Some(b) => {
+            b.validate()?;
+            let (window, source) = budget_window(b.model_context_window);
+            let bytes = history_budget_bytes(window);
+            let total = prior_pairs(db, w, false).await?;
+            c.version = 2;
+            c.input_profile = INPUT_PROFILE_V2.into();
+            c.budget = Some(SharedContextBudget {
+                model_context_window: window,
+                window_source: source.into(),
+                history_budget_bytes: bytes,
+                prior_pairs_total: total,
+                prior_pairs_redacted: prior_pairs(db, w, true).await?,
+                included_pairs: 0,
+            });
+            (total, MAX_HISTORY_PAIRS_V2, bytes as usize)
+        }
+    };
+    fn settle(c: &mut SharedThreadContext, total: i64) {
+        let included = c.history.len() as i64;
+        c.omitted_earlier = total > included;
+        if let Some(b) = c.budget.as_mut() {
+            b.included_pairs = included;
+        }
+    }
+    for old in rows.into_iter().take(max_pairs) {
         let r = runtime(db, &old.runtime_id).await?;
         let old = item(&old, &r)?;
         let sent = delivery(db, &old)
             .await?
             .delivery
             .ok_or(Error::Conflict("shared_reply_delivery_missing"))?;
+        let edit = if c.version == 2 { latest_edit(db, &old).await? } else { None };
+        let (edited_event_id, edited_body, edited_body_digest) = match edit {
+            Some((id, body, digest)) => (Some(id), Some(body), Some(digest)),
+            None => (None, None, None),
+        };
         c.history.insert(
             0,
             SharedContextPair {
@@ -334,22 +421,28 @@ async fn freeze(db: &mut AsyncPgConnection, w: &SharedWorkItem) -> Result<Shared
                 user_body_digest: old.body_digest,
                 delivery: sent.receipt,
                 delivery_digest: sent.receipt_digest,
+                edited_event_id,
+                edited_body,
+                edited_body_digest,
             },
         );
-        if allocation_encoding(&c.history)?.len() > MAX_HISTORY_BYTES {
+        settle(&mut c, total);
+        if allocation_encoding(&c.history)?.len() > max_bytes {
             c.history.remove(0);
+            settle(&mut c, total);
             break;
         }
         match render_context(&c, w) {
             Ok(_) => {}
             Err(Error::Invalid("shared_context_input_too_large")) => {
                 c.history.remove(0);
+                settle(&mut c, total);
                 break;
             }
             Err(error) => return Err(error),
         }
     }
-    c.omitted_earlier = total > c.history.len();
+    settle(&mut c, total);
     let input_digest = hash(&render_context(&c, w)?);
     let digest = allocation_digest(&c)?;
     sql_query(
@@ -534,7 +627,7 @@ impl DomainStore {
                 {
                     return Err(Error::Conflict("shared_context_missing_before_start"));
                 }
-                freeze(db, &w).await
+                freeze(db, &w, input.budget.as_ref()).await
             })
             .await
     }

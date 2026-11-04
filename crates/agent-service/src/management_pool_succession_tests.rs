@@ -759,6 +759,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
     reserve(&f, &carried.id, 100).await;
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     // Back to schema 28 with the committed lossy downgrade (no v3 rows yet).
+    db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_publication_first_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_agent_periods_down.sql")).await.unwrap();
     db.batch_execute(include_str!("../../../deploy/pool-succession-downgrade-to-28.sql")).await.unwrap();
@@ -768,7 +769,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
     // Opening the store migrates the populated database to 29 again.
     let reopened = crate::domain::DomainStore::open(&f.url, "example.test", "_hagency_test_").await.unwrap();
     let upgraded = schema_state(&mut db).await;
-    assert_eq!((upgraded.version, upgraded.columns), (31, true));
+    assert_eq!((upgraded.version, upgraded.columns), (32, true));
     let rows = chain(&f, &a.contribution.id).await;
     assert_eq!(rows.len(), 1);
     assert_eq!((rows[0].chain_root_id.as_str(), rows[0].predecessor_grant_id.as_deref(), rows[0].period_start_ms), (root.id.as_str(), None, root.receipt.period_start_ms));
@@ -781,6 +782,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
         .publish_management_grant_successor(&f.owner.p, &f.policy, &root.id, succeed(&a, &root, successor(&root, "amendment", 800_000, 20)))
         .await
         .unwrap();
+    db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_publication_first_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_agent_periods_down.sql")).await.unwrap();
     db.batch_execute(include_str!("../../../deploy/pool-succession-downgrade-to-28.sql")).await.unwrap();
@@ -796,7 +798,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
     assert_eq!(states.states, expected.join(","));
     assert_eq!(intent_state(&f, &carried.id).await, "fenced");
     crate::domain::DomainStore::open(&f.url, "example.test", "_hagency_test_").await.unwrap();
-    assert_eq!(schema_state(&mut db).await.version, 31);
+    assert_eq!(schema_state(&mut db).await.version, 32);
 }
 
 #[tokio::test]

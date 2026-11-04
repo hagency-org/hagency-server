@@ -4,6 +4,8 @@ use super::*;
 mod approvals;
 #[path = "management_shared_context.rs"]
 pub(super) mod context;
+#[path = "management_shared_revisions.rs"]
+pub(crate) mod revisions;
 #[path = "management_shared_budget_refusals.rs"]
 mod refusals;
 use crate::management_shared_work_types::*;

@@ -3,6 +3,7 @@ use crate::Error;
 use crate::management_shared_context_types::*;
 
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
+    db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_pool_agents_remove_test.sql")).await.unwrap();
     db.batch_execute(include_str!("management_project_manager_remove_test.sql")).await.unwrap();
     db.batch_execute(include_str!("management_agent_budget_remove_test.sql")).await.unwrap();
@@ -25,6 +26,7 @@ fn context_input(a: &SharedActivityLease, w: &SharedWorkItem) -> SharedContextIn
     SharedContextInput {
         authority: a.authority.clone(),
         work_digest: allocation_digest(w).unwrap(),
+            budget: None,
     }
 }
 fn start_input(
@@ -1065,4 +1067,328 @@ async fn shared_context_concurrent_instances_freeze_once_and_start_once() {
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     assert!(sql_query("SELECT (SELECT count(*) FROM hagency_agent_v1.management_shared_context_starts WHERE work_id=$1)=1 AND (SELECT ordinal FROM hagency_agent_v1.management_shared_context_sequences WHERE assignment_id=$2 AND room_id=$3 AND thread_root=$4)=1 AS matched")
         .bind::<Text,_>(&w.id).bind::<Text,_>(&w.assignment_id).bind::<Text,_>(&w.room_id).bind::<Text,_>(&w.thread_root).get_result::<Check>(&mut db).await.unwrap().matched);
+}
+
+/// Builds the version 2 companion of the version 1 fixture: same work, prior
+/// work and delivery; a budget from an observed window; one redacted pair
+/// outside the quote; an edit of the quoted request.
+fn v2_fixture_from_v1(v: &Value) -> (SharedWorkItem, SharedThreadContext) {
+    let w: SharedWorkItem = serde_json::from_value(v["work"].clone()).unwrap();
+    let mut c: SharedThreadContext = serde_json::from_value(v["context"].clone()).unwrap();
+    let (window, source) = budget_window(Some(272_000));
+    c.version = 2;
+    c.input_profile = INPUT_PROFILE_V2.into();
+    c.omitted_earlier = true;
+    c.budget = Some(SharedContextBudget {
+        model_context_window: window,
+        window_source: source.into(),
+        history_budget_bytes: history_budget_bytes(window),
+        prior_pairs_total: 3,
+        prior_pairs_redacted: 1,
+        included_pairs: 1,
+    });
+    let edited = "Remember the name 雪 and the quote \"hello\" (edited).";
+    c.history[0].edited_event_id = Some("$prior_edit".into());
+    c.history[0].edited_body = Some(edited.into());
+    c.history[0].edited_body_digest = Some(crate::hash(edited));
+    (w, c)
+}
+
+#[test]
+#[ignore = "prints the version 2 fixture JSON for tests/fixtures; run with --nocapture"]
+fn print_shared_context_v2_fixture() {
+    let v: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/management-shared-thread-context-v1.json"
+    ))
+    .unwrap();
+    let (w, c) = v2_fixture_from_v1(&v);
+    let rendered = render_context(&c, &w).unwrap();
+    let out = json!({
+        "version": 2,
+        "work": v["work"], "previousWork": v["previousWork"], "matrixContent": v["matrixContent"],
+        "delivery": v["delivery"], "deliveryDigest": v["deliveryDigest"],
+        "context": c, "contextDigest": allocation_digest(&c).unwrap(),
+        "renderedInput": rendered, "inputDigest": crate::hash(&rendered),
+        "historyBytes": allocation_encoding(&c.history).unwrap().len(), "inputBytes": rendered.len(),
+    });
+    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+}
+
+#[test]
+fn shared_context_v2_budget_follows_the_model_window() {
+    assert_eq!(budget_window(None), (DEFAULT_MODEL_CONTEXT_WINDOW, WINDOW_SOURCE_DEFAULT));
+    assert_eq!(budget_window(Some(10_000)), (DEFAULT_MODEL_CONTEXT_WINDOW, WINDOW_SOURCE_DEFAULT));
+    assert_eq!(budget_window(Some(10_000_001)), (DEFAULT_MODEL_CONTEXT_WINDOW, WINDOW_SOURCE_DEFAULT));
+    assert_eq!(budget_window(Some(272_000)), (272_000, WINDOW_SOURCE_OBSERVED));
+    // One sixth of the window at 1.5 bytes per token, capped by the record size.
+    assert_eq!(history_budget_bytes(DEFAULT_MODEL_CONTEXT_WINDOW), 31_999);
+    assert_eq!(history_budget_bytes(32_000), 7_999);
+    assert_eq!(history_budget_bytes(272_000), 67_999);
+    assert_eq!(history_budget_bytes(1_000_000), MAX_HISTORY_BYTES_V2 as i64);
+    assert!(SharedContextBudgetInput { version: 2, model_context_window: None }.validate().is_ok());
+    assert!(SharedContextBudgetInput { version: 1, model_context_window: None }.validate().is_err());
+    assert!(SharedContextBudgetInput { version: 2, model_context_window: Some(0) }.validate().is_err());
+}
+
+#[test]
+fn shared_context_v2_canonical_renderer_coverage_dedup_and_edit_fixture() {
+    let v: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/management-shared-thread-context-v2.json"
+    ))
+    .unwrap();
+    let w: SharedWorkItem = serde_json::from_value(v["work"].clone()).unwrap();
+    let c: SharedThreadContext = serde_json::from_value(v["context"].clone()).unwrap();
+    assert_eq!(allocation_digest(&c).unwrap(), v["contextDigest"]);
+    let rendered = render_context(&c, &w).unwrap();
+    assert_eq!(rendered, v["renderedInput"]);
+    assert_eq!(crate::hash(&rendered), v["inputDigest"]);
+    assert_eq!(rendered.len(), v["inputBytes"].as_u64().unwrap() as usize);
+    assert!(rendered.starts_with("Answer currentRequest only. history holds 1 of 3 earlier delivered exchanges from this thread in time order; the oldest were omitted to fit the model budget; 1 redacted exchanges are excluded. "));
+    assert!(rendered.contains("\"editedBody\":\"Remember the name 雪 and the quote \\\"hello\\\" (edited).\""));
+    assert!(rendered.contains("\"version\":2"));
+    // The version 1 record is byte-for-byte unchanged by the optional fields.
+    let v1: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/management-shared-thread-context-v1.json"
+    ))
+    .unwrap();
+    let c1: SharedThreadContext = serde_json::from_value(v1["context"].clone()).unwrap();
+    assert_eq!(render_context(&c1, &w).unwrap(), v1["renderedInput"]);
+    assert_eq!(allocation_digest(&c1).unwrap(), v1["contextDigest"]);
+    let reject = |mutate: &dyn Fn(&mut SharedThreadContext)| {
+        let mut bad = c.clone();
+        mutate(&mut bad);
+        assert!(render_context(&bad, &w).is_err());
+    };
+    // Dedup: the current request never appears as history; no event repeats.
+    reject(&|c| c.history[0].event_id = w.event_id.clone());
+    reject(&|c| c.history[0].delivery.matrix_event_id = c.history[0].event_id.clone());
+    reject(&|c| c.history[0].edited_event_id = Some(c.history[0].event_id.clone()));
+    reject(&|c| {
+        let mut again = c.history[0].clone();
+        again.work_id = "swork_again".into();
+        again.received_at_ms += 1;
+        c.history.push(again);
+        c.budget.as_mut().unwrap().included_pairs = 2;
+    });
+    // Budget and coverage are recomputed, never trusted.
+    reject(&|c| c.budget.as_mut().unwrap().history_budget_bytes += 1);
+    reject(&|c| c.budget.as_mut().unwrap().model_context_window = 10_000);
+    reject(&|c| c.budget.as_mut().unwrap().window_source = "guess".into());
+    reject(&|c| c.budget.as_mut().unwrap().included_pairs = 0);
+    reject(&|c| c.budget.as_mut().unwrap().prior_pairs_total = 0);
+    reject(&|c| c.omitted_earlier = false);
+    reject(&|c| c.budget = None);
+    reject(&|c| c.input_profile = INPUT_PROFILE_V1.into());
+    // Edits are all-or-nothing and digest-bound.
+    reject(&|c| c.history[0].edited_body = None);
+    reject(&|c| c.history[0].edited_body = Some("other".into()));
+    reject(&|c| c.history[0].edited_event_id = Some("not-an-event".into()));
+    // Version 1 records cannot smuggle the version 2 fields.
+    let mut v1_with_budget = c1.clone();
+    v1_with_budget.budget = c.budget.clone();
+    assert!(render_context(&v1_with_budget, &w).is_err());
+    let mut v1_with_edit = c1;
+    v1_with_edit.history[0].edited_event_id = Some("$prior_edit".into());
+    v1_with_edit.history[0].edited_body = Some("x".into());
+    v1_with_edit.history[0].edited_body_digest = Some(crate::hash("x"));
+    assert!(render_context(&v1_with_edit, &w).is_err());
+}
+
+fn v2_input(a: &SharedActivityLease, w: &SharedWorkItem, window: Option<i64>) -> SharedContextInput {
+    SharedContextInput {
+        authority: a.authority.clone(),
+        work_digest: allocation_digest(w).unwrap(),
+        budget: Some(SharedContextBudgetInput { version: 2, model_context_window: window }),
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_context_v2_budget_follows_model_window_and_states_coverage() {
+    let (mut f, r, _admin, _a, m) = Box::pin(prepared()).await;
+    let (d, a) = qualify(&f).await;
+    let s = work::sender().await;
+    for i in 0..10 {
+        complete(&f, &r, &m, &d, &a, &format!("ctx_v2_{i}"), "$v2", 201 + i, &format!("Reply {i}"), 1).await;
+        send(&f, &m, &s).await;
+    }
+    f.policy = f.policy.with_shared_thread_context(true);
+    let w = queue(&f, &r, &m, &a, "ctx_v2_current", "$v2", "Recall everything").await;
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .await
+        .unwrap();
+    let c = f
+        .domain
+        .freeze_shared_context(&f.owner.p, &f.policy, &w.id, v2_input(&a, &w, Some(400_000)), &m.gateway)
+        .await
+        .unwrap();
+    assert_eq!((c.context.version, c.context.input_profile.as_str()), (2, INPUT_PROFILE_V2));
+    let b = c.context.budget.clone().unwrap();
+    assert_eq!((b.model_context_window, b.window_source.as_str()), (400_000, WINDOW_SOURCE_OBSERVED));
+    assert_eq!(b.history_budget_bytes, MAX_HISTORY_BYTES_V2 as i64);
+    assert_eq!((b.prior_pairs_total, b.prior_pairs_redacted, b.included_pairs), (10, 0, 10));
+    assert!(!c.context.omitted_earlier);
+    assert_eq!(c.context.history.len(), 10);
+    assert_eq!(c.context.history[0].event_id, "$ctx_v2_0");
+    assert_eq!(c.context.history[9].event_id, "$ctx_v2_9");
+    assert!(c.context.history.iter().all(|p| p.edited_event_id.is_none()));
+    let rendered = render_context(&c.context, &w).unwrap();
+    assert!(rendered.starts_with("Answer currentRequest only. history holds 10 of 10 earlier delivered exchanges from this thread in time order. "));
+    assert!(rendered.len() <= MAX_CONTEXT_INPUT_BYTES_V2);
+    // The frozen record replays whatever a later executor asks for.
+    for later in [v2_input(&a, &w, None), v2_input(&a, &w, Some(64_000)), context_input(&a, &w)] {
+        let again = f
+            .domain
+            .freeze_shared_context(&f.owner.p, &f.policy, &w.id, later, &m.gateway)
+            .await
+            .unwrap();
+        assert_eq!(again.context_digest, c.context_digest);
+        assert_eq!(again.input_digest, c.input_digest);
+    }
+    let mode = f.domain.shared_work_input_mode(&f.owner.p, &w.id, read_input(&w)).await.unwrap();
+    assert_eq!((mode.mode.as_str(), mode.context_digest.as_deref()), ("thread_context_v1", Some(c.context_digest.as_str())));
+    assert!(
+        f.domain
+            .start_shared_context_work(&f.owner.p, &f.policy, &w.id, start_input(&a, &w, &c), &m.gateway)
+            .await
+            .unwrap()
+            .start
+            .newly_started
+    );
+    assert_eq!(s.calls.lock().unwrap().len(), 10);
+
+    // Near-limit replies: a small observed window quotes nothing but still
+    // states the coverage; the default window quotes the newest whole pairs.
+    let (mut f, r, _admin, _a, m) = Box::pin(prepared()).await;
+    let (d, a) = qualify(&f).await;
+    let s = work::sender().await;
+    let text = "r".repeat(8192);
+    for i in 0..5 {
+        complete(&f, &r, &m, &d, &a, &format!("ctx_v2_large_{i}"), "$v2large", 201 + i, &text, 1).await;
+        send(&f, &m, &s).await;
+    }
+    f.policy = f.policy.with_shared_thread_context(true);
+    let w = queue(&f, &r, &m, &a, "ctx_v2_small_window", "$v2large", "Recall").await;
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .await
+        .unwrap();
+    let c = f
+        .domain
+        .freeze_shared_context(&f.owner.p, &f.policy, &w.id, v2_input(&a, &w, Some(32_000)), &m.gateway)
+        .await
+        .unwrap();
+    let b = c.context.budget.clone().unwrap();
+    assert_eq!((b.history_budget_bytes, b.prior_pairs_total, b.included_pairs), (7_999, 5, 0));
+    assert!(c.context.history.is_empty() && c.context.omitted_earlier);
+    assert!(render_context(&c.context, &w).unwrap().starts_with("Answer currentRequest only. history holds 0 of 5 earlier delivered exchanges from this thread in time order; the oldest were omitted to fit the model budget. "));
+    assert!(
+        f.domain
+            .start_shared_context_work(&f.owner.p, &f.policy, &w.id, start_input(&a, &w, &c), &m.gateway)
+            .await
+            .unwrap()
+            .start
+            .newly_started
+    );
+    let t = work::ticket(&f, &d, &w).await;
+    let mut out = work::outcome(&d, &w, &t, 301, "completed");
+    out.receipt.body = Some("Nothing to recall".into());
+    out.receipt.body_digest = Some(crate::hash("Nothing to recall"));
+    out.receipt.known_consumed_tokens = 1;
+    out.receipt.retained_tokens = Some(1);
+    f.domain
+        .record_shared_work_result(&f.owner.p, &f.policy, &w.id, out)
+        .await
+        .unwrap();
+    let w = queue(&f, &r, &m, &a, "ctx_v2_default_window", "$v2large", "Recall again").await;
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .await
+        .unwrap();
+    let c = f
+        .domain
+        .freeze_shared_context(&f.owner.p, &f.policy, &w.id, v2_input(&a, &w, None), &m.gateway)
+        .await
+        .unwrap();
+    let b = c.context.budget.clone().unwrap();
+    assert_eq!((b.model_context_window, b.window_source.as_str(), b.history_budget_bytes), (DEFAULT_MODEL_CONTEXT_WINDOW, WINDOW_SOURCE_DEFAULT, 31_999));
+    assert!((1..5).contains(&c.context.history.len()));
+    assert!(c.context.omitted_earlier);
+    assert_eq!(b.included_pairs as usize, c.context.history.len());
+    assert_eq!(b.prior_pairs_total, 5);
+    assert_eq!(c.context.history.last().unwrap().event_id, "$ctx_v2_large_4");
+    assert!(allocation_encoding(&c.context.history).unwrap().len() <= 31_999);
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_context_v2_excludes_redacted_pairs_and_quotes_the_latest_edit() {
+    let (mut f, r, _admin, _a, m) = Box::pin(prepared()).await;
+    let (d, a) = qualify(&f).await;
+    let s = work::sender().await;
+    let mut prior = Vec::new();
+    for i in 0..3 {
+        prior.push(complete(&f, &r, &m, &d, &a, &format!("ctx_rev_{i}"), "$rev", 201 + i, &format!("Reply {i}"), 1).await);
+        send(&f, &m, &s).await;
+    }
+    let revision = |id: &str, target: &str, sender: &str, kind: RevisionKind| RoutedRevision {
+        revision_event_id: id.into(),
+        room_id: prior[0].room_id.clone(),
+        target_event_id: target.into(),
+        sender_mxid: sender.into(),
+        kind,
+    };
+    let edit = |body: &str| RevisionKind::Edit { body: body.into() };
+    let at = prior[2].created_at_ms + 1;
+    // Two edits by the requester: the latest wins. A stranger's edit and an
+    // edit of an unknown event are not revisions of the quoted request.
+    f.domain.retain_shared_revision(&revision("$edit_a", &prior[1].event_id, &prior[1].requester_mxid, edit("First edit")), at).await.unwrap();
+    f.domain.retain_shared_revision(&revision("$edit_b", &prior[1].event_id, &prior[1].requester_mxid, edit("Latest edit")), at + 1).await.unwrap();
+    f.domain.retain_shared_revision(&revision("$edit_x", &prior[1].event_id, "@stranger:example.test", edit("Forged edit")), at + 2).await.unwrap();
+    f.domain.retain_shared_revision(&revision("$edit_unknown", "$nobody", &prior[1].requester_mxid, edit("Lost edit")), at + 3).await.unwrap();
+    // Redacting either side removes the pair: the sent reply of pair 0, the request of pair 2.
+    let reply0 = f.domain.observe_shared_reply(&f.owner.p, &prior[0].id, read_input(&prior[0])).await.unwrap().delivery.unwrap().receipt.matrix_event_id;
+    f.domain.retain_shared_revision(&revision("$red_reply_0", &reply0, "@moderator:example.test", RevisionKind::Redaction), at + 4).await.unwrap();
+    f.domain.retain_shared_revision(&revision("$red_request_2", &prior[2].event_id, &prior[2].requester_mxid, RevisionKind::Redaction), at + 5).await.unwrap();
+    // Replays and malformed revisions never fail the intake loop with a surprise.
+    f.domain.retain_shared_revision(&revision("$red_request_2", &prior[2].event_id, &prior[2].requester_mxid, RevisionKind::Redaction), at + 5).await.unwrap();
+    assert!(f.domain.retain_shared_revision(&revision("$same", "$same", &prior[1].requester_mxid, RevisionKind::Redaction), at).await.is_err());
+    assert!(f.domain.retain_shared_revision(&revision("$empty", &prior[1].event_id, &prior[1].requester_mxid, edit("")), at).await.is_err());
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let retained = sql_query("SELECT COUNT(*) AS count FROM hagency_agent_v1.management_shared_event_revisions").get_result::<Count>(&mut db).await.unwrap().count;
+    assert_eq!(retained, 5, "two edits, one stranger edit, two redactions; unknown target dropped");
+    assert!(sql_query("DELETE FROM hagency_agent_v1.management_shared_event_revisions").execute(&mut db).await.is_err(), "revisions are immutable evidence");
+
+    f.policy = f.policy.with_shared_thread_context(true);
+    let w = queue(&f, &r, &m, &a, "ctx_rev_current", "$rev", "What changed?").await;
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .await
+        .unwrap();
+    let c = f
+        .domain
+        .freeze_shared_context(&f.owner.p, &f.policy, &w.id, v2_input(&a, &w, Some(272_000)), &m.gateway)
+        .await
+        .unwrap();
+    let b = c.context.budget.clone().unwrap();
+    assert_eq!((b.prior_pairs_total, b.prior_pairs_redacted, b.included_pairs), (1, 2, 1));
+    assert!(!c.context.omitted_earlier);
+    let pair = &c.context.history[0];
+    assert_eq!(pair.event_id, prior[1].event_id);
+    assert_eq!(pair.user_body, "Prior user request");
+    assert_eq!(pair.edited_event_id.as_deref(), Some("$edit_b"));
+    assert_eq!(pair.edited_body.as_deref(), Some("Latest edit"));
+    assert_eq!(pair.edited_body_digest.as_deref(), Some(crate::hash("Latest edit").as_str()));
+    let rendered = render_context(&c.context, &w).unwrap();
+    assert!(rendered.starts_with("Answer currentRequest only. history holds 1 of 1 earlier delivered exchanges from this thread in time order; 2 redacted exchanges are excluded. "));
+    assert!(rendered.contains("Latest edit") && !rendered.contains("Forged edit") && !rendered.contains("Reply 0") && !rendered.contains("Reply 2"));
+    assert!(
+        f.domain
+            .start_shared_context_work(&f.owner.p, &f.policy, &w.id, start_input(&a, &w, &c), &m.gateway)
+            .await
+            .unwrap()
+            .start
+            .newly_started
+    );
 }

@@ -403,6 +403,7 @@ async fn pool_schema_upgrade_preserves_existing_capacity_and_rolls_back_atomical
     let input=grant_input(&f,&contribution,&f.outsider.p).await;
     let expected=serde_json::to_string(&input.receipt).unwrap();
     let grant=f.domain.publish_management_grant(&f.owner.p,&f.policy,&contribution.contribution.id,input).await.unwrap();
+    db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_pool_agents_remove_test.sql")).await.unwrap();
     db.batch_execute("ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=23;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=23);CREATE INDEX pool_agent_room_unique ON hagency_agent_v1.management_requests(id)").await.unwrap();
     assert!(DomainStore::open(&f.url,"example.test","_hagency_test_").await.is_err());
@@ -974,7 +975,7 @@ async fn shared_runtime_v11_migration_is_atomic_preserves_original_v1() {
             .is_none()
     );
     assert!(
-        sql_query("SELECT version=31 AS matched FROM hagency_agent_v1.management_deployment")
+        sql_query("SELECT version=32 AS matched FROM hagency_agent_v1.management_deployment")
             .get_result::<Check>(&mut db)
             .await
             .unwrap()

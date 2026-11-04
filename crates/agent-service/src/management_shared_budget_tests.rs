@@ -602,7 +602,7 @@ async fn budget_execution_v3_context_exact_input_old_routes_and_http_recovery() 
             SharedContextInput {
                 authority: a.authority.clone(),
                 work_digest: allocation_digest(&w).unwrap(),
-            },
+            budget: None,},
             &m.gateway,
         )
         .await
@@ -802,6 +802,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         .split("CREATE TRIGGER validate_shared_budget_demand_head")
         .next().unwrap();
     db.batch_execute(&format!("CREATE OR REPLACE FUNCTION hagency_agent_v1.validate_shared_budget_demand(){legacy_validator}")).await.unwrap();
+    db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_publication_first_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_agent_periods_down.sql")).await.unwrap();
     db.batch_execute("DROP FUNCTION hagency_agent_v1.canonical_shared_block_json(jsonb); ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check; UPDATE hagency_agent_v1.management_deployment SET version=25; ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=25)").await.unwrap();
@@ -814,7 +815,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
     for _ in 0..2 {
         f.domain = DomainStore::open(&f.url, "example.test", "_hagency_test_").await.unwrap();
     }
-    assert_eq!(sql_query("SELECT version::bigint AS version FROM hagency_agent_v1.management_deployment").get_result::<SchemaVersion>(&mut db).await.unwrap().version, 31);
+    assert_eq!(sql_query("SELECT version::bigint AS version FROM hagency_agent_v1.management_deployment").get_result::<SchemaVersion>(&mut db).await.unwrap().version, 32);
     let pin = apply_delta(&f, &r, &admin, 25, 230).await;
     let offered = f
         .domain
@@ -1180,6 +1181,7 @@ async fn budget_execution_v3_schema19_atomic_upgrade_reopen_preserves_original_r
             .unwrap()
     );
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_pool_agents_remove_test.sql")).await.unwrap();
     db.batch_execute(include_str!("management_project_manager_remove_test.sql")).await.unwrap();
     db.batch_execute(include_str!("management_shared_budget_remove_test.sql"))

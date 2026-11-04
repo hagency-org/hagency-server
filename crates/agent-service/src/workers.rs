@@ -6,6 +6,7 @@ use crate::{
     matrix_client::MatrixClient,
     transport::{RoutedEvent, TransportStore},
 };
+use crate::management_shared_context_types::{RevisionKind, RoutedRevision};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -107,6 +108,39 @@ pub(crate) fn parse_event(raw: &Value) -> Option<RoutedEvent> {
         is_edit: false,
     })
 }
+/// Edits and redactions of earlier plaintext events. They never become prompts
+/// (`parse_event` rejects them); the shared journal retains them so a later
+/// context quotes the latest edit and drops redacted exchanges. Encrypted
+/// edits carry no readable body and are not revisions here.
+pub(crate) fn parse_revision(raw: &Value) -> Option<RoutedRevision> {
+    if raw.get("state_key").is_some() {
+        return None;
+    }
+    let c = &raw["content"];
+    let (target, kind) = if raw["type"] == "m.room.redaction" {
+        // Room versions before 11 carry `redacts` at the top level.
+        let target = c["redacts"].as_str().or_else(|| raw["redacts"].as_str())?;
+        (target, RevisionKind::Redaction)
+    } else if raw["type"] == "m.room.message" && c["m.relates_to"]["rel_type"] == "m.replace" {
+        let new = &c["m.new_content"];
+        if new["msgtype"] != "m.text" {
+            return None;
+        }
+        let body = new["body"].as_str()?;
+        (c["m.relates_to"]["event_id"].as_str()?, RevisionKind::Edit { body: body.to_owned() })
+    } else {
+        return None;
+    };
+    let revision = RoutedRevision {
+        revision_event_id: raw["event_id"].as_str()?.to_owned(),
+        room_id: raw["room_id"].as_str()?.to_owned(),
+        target_event_id: target.to_owned(),
+        sender_mxid: raw["sender"].as_str()?.to_owned(),
+        kind,
+    };
+    revision.validate().ok()?;
+    Some(revision)
+}
 /// Matrix keeps `m.relates_to` outside the ciphertext, so the sender, Room and
 /// thread are known here; the body and mentions are not. Edits and annotations
 /// relate to earlier events and never become prompts.
@@ -172,6 +206,22 @@ pub(crate) async fn route_with_shared(
         *cursor = transaction.id.clone();
         let mut retry = false;
         for raw in transaction.body["events"].as_array().into_iter().flatten() {
+            if let Some((domain, _)) = shared
+                && let Some(revision) = parse_revision(raw)
+            {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    domain.retain_shared_revision(&revision, transaction.received_at_ms),
+                )
+                .await
+                {
+                    Ok(
+                        Ok(())
+                        | Err(Error::Unauthorized(_) | Error::Invalid(_) | Error::Conflict(_)),
+                    ) => (),
+                    _ => retry = true,
+                }
+            }
             let Some(event) = parse_event(raw) else {
                 continue;
             };
@@ -885,6 +935,36 @@ mod tests {
         let mut encrypted = raw;
         encrypted["type"] = json!("m.room.encrypted");
         assert!(parse_event(&encrypted).is_none());
+    }
+    #[test]
+    fn edits_and_redactions_are_revisions_of_known_events_never_prompts() {
+        let edit = json!({"type":"m.room.message","event_id":"$edit","room_id":"!r:x","sender":"@u:x",
+            "content":{"msgtype":"m.text","body":"* fixed","m.new_content":{"msgtype":"m.text","body":"fixed"},
+            "m.relates_to":{"rel_type":"m.replace","event_id":"$orig"}}});
+        assert!(parse_event(&edit).is_none());
+        let parsed = parse_revision(&edit).unwrap();
+        assert_eq!(parsed.target_event_id, "$orig");
+        assert_eq!(parsed.kind, RevisionKind::Edit { body: "fixed".into() });
+        let mut notice = edit.clone();
+        notice["content"]["m.new_content"]["msgtype"] = json!("m.notice");
+        assert!(parse_revision(&notice).is_none());
+        let mut encrypted = edit.clone();
+        encrypted["type"] = json!("m.room.encrypted");
+        assert!(parse_revision(&encrypted).is_none() && parse_event(&encrypted).is_none());
+        for redaction in [
+            json!({"type":"m.room.redaction","event_id":"$red","room_id":"!r:x","sender":"@mod:x","content":{"redacts":"$orig","reason":"spam"}}),
+            json!({"type":"m.room.redaction","event_id":"$red","room_id":"!r:x","sender":"@mod:x","redacts":"$orig","content":{}}),
+        ] {
+            assert!(parse_event(&redaction).is_none());
+            let parsed = parse_revision(&redaction).unwrap();
+            assert_eq!((parsed.target_event_id.as_str(), parsed.kind.clone()), ("$orig", RevisionKind::Redaction));
+        }
+        let plain = json!({"type":"m.room.message","event_id":"$e","room_id":"!r:x","sender":"@u:x","content":{"msgtype":"m.text","body":"hello"}});
+        assert!(parse_revision(&plain).is_none() && parse_event(&plain).is_some());
+        let mut self_target = edit;
+        self_target["m.relates_to"] = json!({});
+        self_target["content"]["m.relates_to"]["event_id"] = json!("$edit");
+        assert!(parse_revision(&self_target).is_none());
     }
     #[test]
     fn encrypted_events_carry_only_cleartext_routing_metadata() {
