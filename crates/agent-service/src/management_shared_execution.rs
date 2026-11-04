@@ -417,13 +417,17 @@ impl DomainStore {
             // Existing cleanup and fresh issuance share one circular ordering.
             // The first poll favors cleanup; advancing `after` then guarantees
             // that an unresolved process cannot permanently starve its siblings.
+            // Keep stopped processes discoverable until their admitted work has
+            // a usage receipt; delivery() grants history recovery only.
             let ids=sql_query("SELECT a.id AS assignment_id,r.id AS runtime_id
                 FROM hagency_agent_v1.management_shared_assignments a
                 LEFT JOIN hagency_agent_v1.management_shared_runtimes r ON r.assignment_id=a.id AND r.payload::jsonb->>'version'='1' AND NOT r.issuance_void
                 LEFT JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id
                 WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND (
-                    (r.id IS NOT NULL AND r.state<>'stopped' AND
+                    (r.id IS NOT NULL AND ((r.state<>'stopped' AND
                      (r.state<>'qualified' OR r.permanent_fence OR r.activity_until_ms<=$5))
+                     OR (r.state='stopped' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w
+                         WHERE w.runtime_id=r.id AND w.started_at_ms IS NOT NULL AND w.latest_receipt IS NULL))))
                     OR (r.id IS NULL AND $7 AND a.executor_generation=$4 AND a.state='pending_native'
                         AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_controls sc WHERE sc.assignment_id=a.id AND sc.mode='paused')
                         AND m.state='matrix_verified' AND m.verified_at_ms>$5-$6 AND m.verified_at_ms<=$5

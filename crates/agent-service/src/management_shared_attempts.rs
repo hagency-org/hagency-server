@@ -348,7 +348,9 @@ impl DomainStore {
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
             Self::authorize(db,p,0).await?;let (device,_)=device(p)?;let now=clock(db).await?;sweep(db,p,now).await?;
-            let id=sql_query("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE r.payload::jsonb->>'version'='2' AND a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND r.state<>'stopped' AND (r.state<>'qualified' OR r.permanent_fence OR r.activity_until_ms<=$4) ORDER BY (r.id<=$3),r.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<BigInt,_>(now).get_result::<Id>(db).await.optional()?;
+            // A process stop does not acknowledge its work receipt. Recover
+            // missing accounting with a history ticket, never execution authority.
+            let id=sql_query("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE r.payload::jsonb->>'version'='2' AND a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND ((r.state<>'stopped' AND (r.state<>'qualified' OR r.permanent_fence OR r.activity_until_ms<=$4)) OR (r.state='stopped' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w WHERE w.runtime_id=r.id AND w.started_at_ms IS NOT NULL AND w.latest_receipt IS NULL))) ORDER BY (r.id<=$3),r.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<BigInt,_>(now).get_result::<Id>(db).await.optional()?;
             let Some(id)=id else{return Ok(None)};let r=runtime(db,&id.id).await?;Ok(Some(attempt_delivery(db,p,policy,&r,&self.server,false,None).await?))
         }).await
     }

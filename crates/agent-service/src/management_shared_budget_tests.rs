@@ -265,6 +265,29 @@ async fn usage(
         },
     }
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database"]
+async fn stopped_missing_usage_v3_remains_discoverable_without_execution_authority() {
+    let (f, request, _, m, i) = Box::pin(fixture()).await;
+    let (d, a) = started(&f, &m, i).await;
+    let w = queued(&f, &request, &m, &a, "lost_usage_v3").await;
+    f.domain.acknowledge_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .await.unwrap();
+    f.domain.start_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .await.unwrap();
+    f.domain.record_shared_budget_attempt_process(
+        &f.owner.p, &f.policy, &d.command.command_id, evidence(&d, "stopped", 260),
+    ).await.unwrap();
+    let recovered = f.domain.poll_shared_budget_attempt(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await.unwrap().expect("A stopped budget successor still has an undelivered usage receipt");
+    assert_eq!(recovered.command.command_id, d.command.command_id);
+    assert!(!recovered.execution_allowed);
+    assert!(!recovered.cleanup_allowed);
+    work::upload_stopped_usage(&f, &w, "d".repeat(64), 250).await;
+    assert!(f.domain.poll_shared_budget_attempt(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await.unwrap().is_none());
+}
 #[tokio::test]
 #[ignore = "dedicated PostgreSQL"]
 async fn budget_execution_v3_original_assignment_applied_head_replay_and_old_routes_refuse() {

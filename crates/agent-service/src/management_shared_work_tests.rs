@@ -116,6 +116,51 @@ pub(super) fn outcome(
         },
     }
 }
+
+pub(super) async fn upload_stopped_usage(
+    f: &Fixture,
+    w: &SharedWorkItem,
+    process_digest: String,
+    revision: i64,
+) {
+    let t = f.domain.recover_shared_work_result(
+        &f.owner.p, &f.policy, &w.id,
+        SharedWorkRecoverInput {
+            runtime_command_digest: w.runtime_command_digest.clone(),
+            work_digest: allocation_digest(w).unwrap(),
+            observation_id: None,
+        },
+    ).await.unwrap();
+    f.domain.record_shared_work_result(&f.owner.p, &f.policy, &w.id, SharedWorkResultUpload {
+        work_digest: t.work_digest.clone(), token: t.token,
+        receipt: SharedWorkReceipt {
+            version: 1, observation_id: format!("{}_late_usage", w.id),
+            work_id: w.id.clone(), work_digest: t.work_digest,
+            execution_id: w.execution_id.clone(), call_id: format!("call_{}", w.id),
+            runtime_command_digest: w.runtime_command_digest.clone(), process_digest,
+            ledger_revision: revision, state: "failed".into(),
+            known_consumed_tokens: 17, retained_tokens: Some(17), usage_complete: true,
+            body_digest: None, body: None,
+        },
+    }).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database"]
+async fn stopped_missing_usage_v1_remains_discoverable_without_execution_authority() {
+    let (f, request, _, _, m) = Box::pin(prepared()).await;
+    let (d, a) = qualify(&f).await;
+    let w = started(&f, &request, &m, &a, "lost_usage_v1").await;
+    attempts::stop(&f, &d, 220).await;
+    let recovered = f.domain.poll_shared_runtime(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await.unwrap().expect("A stopped process still has an undelivered usage receipt");
+    assert_eq!(recovered.command.command_id, d.command.command_id);
+    assert!(!recovered.execution_allowed);
+    assert!(!recovered.cleanup_allowed);
+    upload_stopped_usage(&f, &w, "a".repeat(64), 210).await;
+    assert!(f.domain.poll_shared_runtime(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await.unwrap().is_none(), "Acknowledged accounting must stop being polled");
+}
 pub(super) struct Sender {
     pub(super) matrix: MatrixClient,
     pub(super) calls: Arc<Mutex<Vec<(String, Value)>>>,

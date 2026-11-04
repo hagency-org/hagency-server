@@ -98,6 +98,33 @@ pub(super) fn result(d: &SharedAttemptDelivery, state: &str, revision: i64) -> S
 }
 
 #[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database"]
+async fn stopped_missing_usage_v2_remains_discoverable_without_execution_authority() {
+    let (mut f, request, _, _, m) = Box::pin(prepared()).await;
+    f.policy = f.policy.with_shared_successors(true);
+    let (original, _) = qualify(&f).await;
+    let stopped = stop(&f, &original, 220).await;
+    let d = f.domain.start_shared_attempt(
+        &f.owner.p, &f.policy, start(&original, &stopped), &m.gateway,
+    ).await.unwrap();
+    let a = f.domain.record_shared_attempt_process(
+        &f.owner.p, &f.policy, &d.command.command_id, result(&d, "qualified", 240),
+    ).await.unwrap().activity.unwrap();
+    let w = work::started(&f, &request, &m, &a, "lost_usage_v2").await;
+    f.domain.record_shared_attempt_process(
+        &f.owner.p, &f.policy, &d.command.command_id, result(&d, "stopped", 260),
+    ).await.unwrap();
+    let recovered = f.domain.poll_shared_attempt(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await.unwrap().expect("A stopped successor still has an undelivered usage receipt");
+    assert_eq!(recovered.command.command_id, d.command.command_id);
+    assert!(!recovered.execution_allowed);
+    assert!(!recovered.cleanup_allowed);
+    work::upload_stopped_usage(&f, &w, "d".repeat(64), 250).await;
+    assert!(f.domain.poll_shared_attempt(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await.unwrap().is_none());
+}
+
+#[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn shared_activity_v2_idle_renewal_survives_original_spawn_deadline() {
     let (mut f, request, _admin, _assignment, m) = Box::pin(prepared()).await;
