@@ -94,7 +94,7 @@ pub(super) async fn projection(
         Err(e) => return Err(e),
     };
     let consumed = known(db, &r.id, &period).await?;
-    let unsettled=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes x ON x.id=w.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=x.assignment_id WHERE a.request_id=$1 AND w.created_at_ms>=$2 AND w.created_at_ms<$3 AND NOT w.usage_complete AND w.state<>'cancelled') AS matched").bind::<Text,_>(&r.id).bind::<BigInt,_>(period.start_ms as i64).bind::<BigInt,_>(period.end_ms as i64).get_result::<Flag>(db).await?.matched;
+    let unsettled=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes x ON x.id=w.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=x.assignment_id WHERE a.request_id=$1 AND w.created_at_ms>=$2 AND w.created_at_ms<$3 AND NOT w.usage_complete AND w.state<>'cancelled' AND x.state<>'stopped') AS matched").bind::<Text,_>(&r.id).bind::<BigInt,_>(period.start_ms as i64).bind::<BigInt,_>(period.end_ms as i64).get_result::<Flag>(db).await?.matched;
     let new_period = original
         .as_ref()
         .and_then(|c| c.pool_grant.as_ref())

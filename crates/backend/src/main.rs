@@ -72,13 +72,16 @@ async fn run() -> anyhow::Result<()> {
     }
     let filter =
         tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    // Spans only need OpenTelemetry when something exports them. Without an
+    // exporter the layer leaks contexts until span bookkeeping panics and takes
+    // Tokio workers with it, which starves token introspection.
+    let otel = std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").map(|_| {
+        tracing_opentelemetry::layer().with_tracer(opentelemetry::global::tracer("hagency-server"))
+    });
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(filter))
         .with(palpo::logging::capture_layer())
-        .with(
-            tracing_opentelemetry::layer()
-                .with_tracer(opentelemetry::global::tracer("hagency-server")),
-        )
+        .with(otel)
         .init();
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
