@@ -48,7 +48,11 @@ just dev
 ```
 
 Open [the console](http://127.0.0.1:8088/login), choose **Sign in with Pasion**,
-and sign in as `admin` using the password in `secrets/admin-password`.
+and sign in as `admin` using the password in `secrets/admin-password`. That
+account is also the management administrator (`[management] administrator` in
+`config/dev/hagency.toml`): it admits resources, and in Hagency Desktop it can
+use the Resource Owner, Server Admin and Agent manager workspaces. To make a
+different account the administrator, change that line and restart.
 Rust changes rebuild automatically; refresh after frontend changes.
 For later starts, use `just db-up` and `just dev`, without initialization or bootstrap.
 
