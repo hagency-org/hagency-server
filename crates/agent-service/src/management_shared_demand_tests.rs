@@ -715,15 +715,17 @@ async fn shared_demand_budget_block_retains_unknown_or_overflow_without_start_id
             assert_eq!(status["executions"][0]["budgetState"],"usage_unresolved");
             assert!(status["executions"][0].get("budgetBlock").is_none());
         }
+        // The blocked event keeps its status, and the next one is offered.
         retain(&f, &r, &m, &format!("demand_budget_later_{}", r.id)).await;
-        assert!(
-            f.domain
-                .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
-                .await
-                .unwrap()
-                .demand
-                .is_none()
-        );
+        let later = f
+            .domain
+            .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .await
+            .unwrap()
+            .demand
+            .unwrap();
+        assert_ne!(later.offer.demand_id, o.offer.demand_id);
+        assert_eq!(later.state, "offered");
         assert!(
             f.domain
                 .start_shared_demand(
@@ -985,13 +987,28 @@ async fn shared_demand_blocked_assignment_does_not_starve_another_owner_assignme
     save(&f, &runtime, "qualified", 310).await.unwrap();
     attempts::stop(&f, &runtime, 311).await;
     retain(&f, &second, &m, "demand_fair_available").await;
-    let polled = f
+    // The blocked assignment's later event is offered, and the cursor still
+    // reaches the other assignment.
+    let later = f
         .domain
         .poll_shared_demand(
             &f.owner.p,
             &f.policy,
             ExecutorPollInput {
                 after: Some(b.id.clone()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(later.demand.unwrap().offer.assignment_id, a.id);
+    assert_eq!(later.next_after, Some(a.id.clone()));
+    let polled = f
+        .domain
+        .poll_shared_demand(
+            &f.owner.p,
+            &f.policy,
+            ExecutorPollInput {
+                after: later.next_after,
             },
         )
         .await

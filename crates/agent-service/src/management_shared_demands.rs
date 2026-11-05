@@ -128,9 +128,11 @@ async fn period_start(db:&mut AsyncPgConnection,id:&str)->Result<i64> {
     let now=clock(db).await?;
     Ok(super::super::super::periods::assignment_period(db,id,now).await?.map_or(0,|p|p.start_ms as i64))
 }
+/// The next event to offer. A blocked event already has its own status and
+/// notice, so it must not hold back later events for the rest of the period.
 async fn oldest(db: &mut AsyncPgConnection, id: &str, revision: i64) -> Result<Option<Queued>> {
     let start=period_start(db,id).await?;
-    Ok(sql_query("SELECT q.* FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=$1 AND q.control_revision=$2 AND q.received_at_ms>=$3 AND (q.state='pending' OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demands d JOIN hagency_agent_v1.management_shared_demand_blocks b ON b.demand_id=d.id WHERE d.intake_id=q.id)) ORDER BY received_at_ms,id LIMIT 1").bind::<Text,_>(id).bind::<BigInt,_>(revision).bind::<BigInt,_>(start).get_result(db).await.optional()?)
+    Ok(sql_query("SELECT q.* FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=$1 AND q.control_revision=$2 AND q.received_at_ms>=$3 AND q.state='pending' ORDER BY received_at_ms,id LIMIT 1").bind::<Text,_>(id).bind::<BigInt,_>(revision).bind::<BigInt,_>(start).get_result(db).await.optional()?)
 }
 async fn known(db: &mut AsyncPgConnection, id: &str) -> Result<i64> {
     let start=period_start(db,id).await?;
@@ -305,7 +307,7 @@ impl DomainStore {
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
  Self::authorize(db,p,0).await?;let (device,generation)=device(p)?;let now=clock(db).await?;
  let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND c.mode='running' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.control_revision=c.revision AND q.state='pending') ORDER BY (a.id<=$4),a.id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(input.after.as_deref().unwrap_or("")).load::<Id>(db).await?;
- let mut after=None;for id in ids {after=Some(id.id.clone());intake::expire(db,&id.id,now).await?;let revision=intake::running_revision(db,&id.id).await?;let Some(q)=oldest(db,&id.id,revision).await? else{continue};if q.state!="pending"{continue}let w=match authorize(db,p,&q,&self.server,now,true).await {Ok(w)=>w,Err(Error::Conflict(_)|Error::NotFound(_))=>continue,Err(e)=>return Err(e)};let Some(h)=head(db,&id.id).await? else{continue};if runtime_version(&h)?==3 || has_applied_budget(db,&w.request_id).await? {continue;}let d=ensure(db,&q,&h).await?;refresh(db,&d,&q,&h).await?;if status(db,&d).await?.state!="offered" && started(db,&d.id).await?.is_none(){continue}let c:ManagedAgentReserveCommand=decode(&w.payload)?;if known(db,&id.id).await?>=c.requested_tokens && started(db,&d.id).await?.is_none(){block(db,&d,&q,"budget_blocked","\"known_consumption_exhausted\"").await?;}let value=status(db,&d).await?;if matches!(value.state.as_str(),"offered"|"start_committed"){return Ok(SharedDemandPoll{demand:Some(value),next_after:after})}}
+ let mut after=None;for id in ids {after=Some(id.id.clone());intake::expire(db,&id.id,now).await?;let revision=intake::running_revision(db,&id.id).await?;let Some(q)=oldest(db,&id.id,revision).await? else{continue};let w=match authorize(db,p,&q,&self.server,now,true).await {Ok(w)=>w,Err(Error::Conflict(_)|Error::NotFound(_))=>continue,Err(e)=>return Err(e)};let Some(h)=head(db,&id.id).await? else{continue};if runtime_version(&h)?==3 || has_applied_budget(db,&w.request_id).await? {continue;}let d=ensure(db,&q,&h).await?;refresh(db,&d,&q,&h).await?;if status(db,&d).await?.state!="offered" && started(db,&d.id).await?.is_none(){continue}let c:ManagedAgentReserveCommand=decode(&w.payload)?;if known(db,&id.id).await?>=c.requested_tokens && started(db,&d.id).await?.is_none(){block(db,&d,&q,"budget_blocked","\"known_consumption_exhausted\"").await?;}let value=status(db,&d).await?;if matches!(value.state.as_str(),"offered"|"start_committed"){return Ok(SharedDemandPoll{demand:Some(value),next_after:after})}}
  Ok(SharedDemandPoll{demand:None,next_after:after})
  }).await
     }
@@ -361,9 +363,6 @@ pub(super) async fn promote(
     let Some(q) = oldest(db, &r.assignment_id, revision).await? else {
         return Ok(());
     };
-    if q.state != "pending" {
-        return Ok(());
-    }
     let w = authorize(db, p, &q, server, now, true).await?;
     if runtime_version(r)? == 3 || has_applied_budget(db, &w.request_id).await? {
         return Ok(());
