@@ -12,3 +12,26 @@ public_dir = "../../resources/frontend/public"
 [queue]
 # Do not start stale offline requests; trusted server receipt time, 24h default.
 event_ttl_ms = 86400000
+
+# Native Hagency management: Projects, resource pools and Agents. Without this
+# section the desktop reports "Hagency management is not enabled on this server".
+# The administrator is the account created by `--bootstrap-admin admin`; its
+# server part is rewritten to the configured server name by `init-config`.
+[management]
+administrator = "@admin:localhost:8088"
+enable_project_reservations = true
+enable_parent_settlement = true
+enable_project_setup = true
+enable_agent_admission = true
+enable_agent_executor = true
+enable_agent_matrix_provisioning = true
+enable_agent_runtime_provisioning = true
+enable_shared_execution = true
+enable_shared_successors = true
+enable_shared_durable_intake = true
+enable_shared_demands = true
+enable_shared_thread_context = true
+enable_agent_budget_deltas = true
+enable_shared_budget_execution = true
+# Pool grant renewal needs desktop support that is not released yet.
+enable_pool_grant_succession = false
