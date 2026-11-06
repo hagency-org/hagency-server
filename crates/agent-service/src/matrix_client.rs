@@ -103,6 +103,23 @@ impl MatrixClient {
             .send()
             .await
             .map_err(|_| Error::Unavailable("matrix_outcome_unknown"))?;
+        if response.status().as_u16() == 429 {
+            // The homeserver's rate limit is retryable and distinct from a
+            // failed request. Log only the endpoint name and the delay.
+            let header = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .map(|seconds| seconds.saturating_mul(1000));
+            let body = rate_limit_delay(&mut response).await;
+            tracing::warn!(
+                endpoint = segments.get(3).copied().unwrap_or(""),
+                retry_after_ms = header.or(body),
+                "Matrix homeserver rate limited a request"
+            );
+            return Err(Error::Unavailable("matrix_rate_limited"));
+        }
         if !response.status().is_success() {
             return Err(if response.status().as_u16() == 403 {
                 Error::Conflict("matrix_permission_missing")
@@ -288,4 +305,16 @@ impl MatrixClient {
         .await?;
         Ok(())
     }
+}
+
+/// `retry_after_ms` from an M_LIMIT_EXCEEDED body, read within a small bound.
+async fn rate_limit_delay(response: &mut reqwest::Response) -> Option<u64> {
+    let mut raw = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        if raw.len() + chunk.len() > 4096 {
+            return None;
+        }
+        raw.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice::<Value>(&raw).ok()?["retry_after_ms"].as_u64()
 }

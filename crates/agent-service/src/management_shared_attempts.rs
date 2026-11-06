@@ -409,7 +409,22 @@ impl DomainStore {
         key(id)?;
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
-            Self::authorize(db,p,0).await?;let r=runtime(db,id).await?;let w=original(db,&r).await?;owner(&w,p)?;let c=attempt_command(&r,&self.server)?;input.receipt.validate_for(&c)?;let now=clock(db).await?;
+            Self::authorize(db,p,0).await?;
+            record_in(db,p,policy,&self.server,id,&input).await
+        }).await
+    }
+}
+/// One v2 process receipt in the caller's transaction. Also used by a demand
+/// retry, which must record its not_started evidence in the same transaction.
+pub(super) async fn record_in(
+    db: &mut AsyncPgConnection,
+    p: &Principal,
+    policy: &ManagementPolicy,
+    server: &str,
+    id: &str,
+    input: &SharedAttemptResultInput,
+) -> Result<SharedAttemptAcknowledgement> {
+            let r=runtime(db,id).await?;let w=original(db,&r).await?;owner(&w,p)?;let c=attempt_command(&r,server)?;input.receipt.validate_for(&c)?;let now=clock(db).await?;
             if input.command_digest!=r.digest {return Err(Error::Conflict("shared_result_ticket_changed"));}
             let ticket_mode=tickets::mode(db,p,id,&input.token,now).await?;
             let digest=allocation_digest(&input.receipt)?;
@@ -421,7 +436,7 @@ impl DomainStore {
             }
             let fresh=latest_evidence(db,id,None).await?.unwrap();
                 if fresh.observation_id==input.receipt.observation_id {
-                    let scope=command(&r,&self.server)?;let live=current(db,&r,&w,&scope,now).await?;
+                    let scope=command(&r,server)?;let live=current(db,&r,&w,&scope,now).await?;
                     let pending=input.receipt.state=="qualified"&&ticket_mode!="execute"&&r.activity_epoch==0&&!r.permanent_fence&&now<c.expires_at_ms&&live&&tickets::has_execute(db,p,id,now).await?;
                     let fenced=r.permanent_fence||!pending&&(ticket_mode!="execute"&&r.activity_epoch==0||input.receipt.state!="qualified"||now>=c.expires_at_ms&&r.activity_epoch==0||!live);
                     // A not_started attempt is stopped; a stopped attempt never
@@ -429,11 +444,9 @@ impl DomainStore {
                     let state=if r.state=="stopped"||input.receipt.state=="not_started" {"stopped"} else if pending {r.state.as_str()} else {input.receipt.state.as_str()};
                     sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET state=$2,process_digest=coalesce(process_digest,$3),permanent_fence=permanent_fence OR $4,activity_until_ms=CASE WHEN $4 THEN 0 ELSE activity_until_ms END WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(state).bind::<Nullable<Text>,_>(&input.receipt.process_digest).bind::<Bool,_>(fenced).execute(db).await?;
                 }
-            let r=runtime(db,id).await?;let scope=command(&r,&self.server)?;
+            let r=runtime(db,id).await?;let scope=command(&r,server)?;
             let activity=if runtime_issuing(db,policy,&r).await?&&input.receipt.state=="qualified"&&ticket_mode=="execute" {let now=clock(db).await?;mint_activity(db,p,&r,&scope,now).await?}else{None};
-            Ok(SharedAttemptAcknowledgement{observation_id:input.receipt.observation_id,receipt_digest:digest,activity,state:if r.permanent_fence&&r.state!="stopped" {"cleanup_pending".into()}else{r.state}})
-        }).await
-    }
+            Ok(SharedAttemptAcknowledgement{observation_id:input.receipt.observation_id.clone(),receipt_digest:digest,activity,state:if r.permanent_fence&&r.state!="stopped" {"cleanup_pending".into()}else{r.state}})
 }
 async fn validate_attempt_receipt(
     db: &mut AsyncPgConnection,

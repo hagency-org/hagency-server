@@ -84,6 +84,7 @@ fn after(
                 ..d.command.budget_observation.clone()
             },
         },
+        retry: None,
     }
 }
 async fn runtime_state(f: &Fixture, id: &str) -> (String, bool) {
@@ -268,3 +269,6 @@ async fn shared_attempt_v2_uncertain_process_blocks_only_until_grace_then_server
     assert_eq!(w.event_id, "$uncertain_next", "the interrupted event is never replayed");
     f.domain.reset_management_test_clock().await.unwrap();
 }
+
+#[path = "management_shared_retry_tests.rs"]
+mod retry_tests;

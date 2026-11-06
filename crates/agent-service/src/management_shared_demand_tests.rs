@@ -1,6 +1,8 @@
 use super::*;
 use crate::management_shared_demand_types::*;
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
+    // ADR-193 amendment retry tables depend on the tables below.
+    db.batch_execute("DROP TABLE IF EXISTS hagency_agent_v1.management_shared_demand_retry_starts,hagency_agent_v1.management_shared_demand_retries;DROP FUNCTION IF EXISTS hagency_agent_v1.validate_shared_demand_retry()").await.unwrap();
     context_tests::remove_migration(db).await;
     db.batch_execute("DROP TABLE hagency_agent_v1.management_shared_demand_bindings,hagency_agent_v1.management_shared_demand_starts,hagency_agent_v1.management_shared_demand_blocks,hagency_agent_v1.management_shared_demands;DROP FUNCTION hagency_agent_v1.validate_shared_demand(),hagency_agent_v1.retain_shared_demand();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=16;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=16)").await.unwrap();
     // This disposable test DB can contain newer rows from earlier test cases.
@@ -75,6 +77,7 @@ fn start_input(
         demand_digest: d.demand_digest.clone(),
         expected_control_revision: d.offer.control_revision,
         start: attempts::start(original, stop),
+        retry: None,
     }
 }
 #[test]

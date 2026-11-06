@@ -2,6 +2,8 @@ use super::*;
 use crate::{management_shared_attempt_types::*, management_shared_work_types::*};
 
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
+    // ADR-193 amendment retry tables depend on the tables below.
+    db.batch_execute("DROP TABLE IF EXISTS hagency_agent_v1.management_shared_demand_retry_starts,hagency_agent_v1.management_shared_demand_retries;DROP FUNCTION IF EXISTS hagency_agent_v1.validate_shared_demand_retry()").await.unwrap();
     ticket_tests::remove_migration(db).await;
     // Tests rewind a shared disposable database. Discard only rows introduced
     // by the newer protocol; preserve every original v1 row under test.

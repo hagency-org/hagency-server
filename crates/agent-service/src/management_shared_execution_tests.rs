@@ -361,7 +361,7 @@ async fn pool_private_chat_without_mentions_retains_promotes_and_resumes_only_ap
     f.domain.route_shared_event(&f.policy, &event, received(&mut db).await, &matrix.gateway).await.unwrap();
     let demand = f.domain.poll_shared_demand(&f.owner.p, &f.policy, Default::default()).await.unwrap().demand.unwrap();
     let next = f.domain.start_shared_demand(&f.owner.p, &f.policy, &demand.offer.demand_id,
-        SharedDemandStartInput {demand_digest: demand.demand_digest, expected_control_revision: demand.offer.control_revision, start: attempts::start(&runtime, &stopped)}, &matrix.gateway).await.unwrap();
+        SharedDemandStartInput {demand_digest: demand.demand_digest, expected_control_revision: demand.offer.control_revision, start: attempts::start(&runtime, &stopped), retry: None}, &matrix.gateway).await.unwrap();
     let activity = f.domain.record_shared_attempt_process(&f.owner.p, &f.policy, &next.command.command_id,
         attempts::result(&next, "qualified", next.command.budget_observation.observed_ledger_revision + 1)).await.unwrap().activity.unwrap();
     let followup = f.domain.poll_shared_work(&f.owner.p, &f.policy, activity.authority, &matrix.gateway).await.unwrap().unwrap();
@@ -420,6 +420,8 @@ async fn pool_schema_upgrade_preserves_existing_capacity_and_rolls_back_atomical
 }
 
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
+    // ADR-193 amendment retry tables depend on the tables below.
+    db.batch_execute("DROP TABLE IF EXISTS hagency_agent_v1.management_shared_demand_retry_starts,hagency_agent_v1.management_shared_demand_retries;DROP FUNCTION IF EXISTS hagency_agent_v1.validate_shared_demand_retry()").await.unwrap();
     work::remove_migration(db).await;
 
     db.batch_execute("DROP TRIGGER fence_shared_runtime ON hagency_agent_v1.management_shared_assignments;DROP TRIGGER exclude_shared_runtime_v1 ON hagency_agent_v1.management_agent_runtime_commands;DROP TABLE hagency_agent_v1.management_shared_activity_renewals,hagency_agent_v1.management_shared_process_receipts,hagency_agent_v1.management_shared_runtimes;DROP FUNCTION hagency_agent_v1.fence_shared_runtime(),hagency_agent_v1.exclude_shared_runtime_v1(),hagency_agent_v1.retain_shared_runtime(),hagency_agent_v1.validate_shared_runtime();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=11;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=11)").await.unwrap();

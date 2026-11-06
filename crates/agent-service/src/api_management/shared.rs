@@ -85,6 +85,12 @@ pub(super) async fn call(
         (&Method::POST, ["shared-execution", "demands", id, "recover"]) => {
             json!({"demand":domain.recover_shared_demand(p,id,body(req).await?).await?})
         }
+        (&Method::POST, ["shared-execution", "demands", id, "retry"]) => serde_json::to_value(
+            domain
+                .retry_shared_demand(p, policy, id, body(req).await?)
+                .await?,
+        )
+        .map_err(|_| Error::Unavailable("encoding_failed"))?,
         (&Method::POST, ["shared-execution", "demands", id, "block"]) => {
             json!({"demand":domain.block_shared_demand(p,id,body(req).await?).await?})
         }
