@@ -271,6 +271,31 @@ async fn refresh(db: &mut AsyncPgConnection, d: &Demand, q: &Queued, h: &Runtime
     }
     Ok(())
 }
+/// The time bound stopped `runtime` without a work binding. End the demand
+/// that started it now (as a later poll would), so the queue moves on without
+/// an executor. Only a still-current, unbound, unblocked demand changes.
+pub(super) async fn interrupt(db: &mut AsyncPgConnection, runtime: &str) -> Result<()> {
+    let v2 = sql_query("SELECT s.demand_id AS id FROM hagency_agent_v1.management_shared_demand_starts s JOIN hagency_agent_v1.management_shared_demands d ON d.id=s.demand_id JOIN hagency_agent_v1.management_shared_intake q ON q.id=d.intake_id WHERE s.runtime_id=$1 AND q.state='pending' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks k WHERE k.demand_id=d.id) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_controls c WHERE c.assignment_id=q.assignment_id AND c.mode='running' AND c.revision=q.control_revision)")
+        .bind::<Text, _>(runtime)
+        .get_result::<Id>(db)
+        .await
+        .optional()?;
+    if let Some(id) = v2 {
+        let d = load(db, &id.id).await?;
+        let q = queued(db, &d.intake_id).await?;
+        block(db, &d, &q, "head_changed", "\"head_changed\"").await?;
+    }
+    let v3 = sql_query("SELECT s.demand_id AS id FROM hagency_agent_v1.management_shared_budget_demand_starts s WHERE s.runtime_id=$1 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_bindings b WHERE b.demand_id=s.demand_id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=s.demand_id)")
+        .bind::<Text, _>(runtime)
+        .get_result::<Id>(db)
+        .await
+        .optional()?;
+    if let Some(id) = v3 {
+        let d = load(db, &id.id).await?;
+        budget::terminal(db, &d, "head_changed").await?;
+    }
+    Ok(())
+}
 // Restriction remains effective when the feature is disabled; old linked
 // processes/work cannot fall back to legacy authority after Stop or rearming.
 pub(super) async fn current(db: &mut AsyncPgConnection, r: &Runtime, now: i64) -> Result<bool> {

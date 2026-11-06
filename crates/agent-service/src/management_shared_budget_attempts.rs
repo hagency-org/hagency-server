@@ -98,9 +98,12 @@ pub(super) async fn attempt_delivery(
         && p.device_generation == Some(w.executor_generation)
         && matches!(r.state.as_str(), "pending" | "issued")
         && recorded.is_none();
+    // A time-bound stop still needs the executor's explicit evidence.
+    let awaiting = !historical && timeouts::awaiting_evidence(db, r).await?;
     let cleanup = !historical
-        && (!live || expired || r.permanent_fence || r.state == "unknown")
-        && r.state != "stopped";
+        && ((!live || expired || r.permanent_fence || r.state == "unknown")
+            && r.state != "stopped"
+            || awaiting);
     let token = secret_token();
     let expiry = if executable {
         until(db, p, now).await?.min(c.expires_at_ms)
@@ -365,9 +368,11 @@ impl DomainStore {
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
             Self::authorize(db,p,0).await?;let (device,_)=device(p)?;let now=clock(db).await?;sweep(db,p,now).await?;
+            timeouts::sweep(db,Some((p.user_id.as_str(),device)),now).await?;
             // A process stop does not acknowledge its work receipt. Recover
             // missing accounting with a history ticket, never execution authority.
-            let id=sql_query("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE r.payload::jsonb->>'version'='3' AND a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND ((r.state<>'stopped' AND (r.state<>'qualified' OR r.permanent_fence OR r.activity_until_ms<=$4)) OR (r.state='stopped' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w WHERE w.runtime_id=r.id AND w.started_at_ms IS NOT NULL AND w.latest_receipt IS NULL))) ORDER BY (r.id<=$3),r.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<BigInt,_>(now).get_result::<Id>(db).await.optional()?;
+            // A time-bound stop stays discoverable until its explicit evidence.
+            let id=sql_query("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE r.payload::jsonb->>'version'='3' AND a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND ((r.state<>'stopped' AND (r.state<>'qualified' OR r.permanent_fence OR r.activity_until_ms<=$4)) OR (r.state='stopped' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w WHERE w.runtime_id=r.id AND w.started_at_ms IS NOT NULL AND w.latest_receipt IS NULL)) OR (r.state='stopped' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_process_receipts o WHERE o.runtime_id=r.id AND o.payload::jsonb->>'state' IN ('stopped','not_started')))) ORDER BY (r.id<=$3),r.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<BigInt,_>(now).get_result::<Id>(db).await.optional()?;
             let Some(id)=id else{return Ok(None)};let r=runtime(db,&id.id).await?;Ok(Some(attempt_delivery(db,p,policy,&r,&self.server,false,None).await?))
         }).await
     }
@@ -423,7 +428,7 @@ impl DomainStore {
             let old=sql_query("SELECT payload FROM hagency_agent_v1.management_shared_process_receipts WHERE id=$1").bind::<Text,_>(&input.receipt.observation_id).get_result::<Json>(db).await.optional()?;
             if let Some(old)=old {let old:SharedBudgetAttemptProcessReceipt=decode(&old.payload)?;if allocation_digest(&old)?!=digest {return Err(Error::Conflict("shared_process_receipt_changed"));}}
             else {
-                validate_attempt_receipt(db,&r,&w,&c,&input.receipt).await?;
+                validate_attempt_receipt(db,&r,&w,&c,&input.receipt,&ticket_mode,now).await?;
                 sql_query("INSERT INTO hagency_agent_v1.management_shared_process_receipts VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(&input.receipt.observation_id).bind::<Text,_>(id).bind::<Text,_>(wire(&input.receipt)?).bind::<Text,_>(&digest).bind::<BigInt,_>(input.receipt.ledger_revision).execute(db).await?;
             }
             let fresh=latest_evidence(db,id,None).await?.unwrap();
@@ -431,7 +436,8 @@ impl DomainStore {
                     let scope=command(&r,&self.server)?;let live=current(db,&r,&w,&scope,now).await? && (r.activity_epoch>0 || head_matches(db,&r,&self.server).await?);
                     let pending=input.receipt.state=="qualified"&&ticket_mode!="execute"&&r.activity_epoch==0&&!r.permanent_fence&&now<c.expires_at_ms&&live&&tickets::has_execute(db,p,id,now).await?;
                     let fenced=r.permanent_fence||!pending&&(ticket_mode!="execute"&&r.activity_epoch==0||input.receipt.state!="qualified"||now>=c.expires_at_ms&&r.activity_epoch==0||!live);
-                    let state=if input.receipt.state=="not_started" {"stopped"} else if pending {r.state.as_str()}else{input.receipt.state.as_str()};
+                    // A stopped attempt never reopens, including a time-bound stop.
+                    let state=if r.state=="stopped"||input.receipt.state=="not_started" {"stopped"} else if pending {r.state.as_str()}else{input.receipt.state.as_str()};
                     sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET state=$2,process_digest=coalesce(process_digest,$3),permanent_fence=permanent_fence OR $4,activity_until_ms=CASE WHEN $4 THEN 0 ELSE activity_until_ms END WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(state).bind::<Nullable<Text>,_>(&input.receipt.process_digest).bind::<Bool,_>(fenced).execute(db).await?;
                 }
             let r=runtime(db,id).await?;let scope=command(&r,&self.server)?;
@@ -446,12 +452,23 @@ async fn validate_attempt_receipt(
     w: &Work,
     c: &SharedBudgetAttemptCommand,
     v: &SharedBudgetAttemptProcessReceipt,
+    ticket_mode: &str,
+    now: i64,
 ) -> Result<()> {
     if v.state == "not_started" {
+        // "stopped" without any receipt is only reachable through the time bound.
         let effect=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work WHERE runtime_id=$1) OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_process_receipts WHERE runtime_id=$1) AS matched")
             .bind::<Text,_>(&r.id).get_result::<Flag>(db).await?.matched;
-        if !r.permanent_fence || r.activity_epoch!=0 || r.process_digest.is_some() || effect || !matches!(r.state.as_str(),"pending"|"issued") {
+        if !r.permanent_fence || r.activity_epoch!=0 || r.process_digest.is_some() || effect || !matches!(r.state.as_str(),"pending"|"issued"|"stopped") {
             return Err(Error::Conflict("shared_attempt_not_unstarted"));
+        }
+    }
+    if v.reason.is_some() {
+        // An uncertain process ends only after the server's own time bound.
+        if ticket_mode != "cleanup"
+            || !(timeouts::awaiting_evidence(db, r).await? || timeouts::due(db, &r.id, now).await?)
+        {
+            return Err(Error::Conflict("shared_attempt_timeout_pending"));
         }
     }
     if v.ledger_revision <= c.budget_observation.observed_ledger_revision

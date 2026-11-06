@@ -35,7 +35,7 @@ A manager or current assigned project administrator may Run or Stop. The exact o
 
 The live accepted example remains 4,813 consumed/retained against4,096 allocated: remaining0 and overrun717. B retains budget_blocked and creates no successor, new allocation, top-up, refund or replacement agent. This is conservative admission, not a hard provider token cutoff. Unknown bounded usage remains held; unrepresentable usage blocks without a fabricated numeric budget.
 
-A changed immutable offer head, uncertain process issuance/stop, or unresolved native custody can require explicit resolution. No automatic rebase or invented stopped receipt exists. Stop cancels pending events with recorded reason; old work and reply outcomes remain auditable/nonreplayable. Schema16 queue limits remain100 pending,24h expiry,10,000 retained rows per assignment. A reviewed archive/retention policy is still required before production; this checkpoint never discards audit to make room. Native paired transport/worker and actual multi-turn acceptance are separate qualification steps.
+A changed immutable offer head or unresolved native custody can require explicit resolution. Uncertain process issuance, start or stop is time-bounded (below). No automatic rebase or invented stopped receipt exists. Stop cancels pending events with recorded reason; old work and reply outcomes remain auditable/nonreplayable. Schema16 queue limits remain100 pending,24h expiry,10,000 retained rows per assignment. A reviewed archive/retention policy is still required before production; this checkpoint never discards audit to make room. Native paired transport/worker and actual multi-turn acceptance are separate qualification steps.
 
 ## Mini-app control display
 
@@ -44,3 +44,15 @@ The readiness read is scoped to the same manager/current assigned administrator/
 Authenticated management session features include `shared-run-control-v1` independently of issuance policy. This advertises the scoped control/readiness/recovery/Stop protocol; it is not authority to Run. Older servers lack that feature. General discovery independently advertises the versioned native transport capability `shared-durable-demand-v1`.
 
 `requiresLocalStop` identifies the exact original executor owner/device cleanup identity independently of role priority or issuance policy, including a later authorized generation. It remains true when that same actor is also manager/assigned administrator. Native must durably apply its owner Stop journal/fence first and must not fall back to a generic central POST if its local selection is missing. For an unrelated manager/administrator it is false; `canRun=false` alone must never infer owner identity.
+
+## Uncertainty time bound (2026-11-06)
+
+Owner policy: uncertain shared execution never blocks an Agent's queue indefinitely. This covers an attempt issued but never claimed, a claim whose process state is unknown, and an unconfirmed start or stop.
+
+- Bound: 3 minutes (`UNCERTAIN_GRACE_MS`) after the later of `expires_at_ms` (which also bounds every execute ticket), the first activity lease (at most 30 s after the window) and later process evidence the server holds (activity renewals, work acknowledge/start/complete). Observe and cleanup tickets never extend it.
+- Within the bound nothing changes: the attempt stays fenced and no second process can start for its work.
+- After it, the server stops a v2/v3 attempt still `pending`, `issued`, `qualified` or `unknown` by itself, on every executor poll and in the background cleanup worker. It fences the attempt, sets `stopped`, and ends the demand that started it (`head_changed` for v2, a `head_changed` terminal for v3). It writes no receipt and no usage.
+- The executor then supplies explicit evidence on a cleanup ticket: `not_started` when nothing was claimed, or `stopped` with `reason: "uncertain_timeout"` and the claim's own process digest. Before the bound the server refuses the latter with `shared_attempt_timeout_pending`. A stopped attempt without such evidence stays discoverable with a cleanup ticket.
+- The next attempt names that receipt as its predecessor stop (an empty `processDigest` after `not_started`). The interrupted event is not replayed; a rare duplicate or missing reply is accepted.
+- v2 now accepts `not_started` for an attempt issued but never claimed, with the same fence proof as v3, and only on a cleanup ticket after `expires_at_ms`. The `validate_shared_runtime()` trigger, re-created at every start, accepts that v2 receipt and a v2 or v3 successor that names it. There is no schema version change.
+

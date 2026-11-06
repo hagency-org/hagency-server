@@ -160,6 +160,7 @@ fn evidence(
             process_digest: Some("d".repeat(64)),
             state: state.into(),
             policy_digest: (state == "qualified").then(|| "e".repeat(64)),
+            reason: None,
         },
     }
 }
@@ -1353,4 +1354,54 @@ async fn encrypted_shared_budget_work_keeps_plaintext_out_of_results_and_sends()
     let calls=m.calls.lock().unwrap().len();
     f.domain.send_shared_replies(&f.policy,&m.gateway,&m.matrix,&mut String::new()).await.unwrap();
     assert_eq!(m.calls.lock().unwrap().len(),calls,"server must never publish encrypted answers as plaintext");
+}
+
+async fn wait_for_db_time(f: &Fixture, at: i64) {
+    loop {
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        let now = sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now")
+            .get_result::<Clock>(&mut db)
+            .await
+            .unwrap()
+            .now;
+        if now > at {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis((at - now + 20) as u64)).await;
+    }
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn budget_execution_v3_uncertain_claim_is_time_bounded_and_chain_continues() {
+    let (f, _r, _admin, m, mut i) = Box::pin(fixture()).await;
+    let (d, a) = started(&f, &m, i.clone()).await;
+    // Claimed and qualified, then silent. Lapsed leases are awaited for real.
+    wait_for_db_time(&f, d.command.expires_at_ms.max(a.expires_at_ms)).await;
+    let deadline = d.command.expires_at_ms + 30_000 + 180_000;
+    let mut timeout = evidence(&d, "stopped", 245);
+    timeout.receipt.reason = Some("uncertain_timeout".into());
+    f.domain.set_management_test_clock(deadline - 1000).await.unwrap();
+    let fenced = f.domain.poll_shared_budget_attempt(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().unwrap();
+    assert_eq!(fenced.command.command_id, d.command.command_id);
+    assert!(fenced.cleanup_allowed && !fenced.execution_allowed);
+    timeout.token = fenced.token.clone();
+    assert!(f.domain.record_shared_budget_attempt_process(&f.owner.p, &f.policy, &d.command.command_id, timeout.clone()).await.is_err(), "within the grace period");
+    f.domain.set_management_test_clock(deadline + 1000).await.unwrap();
+    let swept = f.domain.poll_shared_budget_attempt(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().unwrap();
+    assert_eq!(swept.command.command_id, d.command.command_id);
+    assert!(swept.cleanup_allowed && !swept.execution_allowed);
+    timeout.token = swept.token.clone();
+    let ack = f.domain.record_shared_budget_attempt_process(&f.owner.p, &f.policy, &d.command.command_id, timeout).await.unwrap();
+    assert_eq!(ack.state, "stopped");
+    i.start_intent_id = "after_uncertain_v3".into();
+    i.predecessor.command_id = d.command.command_id.clone();
+    i.predecessor.command_digest = d.command_digest.clone();
+    i.predecessor.process_attempt = d.command.process_attempt;
+    i.predecessor.stopped_receipt_digest = ack.receipt_digest;
+    i.predecessor.process_digest = "d".repeat(64);
+    i.budget_observation.observed_ledger_revision = 246;
+    let next = f.domain.start_shared_budget_attempt(&f.owner.p, &f.policy, i, &m.gateway).await.unwrap();
+    assert!(next.execution_allowed);
+    assert_eq!(next.command.process_attempt, d.command.process_attempt + 1);
+    f.domain.reset_management_test_clock().await.unwrap();
 }

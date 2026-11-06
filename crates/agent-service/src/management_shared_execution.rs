@@ -14,6 +14,8 @@ mod demands;
 pub(super) mod intake;
 #[path = "management_shared_work.rs"]
 mod work;
+#[path = "management_shared_timeouts.rs"]
+mod timeouts;
 use crate::{
     gateway::Gateway, management_agent_runtime_types::ManagedRuntimeRecoverInput,
     management_shared_execution_types::*, transport::DeliveryFacts,

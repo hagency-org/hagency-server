@@ -92,7 +92,7 @@ async fn save_pin(
     }
     Ok(())
 }
-async fn terminal(db: &mut AsyncPgConnection, d: &Demand, reason: &str) -> Result<()> {
+pub(super) async fn terminal(db: &mut AsyncPgConnection, d: &Demand, reason: &str) -> Result<()> {
     let payload = wire(&json!({"demandDigest":d.digest,"reason":reason}))?;
     sql_query("INSERT INTO hagency_agent_v1.management_shared_budget_demand_terminals VALUES($1,$2,$3,$4) ON CONFLICT(demand_id) DO NOTHING")
         .bind::<Text,_>(&d.id).bind::<Text,_>(reason).bind::<Text,_>(&payload).bind::<Text,_>(hash(&payload)).execute(db).await?;

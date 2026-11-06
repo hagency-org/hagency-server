@@ -1348,3 +1348,6 @@ async fn shared_demand_control_readiness_distinguishes_roles_mode_policy_and_bus
         .unwrap();
     assert!(both.can_stop && both.requires_local_stop && !both.can_run);
 }
+
+#[path = "management_shared_timeout_tests.rs"]
+mod timeout_tests;

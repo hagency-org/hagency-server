@@ -93,6 +93,7 @@ pub(super) fn result(d: &SharedAttemptDelivery, state: &str, revision: i64) -> S
             process_digest: Some("d".repeat(64)),
             state: state.into(),
             policy_digest: (state == "qualified").then(|| "b".repeat(64)),
+            reason: None,
         },
     }
 }
@@ -218,6 +219,55 @@ fn shared_attempt_fixture_preserves_original_and_allows_new_spawn_window_only() 
     bad.predecessor.process_attempt = 2;
     assert!(bad.validate("example.test").is_err());
     assert!(serde_json::from_value::<SharedProcessReceipt>(fixture["receipt"].clone()).is_err());
+}
+#[test]
+fn shared_attempt_v2_unstarted_and_timeout_receipts_are_explicit_and_closed() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/management-shared-attempt-v2.json"
+    ))
+    .unwrap();
+    let c: SharedAttemptCommand = serde_json::from_value(fixture["command"].clone()).unwrap();
+    // Non-issuance names no process; the time bound names only a known one.
+    let unstarted: SharedAttemptProcessReceipt =
+        serde_json::from_value(fixture["unstartedReceipt"].clone()).unwrap();
+    unstarted.validate_for(&c).unwrap();
+    assert_eq!(allocation_digest(&unstarted).unwrap(), fixture["unstartedReceiptDigest"]);
+    let timeout: SharedAttemptProcessReceipt =
+        serde_json::from_value(fixture["timeoutReceipt"].clone()).unwrap();
+    timeout.validate_for(&c).unwrap();
+    assert_eq!(timeout.reason.as_deref(), Some(UNCERTAIN_TIMEOUT));
+    assert_eq!(allocation_digest(&timeout).unwrap(), fixture["timeoutReceiptDigest"]);
+    // Existing receipts carry no reason field; their bytes and digest stay.
+    let receipt: SharedAttemptProcessReceipt =
+        serde_json::from_value(fixture["receipt"].clone()).unwrap();
+    assert!(serde_json::to_value(&receipt).unwrap().get("reason").is_none());
+    for (state, process, reason) in [
+        ("not_started", Some("d".repeat(64)), None),
+        ("not_started", None, Some(UNCERTAIN_TIMEOUT)),
+        ("stopped", None, Some(UNCERTAIN_TIMEOUT)),
+        ("qualified", Some("d".repeat(64)), Some(UNCERTAIN_TIMEOUT)),
+        ("unknown", Some("d".repeat(64)), Some(UNCERTAIN_TIMEOUT)),
+        ("stopped", Some("d".repeat(64)), Some("stalled")),
+    ] {
+        let mut bad = timeout.clone();
+        bad.state = state.into();
+        bad.process_digest = process;
+        bad.reason = reason.map(str::to_owned);
+        bad.policy_digest = (state == "qualified").then(|| "b".repeat(64));
+        assert!(bad.validate_for(&c).is_err(), "{state} {:?}", bad.reason);
+    }
+    // Only a later attempt may follow a never-started predecessor.
+    let mut first = c.clone();
+    first.predecessor.process_digest = String::new();
+    assert!(first.validate("example.test").is_err());
+    let mut later = c.clone();
+    later.process_attempt = 3;
+    later.predecessor.process_attempt = 2;
+    later.predecessor.command_id = "sat_unstarted".into();
+    later.predecessor.process_digest = String::new();
+    later.validate("example.test").unwrap();
+    later.predecessor.process_digest = "x".into();
+    assert!(later.validate("example.test").is_err());
 }
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]

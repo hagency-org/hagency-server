@@ -1,5 +1,7 @@
 -- Schema 30 table layout is unchanged. V5 calendar grants retain the same
 -- native no-issuance proof requirements as V4; a missing receipt is no proof.
+-- This function is replaced on every start, so changing it needs no schema
+-- version: v2 successors accept the same not_started proof as v3.
 CREATE OR REPLACE FUNCTION hagency_agent_v1.validate_shared_runtime() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF TG_TABLE_NAME='management_shared_runtimes' THEN
@@ -18,10 +20,12 @@ BEGIN
    THEN RAISE EXCEPTION 'shared_original_not_unstarted'; END IF;
    RETURN NEW;
   END IF;
+  -- Successor non-issuance (v2 or v3, matching its command). A receipt-less
+  -- "stopped" attempt can only have been stopped by the uncertainty time bound.
   IF NEW.payload::jsonb->>'state'='not_started' AND (
-    NEW.payload::jsonb->>'version' IS DISTINCT FROM '3'
+    coalesce(NEW.payload::jsonb->>'version','') NOT IN ('2','3')
     OR NEW.payload::jsonb->>'processDigest' IS NOT NULL OR NEW.payload::jsonb->>'policyDigest' IS NOT NULL
-    OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes r WHERE r.id=NEW.runtime_id AND r.payload::jsonb->>'version'='3' AND r.permanent_fence AND r.state IN('pending','issued') AND r.activity_epoch=0 AND r.process_digest IS NULL)
+    OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes r WHERE r.id=NEW.runtime_id AND r.payload::jsonb->>'version'=NEW.payload::jsonb->>'version' AND r.permanent_fence AND r.state IN('pending','issued','stopped') AND r.activity_epoch=0 AND r.process_digest IS NULL)
     OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w WHERE w.runtime_id=NEW.runtime_id)
     OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_process_receipts p WHERE p.runtime_id=NEW.runtime_id)
   ) THEN RAISE EXCEPTION 'shared_attempt_not_unstarted'; END IF;
@@ -52,12 +56,12 @@ BEGIN
        AND (NEW.payload::jsonb->>'processAttempt')::bigint=x.process_attempt
        AND NEW.payload::jsonb->'predecessor'->>'commandId'=prior.id
        AND NEW.payload::jsonb->'predecessor'->>'commandDigest'=prior.digest
-       AND (NEW.payload::jsonb->'predecessor'->>'processDigest'=prior.process_digest OR (NEW.payload::jsonb->>'version'='3' AND NEW.payload::jsonb->'predecessor'->>'processDigest'='' AND prior.process_digest IS NULL))
+       AND (NEW.payload::jsonb->'predecessor'->>'processDigest'=prior.process_digest OR (NEW.payload::jsonb->'predecessor'->>'processDigest'='' AND prior.process_digest IS NULL))
        AND (NEW.payload::jsonb->'predecessor'->>'processAttempt')::bigint=x.process_attempt-1
        AND coalesce((prior.payload::jsonb->>'processAttempt')::bigint,1)=x.process_attempt-1
        AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_process_receipts o
          WHERE o.runtime_id=prior.id AND o.digest=NEW.payload::jsonb->'predecessor'->>'stoppedReceiptDigest'
-          AND ((o.payload::jsonb->>'state'='stopped' AND o.payload::jsonb->>'processDigest'=prior.process_digest) OR (NEW.payload::jsonb->>'version'='3' AND o.payload::jsonb->>'version'='3' AND o.payload::jsonb->>'state'='not_started' AND o.payload::jsonb->>'processDigest' IS NULL AND prior.process_digest IS NULL AND NEW.payload::jsonb->'predecessor'->>'processDigest'=''))))
+          AND ((o.payload::jsonb->>'state'='stopped' AND o.payload::jsonb->>'processDigest'=prior.process_digest) OR (o.payload::jsonb->>'version' IN ('2','3') AND o.payload::jsonb->>'state'='not_started' AND o.payload::jsonb->>'processDigest' IS NULL AND prior.process_digest IS NULL AND NEW.payload::jsonb->'predecessor'->>'processDigest'=''))))
   THEN RAISE EXCEPTION 'fresh_shared_attempt_required';END IF;
  ELSE
   IF NEW.payload::jsonb->>'capability' IS DISTINCT FROM 'hagency.managed_agents.execution.v1'

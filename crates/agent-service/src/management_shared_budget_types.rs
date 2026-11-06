@@ -3,7 +3,9 @@ use crate::management_shared_tool_policy::SharedAgentToolPolicy;
 use crate::{
     Error, Result, key,
     management_allocation_types::{MAX_EXACT, allocation_digest, valid_digest},
-    management_shared_attempt_types::{SharedAttemptPredecessor, SharedBudgetObservation},
+    management_shared_attempt_types::{
+        SharedAttemptPredecessor, SharedBudgetObservation, valid_receipt_reason,
+    },
     management_shared_demand_types::{SharedDemandBinding, SharedDemandOffer},
     management_shared_execution_types::{SharedRuntimeCommand, SharedWorkItem},
 };
@@ -14,8 +16,8 @@ pub const SHARED_BUDGET_DISCOVERY: &str = "shared-budget-execution-v1";
 fn invalid() -> Error {
     Error::Invalid("invalid_shared_budget_execution")
 }
-// An empty processDigest is only meaningful with a verified v3 not_started
-// receipt. V2 continues to require an actual-process digest.
+// An empty processDigest is only meaningful with a verified not_started
+// receipt for the exact predecessor attempt (v2 or v3).
 fn validate_budget_predecessor(p: &SharedAttemptPredecessor) -> Result<()> {
     key(&p.command_id)?;
     if !positive(p.process_attempt) || !valid_digest(&p.command_digest)
@@ -187,6 +189,9 @@ pub struct SharedBudgetAttemptProcessReceipt {
     pub process_digest: Option<String>,
     pub state: String,
     pub policy_digest: Option<String>,
+    /// Present only on a stop recorded by the uncertainty time bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 impl SharedBudgetAttemptProcessReceipt {
     pub fn validate_for(&self, c: &SharedBudgetAttemptCommand) -> Result<()> {
@@ -215,6 +220,7 @@ impl SharedBudgetAttemptProcessReceipt {
             || self.state == "stopped" && self.process_digest.is_none()
             || self.state == "not_started" && self.process_digest.is_some()
             || self.state != "qualified" && self.policy_digest.is_some()
+            || !valid_receipt_reason(&self.state, self.reason.as_deref())
         {
             return Err(invalid());
         }
