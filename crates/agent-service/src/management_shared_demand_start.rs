@@ -119,7 +119,7 @@ impl DomainStore {
  let delivery=attempts::commit_start(db,p,policy,&input.start,prepared,&self.server,now).await?;
  match input.retry {
   None=>{sql_query("INSERT INTO hagency_agent_v1.management_shared_demand_starts VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(id).bind::<Text,_>(&input.start.start_intent_id).bind::<Text,_>(&delivery.command.command_id).bind::<Text,_>(wire(&input)?).bind::<Text,_>(allocation_digest(&input)?).execute(db).await?;}
-  Some(n)=>{sql_query("INSERT INTO hagency_agent_v1.management_shared_demand_retry_starts VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(id).bind::<BigInt,_>(n).bind::<Text,_>(&input.start.start_intent_id).bind::<Text,_>(&delivery.command.command_id).bind::<Text,_>(wire(&input)?).bind::<Text,_>(allocation_digest(&input)?).execute(db).await?;}
+  Some(n)=>{sql_query("INSERT INTO hagency_agent_v1.management_shared_demand_retry_starts(demand_id,retry,start_intent_id,runtime_id,payload,digest) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(id).bind::<BigInt,_>(n).bind::<Text,_>(&input.start.start_intent_id).bind::<Text,_>(&delivery.command.command_id).bind::<Text,_>(wire(&input)?).bind::<Text,_>(allocation_digest(&input)?).execute(db).await?;}
  }
  Ok(delivery)}).await
     }
@@ -164,7 +164,7 @@ impl DomainStore {
                 _ => return Err(Error::Invalid("invalid_shared_demand_block")),
             }
             block(db, &d, &q, &input.reason, &wire(&input)?).await?;
-            status(db, &d).await
+            visible(db, &d, input.retries).await
         })
         .await
     }

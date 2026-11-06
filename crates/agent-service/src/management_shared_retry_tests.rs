@@ -313,3 +313,93 @@ async fn shared_demand_v2_stop_refuses_a_retry_and_ends_a_running_one() {
         assert_eq!(work_items(&f, &format!("$stop_lost_{running}")).await, 0);
     }
 }
+
+async fn advertised(f: &Fixture, m: &MatrixFixture) -> bool {
+    let mut response = TestClient::get("https://example.test/hagency/api/v1/discovery")
+        .add_header("host", "example.test", true)
+        .send(&svc(f, m.gateway.clone()))
+        .await;
+    let value = response.take_json::<Value>().await.unwrap();
+    value["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == "shared-demand-retry-v1")
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_retry_capability_follows_its_route_and_evidence_still_records() {
+    let (mut f, r, _admin, _a, m) = Box::pin(setup()).await;
+    assert!(advertised(&f, &m).await);
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "gate_lost").await;
+    let lost = demand(&f).await;
+    let issued = start_lapsed(&f, &m, &lost, start_input(&lost, &d, &stopped)).await;
+    let evidence = unstarted(&f, &issued, 210).await;
+    // Any one gate of the demand route off: no capability, no route.
+    f.policy = f.policy.clone().with_project_reservations(false);
+    assert!(!advertised(&f, &m).await);
+    assert!(matches!(
+        retry(&f, &lost, &issued, 1, evidence.clone()).await,
+        Err(crate::Error::Unavailable("shared_demand_retry_unavailable"))
+    ));
+    // The plain result route still records the never-started evidence.
+    assert_eq!(record(&f, &issued, evidence).await.unwrap().state, "stopped");
+    assert_eq!(runtime_state(&f, &issued.command.command_id).await, ("stopped".into(), true));
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_executor_without_retries_never_sees_them_and_ends_an_open_one() {
+    let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "old_lost").await;
+    retain(&f, &r, &m, "old_next").await;
+    let lost = demand(&f).await;
+    let issued = start_lapsed(&f, &m, &lost, start_input(&lost, &d, &stopped)).await;
+    let reply = retry(&f, &lost, &issued, 1, unstarted(&f, &issued, 210).await).await.unwrap();
+    assert_eq!(reply.demand.state, "retry_offered");
+    let capable = f
+        .domain
+        .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput { after: None, retries: true })
+        .await
+        .unwrap()
+        .demand
+        .unwrap();
+    assert_eq!((capable.state.as_str(), capable.retry), ("retry_offered", Some(1)));
+    // An executor without retry support (a downgrade) reads no retry fields;
+    // the retry it cannot run ends the event as before and the queue moves on.
+    let old = f
+        .domain
+        .recover_shared_demand(&f.owner.p, &lost.offer.demand_id, SharedDemandRecoverInput { demand_digest: lost.demand_digest.clone(), retries: false })
+        .await
+        .unwrap();
+    assert_eq!((old.state.as_str(), old.retry), ("head_changed", None));
+    let value = serde_json::to_value(&old).unwrap();
+    assert!(value.get("retry").is_none(), "an old executor's strict status parser sees no new field");
+    let next = next_offer(&f).await;
+    assert_eq!(next.offer.event_id, "$old_next");
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_validator_owner_refuses_to_undo_a_later_change() {
+    let (f, _r, _admin, _a, _m) = Box::pin(setup()).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    // A later versioned migration changed the validator in place.
+    db.batch_execute("CREATE OR REPLACE FUNCTION hagency_agent_v1.validate_shared_demand() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$")
+        .await
+        .unwrap();
+    assert!(
+        DomainStore::open(&f.url, "example.test", "_hagency_test_").await.is_err(),
+        "startup refuses to silently undo it"
+    );
+    // Back to this file's own body: startup accepts and keeps it.
+    let sql = include_str!("management_shared_demand_retry_schema.sql");
+    let own = &sql[sql.find("CREATE OR REPLACE FUNCTION hagency_agent_v1.validate_shared_demand()").unwrap()..];
+    db.batch_execute(own).await.unwrap();
+    DomainStore::open(&f.url, "example.test", "_hagency_test_").await.unwrap();
+}

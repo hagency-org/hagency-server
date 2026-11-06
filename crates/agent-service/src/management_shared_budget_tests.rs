@@ -767,7 +767,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         .unwrap();
     let old = f
         .domain
-        .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .poll_shared_demand(&f.owner.p, &f.policy, crate::management_shared_demand_types::SharedDemandPollInput::default())
         .await
         .unwrap()
         .demand
@@ -779,7 +779,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         demand_digest: old.demand_digest.clone(),
         expected_control_revision: old.offer.control_revision,
         reason: "budget_blocked".into(),
-        budget: Some(old_start.budget_observation.clone()),
+        budget: Some(old_start.budget_observation.clone()), retries: false,
     };
     let original_block_payload = serde_json::to_string(&original_block_input).unwrap();
     let original_block_digest = crate::hash(&original_block_payload);
@@ -929,7 +929,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
             &f.owner.p,
             &old.offer.demand_id,
             SharedDemandRecoverInput {
-                demand_digest: old.demand_digest,
+                demand_digest: old.demand_digest, retries: true 
             },
         )
         .await
@@ -1087,7 +1087,7 @@ async fn budget_execution_v3_stop_run_aba_retains_original_event_and_rejects_old
             &f.owner.p,
             &old.offer.demand_id,
             SharedDemandRecoverInput {
-                demand_digest: old.demand_digest.clone(),
+                demand_digest: old.demand_digest.clone(), retries: true 
             },
         )
         .await
@@ -1151,7 +1151,7 @@ async fn budget_execution_v3_unrelated_head_advance_retains_terminal_original_of
             &f.owner.p,
             &old.offer.demand_id,
             SharedDemandRecoverInput {
-                demand_digest: old.demand_digest.clone(),
+                demand_digest: old.demand_digest.clone(), retries: true 
             },
         )
         .await

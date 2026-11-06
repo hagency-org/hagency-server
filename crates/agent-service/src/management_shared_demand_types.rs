@@ -143,10 +143,22 @@ pub struct SharedDemandPoll {
     pub demand: Option<SharedDemandStatus>,
     pub next_after: Option<String>,
 }
+/// A demand poll. `retries`: the executor runs retries, so a status may say
+/// `retry_offered` and carry `retry` (ADR-193 amendment).
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedDemandPollInput {
+    pub after: Option<String>,
+    #[serde(default)]
+    pub retries: bool,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SharedDemandRecoverInput {
     pub demand_digest: String,
+    /// The executor runs retries; only then may a status say so.
+    #[serde(default)]
+    pub retries: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -168,6 +180,8 @@ pub struct SharedDemandBlockInput {
     pub expected_control_revision: i64,
     pub reason: String,
     pub budget: Option<SharedBudgetObservation>,
+    #[serde(default)]
+    pub retries: bool,
 }
 /// Role/configuration observations only, never native liveness or free capacity.
 #[derive(Clone, Debug, Serialize, Deserialize)]

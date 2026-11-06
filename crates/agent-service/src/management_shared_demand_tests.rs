@@ -62,7 +62,7 @@ async fn retain(f: &Fixture, r: &ManagedAgentRequest, m: &MatrixFixture, id: &st
 }
 async fn demand(f: &Fixture) -> SharedDemandStatus {
     f.domain
-        .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
         .await
         .unwrap()
         .demand
@@ -150,7 +150,7 @@ async fn shared_demand_idle_promotion_preserves_original_event_and_one_work() {
             &f.owner.p,
             &offered.offer.demand_id,
             SharedDemandRecoverInput {
-                demand_digest: offered.demand_digest,
+                demand_digest: offered.demand_digest, retries: true 
             },
         )
         .await
@@ -219,7 +219,7 @@ async fn recovered(f: &Fixture, o: &SharedDemandStatus) -> SharedDemandStatus {
             &f.owner.p,
             &o.offer.demand_id,
             SharedDemandRecoverInput {
-                demand_digest: o.demand_digest.clone(),
+                demand_digest: o.demand_digest.clone(), retries: true 
             },
         )
         .await
@@ -259,7 +259,7 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
                     &who.p,
                     &o.offer.demand_id,
                     SharedDemandRecoverInput {
-                        demand_digest: o.demand_digest.clone()
+                        demand_digest: o.demand_digest.clone(), retries: true 
                     }
                 )
                 .await
@@ -309,7 +309,7 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
                 &p,
                 &o.offer.demand_id,
                 SharedDemandRecoverInput {
-                    demand_digest: o.demand_digest.clone()
+                    demand_digest: o.demand_digest.clone(), retries: true 
                 }
             )
             .await
@@ -352,7 +352,7 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
     );
     assert!(
         f.domain
-            .poll_shared_demand(&p, &f.policy, ExecutorPollInput::default())
+            .poll_shared_demand(&p, &f.policy, SharedDemandPollInput::default())
             .await
             .unwrap()
             .demand
@@ -366,7 +366,7 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
         .with_shared_successors(false);
     assert!(
         f.domain
-            .poll_shared_demand(&p, &f.policy, ExecutorPollInput::default())
+            .poll_shared_demand(&p, &f.policy, SharedDemandPollInput::default())
             .await
             .is_err()
     );
@@ -376,7 +376,7 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
                 &p,
                 &o.offer.demand_id,
                 SharedDemandRecoverInput {
-                    demand_digest: o.demand_digest
+                    demand_digest: o.demand_digest, retries: true 
                 }
             )
             .await
@@ -516,7 +516,7 @@ async fn shared_demand_unrelated_head_advance_retains_offer_and_blocks_replaceme
         .unwrap();
     assert!(
         f.domain
-            .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
             .await
             .unwrap()
             .demand
@@ -699,7 +699,7 @@ async fn shared_demand_budget_block_retains_unknown_or_overflow_without_start_id
                 "budget_blocked"
             }
             .into(),
-            budget: (!unknown).then_some(budget),
+            budget: (!unknown).then_some(budget), retries: false,
         };
         for _ in 0..2 {
             assert_eq!(
@@ -722,7 +722,7 @@ async fn shared_demand_budget_block_retains_unknown_or_overflow_without_start_id
         retain(&f, &r, &m, &format!("demand_budget_later_{}", r.id)).await;
         let later = f
             .domain
-            .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
             .await
             .unwrap()
             .demand
@@ -791,7 +791,7 @@ async fn shared_demand_known_overrun_retains_actual_usage_and_zero_remaining_wit
     retain(&f, &r, &m, "demand_after_overrun").await;
     assert!(
         f.domain
-            .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
             .await
             .unwrap()
             .demand
@@ -905,7 +905,7 @@ async fn shared_demand_schema16_upgrade_atomic_original_bytes_and_controls_prese
     );
     assert_eq!(history(&f, &d).await.command_digest, d.command_digest);
     let o = reopened
-        .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
         .await
         .unwrap()
         .demand
@@ -978,7 +978,7 @@ async fn shared_demand_blocked_assignment_does_not_starve_another_owner_assignme
                 demand_digest: o.demand_digest,
                 expected_control_revision: o.offer.control_revision,
                 reason: "usage_unrepresentable".into(),
-                budget: None,
+                budget: None, retries: false,
             },
         )
         .await
@@ -997,8 +997,9 @@ async fn shared_demand_blocked_assignment_does_not_starve_another_owner_assignme
         .poll_shared_demand(
             &f.owner.p,
             &f.policy,
-            ExecutorPollInput {
+            SharedDemandPollInput {
                 after: Some(b.id.clone()),
+                retries: false,
             },
         )
         .await
@@ -1010,8 +1011,9 @@ async fn shared_demand_blocked_assignment_does_not_starve_another_owner_assignme
         .poll_shared_demand(
             &f.owner.p,
             &f.policy,
-            ExecutorPollInput {
+            SharedDemandPollInput {
                 after: later.next_after,
+                retries: false,
             },
         )
         .await

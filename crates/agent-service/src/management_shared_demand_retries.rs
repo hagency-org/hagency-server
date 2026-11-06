@@ -82,7 +82,7 @@ async fn open(
     if n > MAX_DEMAND_RETRIES {
         return block(db, d, &q, "head_changed", "\"retry_exhausted\"").await;
     }
-    sql_query("INSERT INTO hagency_agent_v1.management_shared_demand_retries VALUES($1,$2,$3,$4,$5)")
+    sql_query("INSERT INTO hagency_agent_v1.management_shared_demand_retries(demand_id,retry,previous_runtime_id,receipt_id,created_at_ms) VALUES($1,$2,$3,$4,$5)")
         .bind::<Text, _>(&d.id).bind::<BigInt, _>(n).bind::<Text, _>(previous)
         .bind::<Text, _>(receipt).bind::<BigInt, _>(now).execute(db).await?;
     Ok(())
@@ -100,7 +100,10 @@ impl DomainStore {
     ) -> Result<SharedDemandRetryReply> {
         key(id)?;
         input.validate()?;
-        enabled_demand(policy)?;
+        // The same predicate decides whether discovery advertises this route.
+        if !policy.shared_demand_retries() {
+            return Err(Error::Unavailable("shared_demand_retry_unavailable"));
+        }
         let mut g = self.db.lock().await?;
         (*g).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
             Self::authorize(db, p, 0).await?;

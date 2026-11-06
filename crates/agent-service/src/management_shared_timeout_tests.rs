@@ -47,7 +47,7 @@ async fn next_offer(f: &Fixture) -> SharedDemandStatus {
     for _ in 0..3 {
         if let Some(d) = f
             .domain
-            .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput { after: None, retries: true })
             .await
             .unwrap()
             .demand

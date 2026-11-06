@@ -67,9 +67,27 @@ DROP TRIGGER IF EXISTS validate_shared_demand_retry ON hagency_agent_v1.manageme
 CREATE TRIGGER validate_shared_demand_retry BEFORE INSERT ON hagency_agent_v1.management_shared_demand_retries FOR EACH ROW EXECUTE FUNCTION hagency_agent_v1.validate_shared_demand_retry();
 DROP TRIGGER IF EXISTS validate_shared_demand_retry_start ON hagency_agent_v1.management_shared_demand_retry_starts;
 CREATE TRIGGER validate_shared_demand_retry_start BEFORE INSERT ON hagency_agent_v1.management_shared_demand_retry_starts FOR EACH ROW EXECUTE FUNCTION hagency_agent_v1.validate_shared_demand_retry();
--- The demand validator from management_shared_demand_schema.sql, unchanged
--- except that a binding may name the demand's latest retry start.
+-- validate_shared_demand() has one owner: this file. It is the schema-17
+-- validator (management_shared_demand_schema.sql), unchanged except that a
+-- binding may name the demand's latest retry start, and it is re-created here
+-- at every start, after the versioned migrations. Replacing it is safe only
+-- while the installed body is the schema-17 one (by digest) or this file's
+-- own (by its marker); anything else means a later versioned migration
+-- changed it, and startup fails instead of silently undoing that change.
+-- A future change to this function belongs here, not in a migration.
+DO $guard$
+DECLARE src text;
+BEGIN
+ SELECT p.prosrc INTO src FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+  WHERE n.nspname='hagency_agent_v1' AND p.proname='validate_shared_demand';
+ IF src IS NOT NULL AND md5(src)<>'f5e681b0cf2eaf20f626f542ed21c833'
+  AND position('retry-aware demand validator' in src)=0 THEN
+  RAISE EXCEPTION 'validate_shared_demand_changed_by_migration';
+ END IF;
+END
+$guard$;
 CREATE OR REPLACE FUNCTION hagency_agent_v1.validate_shared_demand() RETURNS trigger LANGUAGE plpgsql AS $$
+-- retry-aware demand validator (owned by management_shared_demand_retry_schema.sql)
 DECLARE d jsonb; o jsonb; q hagency_agent_v1.management_shared_intake; x hagency_agent_v1.management_shared_demands;
 BEGIN
  d=NEW.payload::jsonb;

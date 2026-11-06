@@ -66,6 +66,9 @@ ADR-193 amendment, v2 demands only: an event whose attempt provably never starte
 - Bindings, `current()`, `allowed()` and the sweep treat a retry start like the original start. The binding validator is replaced to accept the latest retry start.
 - A fourth `not_started` ends the event: `head_changed`, block payload `"retry_exhausted"`. A claim, a qualified process or any work evidence makes an event ineligible.
 - A `not_started` receipt on the plain result route (older executors) ends the event as before. A never-qualified attempt stopped by the time bound keeps its demand open for the executor's evidence.
-- Discovery advertises `shared-demand-retry-v1`. Wire additions are optional (`retry` on the start input and the status), and the new state and fields appear only after a retry request.
+- Discovery advertises `shared-demand-retry-v1` only while the retry route is enabled: both use `ManagementPolicy::shared_demand_retries()`.
+- Wire additions are optional (`retry` on the start input and the status). A status carries `retry` or `retry_offered` only for a request that declares `retries: true` (demand poll, recover, block). For any other executor, an unbound retry ends the event (`head_changed`, block payload `"retry_unsupported"`), and a bound one reads as `bound`.
+- `validate_shared_demand()` is owned by the retry schema file. Startup refuses to replace a body that a later versioned migration changed. Retry rows are inserted with explicit column lists.
+- Rollback: let retries finish first. The previous binary ends an unbound retry as `head_changed` and reports a retry-bound demand with the original start's runtime. Never drop the retry tables.
 - Schema: two additive tables, their triggers and the replaced validator, applied by `management_shared_demand_retry_schema.sql` at every start. There is no version change; the previous binary ignores them.
 - Matrix 429 responses map to `matrix_rate_limited` (retryable, 503); the delay and endpoint name are logged, never ids or bodies.
