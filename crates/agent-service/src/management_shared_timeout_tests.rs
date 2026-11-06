@@ -23,6 +23,9 @@ async fn wait_until(f: &Fixture, at: i64) {
         tokio::time::sleep(std::time::Duration::from_millis((at - now + 20) as u64)).await;
     }
 }
+fn conflict<T>(r: crate::Result<T>, code: &str) -> bool {
+    matches!(r, Err(crate::Error::Conflict(c)) if c == code)
+}
 async fn record(
     f: &Fixture,
     d: &SharedAttemptDelivery,
@@ -119,7 +122,7 @@ async fn shared_attempt_v2_unclaimed_not_started_continues_chain_and_ends_lost_d
     // The executor stalls past the claim window: nothing claims the attempt.
     let mut unstarted = attempts::result(&issued, "not_started", 210);
     unstarted.receipt.process_digest = None;
-    assert!(record(&f, &issued, unstarted.clone()).await.is_err(), "an execute ticket cannot retire a live window");
+    assert!(conflict(record(&f, &issued, unstarted.clone()).await, "shared_attempt_not_unstarted"), "an execute ticket cannot retire a live window");
     wait_until(&f, issued.command.expires_at_ms).await;
     let cleanup = attempt_poll(&f).await;
     assert_eq!(cleanup.command.command_id, issued.command.command_id);
@@ -131,7 +134,7 @@ async fn shared_attempt_v2_unclaimed_not_started_continues_chain_and_ends_lost_d
     assert_eq!(record(&f, &issued, unstarted.clone()).await.unwrap().receipt_digest, ack.receipt_digest);
     let mut fabricated = attempts::result(&issued, "qualified", 211);
     fabricated.token = cleanup.token.clone();
-    assert!(record(&f, &issued, fabricated).await.is_err(), "no process evidence after non-issuance");
+    assert!(conflict(record(&f, &issued, fabricated).await, "shared_process_cannot_restart"), "no process evidence after non-issuance");
     assert_eq!(runtime_state(&f, &issued.command.command_id).await, ("stopped".into(), true));
     // The lost event ends and the next one is offered on top of the unstarted attempt.
     let next = next_offer(&f).await;
@@ -139,7 +142,7 @@ async fn shared_attempt_v2_unclaimed_not_started_continues_chain_and_ends_lost_d
     assert_eq!(next.offer.predecessor_command_id, issued.command.command_id);
     assert_eq!(recovered(&f, &lost).await.state, "head_changed");
     let mut forged = after(&next, &issued, &ack.receipt_digest, &"d".repeat(64), 212);
-    assert!(f.domain.start_shared_demand(&f.owner.p, &f.policy, &next.offer.demand_id, forged.clone(), &m.gateway).await.is_err(), "no process identity is invented");
+    assert!(conflict(f.domain.start_shared_demand(&f.owner.p, &f.policy, &next.offer.demand_id, forged.clone(), &m.gateway).await, "shared_predecessor_not_stopped"), "no process identity is invented");
     forged.start.predecessor.process_digest.clear();
     let started = f
         .domain
@@ -219,10 +222,10 @@ async fn shared_attempt_v2_uncertain_process_blocks_only_until_grace_then_server
     assert_eq!(fenced.command.command_id, issued.command.command_id);
     assert!(fenced.cleanup_allowed && !fenced.execution_allowed);
     timeout.token = fenced.token.clone();
-    assert!(record(&f, &issued, timeout.clone()).await.is_err(), "the time bound has not passed");
+    assert!(conflict(record(&f, &issued, timeout.clone()).await, "shared_attempt_timeout_pending"), "the time bound has not passed");
     assert_eq!(runtime_state(&f, &issued.command.command_id).await, ("qualified".into(), true));
     assert_eq!(recovered(&f, &lost).await.state, "start_committed");
-    assert!(f.domain.start_shared_attempt(&f.owner.p, &f.policy, premature.clone(), &m.gateway).await.is_err());
+    assert!(conflict(f.domain.start_shared_attempt(&f.owner.p, &f.policy, premature.clone(), &m.gateway).await, "shared_predecessor_not_stopped"));
     // After it, the server stops the attempt itself, without any executor poll.
     f.domain.set_management_test_clock(deadline + 1000).await.unwrap();
     for _ in 0..64 {
@@ -233,7 +236,7 @@ async fn shared_attempt_v2_uncertain_process_blocks_only_until_grace_then_server
     }
     assert_eq!(runtime_state(&f, &issued.command.command_id).await, ("stopped".into(), true));
     assert_eq!(recovered(&f, &lost).await.state, "head_changed");
-    assert!(f.domain.start_shared_attempt(&f.owner.p, &f.policy, premature, &m.gateway).await.is_err(), "a stop needs explicit evidence");
+    assert!(conflict(f.domain.start_shared_attempt(&f.owner.p, &f.policy, premature, &m.gateway).await, "shared_predecessor_evidence_changed"), "a stop needs explicit evidence");
     // The executor supplies that evidence: the known process, reason uncertain_timeout.
     let awaiting = attempt_poll(&f).await;
     assert_eq!(awaiting.command.command_id, issued.command.command_id);
