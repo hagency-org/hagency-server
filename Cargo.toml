@@ -50,7 +50,7 @@ rustls = { version = "0.23", features = ["aws_lc_rs"] }
 ryu-js = "1.0.3"
 salvo = { version = "1.1.0", features = ["serve-static", "test", "affix-state", "size-limiter"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde-saphyr = "0.0.27"
+serde-saphyr = "2.0.0"
 serde_json = "1.0.149"
 sha2 = "0.11"
 signal-hook = "0.3"
