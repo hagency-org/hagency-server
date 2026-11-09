@@ -132,6 +132,40 @@ async fn pool_agent_reaches_private_room_and_runtime_without_any_project() {
     let ticket=work::ticket(&f,&runtime,&work).await;
     f.domain.record_shared_work_result(&f.owner.p,&f.policy,&work.id,work::outcome(&runtime,&work,&ticket,102,"completed")).await.unwrap();
     assert!(f.domain.shared_execution_status(&f.outsider.p,&f.policy,&request.id).await.unwrap().unwrap().work_available);
+    // Discover a completed pool call from the global Work page, then read it
+    // through the same bounded history endpoint used for project Agents.
+    use crate::management_shared_work_types::{SharedWorkIndexQuery, SharedWorkQuery};
+    assert!(f.domain.shared_work_index(&f.outsider.p, &f.policy,
+        SharedWorkIndexQuery::default()).await.unwrap().items.is_empty());
+    for reader in [&f.outsider.p, &f.owner.p, &f.coordinator.p] {
+        let page = f.domain.shared_work_index(reader, &f.policy,
+            SharedWorkIndexQuery {include_pool_agents: true, ..Default::default()}).await.unwrap();
+        assert_eq!(page.items.len(), 1);
+        let entry = &page.items[0];
+        assert_eq!(entry.request_id, request.id);
+        assert_eq!(entry.project_id, None);
+        assert_eq!(entry.project_name, None);
+        assert_eq!(entry.pool_id.as_deref(), Some(request.pool_id.as_str()));
+        assert!(entry.pool_name.as_ref().is_some_and(|name| !name.is_empty()));
+        let history = f.domain.shared_work_history(reader, &f.policy, &entry.request_id,
+            SharedWorkQuery::default()).await.unwrap();
+        assert_eq!(history.items.len(), 1);
+        assert_eq!(history.items[0].state, "completed");
+        assert_eq!(history.items[0].usage.as_ref().unwrap().known_consumed_tokens, 17);
+        assert!(f.domain.shared_work_index(reader, &f.policy,
+            SharedWorkIndexQuery {include_pool_agents: true, after: Some(request.id.clone()), ..Default::default()})
+            .await.unwrap().items.is_empty());
+        assert!(f.domain.shared_work_index(reader, &f.policy,
+            SharedWorkIndexQuery {include_pool_agents: true, project_id: Some("unrelated_project".into()), ..Default::default()})
+            .await.unwrap().items.is_empty());
+    }
+    let unrelated = actor(&f.auth, "unrelated_pool_history_reader").await;
+    for reader in [&f.admin.p, &unrelated.p] {
+        assert!(f.domain.shared_work_index(reader, &f.policy,
+            SharedWorkIndexQuery {include_pool_agents: true, ..Default::default()}).await.unwrap().items.is_empty());
+        assert!(f.domain.shared_work_history(reader, &f.policy, &request.id, SharedWorkQuery::default()).await.is_err());
+    }
+
     let stopped=attempts::stop(&f,&runtime,103).await;
     let next=f.domain.start_shared_attempt(&f.owner.p,&f.policy,attempts::start(&runtime,&stopped),&matrix.gateway).await.unwrap();
     assert_eq!(next.command.process_attempt,2);

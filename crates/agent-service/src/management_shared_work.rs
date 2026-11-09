@@ -465,8 +465,30 @@ impl DomainStore {
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {
             Self::authorize(db,p,0).await?;
-            let mut rows=sql_query("SELECT json_build_object('requestId',q.id,'projectId',q.plan_id,'projectName',p.name,'agentName',q.definition::jsonb->>'name')::text AS payload FROM hagency_agent_v1.management_agent_requests q JOIN hagency_agent_v1.management_projects p ON p.id=q.plan_id JOIN hagency_agent_v1.management_project_authorities a ON a.plan_id=q.plan_id WHERE (q.manager_user_id=$1 OR a.administrator_user_id=$1) AND ($2::text IS NULL OR q.plan_id=$2) AND q.id>$3 AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments s JOIN hagency_agent_v1.management_shared_runtimes r ON r.assignment_id=s.id JOIN hagency_agent_v1.management_shared_work w ON w.runtime_id=r.id WHERE s.request_id=q.id) ORDER BY q.id LIMIT $4")
-                .bind::<Text,_>(&p.user_id).bind::<Nullable<Text>,_>(&input.project_id).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<BigInt,_>(i64::from(limit)+1).load::<Json>(db).await?;
+            // Pool requests deliberately have no project. Keep legacy queries
+            // project-only; opted-in readers receive explicit pool metadata.
+            let mut rows = sql_query(
+                "SELECT json_strip_nulls(json_build_object(
+                    'requestId',q.id,'projectId',q.plan_id,'projectName',p.name,
+                    'poolId',q.pool_contribution_id,'poolName',c.label,
+                    'agentName',q.definition::jsonb->>'name'))::text AS payload
+                 FROM hagency_agent_v1.management_agent_requests q
+                 LEFT JOIN hagency_agent_v1.management_projects p ON p.id=q.plan_id
+                 LEFT JOIN hagency_agent_v1.management_project_authorities a ON a.plan_id=q.plan_id
+                 LEFT JOIN hagency_agent_v1.management_contributions c ON c.id=q.pool_contribution_id
+                 WHERE ((q.plan_id IS NOT NULL AND (q.manager_user_id=$1 OR a.administrator_user_id=$1))
+                    OR ($5 AND q.pool_contribution_id IS NOT NULL
+                        AND (q.manager_user_id=$1 OR q.administrator_user_id=$1)))
+                   AND ($2::text IS NULL OR q.plan_id=$2) AND q.id>$3
+                   AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments s
+                       JOIN hagency_agent_v1.management_shared_runtimes r ON r.assignment_id=s.id
+                       JOIN hagency_agent_v1.management_shared_work w ON w.runtime_id=r.id
+                       WHERE s.request_id=q.id)
+                 ORDER BY q.id LIMIT $4")
+                .bind::<Text,_>(&p.user_id).bind::<Nullable<Text>,_>(&input.project_id)
+                .bind::<Text,_>(input.after.as_deref().unwrap_or(""))
+                .bind::<BigInt,_>(i64::from(limit)+1).bind::<Bool,_>(input.include_pool_agents)
+                .load::<Json>(db).await?;
             let more=rows.len()>usize::from(limit);rows.truncate(usize::from(limit));
             let items=rows.into_iter().map(|r|decode::<SharedWorkIndexItem>(&r.payload)).collect::<Result<Vec<_>>>()?;
             let next_after=more.then(||items.last().unwrap().request_id.clone());
