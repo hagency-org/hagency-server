@@ -132,12 +132,12 @@ fn build_sections(
                 icon: "layout-dashboard",
             },
             NavItem {
-                title: "Projects".into(),
+                title: t("home.projects"),
                 route: Route::HagencyProjects {},
                 icon: "layers",
             },
             NavItem {
-                title: "My agents".into(),
+                title: t("home.agents"),
                 route: Route::HagencyAgents {},
                 icon: "code",
             },
