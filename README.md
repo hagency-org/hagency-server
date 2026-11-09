@@ -78,6 +78,15 @@ Proxy `https://palpo.instance` to `127.0.0.1:8088`, preserving paths and the pub
 Host header. Open `https://palpo.instance/login` and sign in through Pasion as `admin`.
 For later starts, use `just docker-up`.
 
+The schema 33 native CLI cutover requires matching current Desktop and owner-daemon
+builds. Treat it as a forward-only deployment: the SQL files named `*_down.sql`
+are test fixtures, not a supported production rollback. In particular, lowering
+the version does not restore the previous context-validation trigger, and a
+Claude runtime cannot be represented by the previous schema. Returning to an
+older binary requires restoring a pre-cutover Hagency database or starting with
+a fresh Hagency database; replacing the executable alone is not a rollback.
+Matrix and Pasion databases are separate from that Hagency reset.
+
 Registration is disabled by default. Initializers refuse to overwrite existing
 configuration. For existing data, see [migration instructions](docs/guide.md#upgrading-the-former-combined-database).
 

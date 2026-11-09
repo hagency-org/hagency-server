@@ -75,6 +75,12 @@ docker compose up -d server
 打开 `https://palpo.instance/login`，通过 Pasion 使用 `admin` 登录。
 后续启动只需 `just docker-up`。
 
+schema 33 的原生 CLI 切换要求配套的当前 Desktop 和 owner daemon。
+这次部署只支持向前升级：`*_down.sql` 是测试夹具，不是生产回滚方案。
+只降低版本号不会恢复旧的上下文校验触发器，旧 schema 也不能表示 Claude 运行。
+若要重新运行旧二进制，必须恢复切换前的 Hagency 数据库，或使用全新的 Hagency
+数据库；仅替换可执行文件不构成回滚。Matrix 和 Pasion 数据库不属于该 Hagency 重置范围。
+
 默认关闭注册。初始化工具不会覆盖已有配置。
 已有数据请先阅读[迁移说明](docs/guide.zh-CN.md#拆分旧的合并数据库)。
 
