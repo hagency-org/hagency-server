@@ -1295,6 +1295,8 @@ impl I18n {
         m.insert("hagency.auth.signed_in_as".into(), "Signed in as".into());
         m.insert("hagency.auth.projects".into(), "Go to your projects".into());
 
+        m.insert("nav.toggle_navigation".into(), "Toggle navigation".into());
+
         m
     }
 
@@ -3062,6 +3064,8 @@ impl I18n {
         m.insert("hagency.auth.admin_notice".into(), "此页面需要服务器管理员权限。你仍可管理自己的项目和 Agent。".into());
         m.insert("hagency.auth.signed_in_as".into(), "当前登录账号".into());
         m.insert("hagency.auth.projects".into(), "前往我的项目".into());
+
+        m.insert("nav.toggle_navigation".into(), "切换导航栏".into());
 
         m
     }
