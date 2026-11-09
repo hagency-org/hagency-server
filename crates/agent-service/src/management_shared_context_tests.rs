@@ -3,6 +3,7 @@ use crate::Error;
 use crate::management_shared_context_types::*;
 
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
+    db.batch_execute(include_str!("management_shared_claude_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_pool_agents_remove_test.sql")).await.unwrap();
     db.batch_execute(include_str!("management_project_manager_remove_test.sql")).await.unwrap();

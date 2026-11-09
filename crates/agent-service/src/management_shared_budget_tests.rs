@@ -803,6 +803,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         .split("CREATE TRIGGER validate_shared_budget_demand_head")
         .next().unwrap();
     db.batch_execute(&format!("CREATE OR REPLACE FUNCTION hagency_agent_v1.validate_shared_budget_demand(){legacy_validator}")).await.unwrap();
+    db.batch_execute(include_str!("management_shared_claude_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_publication_first_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_agent_periods_down.sql")).await.unwrap();
@@ -816,7 +817,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
     for _ in 0..2 {
         f.domain = DomainStore::open(&f.url, "example.test", "_hagency_test_").await.unwrap();
     }
-    assert_eq!(sql_query("SELECT version::bigint AS version FROM hagency_agent_v1.management_deployment").get_result::<SchemaVersion>(&mut db).await.unwrap().version, 32);
+    assert_eq!(sql_query("SELECT version::bigint AS version FROM hagency_agent_v1.management_deployment").get_result::<SchemaVersion>(&mut db).await.unwrap().version, 33);
     let pin = apply_delta(&f, &r, &admin, 25, 230).await;
     let offered = f
         .domain
@@ -1182,6 +1183,7 @@ async fn budget_execution_v3_schema19_atomic_upgrade_reopen_preserves_original_r
             .unwrap()
     );
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute(include_str!("management_shared_claude_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_pool_agents_remove_test.sql")).await.unwrap();
     db.batch_execute(include_str!("management_project_manager_remove_test.sql")).await.unwrap();
@@ -1311,7 +1313,9 @@ async fn encrypted_shared_budget_work_keeps_plaintext_out_of_results_and_sends()
     let mut e=work::message(&f,&r,"encrypted_budget").await;
     e.encrypted=true;e.body.clear();e.mentioned_mxids.clear();
     let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();
-    let now=sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now").get_result::<Clock>(&mut db).await.unwrap().now;
+    // Ingress uses the application clock. PostgreSQL's bigint cast rounds and
+    // can put this event one millisecond in the future relative to that clock.
+    let now=crate::api::now_ms();
     f.domain.route_shared_event(&f.policy,&e,now,&m.gateway).await.unwrap();
     f.domain.shared_crypto_confirm(&f.owner.p,serde_json::from_value(json!({"assignmentId":d.command.assignment_id,"eventId":e.event_id,"addressed":true,"mentioned":true})).unwrap(),&m.gateway).await.unwrap();
     let w=f.domain.poll_shared_budget_work(&f.owner.p,&f.policy,a.authority.clone(),&m.gateway).await.unwrap().unwrap();

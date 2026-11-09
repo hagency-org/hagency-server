@@ -126,6 +126,7 @@ async fn publication_first_drafts_are_private_replayable_and_cannot_be_changed_t
     let a = draft(&f).await;
     assert!(f.domain.contribution(&f.admin.p,&f.policy,&a.contribution.id).await.is_err());
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute(include_str!("management_shared_claude_down.sql")).await.unwrap();
     db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
     assert!(db.batch_execute(include_str!("management_publication_first_down.sql")).await.is_err(),
         "rollback must preserve the private draft's authority and history");

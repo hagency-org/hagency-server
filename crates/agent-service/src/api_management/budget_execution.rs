@@ -12,6 +12,9 @@ pub(super) async fn call(
         (&Method::POST, ["shared-execution", "budget-attempts", "start"]) => {
             json!({"delivery":Box::pin(domain.start_shared_budget_attempt(p,policy,body(req).await?,gateway)).await?})
         }
+        (&Method::POST, ["shared-execution", "budget-attempts", "poll-v4"]) => {
+            json!({"delivery":domain.poll_shared_budget_attempt_v4(p,policy,body(req).await?).await?})
+        }
         (&Method::POST, ["shared-execution", "budget-attempts", "poll"]) => {
             json!({"delivery":domain.poll_shared_budget_attempt(p,policy,body(req).await?).await?})
         }
@@ -81,6 +84,9 @@ pub(super) async fn call(
         }
         (&Method::POST, ["shared-execution", "budget-work", id, "refusal", "recover"]) => {
             json!({"refusal":domain.recover_shared_budget_work_refusal(p,id,body(req).await?).await?})
+        }
+        (&Method::POST, ["shared-execution", "budget-demands", "poll-v4"]) => {
+            serde_json::to_value(domain.poll_shared_budget_demand_v4(p,policy,body(req).await?).await?).map_err(|_| Error::Unavailable("encoding_failed"))?
         }
         (&Method::POST, ["shared-execution", "budget-demands", "poll"]) => serde_json::to_value(
             domain

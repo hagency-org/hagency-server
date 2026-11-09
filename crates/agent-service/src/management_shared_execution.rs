@@ -110,10 +110,7 @@ async fn runtime_issuing(
             && demands::allowed(db, policy, r).await?
             && issuing(policy)
             && (policy.shared_successors()
-                || serde_json::from_str::<serde_json::Value>(&r.payload)
-                    .ok()
-                    .and_then(|v| v.get("version").and_then(serde_json::Value::as_u64))
-                    == Some(1)),
+                || matches!(runtime_version(r)?, 1 | 4)),
     )
 }
 fn runtime_version(r: &Runtime) -> Result<u64> {
@@ -130,7 +127,7 @@ enum WorkProtocol {
 impl WorkProtocol {
     fn check(self, r: &Runtime) -> Result<()> {
         let version = runtime_version(r)?;
-        if !matches!((self, version), (Self::Legacy, 1 | 2) | (Self::Budget, 3)) {
+        if !matches!((self, version), (Self::Legacy, 1 | 2 | 4) | (Self::Budget, 3)) {
             return Err(Error::Conflict("shared_execution_version_required"));
         }
         Ok(())
@@ -174,6 +171,8 @@ fn original_command(r: &Runtime, server: &str) -> Result<SharedRuntimeCommand> {
 }
 // Common authority projection only; never serialized as a v1 command.
 struct RuntimeScope {
+    runtime: &'static str,
+    policy: String,
     reserve_command: ManagedAgentReserveCommand,
     execution_budget: Option<crate::management_shared_budget_types::SharedExecutionBudget>,
     issued_at_ms: i64,
@@ -184,6 +183,8 @@ fn command(r: &Runtime, server: &str) -> Result<RuntimeScope> {
     if raw.get("version").and_then(serde_json::Value::as_u64) == Some(3) {
         let c = budget_attempts::attempt_command(r, server)?;
         Ok(RuntimeScope {
+            runtime: c.original_runtime_command.runtime()?,
+            policy: c.original_runtime_command.execution_policy(c.web_search, c.tool_policy.as_ref().map(|p| p.mode.as_str()))?.into(),
             reserve_command: c.original_runtime_command.reserve_command,
             execution_budget: Some(c.execution_budget),
             issued_at_ms: c.issued_at_ms,
@@ -192,6 +193,8 @@ fn command(r: &Runtime, server: &str) -> Result<RuntimeScope> {
     } else if raw.get("version").and_then(serde_json::Value::as_u64) == Some(2) {
         let c = attempts::attempt_command(r, server)?;
         Ok(RuntimeScope {
+            runtime: c.original_runtime_command.runtime()?,
+            policy: c.original_runtime_command.execution_policy(c.web_search, c.tool_policy.as_ref().map(|p| p.mode.as_str()))?.into(),
             reserve_command: c.original_runtime_command.reserve_command,
             execution_budget: None,
             issued_at_ms: c.issued_at_ms,
@@ -200,6 +203,8 @@ fn command(r: &Runtime, server: &str) -> Result<RuntimeScope> {
     } else {
         let c = original_command(r, server)?;
         Ok(RuntimeScope {
+            runtime: c.runtime()?,
+            policy: c.policy.clone(),
             reserve_command: c.reserve_command,
             execution_budget: None,
             issued_at_ms: c.issued_at_ms,
@@ -222,7 +227,7 @@ async fn current(
     {
         return Ok(false);
     }
-    Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_requests r ON r.id=a.request_id LEFT JOIN hagency_agent_v1.management_projects p ON p.id=r.plan_id JOIN hagency_agent_v1.management_contributions c ON c.id=COALESCE(r.pool_contribution_id,p.contribution_id) WHERE a.id=$1 AND a.state='pending_native' AND c.runtime='codex') AS matched").bind::<Text,_>(&r.assignment_id).get_result::<Flag>(db).await?.matched)
+    Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_requests r ON r.id=a.request_id LEFT JOIN hagency_agent_v1.management_projects p ON p.id=r.plan_id JOIN hagency_agent_v1.management_contributions c ON c.id=COALESCE(r.pool_contribution_id,p.contribution_id) WHERE a.id=$1 AND a.state='pending_native' AND c.runtime=$2) AS matched").bind::<Text,_>(&r.assignment_id).bind::<Text,_>(c.runtime).get_result::<Flag>(db).await?.matched)
 }
 async fn membership(db: &mut AsyncPgConnection, r: &Runtime) -> Result<Membership> {
     sql_query("SELECT m.binding_id,m.binding_generation,m.room_id,m.space_id,m.puppet_mxid,u.mxid AS manager_mxid,q.pool_contribution_id IS NOT NULL AS pool_agent FROM hagency_agent_v1.shared_room_memberships m JOIN hagency_agent_v1.management_shared_assignments a ON a.id=m.assignment_id JOIN hagency_agent_v1.management_agent_requests q ON q.id=a.request_id JOIN hagency_agent_v1.users u ON u.id=a.manager_user_id WHERE m.assignment_id=$1 AND m.binding_id IS NULL AND m.state='matrix_verified'").bind::<Text,_>(&r.assignment_id).get_result(db).await.map_err(hidden)
@@ -400,6 +405,23 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: ExecutorPollInput,
     ) -> Result<Option<SharedRuntimeDelivery>> {
+        self.poll_shared_runtime_inner(p, policy, input, false).await
+    }
+    pub async fn poll_shared_runtime_v4(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        input: ExecutorPollInput,
+    ) -> Result<Option<SharedRuntimeDelivery>> {
+        self.poll_shared_runtime_inner(p, policy, input, true).await
+    }
+    async fn poll_shared_runtime_inner(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        input: ExecutorPollInput,
+        allow_claude: bool,
+    ) -> Result<Option<SharedRuntimeDelivery>> {
         enabled(policy)?;
         if let Some(id) = &input.after {
             key(id)?;
@@ -423,28 +445,28 @@ impl DomainStore {
             // a usage receipt; delivery() grants history recovery only.
             let ids=sql_query("SELECT a.id AS assignment_id,r.id AS runtime_id
                 FROM hagency_agent_v1.management_shared_assignments a
-                LEFT JOIN hagency_agent_v1.management_shared_runtimes r ON r.assignment_id=a.id AND r.payload::jsonb->>'version'='1' AND NOT r.issuance_void
+                LEFT JOIN hagency_agent_v1.management_shared_runtimes r ON r.assignment_id=a.id AND (r.payload::jsonb->>'version'='1' OR ($8 AND r.payload::jsonb->>'version'='4')) AND NOT r.issuance_void
                 LEFT JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id
                 WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND (
                     (r.id IS NOT NULL AND ((r.state<>'stopped' AND
                      (r.state<>'qualified' OR r.permanent_fence OR r.activity_until_ms<=$5))
                      OR (r.state='stopped' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w
                          WHERE w.runtime_id=r.id AND w.started_at_ms IS NOT NULL AND w.latest_receipt IS NULL))))
-                    OR (r.id IS NULL AND $7 AND a.executor_generation=$4 AND a.state='pending_native'
+                    OR (r.id IS NULL AND $7 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes root WHERE root.assignment_id=a.id AND root.payload::jsonb->>'version' IN ('1','4') AND NOT root.issuance_void) AND a.executor_generation=$4 AND a.state='pending_native'
                         AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_controls sc WHERE sc.assignment_id=a.id AND sc.mode='paused')
                         AND m.state='matrix_verified' AND m.verified_at_ms>$5-$6 AND m.verified_at_ms<=$5
                         AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_runtime_commands x WHERE x.assignment_id=a.id)
                         AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests ar
                             LEFT JOIN hagency_agent_v1.management_projects p ON p.id=ar.plan_id
                             JOIN hagency_agent_v1.management_contributions c ON c.id=COALESCE(ar.pool_contribution_id,p.contribution_id)
-                            WHERE ar.id=a.request_id AND c.runtime='codex')))
+                            WHERE ar.id=a.request_id AND (c.runtime='codex' OR ($8 AND c.runtime='claude')))))
                 ORDER BY CASE WHEN $3='' THEN coalesce(r.permanent_fence OR r.state='unknown'
                     OR r.state='qualified' AND r.activity_until_ms<=$5
                     OR r.state IN ('pending','issued') AND r.expires_at_ms<=$5,false) ELSE false END DESC,
                     (a.id<=$3),a.id LIMIT 32")
                 .bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(&cursor)
                 .bind::<BigInt,_>(generation).bind::<BigInt,_>(now).bind::<BigInt,_>(MAX_FACT_AGE_MS)
-                .bind::<Bool,_>(issuing(policy)).load::<RuntimeCandidate>(db).await?;
+                .bind::<Bool,_>(issuing(policy)).bind::<Bool,_>(allow_claude).load::<RuntimeCandidate>(db).await?;
             for id in ids {
                 if let Some(id)=id.runtime_id {
                     let r=runtime(db,&id).await?;
@@ -454,11 +476,15 @@ impl DomainStore {
                 let w=sql_query(format!("{WORK} JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=i.request_id WHERE a.id=$1 AND w.operation='agent.reserve'")).bind::<Text,_>(&id.assignment_id).get_result::<Work>(db).await?;
                 let reserve:ManagedAgentReserveCommand=decode(&w.payload)?;
                 if !live(db,&w,&reserve,now).await? {continue;}
-                let codex=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests ar LEFT JOIN hagency_agent_v1.management_projects p ON p.id=ar.plan_id JOIN hagency_agent_v1.management_contributions c ON c.id=COALESCE(ar.pool_contribution_id,p.contribution_id) WHERE ar.id=$1 AND c.runtime='codex') AS matched").bind::<Text,_>(&reserve.request_id).get_result::<Flag>(db).await?.matched;
-                if !codex {continue;}
+                let provider=sql_query("SELECT c.runtime AS id FROM hagency_agent_v1.management_agent_requests ar LEFT JOIN hagency_agent_v1.management_projects p ON p.id=ar.plan_id JOIN hagency_agent_v1.management_contributions c ON c.id=COALESCE(ar.pool_contribution_id,p.contribution_id) WHERE ar.id=$1").bind::<Text,_>(&reserve.request_id).get_result::<Id>(db).await?;
+                let (version,capability,execution_policy)=match provider.id.as_str() {
+                    "codex" => (1,SHARED_EXECUTION_CAPABILITY,SHARED_TEXT_POLICY),
+                    "claude" if allow_claude => (4,SHARED_CLAUDE_CAPABILITY,SHARED_CLAUDE_POLICY),
+                    _ => continue,
+                };
                 let receipt:ManagedAgentReservationReceipt=decode(w.receipt.as_deref().ok_or(Error::Conflict("agent_reservation_required"))?)?;
                 let lifetime=reserve_lifetime(db,&reserve,now).await?;
-                let c=SharedRuntimeCommand {version:1,capability:SHARED_EXECUTION_CAPABILITY.into(),operation:"agent.execution.provision".into(),command_id:format!("sex_{}",entity_id()?),assignment_id:id.assignment_id,assignment_generation:1,agent_reservation_id:receipt.agent_reservation_id.ok_or(Error::Conflict("agent_reservation_required"))?,reserve_command_digest:w.digest,reserve_receipt_digest:w.receipt_digest.ok_or(Error::Conflict("agent_reservation_required"))?,policy:SHARED_TEXT_POLICY.into(),issued_at_ms:now,expires_at_ms:(now+30000).min(lifetime),reserve_command:reserve};c.validate(&self.server)?;
+                let c=SharedRuntimeCommand {version,capability:capability.into(),operation:"agent.execution.provision".into(),command_id:format!("sex_{}",entity_id()?),assignment_id:id.assignment_id,assignment_generation:1,agent_reservation_id:receipt.agent_reservation_id.ok_or(Error::Conflict("agent_reservation_required"))?,reserve_command_digest:w.digest,reserve_receipt_digest:w.receipt_digest.ok_or(Error::Conflict("agent_reservation_required"))?,policy:execution_policy.into(),issued_at_ms:now,expires_at_ms:(now+30000).min(lifetime),reserve_command:reserve};c.validate(&self.server)?;
                 let digest=allocation_digest(&c)?;
                 sql_query("INSERT INTO hagency_agent_v1.management_shared_runtimes(id,assignment_id,payload,digest,created_at_ms,expires_at_ms) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&c.command_id).bind::<Text,_>(&c.assignment_id).bind::<Text,_>(wire(&c)?).bind::<Text,_>(&digest).bind::<BigInt,_>(now).bind::<BigInt,_>(c.expires_at_ms).execute(db).await?;
                 let r=runtime(db,&c.command_id).await?;return Ok(Some(delivery(db,p,policy,&r,&self.server,false,None).await?));
@@ -633,7 +659,7 @@ impl DomainStore {
             let w=original(db,&r).await?;let c=command(&r,&self.server)?;let live=current(db,&r,&w,&c,now).await?;
             let state=if r.state=="stopped" {"stopped"}else if !live||r.permanent_fence||r.state=="qualified"&&r.activity_until_ms<=now {"cleanup_pending"}else if r.state=="unknown" {"outcome_unknown"}else{&r.state};
             let spendable=runtime_version(&r)?!=3 || budget_attempts::head_matches(db,&r,&self.server).await?;
-            Ok(Some(SharedExecutionStatus {assignment_id:r.assignment_id.clone(),state:state.into(),policy:SHARED_TEXT_POLICY.into(),activity_expires_at_ms:(r.activity_until_ms>0).then_some(r.activity_until_ms),work_available:runtime_issuing(db,policy,&r).await?&&live&&spendable&&r.state=="qualified"&&r.activity_until_ms>now,capacity_released:false,recent_work:vec![]}))
+            Ok(Some(SharedExecutionStatus {assignment_id:r.assignment_id.clone(),state:state.into(),policy:c.policy.clone(),activity_expires_at_ms:(r.activity_until_ms>0).then_some(r.activity_until_ms),work_available:runtime_issuing(db,policy,&r).await?&&live&&spendable&&r.state=="qualified"&&r.activity_until_ms>now,capacity_released:false,recent_work:vec![]}))
         }).await
     }
 }

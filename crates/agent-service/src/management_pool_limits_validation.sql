@@ -1,4 +1,4 @@
--- Schema 30 table layout is unchanged. V5 calendar grants retain the same
+-- Schema 33: provider-specific immutable roots share the same lifetime tables. V5 calendar grants retain the same
 -- native no-issuance proof requirements as V4; a missing receipt is no proof.
 -- This function is replaced on every start, so changing it needs no schema
 -- version: v2 successors accept the same not_started proof as v3.
@@ -14,7 +14,7 @@ BEGIN
   -- recurring original command. No absence of evidence grants a retry.
   IF NEW.payload::jsonb->>'version'='1' AND NEW.payload::jsonb->>'state'='not_started' THEN
    IF NEW.payload::jsonb->>'processDigest' IS NOT NULL OR NEW.payload::jsonb->>'policyDigest' IS NOT NULL
-    OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes r WHERE r.id=NEW.runtime_id AND r.payload::jsonb->>'version'='1' AND r.payload::jsonb->'reserveCommand'->'poolGrant'->>'version' IN ('4','5') AND r.payload::jsonb->'reserveCommand'->'poolGrant'->'calendar' IS NOT NULL AND r.payload::jsonb->'reserveCommand'->'poolGrant'->'calendar'<>'null'::jsonb AND r.permanent_fence AND r.state IN('pending','issued') AND r.activity_epoch=0 AND r.process_digest IS NULL)
+    OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes r WHERE r.id=NEW.runtime_id AND r.payload::jsonb->>'version' IN ('1','4') AND r.payload::jsonb->'reserveCommand'->'poolGrant'->>'version' IN ('4','5') AND r.payload::jsonb->'reserveCommand'->'poolGrant'->'calendar' IS NOT NULL AND r.payload::jsonb->'reserveCommand'->'poolGrant'->'calendar'<>'null'::jsonb AND r.permanent_fence AND r.state IN('pending','issued') AND r.activity_epoch=0 AND r.process_digest IS NULL)
     OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w WHERE w.runtime_id=NEW.runtime_id)
     OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_process_receipts p WHERE p.runtime_id=NEW.runtime_id)
    THEN RAISE EXCEPTION 'shared_original_not_unstarted'; END IF;
@@ -47,7 +47,7 @@ BEGIN
      WHERE x.runtime_id=NEW.id AND x.assignment_id=NEW.assignment_id
        AND a.state='pending_native' AND i.state<>'fenced' AND m.state='matrix_verified'
        AND prior.assignment_id=a.id AND prior.state='stopped' AND prior.permanent_fence
-       AND original.assignment_id=a.id AND original.payload::jsonb->>'version'='1'
+       AND original.assignment_id=a.id AND original.payload::jsonb->>'version' IN ('1','4')
        AND NEW.payload::jsonb->'originalRuntimeCommand'=original.payload::jsonb
        AND NEW.payload::jsonb->>'originalRuntimeDigest'=original.digest
        AND NEW.payload::jsonb->>'agentReservationId'=a.agent_reservation_id
@@ -64,13 +64,17 @@ BEGIN
           AND ((o.payload::jsonb->>'state'='stopped' AND o.payload::jsonb->>'processDigest'=prior.process_digest) OR (o.payload::jsonb->>'version' IN ('2','3') AND o.payload::jsonb->>'state'='not_started' AND o.payload::jsonb->>'processDigest' IS NULL AND prior.process_digest IS NULL AND NEW.payload::jsonb->'predecessor'->>'processDigest'=''))))
   THEN RAISE EXCEPTION 'fresh_shared_attempt_required';END IF;
  ELSE
-  IF NEW.payload::jsonb->>'capability' IS DISTINCT FROM 'hagency.managed_agents.execution.v1'
+  IF NOT COALESCE(
+    (NEW.payload::jsonb->>'version'='1' AND NEW.payload::jsonb->>'capability'='hagency.managed_agents.execution.v1' AND NEW.payload::jsonb->>'policy'='codex_text_v1')
+    OR (NEW.payload::jsonb->>'version'='4' AND NEW.payload::jsonb->>'capability'='hagency.managed_agents.execution.v4' AND NEW.payload::jsonb->>'policy'='claude_text_v1'), false)
    OR NEW.payload::jsonb->>'operation' IS DISTINCT FROM 'agent.execution.provision'
-   OR NEW.payload::jsonb->>'policy' IS DISTINCT FROM 'codex_text_v1'
-   OR (NEW.payload::jsonb->>'version')::integer IS DISTINCT FROM 1
    OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_runtime_commands WHERE assignment_id=NEW.assignment_id)
    OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=a.request_id JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id
-    WHERE a.id=NEW.assignment_id AND a.state='pending_native' AND i.state<>'fenced' AND m.state='matrix_verified'
+    JOIN hagency_agent_v1.management_agent_requests ar ON ar.id=a.request_id
+    LEFT JOIN hagency_agent_v1.management_projects project ON project.id=ar.plan_id
+    JOIN hagency_agent_v1.management_contributions contribution ON contribution.id=COALESCE(ar.pool_contribution_id,project.contribution_id)
+    WHERE contribution.runtime=CASE NEW.payload::jsonb->>'version' WHEN '4' THEN 'claude' ELSE 'codex' END
+    AND a.id=NEW.assignment_id AND a.state='pending_native' AND i.state<>'fenced' AND m.state='matrix_verified'
     AND NEW.payload::jsonb->>'commandId'=NEW.id AND NEW.payload::jsonb->>'assignmentId'=a.id
     AND NEW.payload::jsonb->>'agentReservationId'=a.agent_reservation_id
     AND NEW.payload::jsonb->>'reserveReceiptDigest'=a.reserve_receipt_digest

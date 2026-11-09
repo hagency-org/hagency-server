@@ -47,6 +47,23 @@ fn encrypted_request(request:&Value)->Result<EncryptedRequest> {
  let _=(value.session_allowed,value.manager_can_decide);
  Ok(value)
 }
+// Claude permission callbacks have their own closed schema. They never use
+// question cards, and only the funding owner can authorize the native tool.
+fn plain_request_runtime(request: &Value) -> Result<&'static str> {
+ let invalid=||Error::Invalid("invalid_permission_request");
+ if matches!(request["method"].as_str(),Some("item/commandExecution/requestApproval"|"item/fileChange/requestApproval"|"item/permissions/requestApproval")) {
+  if !request["params"].is_object() || !request["sessionAllowed"].is_boolean() || !request["managerCanDecide"].is_boolean() || ["threadId","turnId","itemId"].iter().any(|k|request["params"][k].as_str().is_none_or(|s|s.is_empty()||s.len()>255)) {return Err(invalid());}
+  return Ok("codex");
+ }
+ let object=request.as_object().ok_or_else(invalid)?;
+ let params=request["params"].as_object().ok_or_else(invalid)?;
+ if request["method"]!="claude/can_use_tool" || request["sessionAllowed"]!=false || request["managerCanDecide"]!=false
+  || object.len()!=5 || object.keys().any(|k|!matches!(k.as_str(),"id"|"method"|"params"|"sessionAllowed"|"managerCanDecide"))
+  || params.len()!=3 || params.keys().any(|k|!matches!(k.as_str(),"sessionId"|"toolName"|"input"))
+  || !params["input"].is_object()
+  || [&request["id"],&params["sessionId"],&params["toolName"]].iter().any(|v|v.as_str().is_none_or(|s|s.is_empty()||s.len()>255||s.chars().any(char::is_control))) {return Err(invalid());}
+ Ok("claude")
+}
 async fn row(db:&mut AsyncPgConnection,id:&str)->Result<Row>{sql_query("SELECT * FROM hagency_agent_v1.management_shared_approvals WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result(db).await.map_err(hidden)}
 async fn live_request(db:&mut AsyncPgConnection,a:&Row,server:&str,now:i64)->Result<bool>{
  let r=runtime(db,&a.runtime_id).await?;let w=work_row(db,&a.work_id).await?;
@@ -59,11 +76,15 @@ impl DomainStore {
   if !(1..=120_000).contains(&input.remaining_ms) || serde_json::to_vec(&input.request).map_or(true,|v|v.len()>64*1024) {return Err(Error::Invalid("invalid_permission_request"));}
   let request=&input.request;
   let encrypted=if request.get("encrypted").is_some(){Some(encrypted_request(request)?)}else{None};
-  if encrypted.is_none() && (!matches!(request["method"].as_str(),Some("item/commandExecution/requestApproval"|"item/fileChange/requestApproval"|"item/permissions/requestApproval")) || !request["params"].is_object() || !request["sessionAllowed"].is_boolean() || !request["managerCanDecide"].is_boolean() || ["threadId","turnId","itemId"].iter().any(|k|request["params"][k].as_str().is_none_or(|s|s.is_empty()||s.len()>255))) {return Err(Error::Invalid("invalid_permission_request"));}
+  let request_runtime=if encrypted.is_none(){Some(plain_request_runtime(request)?)}else{None};
   let mut guard=self.db.lock().await?;
   (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
    let now=clock(db).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;
    let c=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
+   if request_runtime.is_some_and(|runtime| runtime!=c.runtime)
+    || c.runtime=="claude" && (request["sessionAllowed"]!=false || request["managerCanDecide"]!=false) {
+    return Err(Error::Invalid("invalid_permission_request"));
+   }
    let raw:Value=decode(&r.payload)?;
    if raw["toolPolicy"]["mode"]!="standard" {return Err(Error::Unauthorized("approval_mode_required"));}
    let w=work_row(db,&input.work_id).await?;let work=item(&w,&r)?;
@@ -77,7 +98,7 @@ impl DomainStore {
    if let Some(old)=old {let payload:Value=decode(&old.payload)?;if old.work_id!=w.id || old.owner_user_id!=p.user_id || payload["request"]!=input.request{return Err(Error::Conflict("approval_request_changed"));}return Ok(json!({"approval":payload,"digest":old.digest}));}
    if sql_query("SELECT count(*)>=16 AS matched FROM hagency_agent_v1.management_shared_approvals WHERE runtime_id=$1 AND NOT consumed AND expires_at_ms>$2").bind::<Text,_>(&r.id).bind::<BigInt,_>(now).get_result::<Flag>(db).await?.matched {return Err(Error::Unavailable("approval_queue_full"));}
    let expires=(now+input.remaining_ms).min(reserve_lifetime(db,&c.reserve_command,now).await?);
-   let mut payload=json!({"id":input.id,"workId":w.id,"agentId":c.reserve_command.proposed_agent_id,"agentName":c.reserve_command.definition.name,"roomId":work.room_id,"eventId":work.event_id,"threadRoot":work.thread_root,"requesterMxid":work.requester_mxid,"ownerMxid":p.mxid,"request":input.request,"expiresAtMs":expires,"sessionScope":"current_codex_session"});
+   let mut payload=json!({"id":input.id,"workId":w.id,"agentId":c.reserve_command.proposed_agent_id,"agentName":c.reserve_command.definition.name,"roomId":work.room_id,"eventId":work.event_id,"threadRoot":work.thread_root,"requesterMxid":work.requester_mxid,"ownerMxid":p.mxid,"request":input.request,"expiresAtMs":expires,"sessionScope":if c.runtime=="claude" {"current_claude_session"} else {"current_codex_session"}});
    if encrypted.is_some(){let m=membership(db,&r).await?;payload["agentMxid"]=json!(m.puppet_mxid);payload["managerMxid"]=json!(c.reserve_command.manager_mxid);}
    let digest=allocation_digest(&payload)?;
    // Other Room members may send the work, but manager-delegable decisions stay with the manager.
@@ -127,5 +148,21 @@ impl DomainStore {
    if a.decision.is_some() {sql_query("UPDATE hagency_agent_v1.management_shared_approvals SET consumed=true WHERE id=$1 AND NOT consumed").bind::<Text,_>(&a.id).execute(db).await?;}
    Ok(json!({"id":a.id,"digest":a.digest,"decision":a.decision,"ownerApproved":a.decision_by_owner,"decidedByMxid":a.decided_by_mxid}))
   }).await
+ }
+}
+
+#[cfg(test)]
+mod claude_tests {
+ use super::*;
+ #[test]
+ fn shared_claude_permission_rejects_delegation_questions_and_open_schema() {
+  let request=json!({"id":"native-request","method":"claude/can_use_tool","params":{"sessionId":"native-session","toolName":"Bash","input":{"command":"ls"}},"sessionAllowed":false,"managerCanDecide":false});
+  assert_eq!(plain_request_runtime(&request).unwrap(),"claude");
+  for (pointer,value) in [("/sessionAllowed",json!(true)),("/managerCanDecide",json!(true)),("/id",json!(7)),("/method",json!("request_user_input")),("/params/sessionId",json!("")),("/params/toolName",json!("bad\nname")),("/params/input",json!("ls"))] {
+   let mut wrong=request.clone();*wrong.pointer_mut(pointer).unwrap()=value;
+   assert!(plain_request_runtime(&wrong).is_err(),"{pointer}");
+  }
+  let mut wrong=request.clone();wrong["managerOverride"]=json!(true);assert!(plain_request_runtime(&wrong).is_err());
+  let mut wrong=request;wrong["params"]["threadId"]=json!("codex-thread");assert!(plain_request_runtime(&wrong).is_err());
  }
 }
