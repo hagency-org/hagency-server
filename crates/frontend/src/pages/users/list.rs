@@ -156,16 +156,16 @@ pub fn UserList() -> Element {
         });
     }
 
-    let search_val = search.read().clone();
     let page_val = *page.read();
     let per_page_val = *per_page.read();
-    let sort_by_val = sort_by.read().clone();
-    let sort_dir_val = sort_dir.read().clone();
 
     let mut users_data = use_resource(move || {
-        let search = search_val.clone();
-        let order_by = sort_by_val.clone();
-        let order = sort_dir_val.clone();
+        // Read inside the resource so changes subscribe and reload this query.
+        let search = search.read().clone();
+        let page_val = *page.read();
+        let per_page_val = *per_page.read();
+        let order_by = sort_by.read().clone();
+        let order = sort_dir.read().clone();
         async move { users::get_users_cached(page_val, per_page_val, &order_by, &order, &search).await }
     });
 

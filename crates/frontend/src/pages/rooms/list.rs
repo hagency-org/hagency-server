@@ -135,16 +135,19 @@ pub fn RoomList() -> Element {
         });
     }
 
-    let search_val = search.read().clone();
     let page_val = *page.read();
     let per_page_val = *per_page.read();
     let current_sort = sort_option.read().clone();
 
-    let order_by = current_sort.order_by();
-    let dir = current_sort.default_dir();
-
     let mut rooms_data = use_resource(move || {
-        let search = search_val.clone();
+        // Query dependencies must be read in this reactive scope, not captured
+        // as the values from the component's first render.
+        let search = search.read().clone();
+        let page_val = *page.read();
+        let per_page_val = *per_page.read();
+        let sort = sort_option.read().clone();
+        let order_by = sort.order_by();
+        let dir = sort.default_dir();
         async move { rooms::get_rooms_cached(page_val, per_page_val, order_by, dir, &search).await }
     });
 
