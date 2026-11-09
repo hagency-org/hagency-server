@@ -52,29 +52,29 @@ pub fn RoomDiscovery(project_id: Signal<String>, room: Signal<String>) -> Elemen
         .and_then(|(_, _, v)| v.ok())
         .unwrap_or(Value::Null);
     rsx! {section {class:"hg-card hg-stack",
-        div {class:"hg-heading", h2 {"Rooms"}
-            button {class:"hg-button hg-secondary",disabled:project_id().is_empty(),onclick:move |_| {rooms.restart();agents.restart();},"Refresh"}
+        div {class:"hg-heading", h2 {{t("hagency.rooms.title")}}
+            button {class:"hg-button hg-secondary",disabled:project_id().is_empty(),onclick:move |_| {rooms.restart();agents.restart();},{t("hagency.refresh")}}
         }
-        if rooms().is_none() {p {role:"status","Loading Rooms…"}}
+        if rooms().is_none() {p {role:"status",{t("hagency.rooms.loading")}}}
         if let Some((project,Err(error)))=rooms() {if project==project_id() {p {role:"alert","{error}"}}}
-        if !data.is_null()&&rows(&data,"rooms").is_empty() {p {class:"hg-note","No registered Rooms you currently belong to."}}
+        if !data.is_null()&&rows(&data,"rooms").is_empty() {p {class:"hg-note",{t("hagency.rooms.empty")}}}
         if !rows(&data,"rooms").is_empty() {
-            label {class:"hg-field","Room" select {class:"hg-input",value:room(),onchange:move |e| room.set(e.value()),
-                option {value:"","Select a Room"}
+            label {class:"hg-field",{t("hagency.room")} select {class:"hg-input",value:room(),onchange:move |e| room.set(e.value()),
+                option {value:"",{t("hagency.rooms.select")}}
                 for item in rows(&data,"rooms") {option {value:text(&item,"roomId"),{name(&item,"roomId")}}}
             }}
         }
         if !room().is_empty() {
-            h3 {"Agents in this Room"}
-            if agents().is_none() {p {role:"status","Loading Agents…"}}
+            h3 {{t("hagency.rooms.agents")}}
+            if agents().is_none() {p {role:"status",{t("hagency.agents.loading")}}}
             if let Some((project,selected,Err(error)))=agents() {if project==project_id()&&selected==room() {p {role:"alert","{error}"}}}
-            if !roster.is_null()&&rows(&roster,"agents").is_empty() {p {class:"hg-note","No visible Agents in this Room."}}
+            if !roster.is_null()&&rows(&roster,"agents").is_empty() {p {class:"hg-note",{t("hagency.rooms.no_agents")}}}
             for agent in rows(&roster,"agents") {div {class:"hg-stack",key:"{agent}",
                 strong {{text(&agent,"displayName")}}
-                p {class:"hg-note",{format!("Owner: {} · Binding: {}",text(&agent,"ownerMxid"),text(&agent,"bindingState"))}}
-                details {summary {"Matrix identity"}code {{text(&agent,"puppetMxid")}}}
+                p {class:"hg-note",{t_with("hagency.rooms.owner_binding", &[("owner", &text(&agent,"ownerMxid")), ("state", &state_label(&text(&agent,"bindingState")))])}}
+                details {summary {{t("hagency.matrix_identity")}}code {{text(&agent,"puppetMxid")}}}
             }}
         }
-        p {class:"hg-note","Only joined, registered Rooms are shown. Binding state does not indicate whether an Agent’s device is online."}
+        p {class:"hg-note",{t("hagency.rooms.note")}}
     }}
 }

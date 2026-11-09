@@ -66,62 +66,62 @@ pub fn Agents() -> Element {
         .into_iter()
         .find(|a| text(a, "id") == selected());
     rsx! {div {class:"hg-page hg-stack",
-        div {class:"hg-heading", h1 {"My Agents"}
-            button {class:"hg-button hg-secondary", disabled:busy(), onclick:move |_| {agents.restart();devices.restart();bindings.restart();},"Refresh"}
+        div {class:"hg-heading", h1 {{t("hagency.agents.title")}}
+            button {class:"hg-button hg-secondary", disabled:busy(), onclick:move |_| {agents.restart();devices.restart();bindings.restart();},{t("hagency.refresh")}}
         }
-        p {class:"hg-note", "Agents belong to your account across the server. Use Hagency Desktop to create an Agent, assign its execution device, configure its model and resources, and start responding."}
+        p {class:"hg-note", {t("hagency.agents.description")}}
         Notice {message}
-        if agents().is_none() {p {role:"status","Loading Agents…"}}
+        if agents().is_none() {p {role:"status",{t("hagency.agents.loading")}}}
         if let Some(Err(error))=agents() {p {role:"alert","{error}"}}
-        if let Some(Err(error))=devices() {p {role:"alert","Unable to load execution devices: {error}"}}
-        if agents().is_some_and(|r|r.is_ok())&&rows(&data,"agents").is_empty() {div {class:"hg-card hg-stack",h2 {"No Agents yet"}p {"Create an Agent in Hagency Desktop. It is assigned to that device and gets a private chat with you automatically."}}}
+        if let Some(Err(error))=devices() {p {role:"alert",{t_with("hagency.agents.devices_error", &[("error", &error)])}}}
+        if agents().is_some_and(|r|r.is_ok())&&rows(&data,"agents").is_empty() {div {class:"hg-card hg-stack",h2 {{t("hagency.agents.empty_title")}}p {{t("hagency.agents.empty")}}}}
         div {class:"hg-grid",
             for agent in rows(&data,"agents") {
                 {let id=text(&agent,"id");let device_id=text(&agent,"executionDeviceId");let device=rows(&device_data,"devices").into_iter().find(|d|text(d,"id")==device_id);
                 rsx! {section {class:"hg-card hg-stack",key:"{id}",
-                    div {class:"hg-heading",h2 {{text(&agent,"displayName")}}span {class:"hg-badge",{text(&agent,"state")}}}
-                    p {class:"hg-note",{match device {Some(d)=>format!("Execution device: {}{}",text(&d,"name"),if d["revoked"]==true {" (authorization revoked)"}else{""}),None if device_id.is_empty()=>"No execution device assigned".into(),None=>format!("Execution device: {device_id}")}}}
-                    details {summary {"Matrix identity"}code {{text(&agent,"puppetMxid")}}}
-                    div {class:"hg-actions",button {class:"hg-button hg-secondary",disabled:busy(),onclick:move |_| {selected.set(id.clone());project.set(String::new());room.set(String::new());message.set(String::new());command.set(browser_auth::operation_id());},"Manage Agent"}}
+                    div {class:"hg-heading",h2 {{text(&agent,"displayName")}}span {class:"hg-badge",{state_label(&text(&agent,"state"))}}}
+                    p {class:"hg-note",{match device {Some(d)=>format!("{}{}",t_with("hagency.agents.device", &[("device", &text(&d,"name"))]),if d["revoked"]==true {t("hagency.agents.revoked")}else{String::new()}),None if device_id.is_empty()=>{t("hagency.agents.no_device")}.into(),None=>t_with("hagency.agents.device", &[("device", &device_id)])}}}
+                    details {summary {{t("hagency.matrix_identity")}}code {{text(&agent,"puppetMxid")}}}
+                    div {class:"hg-actions",button {class:"hg-button hg-secondary",disabled:busy(),onclick:move |_| {selected.set(id.clone());project.set(String::new());room.set(String::new());message.set(String::new());command.set(browser_auth::operation_id());},{t("hagency.agents.manage")}}}
                 }}}
             }
         }
         if let Some(agent)=active_agent {
             section {class:"hg-card hg-stack",h2 {{text(&agent,"displayName")}}
-                p {class:"hg-note", "Server availability controls all of this Agent’s bindings. It does not start or stop the model on its device. Binding state does not prove the device is online."}
+                p {class:"hg-note", {t("hagency.agents.availability_note")}}
                 if let Some(action)=availability_action(&text(&agent,"state")) {
                     div {class:"hg-actions",button {class:"hg-button",disabled:busy(),onclick:move |_| {
                         let id=selected();busy.set(true);spawn(async move {match mutate(&format!("/agents/{id}/{action}"),"POST",json!({})).await {
-                            Ok(_)=>{message.set(if action=="pause" {"Agent paused on the server."}else{"Agent available on the server. Its device must also be running."}.into());agents.restart();bindings.restart();},Err(e)=>message.set(e)
+                            Ok(_)=>{message.set(if action=="pause" {{t("hagency.agents.paused")}}else{{t("hagency.agents.available")}}.into());agents.restart();bindings.restart();},Err(e)=>message.set(e)
                         }busy.set(false);});
-                    },Icon {name:if action=="pause" {"pause".to_string()}else{"play".to_string()},class:"h-4 w-4".to_string()},if action=="pause" {"Pause Agent"}else {"Restore availability"}}}
+                    },Icon {name:if action=="pause" {"pause".to_string()}else{"play".to_string()},class:"h-4 w-4".to_string()},if action=="pause" {{t("hagency.agents.pause")}}else {{t("hagency.agents.restore")}}}}
                 }
-                h3 {"Connected chats"}
+                h3 {{t("hagency.agents.chats")}}
                 if let Some((id,Err(error)))=bindings() {if id==selected(){p {role:"alert","{error}"}}}
-                if binding_data.is_null() {p {role:"status","Loading chats…"}}
+                if binding_data.is_null() {p {role:"status",{t("hagency.agents.loading_chats")}}}
                 for binding in rows(&binding_data,"bindings") {
                     {let id=text(&binding,"id");let is_direct=binding["scopeKind"]=="owner_direct";
                     rsx! {div {class:"hg-card hg-stack",key:"{id}",
-                        h3 {if is_direct {"Private chat with you"}else {"Project Room"}}
+                        h3 {if is_direct {{t("hagency.agents.private_chat")}}else {{t("hagency.agents.project_room")}}}
                         code {{text(&binding,"roomId")}}
-                        p {class:"hg-note",{format!("Server binding: {}",text(&binding,"state"))}}
+                        p {class:"hg-note",{t_with("hagency.agents.binding", &[("state", &state_label(&text(&binding,"state")))])}}
                         div {class:"hg-actions",
                             if let Some(action)=binding_action(&text(&binding,"state")) {
                                 {let id=id.clone();rsx! {button {class:"hg-button hg-secondary",disabled:busy(),onclick:move |_| {
                                     let id=id.clone();busy.set(true);spawn(async move {match mutate(&format!("/bindings/{id}/{action}"),"POST",json!({})).await {
                                         Ok(result)=>{message.set(result);bindings.restart();},Err(e)=>message.set(e)
                                     }busy.set(false);});
-                                },Icon {name:if action=="pause" {"pause".to_string()}else{"play".to_string()},class:"h-4 w-4".to_string()},if action=="pause" {"Pause in this chat"}else {"Resume in this chat"}}}}
+                                },Icon {name:if action=="pause" {"pause".to_string()}else{"play".to_string()},class:"h-4 w-4".to_string()},if action=="pause" {{t("hagency.agents.pause_chat")}}else {{t("hagency.agents.resume_chat")}}}}}
                             }
                             if !is_direct&&text(&binding,"state")!="left" {
                                 button {class:"hg-button hg-secondary",disabled:busy(),onclick:move |_| {
                                     let id=id.clone();busy.set(true);spawn(async move {match mutate(&format!("/bindings/{id}"),"DELETE",json!({})).await {Ok(result)=>{message.set(result);bindings.restart();},Err(e)=>message.set(e)}busy.set(false);});
-                                },"Leave Room"}
+                                },{t("hagency.agents.leave_room")}}
                             }
                         }
                     }}}
                 }
-                details {summary {"Add to a Project Room"}
+                details {summary {{t("hagency.agents.add_room")}}
                     form {class:"hg-stack",onsubmit:move |e| {
                         e.prevent_default();if busy()||room().is_empty()||project().is_empty(){return;}
                         let id=selected();let body=binding_body(&project(),&room(),&command());busy.set(true);
@@ -129,21 +129,21 @@ pub fn Agents() -> Element {
                             Ok(result)=>{message.set(result);command.set(browser_auth::operation_id());bindings.restart();},Err(e)=>message.set(e)
                         }busy.set(false);});
                     },
-                        p {class:"hg-note", "You must belong to both the Space and Room, and their Agent access policies must allow you. The Hagency service account needs permission to invite the Agent. Encrypted Rooms are not yet supported for Agents."}
+                        p {class:"hg-note", {t("hagency.agents.binding_note")}}
                         if let Some(Err(error))=projects() {p {role:"alert","{error}"}}
-                        label {class:"hg-field","Project" select {class:"hg-input",disabled:busy(),value:project(),onchange:move |e| {project.set(e.value());room.set(String::new());command.set(browser_auth::operation_id());},
-                            option {value:"","Select a Project"}
+                        label {class:"hg-field",{t("hagency.project")} select {class:"hg-input",disabled:busy(),value:project(),onchange:move |e| {project.set(e.value());room.set(String::new());command.set(browser_auth::operation_id());},
+                            option {value:"",{t("hagency.projects.select")}}
                             for item in rows(&projects().and_then(Result::ok).unwrap_or(Value::Null),"projects") {option {value:text(&item,"id"),{name(&item,"spaceId")}}}
                         }}
                         if let Some((id,Err(error)))=rooms() {if id==project(){p {role:"alert","{error}"}}}
-                        label {class:"hg-field","Room" select {class:"hg-input",disabled:busy()||project().is_empty(),value:room(),onchange:move |e| {room.set(e.value());command.set(browser_auth::operation_id());},
-                            option {value:"","Select a registered Room"}
+                        label {class:"hg-field",{t("hagency.room")} select {class:"hg-input",disabled:busy()||project().is_empty(),value:room(),onchange:move |e| {room.set(e.value());command.set(browser_auth::operation_id());},
+                            option {value:"",{t("hagency.agents.select_room")}}
                             for item in rows(&room_data,"rooms") {option {value:text(&item,"roomId"),{name(&item,"roomId")}}}
                         }}
-                        div {class:"hg-actions",button {class:"hg-button",disabled:busy()||room().is_empty(),r#type:"submit","Add Agent"}}
+                        div {class:"hg-actions",button {class:"hg-button",disabled:busy()||room().is_empty(),r#type:"submit",{t("hagency.agents.add")}}}
                     }
                 }
-                div {class:"hg-actions",button {class:"hg-button hg-secondary",disabled:busy(),onclick:move |_| selected.set(String::new()),"Done"}}
+                div {class:"hg-actions",button {class:"hg-button hg-secondary",disabled:busy(),onclick:move |_| selected.set(String::new()),{t("hagency.done")}}}
             }
         }
     }}

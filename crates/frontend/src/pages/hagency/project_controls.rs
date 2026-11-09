@@ -56,17 +56,17 @@ pub fn ProjectControls(project_id: Signal<String>, room_id: String) -> Element {
     let policy_path = path.clone();
     let pause_path = path.clone();
     rsx! {section {class:"hg-card hg-stack",
-        h2 {if room_scope {"Room Agent access"} else {"Project Agent access"}}
+        h2 {if room_scope {{t("hagency.access.room_title")}} else {{t("hagency.access.project_title")}}}
         if room_scope {p {class:"hg-note", "{room_id}"}}
-        p {class:"hg-note", "Controls who may add their own Agents. Existing bindings are stopped only by a service pause. Limits and model resources are managed on the Agent’s execution device."}
+        p {class:"hg-note", {t("hagency.access.description")}}
         Notice {message}
-        if state().is_none() {p {role:"status", "Loading access settings…"}}
+        if state().is_none() {p {role:"status", {t("hagency.access.loading")}}}
         if let Some(Err(error))=state() {p {role:"alert", "{error}"}}
         if let Some(Ok(_))=state() {
-            p {if data["servicePaused"]==true {"Agent service is paused in this scope."} else {"No administrative service pause."}}
-            if !can_manage {p {class:"hg-note", "Read only. Editing requires current Matrix administration rights in this Space or Room; a server Admin role alone does not grant them."}}
+            p {if data["servicePaused"]==true {{t("hagency.access.paused")}} else {{t("hagency.access.no_pause")}}}
+            if !can_manage {p {class:"hg-note", {t("hagency.access.read_only")}}}
         }
-        div {class:"hg-actions", button {class:"hg-button hg-secondary",disabled:busy(),onclick:move |_| state.restart(),"Refresh access"}}
+        div {class:"hg-actions", button {class:"hg-button hg-secondary",disabled:busy(),onclick:move |_| state.restart(),{t("hagency.access.refresh")}}}
         if loaded_revision().is_some() {
             form {class:"hg-stack", onsubmit:move |e| {
                 e.prevent_default();if busy()||!can_manage{return;}
@@ -78,38 +78,38 @@ pub fn ProjectControls(project_id: Signal<String>, room_id: String) -> Element {
                 }}else {json!({"defaultAllow":default_allow(),"allow":members(&allow()),"deny":members(&deny())})};
                 let path=policy_path.clone();busy.set(true);
                 spawn(async move {match browser_auth::call(&format!("{path}/creation-policy"),"PUT",Some(json!({"expectedRevision":expected_revision,"policy":policy}))).await {
-                    Ok(_)=>{message.set("Access policy saved.".into());state.restart();},
+                    Ok(_)=>{message.set({t("hagency.access.saved")}.into());state.restart();},
                     Err(e)=>{message.set(format!("{} Refresh access before retrying.",e.message));loaded_revision.set(None);}
                 }busy.set(false);});
             },
                 if room_scope {
-                    label {class:"hg-field", "Who may add Agents?" select {class:"hg-input",value:mode(),disabled:busy()||!can_manage,onchange:move |e| mode.set(e.value()),
-                        option {value:"inherit_project", "Inherit Project policy"}
-                        option {value:"allow_list", "Only listed Room members"}
-                        option {value:"disabled", "No new Agents"}
+                    label {class:"hg-field", {t("hagency.access.who")} select {class:"hg-input",value:mode(),disabled:busy()||!can_manage,onchange:move |e| mode.set(e.value()),
+                        option {value:"inherit_project", {t("hagency.access.inherit")}}
+                        option {value:"allow_list", {t("hagency.access.listed")}}
+                        option {value:"disabled", {t("hagency.access.disabled")}}
                     }}
                 } else {
                     label {input {r#type:"checkbox",checked:default_allow(),disabled:busy()||!can_manage,onchange:move |e| default_allow.set(e.checked())} " Members may add Agents by default"}
                 }
                 if (room_scope&&mode()=="allow_list")||(!room_scope&&!default_allow()) {
-                    label {class:"hg-field", "Allowed Matrix users" textarea {class:"hg-input",value:allow(),disabled:busy()||!can_manage,placeholder:"@user:server",oninput:move |e| allow.set(e.value())}}
+                    label {class:"hg-field", {t("hagency.access.allowed")} textarea {class:"hg-input",value:allow(),disabled:busy()||!can_manage,placeholder:"@user:server",oninput:move |e| allow.set(e.value())}}
                 }
                 if !room_scope||mode()!="disabled" {
-                    label {class:"hg-field", "Denied Matrix users" textarea {class:"hg-input",value:deny(),disabled:busy()||!can_manage,placeholder:"One Matrix ID per line. Deny takes precedence.",oninput:move |e| deny.set(e.value())}}
+                    label {class:"hg-field", {t("hagency.access.denied")} textarea {class:"hg-input",value:deny(),disabled:busy()||!can_manage,placeholder:{t("hagency.access.lines")},oninput:move |e| deny.set(e.value())}}
                 }
-                if can_manage {div {class:"hg-actions",button {class:"hg-button",r#type:"submit",disabled:busy()||loaded_revision().is_none(),"Save access policy"}}}
+                if can_manage {div {class:"hg-actions",button {class:"hg-button",r#type:"submit",disabled:busy()||loaded_revision().is_none(),{t("hagency.access.save")}}}}
             }
         }
         if can_manage {
-            details {summary {"Service pause"}
-                p {class:"hg-note", "Pause blocks new bindings and suspends existing ones. Clearing a pause lets owners resume their bindings; it does not restart their devices."}
-                if room_scope&&data["projectPaused"]==true {p {class:"hg-note", "The Project is paused. Clearing only this Room’s pause cannot restore service."}}
+            details {summary {{t("hagency.access.service_pause")}}
+                p {class:"hg-note", {t("hagency.access.pause_note")}}
+                if room_scope&&data["projectPaused"]==true {p {class:"hg-note", {t("hagency.access.project_paused")}}}
                 div {class:"hg-actions", button {class:"hg-button hg-secondary",disabled:busy(),onclick:move |_| {
                     let path=pause_path.clone();let action=if own_paused {"clear-service-pause"}else{"pause-service"};busy.set(true);
                     spawn(async move {match browser_auth::call(&format!("{path}/{action}"),"POST",None).await {
-                        Ok(_)=>{message.set(if own_paused {"Pause cleared. Owners may resume bindings."} else {"Service paused."}.into());state.restart();},Err(e)=>message.set(e.message)
+                        Ok(_)=>{message.set(if own_paused {{t("hagency.access.cleared")}} else {{t("hagency.access.service_paused")}}.into());state.restart();},Err(e)=>message.set(e.message)
                     }busy.set(false);});
-                },if own_paused {"Clear service pause"}else {"Pause service"}}}
+                },if own_paused {{t("hagency.access.clear")}}else {{t("hagency.access.pause")}}}}
             }
         }
     }}
