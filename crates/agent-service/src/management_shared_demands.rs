@@ -10,6 +10,8 @@ pub(super) mod budget;
 mod start;
 #[path = "management_shared_demand_retries.rs"]
 mod retries;
+#[path = "management_shared_session_route.rs"]
+mod session_route;
 // Decode only server-owned retained bytes, never an external AS authority.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

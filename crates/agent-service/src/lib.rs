@@ -26,6 +26,7 @@ pub mod management_shared_attempt_types;
 pub mod management_shared_work_types;
 pub mod management_shared_intake_types;
 pub mod management_shared_demand_types;
+pub mod management_shared_session_types;
 pub mod management_shared_context_types;
 pub mod management_shared_budget_types;
 pub mod management_agent_types;

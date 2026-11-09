@@ -862,6 +862,15 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         )
         .await
         .unwrap();
+    // The original v3 execute ticket can read the exact next session route;
+    // this neither qualifies its process nor promotes the retained work.
+    let route_input = crate::management_shared_session_types::SharedSessionRouteInput {
+        command_digest: d.command_digest.clone(), token: d.token.clone(),
+    };
+    let route = f.domain.shared_native_session_route(&f.owner.p, &f.policy,
+        &d.command.command_id, route_input.clone(), &m.gateway).await.unwrap().unwrap();
+    assert_eq!(route.event_id, offered.offer.event_id);
+    assert_eq!(route.runtime_command_digest, d.command_digest);
     let disabled = f.policy.clone().with_shared_budget_execution(false);
     #[derive(QueryableByName)]
     struct RetainedOriginalBlock {
@@ -885,6 +894,12 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         .unwrap();
     assert_eq!(replay.command_digest, d.command_digest);
     assert!(!replay.execution_allowed);
+    assert!(f.domain.shared_native_session_route(&f.owner.p, &f.policy,
+        &d.command.command_id, crate::management_shared_session_types::SharedSessionRouteInput {
+            command_digest: replay.command_digest.clone(), token: replay.token.clone(),
+        }, &m.gateway).await.is_err());
+    assert!(f.domain.shared_native_session_route(&f.owner.p, &disabled,
+        &d.command.command_id, route_input, &m.gateway).await.is_err());
     let activity = f
         .domain
         .record_shared_budget_attempt_process(

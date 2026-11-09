@@ -191,6 +191,9 @@ pub(super) async fn call(
         (&Method::POST, ["shared-execution", "runtime", id, "recover"]) => {
             json!({"delivery":domain.recover_shared_runtime(p,policy,id,body(req).await?).await?})
         }
+        (&Method::POST, ["shared-execution", "runtime", id, "session-route"]) => {
+            json!({"route":domain.shared_native_session_route(p,policy,id,body(req).await?,gateway).await?})
+        }
         (&Method::POST, ["shared-execution", "runtime", id, "result"]) => serde_json::to_value(
             domain
                 .record_shared_process(p, policy, id, body(req).await?)
