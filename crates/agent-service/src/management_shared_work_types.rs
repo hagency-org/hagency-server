@@ -3,6 +3,7 @@ use crate::management_shared_execution_types::*;
 use serde::{Deserialize, Serialize};
 /// Read/history protocol only; individual live authority gates all effects.
 pub const SHARED_WORK_HISTORY_FEATURE: &str = "shared-work-history-v1";
+pub const POOL_WORK_HISTORY_FEATURE: &str = "pool-work-history-v1";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SharedWorkPollInput {
@@ -79,6 +80,9 @@ pub struct SharedWorkPage {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SharedWorkIndexQuery {
+    /// Opt in to nullable project fields and direct resource-pool entries.
+    #[serde(default)]
+    pub include_pool_agents: bool,
     pub project_id: Option<String>,
     pub after: Option<String>,
     pub limit: Option<u16>,
@@ -87,8 +91,12 @@ pub struct SharedWorkIndexQuery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SharedWorkIndexItem {
     pub request_id: String,
-    pub project_id: String,
-    pub project_name: String,
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool_name: Option<String>,
     pub agent_name: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]

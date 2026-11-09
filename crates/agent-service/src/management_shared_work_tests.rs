@@ -1450,6 +1450,7 @@ async fn shared_work_restart_index_is_role_scoped_paged_and_independent_of_admis
             &f.policy,
             SharedWorkIndexQuery {
                 project_id: Some(first.project_id.clone()),
+                include_pool_agents: false,
                 after: page.next_after,
                 limit: Some(1),
             },
