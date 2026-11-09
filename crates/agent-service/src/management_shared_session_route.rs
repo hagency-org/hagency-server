@@ -88,6 +88,7 @@ async fn candidate(
         thread_root: event.thread_root.unwrap_or(event.event_id),
         room_binding: room_binding(&membership, &r.assignment_id),
         encrypted: event.encrypted,
+        native_context_version: (!event.encrypted && policy.shared_thread_context()).then_some(3),
     };
     route.validate()?;
     Ok(Some((route, membership)))

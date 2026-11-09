@@ -36,6 +36,9 @@ pub struct SharedSessionRoute {
     pub thread_root: String,
     pub room_binding: Option<SharedRoomBinding>,
     pub encrypted: bool,
+    /// Descriptive protocol selection only; actual frozen input is rechecked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_context_version: Option<u16>,
 }
 impl SharedSessionRoute {
     pub fn validate(&self) -> Result<()> {
@@ -47,6 +50,7 @@ impl SharedSessionRoute {
                 && !id.chars().any(char::is_control)
         };
         if self.version != 1
+            || self.native_context_version.is_some_and(|v| v != 3 || self.encrypted)
             || !valid_digest(&self.runtime_command_digest)
             || !valid_digest(&self.body_digest)
             || !matrix(&self.event_id, '$')

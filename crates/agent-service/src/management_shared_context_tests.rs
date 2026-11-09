@@ -1,6 +1,8 @@
 use super::*;
 use crate::Error;
 use crate::management_shared_context_types::*;
+#[path = "management_shared_native_context_tests.rs"]
+mod native;
 
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
     db.batch_execute(include_str!("management_shared_claude_down.sql")).await.unwrap();

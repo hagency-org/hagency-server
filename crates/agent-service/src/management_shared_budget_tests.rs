@@ -1339,7 +1339,7 @@ async fn encrypted_shared_budget_work_keeps_plaintext_out_of_results_and_sends()
     assert_eq!(mode.mode,"plain_text_v1");
     f.domain.acknowledge_shared_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
     f.domain.start_shared_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
-    f.domain.authorize_shared_encrypted_reply(&f.owner.p,&f.policy,&w.id,&m.gateway).await.unwrap();
+    f.domain.authorize_shared_room_send(&f.owner.p,&f.policy,&w.id,&m.gateway).await.unwrap();
     let puppet=read_matrix(&f,&r).await.puppet_mxid;
     sql_query("INSERT INTO hagency_agent_v1.executor_matrix_devices(scope_id,puppet_mxid,device_id,executor_device_id,executor_generation,kind) VALUES($1,$2,'HAGE2EEAPPROVAL',$3,$4,'shared')").bind::<Text,_>(&d.command.assignment_id).bind::<Text,_>(&puppet).bind::<Text,_>(f.owner.p.device_id.as_deref().unwrap()).bind::<BigInt,_>(f.owner.p.device_generation.unwrap()).execute(&mut db).await.unwrap();
     let register=json!({"authority":a.authority,"workId":w.id,"workDigest":allocation_digest(&w).unwrap(),"id":format!("sap_encrypted_{}",w.id),"remainingMs":100000,"request":{"encrypted":{"algorithm":"m.olm.v1.curve25519-aes-sha2","requestDigest":"a".repeat(64),"deviceId":"HAGE2EEAPPROVAL"},"sessionAllowed":true,"managerCanDecide":false}});

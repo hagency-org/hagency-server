@@ -236,7 +236,7 @@ impl App {
             return Ok(json!({"startupRoundtripConfirmed":self.startup_ready()}));
         }
         if path == "/hagency/api/v1/discovery" && method == salvo::http::Method::GET {
-            let mut capabilities = vec!["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","agent-e2ee-device-v1","shared-agent-e2ee-v1","processing-reaction-v1","execution-configuration-v1","shared-durable-demand-v1","shared-thread-context-v1","shared-thread-context-v2","managed-agent-budget-delta-v1","shared-budget-execution-v1","shared-claude-execution-v1","agent-settlement-v1"];
+            let mut capabilities = vec!["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","agent-e2ee-device-v1","shared-agent-e2ee-v1","processing-reaction-v1","execution-configuration-v1","shared-durable-demand-v1","shared-thread-context-v1","shared-thread-context-v2","shared-native-context-v3","managed-agent-budget-delta-v1","shared-budget-execution-v1","shared-claude-execution-v1","agent-settlement-v1"];
             // Only when the retry route itself is enabled (same predicate).
             if self.management.as_ref().is_some_and(|p| p.shared_demand_retries()) {
                 capabilities.insert(13, "shared-demand-retry-v1");

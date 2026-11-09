@@ -375,22 +375,45 @@ async fn latest_work_receipt(
     let r=sql_query("SELECT payload FROM hagency_agent_v1.management_shared_work_receipts WHERE work_id=$1 AND ($2::text IS NULL OR id=$2) ORDER BY ledger_revision DESC LIMIT 1").bind::<Text,_>(id).bind::<Nullable<Text>,_>(observation).get_result::<Json>(db).await.optional()?;
     r.map(|v| decode(&v.payload)).transpose()
 }
+async fn native_send_scope(db: &mut AsyncPgConnection, p: &Principal, policy: &ManagementPolicy,
+    id: &str, server: &str) -> Result<(Membership, SharedWorkItem)> {
+    DomainStore::authorize(db, p, 0).await?;
+    let w = work_row(db, id).await?;
+    let r = runtime(db, &w.runtime_id).await?;
+    let original = original(db, &r).await?;
+    owner(&original, p)?;
+    let command = command(&r, server)?;
+    let value = item(&w, &r)?;
+    let now = clock(db).await?;
+    if (!value.encrypted && !context::native_input(db, &value).await?)
+        || w.started_at_ms.is_none() || !runtime_issuing(db, policy, &r).await?
+        || r.state != "qualified" || r.activity_until_ms <= now
+        || p.device_generation != Some(original.executor_generation)
+        || !current(db, &r, &original, &command, now).await? {
+        return Err(Error::Unauthorized("shared_room_send_authority_changed"));
+    }
+    Ok((work_membership(db, &r, &value).await?, value))
+}
 impl DomainStore {
-    /// Exact executor history/upload only, including after generation rotation or
-    /// cancellation. It exposes neither a new prompt nor model issuance authority.
-    pub(crate) async fn authorize_shared_encrypted_reply(&self,p:&Principal,policy:&ManagementPolicy,id:&str,gateway:&Gateway) -> Result<()> {
+    /// Current device and room authority for native file/card publication.
+    /// The separately pinned V3 input permits plaintext; encryption never falls back.
+    pub(crate) async fn authorize_shared_room_send(&self, p: &Principal, policy: &ManagementPolicy, id: &str, gateway: &Gateway) -> Result<()> {
         key(id)?;
-        let (m,v)={
-            let mut db=self.db.lock().await?;
-            Self::authorize(&mut db,p,0).await?;
-            let w=work_row(&mut db,id).await?;let r=runtime(&mut db,&w.runtime_id).await?;let original=original(&mut db,&r).await?;
-            owner(&original,p)?;let c=command(&r,&self.server)?;let v=item(&w,&r)?;let now=clock(&mut db).await?;
-            if !v.encrypted || w.started_at_ms.is_none() || !runtime_issuing(&mut db,policy,&r).await? || r.state!="qualified" || r.activity_until_ms<=now || p.device_generation!=Some(original.executor_generation) || !current(&mut db,&r,&original,&c,now).await? {return Err(Error::Unauthorized("encrypted_send_authority_changed"));}
-            (work_membership(&mut db,&r,&v).await?,v)
+        let (membership, work) = {
+            let mut db = self.db.lock().await?;
+            native_send_scope(&mut db, p, policy, id, &self.server).await?
         };
-        let f=gateway.shared_delivery(&m.room_id,&m.space_id,&m.manager_mxid,&v.requester_mxid,&m.puppet_mxid).await?;
-        facts(&m,&f)?;
-        if !f.encrypted {return Err(Error::Unauthorized("encrypted_room_required"));}
+        let observed = gateway.shared_delivery(&membership.room_id, &membership.space_id,
+            &membership.manager_mxid, &work.requester_mxid, &membership.puppet_mxid).await?;
+        let mut db = self.db.lock().await?;
+        // Recheck after the Matrix wait: revocation or a changed run fence must
+        // not authorize a late upload using the earlier snapshot.
+        let (current, latest) = native_send_scope(&mut db, p, policy, id, &self.server).await?;
+        facts(&current, &observed)?;
+        if allocation_digest(&work)? != allocation_digest(&latest)?
+            || observed.requester_mxid != latest.requester_mxid || observed.encrypted != latest.encrypted {
+            return Err(Error::Unauthorized("shared_room_send_authority_changed"));
+        }
         Ok(())
     }
     pub async fn recover_shared_work_result(

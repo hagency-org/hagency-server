@@ -113,6 +113,10 @@ async fn saved_context(
         input_digest: row.input_digest,
     }))
 }
+pub(super) async fn native_input(db: &mut AsyncPgConnection, w: &SharedWorkItem) -> Result<bool> {
+    Ok(mode(db, &w.id).await? == "thread_context_v1"
+        && saved_context(db, w).await?.is_some_and(|c| c.context.version == 3))
+}
 pub(super) async fn saved_input_digest(
     db: &mut AsyncPgConnection,
     w: &SharedWorkItem,
@@ -349,8 +353,10 @@ async fn freeze(
         None => format!("SELECT w.* {PRIOR_PAIRS} ORDER BY w.created_at_ms DESC,w.id DESC LIMIT {}", MAX_HISTORY_PAIRS + 1),
         Some(_) => format!("SELECT w.* {PRIOR_PAIRS} AND NOT {PAIR_REDACTED} ORDER BY w.created_at_ms DESC,w.id DESC LIMIT {MAX_HISTORY_PAIRS_V2}"),
     };
-    let rows=sql_query(page)
-        .bind::<Text,_>(&w.assignment_id).bind::<Text,_>(&w.room_id).bind::<Text,_>(&w.thread_root).bind::<BigInt,_>(w.created_at_ms).bind::<Text,_>(&w.id).load::<WorkRow>(db).await?;
+    let native = budget.is_some_and(|b| b.version == 3);
+    let rows = if native { Vec::new() } else { sql_query(page)
+        .bind::<Text,_>(&w.assignment_id).bind::<Text,_>(&w.room_id).bind::<Text,_>(&w.thread_root).bind::<BigInt,_>(w.created_at_ms).bind::<Text,_>(&w.id).load::<WorkRow>(db).await?
+    };
     let mut c = SharedThreadContext {
         version: 1,
         input_profile: INPUT_PROFILE_V1.into(),
@@ -372,6 +378,13 @@ async fn freeze(
     };
     let (total, max_pairs, max_bytes) = match budget {
         None => (rows.len() as i64, MAX_HISTORY_PAIRS, MAX_HISTORY_BYTES),
+        Some(b) if b.version == 3 => {
+            b.validate()?;
+            c.version = 3;
+            c.input_profile = INPUT_PROFILE_V3.into();
+            c.coverage = COVERAGE_NATIVE_HISTORY.into();
+            (0, 0, 2)
+        }
         Some(b) => {
             b.validate()?;
             let (window, source) = budget_window(b.model_context_window);
@@ -392,7 +405,7 @@ async fn freeze(
     };
     fn settle(c: &mut SharedThreadContext, total: i64) {
         let included = c.history.len() as i64;
-        c.omitted_earlier = total > included;
+        c.omitted_earlier = c.version == 3 || total > included;
         if let Some(b) = c.budget.as_mut() {
             b.included_pairs = included;
         }

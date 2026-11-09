@@ -22,7 +22,7 @@ pub(super) async fn call(
         (&Method::POST,["shared-execution","crypto","send"]) => {
             #[derive(serde::Deserialize)] #[serde(rename_all="camelCase",deny_unknown_fields)] struct Send {work_id:String}
             let input:Send=body(req).await?;
-            domain.authorize_shared_encrypted_reply(p,policy,&input.work_id,gateway).await?;
+            domain.authorize_shared_room_send(p,policy,&input.work_id,gateway).await?;
             json!({"authorized":true})
         }
         (&Method::POST,["shared-execution","crypto","confirm"]) => domain.shared_crypto_confirm(p,body(req).await?,gateway).await?,

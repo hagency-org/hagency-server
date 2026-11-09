@@ -513,6 +513,7 @@ impl DomainStore {
             db.batch_execute(include_str!("management_pool_limits_validation.sql")).await?;
             db.batch_execute(include_str!("management_agent_periods_recovery.sql")).await?;
             db.batch_execute(include_str!("management_shared_e2ee_schema.sql")).await?;
+            db.batch_execute(include_str!("management_shared_native_context_schema.sql")).await?;
             db.batch_execute(include_str!("shared_rooms_schema.sql")).await?;
             db.batch_execute(include_str!("management_shared_demand_retry_schema.sql")).await?;
             db.batch_execute("CREATE INDEX IF NOT EXISTS management_command_recovery ON hagency_agent_v1.management_commands(actor_user_id,device_id,command_id)").await?;
