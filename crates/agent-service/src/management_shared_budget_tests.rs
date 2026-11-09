@@ -821,7 +821,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
     for _ in 0..2 {
         f.domain = DomainStore::open(&f.url, "example.test", "_hagency_test_").await.unwrap();
     }
-    assert_eq!(sql_query("SELECT version::bigint AS version FROM hagency_agent_v1.management_deployment").get_result::<SchemaVersion>(&mut db).await.unwrap().version, 33);
+    assert_eq!(sql_query("SELECT version::bigint AS version FROM hagency_agent_v1.management_deployment").get_result::<SchemaVersion>(&mut db).await.unwrap().version, 34);
     let pin = apply_delta(&f, &r, &admin, 25, 230).await;
     let offered = f
         .domain

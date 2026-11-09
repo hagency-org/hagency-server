@@ -770,7 +770,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
     // Opening the store migrates the populated database to 29 again.
     let reopened = crate::domain::DomainStore::open(&f.url, "example.test", "_hagency_test_").await.unwrap();
     let upgraded = schema_state(&mut db).await;
-    assert_eq!((upgraded.version, upgraded.columns), (33, true));
+    assert_eq!((upgraded.version, upgraded.columns), (34, true));
     let rows = chain(&f, &a.contribution.id).await;
     assert_eq!(rows.len(), 1);
     assert_eq!((rows[0].chain_root_id.as_str(), rows[0].predecessor_grant_id.as_deref(), rows[0].period_start_ms), (root.id.as_str(), None, root.receipt.period_start_ms));
@@ -800,7 +800,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
     assert_eq!(states.states, expected.join(","));
     assert_eq!(intent_state(&f, &carried.id).await, "fenced");
     crate::domain::DomainStore::open(&f.url, "example.test", "_hagency_test_").await.unwrap();
-    assert_eq!(schema_state(&mut db).await.version, 33);
+    assert_eq!(schema_state(&mut db).await.version, 34);
 }
 
 #[tokio::test]

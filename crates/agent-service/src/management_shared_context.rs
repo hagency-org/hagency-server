@@ -495,6 +495,7 @@ impl DomainStore {
                 if !runtime_issuing(db, policy, &r).await? {
                     return Err(Error::Unavailable("shared_execution_issuance_unavailable"));
                 }
+                worker_protocol::require(db,p,now).await?;
                 require_activity(db, p, &r, &input.authority, &self.server, now).await?;
                 let row = work_row(db, id).await?;
                 let w = item(&row, &r)?;
@@ -566,7 +567,7 @@ impl DomainStore {
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;
             if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_execution_issuance_unavailable"));}
-            let original=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
+            worker_protocol::require(db,p,now).await?;let original=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
             let row=work_row(db,id).await?;let w=item(&row,&r)?;facts(&work_membership(db,&r,&w).await?,&observed)?;
             if row.digest!=input.work_digest || mode(db,id).await?!="thread_context_v1" {return Err(Error::Conflict("shared_context_binding_changed"));}
             refusals::ensure_unfenced(db,id).await?;let saved=saved_context(db,&w).await?.ok_or(Error::Conflict("shared_context_required"))?;

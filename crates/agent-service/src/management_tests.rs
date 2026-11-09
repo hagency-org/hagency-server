@@ -96,6 +96,9 @@ async fn fixture_at(url: String) -> Fixture {
         .await
         .unwrap();
     let owner = actor(&auth, "contributor").await;
+    // Fixtures model the current native worker. Obsolete/missing declaration
+    // tests explicitly omit/revoke this authenticated observation.
+    domain.observe_shared_daemon_protocol(&owner.p,true).await.unwrap();
     let admin = actor(&auth, "administrator").await;
     let coordinator = owner_coordinator_device(&auth, &owner).await;
     let outsider = actor(&auth, "manager").await;
@@ -701,6 +704,7 @@ async fn post(s: &Service, path: &str, token: &str, body: Value, status: StatusC
             "https://example.test/hagency/api/v1/management/{path}"
         ))
         .add_header("host", "example.test", true)
+        .add_header(crate::domain::shared_protocol::HEADER, crate::domain::shared_protocol::CURRENT, true)
         .bearer_auth(token)
         .json(&body)
         .send(s),

@@ -144,11 +144,21 @@ impl DomainStore {
             sql_query("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.shared_room_memberships m ON m.assignment_id=r.assignment_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id JOIN hagency_agent_v1.management_agent_requests q ON q.id=a.request_id JOIN hagency_agent_v1.users u ON u.id=a.manager_user_id WHERE r.state='qualified' AND NOT r.permanent_fence AND r.activity_until_ms>(extract(epoch from clock_timestamp())*1000)::bigint AND m.state='matrix_verified' AND m.room_id=$1 AND (m.puppet_mxid=ANY($3) OR (q.pool_contribution_id IS NOT NULL AND m.space_id='' AND u.mxid=$2)) ORDER BY r.id LIMIT $4").bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.sender_mxid).bind::<Array<Text>,_>(mentions).bind::<BigInt,_>(page_limit.clamp(1,32)).load::<Id>(&mut *db).await?
         };
         for id in ids {
-            let scope = {
+            let (scope, deferred) = {
                 let mut db = self.db.lock().await?;
                 let r = runtime(&mut db, &id.id).await?;
-                membership_for(&mut db, &r, &event.room_id).await?
+                let now = clock(&mut db).await?;
+                let deferred = worker_protocol::assignment_reason(&mut db, &r.assignment_id, now).await?
+                    .map(|_| r.assignment_id.clone());
+                (membership_for(&mut db, &r, &event.room_id).await?, deferred)
             };
+            if let Some(assignment) = deferred {
+                // Retain the original event without issuing native work. A
+                // current worker can consume it under the normal Run revision
+                // and room checks; no compatibility turn is created.
+                self.retain_shared_event_for(event, received, gateway, Some(&assignment)).await?;
+                continue;
+            }
             let observed = gateway
                 .shared_delivery(
                     &scope.room_id,
@@ -205,6 +215,7 @@ impl DomainStore {
                         return Err(Error::Unavailable("shared_successor_issuance_unavailable"));
                     }
                     let now = clock(db).await?;
+                    worker_protocol::require(db,p,now).await?;
                     require_activity(db, p, &r, a, &self.server, now).await?;
                     if let Some(id)=work_id {let row=work_row(db,id).await?;let w=item(&row,&r)?;Ok((work_membership(db,&r,&w).await?,w.requester_mxid))}
                     else {let m=membership(db,&r).await?;let requester=m.manager_mxid.clone();Ok((m,requester))}
@@ -254,7 +265,7 @@ impl DomainStore {
             .shared_work_facts(p, policy, &a, gateway, protocol, None)
             .await?;
         let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&a.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}require_activity(db,p,&r,&a,&self.server,now).await?;facts(&membership(db,&r).await?,&observed)?;
+        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&a.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}worker_protocol::require(db,p,now).await?;require_activity(db,p,&r,&a,&self.server,now).await?;facts(&membership(db,&r).await?,&observed)?;
             if matches!(protocol,WorkProtocol::Assignment) { demands::promote(db,p,policy,&r,&self.server,now).await?; } else {demands::budget::promote(db,p,policy,&r,&self.server,now).await?;}
             let scope=command(&r,&self.server)?;
             if let Some(calendar)=scope.reserve_command.pool_grant.as_ref().and_then(|g|g.calendar.as_ref()) {
@@ -297,7 +308,7 @@ impl DomainStore {
             .shared_work_facts(p, policy, &input.authority, gateway, protocol, Some(&input.work_id))
             .await?;
         let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}require_activity(db,p,&r,&input.authority,&self.server,now).await?;let w=work_row(db,&input.work_id).await?;let v=item(&w,&r)?;facts(&work_membership(db,&r,&v).await?,&observed)?;
+        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}worker_protocol::require(db,p,now).await?;require_activity(db,p,&r,&input.authority,&self.server,now).await?;let w=work_row(db,&input.work_id).await?;let v=item(&w,&r)?;facts(&work_membership(db,&r,&v).await?,&observed)?;
             if w.digest!=input.work_digest {return Err(Error::Conflict("shared_work_changed"));}
             let scope=command(&r,&self.server)?;
             if let Some(calendar)=scope.reserve_command.pool_grant.as_ref().and_then(|g|g.calendar.as_ref()) {
@@ -340,7 +351,7 @@ impl DomainStore {
             .shared_work_facts(p, policy, &input.authority, gateway, protocol, Some(&input.work_id))
             .await?;
         let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}require_activity(db,p,&r,&input.authority,&self.server,now).await?;let w=work_row(db,&input.work_id).await?;let v=item(&w,&r)?;facts(&work_membership(db,&r,&v).await?,&observed)?;context::require_plain(db,&w.id).await?;refusals::ensure_unfenced(db,&w.id).await?;
+        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}worker_protocol::require(db,p,now).await?;require_activity(db,p,&r,&input.authority,&self.server,now).await?;let w=work_row(db,&input.work_id).await?;let v=item(&w,&r)?;facts(&work_membership(db,&r,&v).await?,&observed)?;context::require_plain(db,&w.id).await?;refusals::ensure_unfenced(db,&w.id).await?;
             if w.digest!=input.work_digest {return Err(Error::Conflict("shared_work_changed"));}
             let scope=command(&r,&self.server)?;
             if let Some(calendar)=scope.reserve_command.pool_grant.as_ref().and_then(|g|g.calendar.as_ref()) {

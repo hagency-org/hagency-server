@@ -327,7 +327,7 @@ impl DomainStore {
             key(after)?;
         }
         let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,0).await?;let w=assignment(db,id).await?;rights(db,p,&w).await?;let now=clock(db).await?;expire(db,id,now).await?;let mut rows=sql_query("SELECT * FROM hagency_agent_v1.management_shared_intake WHERE assignment_id=$1 AND ($2::text IS NULL OR id>$2) ORDER BY id LIMIT 17").bind::<Text,_>(id).bind::<Nullable<Text>,_>(q.after.as_deref()).load::<Intake>(db).await?;let more=rows.len()>16;rows.truncate(16);let next_after=more.then(||rows.last().unwrap().id.clone());Ok(SharedIntakePage{items:rows.into_iter().map(Intake::view).collect(),next_after})}).await
+        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,0).await?;let w=assignment(db,id).await?;rights(db,p,&w).await?;let now=clock(db).await?;expire(db,id,now).await?;let mut rows=sql_query("SELECT * FROM hagency_agent_v1.management_shared_intake WHERE assignment_id=$1 AND ($2::text IS NULL OR id>$2) ORDER BY id LIMIT 17").bind::<Text,_>(id).bind::<Nullable<Text>,_>(q.after.as_deref()).load::<Intake>(db).await?;let more=rows.len()>16;rows.truncate(16);let next_after=more.then(||rows.last().unwrap().id.clone());let reason=worker_protocol::assignment_reason(db,id,now).await?;Ok(SharedIntakePage{items:rows.into_iter().map(|row| {let mut item=row.view();if item.state=="pending" && reason.is_some(){item.state="blocked".into();item.reason=reason.clone();}item}).collect(),next_after})}).await
     }
     pub(crate) async fn retain_shared_event(
         &self,

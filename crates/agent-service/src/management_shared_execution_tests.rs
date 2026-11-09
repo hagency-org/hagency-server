@@ -16,6 +16,8 @@ mod ticket_tests;
 mod intake_tests;
 #[path="management_shared_demand_tests.rs"]
 mod demand_tests;
+#[path = "management_shared_protocol_tests.rs"]
+mod protocol_tests;
 
 async fn prepared_pool(durable: bool) -> (Fixture, crate::management_pool_types::PoolAgentRequest, PendingManagedAssignment, MatrixFixture) {
     prepared_pool_calendar(durable,false).await
@@ -998,7 +1000,7 @@ async fn shared_runtime_v11_migration_is_atomic_preserves_original_v1() {
             .is_none()
     );
     assert!(
-        sql_query("SELECT version=33 AS matched FROM hagency_agent_v1.management_deployment")
+        sql_query("SELECT version=34 AS matched FROM hagency_agent_v1.management_deployment")
             .get_result::<Check>(&mut db)
             .await
             .unwrap()

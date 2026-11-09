@@ -26,6 +26,8 @@ mod execution_devices;
 mod owner_direct;
 #[path = "shared_rooms.rs"]
 mod shared_rooms;
+#[path = "management_shared_protocol.rs"]
+pub(crate) mod shared_protocol;
 pub(crate) use execution_devices::require_assigned;
 pub use execution_devices::{OwnerDevice, SetExecutionDevice};
 
@@ -509,6 +511,8 @@ impl DomainStore {
             let management=sql_query("SELECT version=32 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
             if management.matched {db.batch_execute(include_str!("management_shared_claude_schema.sql")).await?;}
             let management=sql_query("SELECT version=33 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_shared_protocol_schema.sql")).await?;}
+            let management=sql_query("SELECT version=34 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
             if !management.matched { return Err(Error::Conflict("management_schema_incompatible")); }
             db.batch_execute(include_str!("management_pool_limits_validation.sql")).await?;
             db.batch_execute(include_str!("management_agent_periods_recovery.sql")).await?;

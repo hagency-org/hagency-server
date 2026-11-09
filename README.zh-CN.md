@@ -75,7 +75,10 @@ docker compose up -d server
 打开 `https://palpo.instance/login`，通过 Pasion 使用 `admin` 登录。
 后续启动只需 `just docker-up`。
 
-schema 33 的原生 CLI 切换要求配套的当前 Desktop 和 owner daemon。
+schema 34 的原生 CLI 切换要求配套的当前 Desktop 和 owner daemon。
+工作进程请求声明 `native-context-v3;claude-v4`，声明在五分钟后失效。
+旧版本或离线工作进程对应的消息会保留待处理，并显示更新或重新上线的原因。
+恢复连接后继续处理原消息；声明过期不会阻断已启动任务的结算。
 这次部署只支持向前升级：`*_down.sql` 是测试夹具，不是生产回滚方案。
 只降低版本号不会恢复旧的上下文校验触发器，旧 schema 也不能表示 Claude 运行。
 若要重新运行旧二进制，必须恢复切换前的 Hagency 数据库，或使用全新的 Hagency

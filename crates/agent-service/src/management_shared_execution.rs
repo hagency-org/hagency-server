@@ -2,6 +2,7 @@
 #[path = "management_shared_tickets.rs"]
 mod tickets;
 use super::*;
+use crate::domain::shared_protocol as worker_protocol;
 #[path = "management_shared_e2ee.rs"]
 pub(super) mod e2ee;
 #[path = "management_shared_attempts.rs"]

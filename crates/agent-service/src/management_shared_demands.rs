@@ -239,6 +239,7 @@ async fn authorize(
 ) -> Result<Work> {
     let w = intake::assignment(db, &q.assignment_id).await?;
     owner(&w, p)?;
+    if fresh { worker_protocol::require(db,p,now).await?; }
     if fresh && !sql_query("SELECT (room_binding_id IS NULL OR EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m WHERE m.binding_id=q.room_binding_id AND m.binding_generation=q.room_binding_generation)) AS matched FROM hagency_agent_v1.management_shared_intake q WHERE id=$1").bind::<Text,_>(&q.id).get_result::<Flag>(db).await?.matched {
         return Err(Error::Conflict("shared_room_binding_changed"));
     }

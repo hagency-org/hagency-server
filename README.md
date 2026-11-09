@@ -78,8 +78,12 @@ Proxy `https://palpo.instance` to `127.0.0.1:8088`, preserving paths and the pub
 Host header. Open `https://palpo.instance/login` and sign in through Pasion as `admin`.
 For later starts, use `just docker-up`.
 
-The schema 33 native CLI cutover requires matching current Desktop and owner-daemon
-builds. Treat it as a forward-only deployment: the SQL files named `*_down.sql`
+The schema 34 native CLI cutover requires matching current Desktop and owner-daemon
+builds. Actual worker requests declare `native-context-v3;claude-v4`; the declaration
+expires after five minutes. An outdated or offline worker leaves incoming messages
+pending with a visible update/reconnect reason. Reconnecting resumes the original
+message, and declaration expiry never blocks settlement of work already started.
+Treat it as a forward-only deployment: the SQL files named `*_down.sql`
 are test fixtures, not a supported production rollback. In particular, lowering
 the version does not restore the previous context-validation trigger, and a
 Claude runtime cannot be represented by the previous schema. Returning to an
