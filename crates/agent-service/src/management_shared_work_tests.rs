@@ -60,7 +60,7 @@ pub(super) async fn started(
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(a, &w), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(a, &w), &m.gateway)
             .await
             .unwrap()
             .newly_started
@@ -285,7 +285,7 @@ async fn shared_work_exact_intake_ack_start_result_history_and_matrix_reply() {
     let w = queued(&f, &r, &m, &a, "first_work").await;
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
             .await
             .is_err()
     );
@@ -295,13 +295,13 @@ async fn shared_work_exact_intake_ack_start_result_history_and_matrix_reply() {
         .unwrap();
     let one = f
         .domain
-        .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await
         .unwrap();
     assert!(one.newly_started);
     let again = f
         .domain
-        .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await
         .unwrap();
     assert!(!again.newly_started);
@@ -414,7 +414,7 @@ async fn shared_work_unknown_matrix_reply_retries_exact_transaction_without_seco
     }
     assert!(
         !f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
             .await
             .unwrap()
             .newly_started
@@ -475,7 +475,7 @@ async fn shared_work_late_result_after_revoke_retains_usage_without_reply_or_ree
     assert!(page.items[0].usage.as_ref().unwrap().complete);
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
             .await
             .is_err()
     );
@@ -588,7 +588,7 @@ async fn shared_work_incomplete_usage_blocks_next_start_and_changed_receipt_roll
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(&a, &next), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &next), &m.gateway)
             .await
             .is_err()
     );
@@ -612,7 +612,7 @@ async fn shared_work_incomplete_usage_blocks_next_start_and_changed_receipt_roll
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(&a, &next), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &next), &m.gateway)
             .await
             .unwrap()
             .newly_started
@@ -694,24 +694,19 @@ async fn shared_work_actual_appservice_and_closed_executor_http_are_idempotent()
         StatusCode::OK,
     )
     .await;
-    let first = post(
-        &api,
-        "shared-execution/work/start",
-        &f.owner.token,
-        serde_json::to_value(input(&a, &w)).unwrap(),
-        StatusCode::OK,
-    )
-    .await;
-    assert_eq!(first["newlyStarted"], true);
-    let replay = post(
-        &api,
-        "shared-execution/work/start",
-        &f.owner.token,
-        serde_json::to_value(input(&a, &w)).unwrap(),
-        StatusCode::OK,
-    )
-    .await;
-    assert_eq!(replay["newlyStarted"], false);
+    post(&api, "shared-execution/work/start", &f.owner.token,
+        serde_json::to_value(input(&a, &w)).unwrap(), StatusCode::CONFLICT).await;
+    let context = post(&api, &format!("shared-execution/work/{}/context",w.id), &f.owner.token,
+        json!({"authority":a.authority,"workDigest":allocation_digest(&w).unwrap(),"version":3}), StatusCode::OK).await;
+    assert_eq!(context["context"]["version"],3);
+    assert_eq!(context["context"]["history"],json!([]));
+    let start=json!({"authority":a.authority,"workDigest":allocation_digest(&w).unwrap(),
+        "contextDigest":context["contextDigest"],"inputDigest":context["inputDigest"]});
+    let route=format!("shared-execution/work/{}/context/start",w.id);
+    let first=post(&api,&route,&f.owner.token,start.clone(),StatusCode::OK).await;
+    assert_eq!(first["start"]["newlyStarted"],true);
+    let replay=post(&api,&route,&f.owner.token,start,StatusCode::OK).await;
+    assert_eq!(replay["start"]["newlyStarted"],false);
     let ticket_reply=post(&api,&format!("shared-execution/work/{}/recover",w.id),&f.owner.token,json!({"runtimeCommandDigest":d.command_digest,"workDigest":allocation_digest(&w).unwrap(),"observationId":null}),StatusCode::OK).await;
     let t: SharedWorkResultTicket = serde_json::from_value(ticket_reply["ticket"].clone()).unwrap();
     assert_eq!(t.state, "started");

@@ -1001,8 +1001,6 @@ async fn postgres_public_discovery_identifies_hagency_without_granting_authority
             "processing-reaction-v1",
             "execution-configuration-v1",
             "shared-durable-demand-v1",
-            "shared-thread-context-v1",
-            "shared-thread-context-v2",
             "shared-native-context-v3",
             "managed-agent-budget-delta-v1",
             "shared-budget-execution-v1",

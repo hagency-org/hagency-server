@@ -275,7 +275,7 @@ async fn stopped_missing_usage_v3_remains_discoverable_without_execution_authori
     let w = queued(&f, &request, &m, &a, "lost_usage_v3").await;
     f.domain.acknowledge_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await.unwrap();
-    f.domain.start_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+    f.domain.start_current_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await.unwrap();
     f.domain.record_shared_budget_attempt_process(
         &f.owner.p, &f.policy, &d.command.command_id, evidence(&d, "stopped", 260),
@@ -343,14 +343,14 @@ async fn budget_execution_v3_original_assignment_applied_head_replay_and_old_rou
     );
     assert!(
         f.domain
-            .start_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .start_current_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
             .await
             .unwrap()
             .newly_started
     );
     assert!(
         !f.domain
-            .start_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .start_current_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
             .await
             .unwrap()
             .newly_started
@@ -366,10 +366,14 @@ async fn budget_execution_v3_head_change_produces_permanent_exact_no_start_fence
         .acknowledge_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await
         .unwrap();
+    let context = f.domain.freeze_shared_budget_context(&f.owner.p, &f.policy, &w.id,
+        crate::management_shared_context_types::SharedContextInput {
+            authority: a.authority.clone(), work_digest: allocation_digest(&w).unwrap(), version: 3,
+        }, &m.gateway).await.unwrap();
     let proof = SharedBudgetWorkRefusalInput {
         runtime_command_digest: d.command_digest.clone(),
         work_digest: allocation_digest(&w).unwrap(),
-        input_digest: w.body_digest.clone(),
+        input_digest: context.input_digest,
     };
     assert!(
         f.domain
@@ -380,7 +384,7 @@ async fn budget_execution_v3_head_change_produces_permanent_exact_no_start_fence
     let newer = apply_delta(&f, &r, &admin, 10, 250).await;
     assert!(
         f.domain
-            .start_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .start_current_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
             .await
             .is_err()
     );
@@ -445,7 +449,7 @@ async fn budget_execution_v3_later_head_preserves_issued_usage_reply_and_stop() 
         .await
         .unwrap();
     f.domain
-        .start_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .start_current_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await
         .unwrap();
     apply_delta(&f, &r, &admin, 10, 250).await;
@@ -603,7 +607,7 @@ async fn budget_execution_v3_context_exact_input_old_routes_and_http_recovery() 
             SharedContextInput {
                 authority: a.authority.clone(),
                 work_digest: allocation_digest(&w).unwrap(),
-            budget: None,},
+            version: 3,},
             &m.gateway,
         )
         .await
@@ -1293,7 +1297,7 @@ async fn budget_execution_v3_long_reply_http_recovery_and_matrix_delivery(){
         let(d,a)=started(&f,&m,i).await;
         let w=queued(&f,&r,&m,&a,&format!("long_answer_{index}")).await;
         f.domain.acknowledge_shared_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
-        f.domain.start_shared_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
+        f.domain.start_current_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
         let mut upload=usage(&f,&d,&w,260,37,"completed").await;
         upload.receipt.body=Some(body.clone());upload.receipt.body_digest=Some(crate::hash(&body));
         let svc=service(&f,true);
@@ -1338,7 +1342,7 @@ async fn encrypted_shared_budget_work_keeps_plaintext_out_of_results_and_sends()
     let mode=f.domain.shared_budget_work_input_mode(&f.owner.p,&w.id,crate::management_shared_context_types::SharedWorkEvidenceInput{runtime_command_digest:d.command_digest.clone(),work_digest:allocation_digest(&w).unwrap()}).await.unwrap();
     assert_eq!(mode.mode,"plain_text_v1");
     f.domain.acknowledge_shared_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
-    f.domain.start_shared_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
+    f.domain.start_current_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
     f.domain.authorize_shared_room_send(&f.owner.p,&f.policy,&w.id,&m.gateway).await.unwrap();
     let puppet=read_matrix(&f,&r).await.puppet_mxid;
     sql_query("INSERT INTO hagency_agent_v1.executor_matrix_devices(scope_id,puppet_mxid,device_id,executor_device_id,executor_generation,kind) VALUES($1,$2,'HAGE2EEAPPROVAL',$3,$4,'shared')").bind::<Text,_>(&d.command.assignment_id).bind::<Text,_>(&puppet).bind::<Text,_>(f.owner.p.device_id.as_deref().unwrap()).bind::<BigInt,_>(f.owner.p.device_generation.unwrap()).execute(&mut db).await.unwrap();

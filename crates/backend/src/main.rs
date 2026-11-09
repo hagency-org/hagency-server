@@ -16,9 +16,6 @@ struct Args {
     check_config: bool,
     #[arg(long)]
     list_config_files: bool,
-    /// Rename a stopped existing deployment's /_pasion/ identity to /auth/ and exit.
-    #[arg(long, conflicts_with_all = ["bootstrap_admin", "check_config", "list_config_files"])]
-    migrate_auth_path: bool,
     #[arg(long, requires = "bootstrap_password_file")]
     bootstrap_admin: Option<String>,
     #[arg(long, requires = "bootstrap_admin")]
@@ -50,24 +47,6 @@ async fn run() -> anyhow::Result<()> {
     );
     if args.check_config {
         println!("Configuration is valid.");
-        return Ok(());
-    }
-    if args.migrate_auth_path {
-        let issuer = conf.public_origin.join(hagency_server::pasion::MOUNT)?;
-        let changed = hagency_agent_service::store::Store::migrate_auth_path(
-            &conf.database_url,
-            conf.matrix.server_name.as_str(),
-            issuer.as_str(),
-        )
-        .await?;
-        println!(
-            "Auth path migration {}.",
-            if changed {
-                "completed; sign in again"
-            } else {
-                "already completed"
-            }
-        );
         return Ok(());
     }
     let filter =

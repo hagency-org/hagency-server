@@ -220,7 +220,7 @@ async fn pool_agent_additional_project_room_is_owner_bound_and_keeps_original_ch
         .await
         .unwrap();
     f.domain
-        .start_shared_work(&f.owner.p, &f.policy, input.clone(), &matrix.gateway)
+        .start_current_work(&f.owner.p, &f.policy, input.clone(), &matrix.gateway)
         .await
         .unwrap();
     matrix.states.lock().unwrap().get_mut(room).unwrap().push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
@@ -242,7 +242,7 @@ async fn pool_agent_additional_project_room_is_owner_bound_and_keeps_original_ch
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input, &matrix.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input, &matrix.gateway)
             .await
             .is_err()
     );

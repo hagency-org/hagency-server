@@ -28,7 +28,7 @@ async fn prepared_pool_limits(durable: bool, recurring: bool, cap: Option<i64>) 
     use crate::management_tests::allocations::pool_agents;
     let mut f=pool_agents::isolated_fixture().await;
     f.policy=f.policy.with_agent_admission(true).with_agent_executor(true)
-        .with_agent_matrix_provisioning(true).with_shared_execution(true).with_shared_successors(true)
+        .with_agent_matrix_provisioning(true).with_shared_execution(true).with_shared_thread_context(true).with_shared_successors(true)
         .with_shared_durable_intake(durable).with_shared_demands(durable);
     let pool=if recurring {
         f.policy=f.policy.with_pool_grant_succession(true);f.domain.set_pool_grant_succession(true);
@@ -100,7 +100,7 @@ async fn carried_pool_agent_activity_lease_follows_the_capacity_chain() {
     use crate::management_pool_types::DecidePoolAgent;
     use crate::management_tests::allocations::pool_agents::{self, succession};
     let mut f=succession::succession_fixture().await;
-    f.policy=f.policy.with_agent_matrix_provisioning(true).with_shared_execution(true).with_shared_successors(true);
+    f.policy=f.policy.with_agent_matrix_provisioning(true).with_shared_execution(true).with_shared_thread_context(true).with_shared_successors(true);
     let pool=admitted(&f).await;
     // The root's month ends in 20 s; its renewal follows without a gap.
     let (root,renewal)=succession::seed_short_chain(&f,&pool,&f.outsider.p,20_000).await;
@@ -148,7 +148,7 @@ async fn pool_agent_reaches_private_room_and_runtime_without_any_project() {
     let work=f.domain.poll_shared_work(&f.owner.p,&f.policy,activity.authority.clone(),&matrix.gateway).await.unwrap().unwrap();
     let input=SharedWorkInput {authority:activity.authority.clone(),work_id:work.id.clone(),work_digest:allocation_digest(&work).unwrap()};
     f.domain.acknowledge_shared_work(&f.owner.p,&f.policy,input.clone(),&matrix.gateway).await.unwrap();
-    assert!(f.domain.start_shared_work(&f.owner.p,&f.policy,input,&matrix.gateway).await.unwrap().newly_started);
+    assert!(f.domain.start_current_work(&f.owner.p,&f.policy,input,&matrix.gateway).await.unwrap().newly_started);
     let ticket=work::ticket(&f,&runtime,&work).await;
     f.domain.record_shared_work_result(&f.owner.p,&f.policy,&work.id,work::outcome(&runtime,&work,&ticket,102,"completed")).await.unwrap();
     assert!(f.domain.shared_execution_status(&f.outsider.p,&f.policy,&request.id).await.unwrap().unwrap().work_available);
@@ -260,7 +260,7 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
     let work = f.domain.poll_shared_work(&f.owner.p, &f.policy, activity.authority.clone(), &matrix.gateway).await.unwrap().unwrap();
     let input = SharedWorkInput {authority: activity.authority.clone(), work_id: work.id.clone(), work_digest: allocation_digest(&work).unwrap()};
     f.domain.acknowledge_shared_work(&f.owner.p, &f.policy, input.clone(), &matrix.gateway).await.unwrap();
-    f.domain.start_shared_work(&f.owner.p, &f.policy, input, &matrix.gateway).await.unwrap();
+    f.domain.start_current_work(&f.owner.p, &f.policy, input, &matrix.gateway).await.unwrap();
     let value = f.domain.shared_approvals(&f.outsider.p, serde_json::from_value(query.clone()).unwrap()).await.unwrap();
     assert_eq!(value["executions"][0]["state"], "started");
     attempts::stop(&f, &runtime, 103).await;
@@ -371,7 +371,7 @@ async fn pool_private_chat_without_mentions_retains_promotes_and_resumes_only_ap
     assert_eq!(f.domain.poll_shared_work(&f.owner.p, &f.policy, activity.authority.clone(), &matrix.gateway).await.unwrap().unwrap().id, work.id);
     let input = SharedWorkInput {authority: activity.authority.clone(), work_id: work.id.clone(), work_digest: allocation_digest(&work).unwrap()};
     f.domain.acknowledge_shared_work(&f.owner.p, &f.policy, input.clone(), &matrix.gateway).await.unwrap();
-    assert!(f.domain.start_shared_work(&f.owner.p, &f.policy, input, &matrix.gateway).await.unwrap().newly_started);
+    assert!(f.domain.start_current_work(&f.owner.p, &f.policy, input, &matrix.gateway).await.unwrap().newly_started);
     let ticket = work::ticket(&f, &runtime, &work).await;
     f.domain.record_shared_work_result(&f.owner.p, &f.policy, &work.id, work::outcome(&runtime, &work, &ticket, 102, "completed")).await.unwrap();
     let stopped = attempts::stop(&f, &runtime, 103).await;
@@ -455,7 +455,7 @@ async fn prepared() -> (
     MatrixFixture,
 ) {
     let (mut f, r, admin, a, m) = Box::pin(ready()).await;
-    f.policy = f.policy.with_shared_execution(true);
+    f.policy = f.policy.with_shared_execution(true).with_shared_thread_context(true);
     (f, r, admin, a, m)
 }
 async fn shared_poll(f: &Fixture) -> SharedRuntimeDelivery {
@@ -527,7 +527,7 @@ async fn shared_runtime_requires_closed_policy_current_codex_and_real_matrix() {
     let (mut f, r, _admin, a) = Box::pin(prepared_matrix()).await;
     f.policy = f
         .policy
-        .with_shared_execution(true)
+        .with_shared_execution(true).with_shared_thread_context(true)
         .with_agent_runtime_provisioning(true);
     assert!(
         f.domain

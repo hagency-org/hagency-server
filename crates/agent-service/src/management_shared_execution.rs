@@ -121,13 +121,13 @@ fn runtime_version(r: &Runtime) -> Result<u64> {
 }
 #[derive(Clone, Copy)]
 enum WorkProtocol {
-    Legacy,
+    Assignment,
     Budget,
 }
 impl WorkProtocol {
     fn check(self, r: &Runtime) -> Result<()> {
         let version = runtime_version(r)?;
-        if !matches!((self, version), (Self::Legacy, 1 | 2 | 4) | (Self::Budget, 3)) {
+        if !matches!((self, version), (Self::Assignment, 1 | 2 | 4) | (Self::Budget, 3)) {
             return Err(Error::Conflict("shared_execution_version_required"));
         }
         Ok(())
@@ -573,7 +573,7 @@ impl DomainStore {
         input: SharedActivityRenewInput,
         gateway: &Gateway,
     ) -> Result<SharedActivityLease> {
-        self.renew_shared_activity_with_protocol(p, policy, input, gateway, WorkProtocol::Legacy)
+        self.renew_shared_activity_with_protocol(p, policy, input, gateway, WorkProtocol::Assignment)
             .await
     }
     pub async fn renew_shared_budget_activity(

@@ -391,17 +391,8 @@ Padmin 源码和 Pasion 依赖仍保留其上游 AGPL 许可；修改项目清�
 路径和前端保存的标志不赋予管理员 API 权限。
 账号中心及 OAuth/OIDC 接口统一挂载于 `/auth/`。
 
-### 从旧账号路径升级
+### 身份与升级
 
-已有数据库应先停止旧服务并备份数据库与状态文件，再用新二进制及原部署配置执行：
-
-```sh
-hagency-server --config config/dev/hagency.toml --migrate-auth-path
-```
-
-该单向事务只接受同一 server name 和 public origin，把 Agent 部署/用户的 issuer
-从 `/_pasion/` 改成 `/auth/`，保留用户 ID 与 Agent 所有权，恢复身份不可修改约束，
-并撤销旧 Agent 会话/设备凭证。升级启动前执行一次，重复执行不会再次修改。
-全新安装无需迁移。Client/Desktop 应配套升级并重新登录。Native 账号 ID 和本地
-Agent 账本路径保持原存储命名空间；旧身份标记只有在同身份的原账本校验成功后才更新。
-新客户端不接受旧 OAuth issuer。
+Server、Client 和 Desktop 统一使用 `/auth/` 作为身份 issuer，应配套部署。
+不再自动转换旧 issuer 或旧身份标记。历史账单、实际用量、已登记的加密身份和本地
+存储命名空间保持不变；遇到不匹配的身份会拒绝使用，不会重写这些记录。

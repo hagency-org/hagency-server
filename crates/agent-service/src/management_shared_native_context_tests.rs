@@ -16,8 +16,8 @@ fn shared_context_v3_canonical_native_input_rejects_transcript_or_coverage_chang
     );
     assert_eq!(crate::hash(&rendered), fixture["inputDigest"]);
     for (key, value) in [
-        ("inputProfile", json!(INPUT_PROFILE_V2)),
-        ("coverage", json!(COVERAGE_PRIOR_DELIVERED_PAIRS)),
+        ("inputProfile", json!("shared_thread_text_v2")),
+        ("coverage", json!("prior_delivered_pairs_only")),
         ("omittedEarlier", json!(false)),
         ("roomId", json!("!other:test")),
         ("version", json!(2)),
@@ -36,27 +36,12 @@ fn shared_context_v3_canonical_native_input_rejects_transcript_or_coverage_chang
     let mut repeated = context;
     repeated.history = serde_json::from_value(old["context"]["history"].clone()).unwrap();
     assert!(render_context(&repeated, &work).is_err());
-    assert!(
-        SharedContextBudgetInput {
-            version: 3,
-            model_context_window: None
-        }
-        .validate()
-        .is_ok()
-    );
-    assert!(
-        SharedContextBudgetInput {
-            version: 3,
-            model_context_window: Some(128_000)
-        }
-        .validate()
-        .is_err()
-    );
+
 }
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
-async fn shared_context_v3_freezes_only_current_request_preserving_exact_start_and_legacy_replay() {
+async fn shared_context_v3_freezes_only_current_request_preserving_exact_start_and_current_replay() {
     let (mut f, r, _admin, _a, m) = Box::pin(prepared()).await;
     let (d, a) = qualify(&f).await;
     let sender = work::sender().await;
@@ -92,11 +77,10 @@ async fn shared_context_v3_freezes_only_current_request_preserving_exact_start_a
     let native = SharedContextInput {
         authority: a.authority.clone(),
         work_digest: allocation_digest(&w).unwrap(),
-        budget: Some(SharedContextBudgetInput {
-            version: 3,
-            model_context_window: None,
-        }),
+        version: 3,
     };
+    let mut obsolete = native.clone(); obsolete.version = 2;
+    assert!(f.domain.freeze_shared_context(&f.owner.p,&f.policy,&w.id,obsolete,&m.gateway).await.is_err());
     let c = f
         .domain
         .freeze_shared_context(&f.owner.p, &f.policy, &w.id, native.clone(), &m.gateway)
@@ -104,7 +88,7 @@ async fn shared_context_v3_freezes_only_current_request_preserving_exact_start_a
         .unwrap();
     assert_eq!(c.context.version, 3);
     assert!(
-        c.context.history.is_empty() && c.context.budget.is_none() && c.context.omitted_earlier
+        c.context.history.is_empty() && c.context.omitted_earlier
     );
     let rendered = render_context(&c.context, &w).unwrap();
     assert!(rendered.contains("read_room_history") && rendered.contains(&w.body));
@@ -117,10 +101,12 @@ async fn shared_context_v3_freezes_only_current_request_preserving_exact_start_a
             .is_err(),
         "a frozen description cannot authorize file publication before call admission"
     );
+    let mut obsolete = native.clone();
+    obsolete.version = 2;
+    assert!(f.domain.freeze_shared_context(&f.owner.p, &f.policy, &w.id, obsolete, &m.gateway).await.is_err());
     for later in [
         native,
         context_input(&a, &w),
-        v2_input(&a, &w, Some(128_000)),
     ] {
         let again = f
             .domain

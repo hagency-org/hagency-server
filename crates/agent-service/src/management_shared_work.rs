@@ -228,7 +228,7 @@ impl DomainStore {
         a: SharedActivityRef,
         gateway: &Gateway,
     ) -> Result<Option<SharedWorkItem>> {
-        self.poll_shared_work_with_protocol(p, policy, a, gateway, WorkProtocol::Legacy)
+        self.poll_shared_work_with_protocol(p, policy, a, gateway, WorkProtocol::Assignment)
             .await
     }
     pub async fn poll_shared_budget_work(
@@ -255,7 +255,7 @@ impl DomainStore {
             .await?;
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&a.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}require_activity(db,p,&r,&a,&self.server,now).await?;facts(&membership(db,&r).await?,&observed)?;
-            if matches!(protocol,WorkProtocol::Legacy) { demands::promote(db,p,policy,&r,&self.server,now).await?; } else {demands::budget::promote(db,p,policy,&r,&self.server,now).await?;}
+            if matches!(protocol,WorkProtocol::Assignment) { demands::promote(db,p,policy,&r,&self.server,now).await?; } else {demands::budget::promote(db,p,policy,&r,&self.server,now).await?;}
             let scope=command(&r,&self.server)?;
             if let Some(calendar)=scope.reserve_command.pool_grant.as_ref().and_then(|g|g.calendar.as_ref()) {
                 let period=calendar.period_at(now as u64).map_err(|_|Error::Conflict("agent_period_changed"))?;
@@ -271,7 +271,7 @@ impl DomainStore {
         input: SharedWorkInput,
         gateway: &Gateway,
     ) -> Result<()> {
-        self.acknowledge_shared_work_with_protocol(p, policy, input, gateway, WorkProtocol::Legacy)
+        self.acknowledge_shared_work_with_protocol(p, policy, input, gateway, WorkProtocol::Assignment)
             .await
     }
     pub async fn acknowledge_shared_budget_work(
@@ -314,7 +314,7 @@ impl DomainStore {
         input: SharedWorkInput,
         gateway: &Gateway,
     ) -> Result<SharedWorkStart> {
-        self.start_shared_work_with_protocol(p, policy, input, gateway, WorkProtocol::Legacy)
+        self.start_shared_work_with_protocol(p, policy, input, gateway, WorkProtocol::Assignment)
             .await
     }
     pub async fn start_shared_budget_work(

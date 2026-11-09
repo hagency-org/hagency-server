@@ -775,7 +775,7 @@ async fn shared_demand_known_overrun_retains_actual_usage_and_zero_remaining_wit
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input, &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input, &m.gateway)
             .await
             .unwrap()
             .newly_started
@@ -1065,7 +1065,7 @@ async fn acknowledge_start_item(
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input, &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input, &m.gateway)
             .await
             .unwrap()
             .newly_started

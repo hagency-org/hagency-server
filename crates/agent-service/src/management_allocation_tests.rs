@@ -446,24 +446,31 @@ async fn coordinator_decision_is_separate_from_admission_and_exact_executor_rece
         .unwrap();
     assert_eq!(inbox.items.len(), 1);
     assert!(inbox.items[0].can_decide);
-    let admin_history = f
-        .domain
-        .management_inbox(
-            &f.admin.p,
-            &f.policy,
-            ManagementQuery {
-                include_allocations: true,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert!(
-        admin_history
-            .items
-            .iter()
-            .any(|r| r.allocation_id.as_deref() == Some(a.id.as_str()) && !r.can_decide)
-    );
+    // Administrators can inspect allocations from every owner. The shared
+    // integration database may already contain more than one result page.
+    let mut after = None;
+    loop {
+        let page = f
+            .domain
+            .management_inbox(
+                &f.admin.p,
+                &f.policy,
+                ManagementQuery {
+                    include_allocations: true,
+                    after: after.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        if let Some(row) = page.items.iter().find(|r| r.allocation_id.as_deref() == Some(a.id.as_str())) {
+            assert!(!row.can_decide);
+            break;
+        }
+        let next = page.next_after.expect("allocation must remain visible to the administrator");
+        assert!(after.as_ref().is_none_or(|previous| previous < &next));
+        after = Some(next);
+    }
     let approved = accepted(&f, &a).await;
     assert_eq!(approved.state, "approved_waiting_executor");
     assert!(approved.result.is_none());

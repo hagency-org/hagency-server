@@ -507,21 +507,10 @@ for the missing OAuth management authorization for the same account. A pathname
 or client-side stored flag never grants administrative API access.
 The account center and OAuth/OIDC endpoints are mounted at `/auth/`.
 
-### Upgrade from the old auth mount
+### Identity and upgrades
 
-For an existing database, stop the old server and back up its databases and
-state files. With the new binary and the same deployment configuration, run:
-
-```sh
-hagency-server --config config/dev/hagency.toml --migrate-auth-path
-```
-
-This one-way transaction accepts only the same server and public origin,
-changes the Agent deployment/user issuer from `/_pasion/` to `/auth/`, retains
-user IDs and Agent ownership, restores identity immutability, and revokes old
-Agent sessions/devices. Run it once before starting the upgraded server;
-repeating it is harmless. Fresh installations need no migration.
-Upgrade Client/Desktop together and sign in again. Native account IDs and
-local Agent ledger paths keep their existing storage namespace; a matching
-legacy profile marker is updated only after its original scoped ledger is verified.
-Old OAuth issuers are not accepted by the upgraded clients.
+Server, Client and Desktop use `/auth/` as the identity issuer. Deploy matching
+versions together. Automatic conversion of old issuers and profile markers is
+not supported. Existing billing, usage, registered encryption identities and
+local storage namespaces are retained; an incompatible identity is rejected
+without rewriting those records.
