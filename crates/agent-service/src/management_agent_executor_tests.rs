@@ -125,6 +125,28 @@ async fn submit(
         .record_managed_agent_executor_result(&f.owner.p, &f.policy, id(d), r)
         .await
 }
+/// The fence receipt of a reserved Agent, numbered `revision` by its ledger.
+fn fence_at(d: &AgentExecutorDelivery, revision: i64) -> AgentExecutorResultInput {
+    let mut result = fence_result(d, true);
+    let AgentExecutorReceipt::Fence(ref mut receipt) = result.receipt else {
+        panic!("fence")
+    };
+    receipt.fence_revision = revision;
+    receipt.ledger_revision = revision;
+    result
+}
+/// The owner device replaced its ledger database and declares the new one.
+async fn replace_ledger(f: &Fixture) {
+    f.domain
+        .declare_executor_ledger(
+            &f.owner.p,
+            ExecutorLedgerInput {
+                ledger_id: crate::hash(&secret_token()),
+            },
+        )
+        .await
+        .unwrap();
+}
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn agent_executor_exact_http_delivery_replay_and_personal_isolation() {
@@ -870,4 +892,200 @@ async fn agent_executor_native_child_identity_cannot_be_reused_by_reserve_or_cle
         submit(&f, &cleanup, bad).await.unwrap_err().to_string(),
         "agent_executor_child_reused"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn agent_executor_project_receipt_revision_is_free_again_in_a_newly_declared_ledger() {
+    for agent_first in [true, false] {
+        let (f, r, _) = approved().await;
+        let agent = poll(&f).await;
+        if agent_first {
+            submit(&f, &agent, reservation(&agent)).await.unwrap();
+        }
+        let allocation = f
+            .domain
+            .management_project_allocation(&f.outsider.p, &f.policy, &r.project_id)
+            .await
+            .unwrap()
+            .unwrap();
+        f.domain
+            .release_management_allocation(
+                &f.outsider.p,
+                &f.policy,
+                &allocation.id,
+                RevokeInput {
+                    command_id: "release_other_ledger".into(),
+                    expected_revision: allocation.revision,
+                },
+            )
+            .await
+            .unwrap();
+        let release = delivered(&f).await;
+        if !agent_first {
+            f.domain
+                .record_management_executor_result(
+                    &f.owner.p,
+                    &f.policy,
+                    &release.command.command_id,
+                    result(&release, "refused", 100),
+                )
+                .await
+                .unwrap();
+        }
+        // The device replaced its ledger database. Mutation 100 of the new
+        // database is not mutation 100 of the old one, in either arrival order.
+        replace_ledger(&f).await;
+        if agent_first {
+            f.domain
+                .record_management_executor_result(
+                    &f.owner.p,
+                    &f.policy,
+                    &release.command.command_id,
+                    result(&release, "refused", 100),
+                )
+                .await
+                .unwrap();
+        } else {
+            submit(&f, &agent, reservation(&agent)).await.unwrap();
+        }
+        let (agent_epoch, release_epoch): (i64, i64) = if agent_first { (0, 1) } else { (1, 0) };
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        assert!(sql_query("SELECT (SELECT receipt_ledger_epoch FROM hagency_agent_v1.management_agent_executor_commands WHERE id=$1)=$2 AND (SELECT receipt_ledger_epoch FROM hagency_agent_v1.management_executor_commands WHERE id=$3)=$4 AS matched").bind::<Text,_>(id(&agent)).bind::<BigInt,_>(agent_epoch).bind::<Text,_>(&release.command.command_id).bind::<BigInt,_>(release_epoch).get_result::<Check>(&mut db).await.unwrap().matched);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn agent_executor_parent_receipt_revision_is_free_again_in_a_newly_declared_ledger() {
+    use crate::management_parent_types::*;
+    for agent_first in [true, false] {
+        let (mut f, r, _) = approved().await;
+        f.policy = f.policy.with_parent_settlement(true);
+        let agent = poll(&f).await;
+        if agent_first {
+            submit(&f, &agent, reservation(&agent)).await.unwrap();
+        }
+        let allocation = f
+            .domain
+            .management_project_allocation(&f.outsider.p, &f.policy, &r.project_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let g = f
+            .domain
+            .management_resource_grant(&f.owner.p, &f.policy, &allocation.grant_id)
+            .await
+            .unwrap();
+        f.domain
+            .close_management_parent(
+                &f.owner.p,
+                &f.policy,
+                &g.id,
+                ParentCloseInput {
+                    command_id: "parent_other_ledger".into(),
+                    expected_grant_revision: g.revision,
+                },
+            )
+            .await
+            .unwrap();
+        let parent = f
+            .domain
+            .poll_management_parent_executor(&f.owner.p, &f.policy, Default::default())
+            .await
+            .unwrap()
+            .unwrap();
+        let report = ParentResultInput {
+            command_digest: parent.command_digest.clone(),
+            token: parent.token.clone(),
+            receipt: NativeGrantSettlementReceipt {
+                version: 1,
+                command_id: parent.command.command_id.clone(),
+                command_digest: parent.command_digest.clone(),
+                grant_id: g.id,
+                grant_receipt_digest: g.receipt_digest,
+                enrollment_id: g.receipt.enrollment_id,
+                period_key: g.receipt.period_key,
+                fence_revision: 100,
+                ledger_revision: 100,
+                state: "retained".into(),
+                retained_tokens: 100_000,
+                known_consumed_tokens: 0,
+                unresolved_tokens: 100_000,
+                liability_count: 1,
+                liability_digest: "b".repeat(64),
+            },
+        };
+        if agent_first {
+            replace_ledger(&f).await;
+            f.domain
+                .record_management_parent_result(
+                    &f.owner.p,
+                    &f.policy,
+                    &parent.command.command_id,
+                    report,
+                )
+                .await
+                .unwrap();
+        } else {
+            f.domain
+                .record_management_parent_result(
+                    &f.owner.p,
+                    &f.policy,
+                    &parent.command.command_id,
+                    report,
+                )
+                .await
+                .unwrap();
+            replace_ledger(&f).await;
+            submit(&f, &agent, reservation(&agent)).await.unwrap();
+        }
+        let (agent_epoch, parent_epoch): (i64, i64) = if agent_first { (0, 1) } else { (1, 0) };
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        assert!(sql_query("SELECT (SELECT receipt_ledger_epoch FROM hagency_agent_v1.management_agent_executor_commands WHERE id=$1)=$2 AND (SELECT receipt_ledger_epoch FROM hagency_agent_v1.management_parent_commands WHERE id=$3)=$4 AS matched").bind::<Text,_>(id(&agent)).bind::<BigInt,_>(agent_epoch).bind::<Text,_>(&parent.command.command_id).bind::<BigInt,_>(parent_epoch).get_result::<Check>(&mut db).await.unwrap().matched);
+    }
+}
+
+/// What ledger epochs do not change: cleanup stays paired with the reservation
+/// the server recorded, whichever ledger numbered it. A replacement database
+/// that never held the reservation can neither report it absent nor number its
+/// fence below the reservation.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn agent_executor_cleanup_still_pairs_with_a_reservation_of_an_earlier_ledger() {
+    let (f, r, admin) = approved().await;
+    let d = poll(&f).await;
+    submit(&f, &d, reservation(&d)).await.unwrap();
+    replace_ledger(&f).await;
+    f.domain
+        .revoke_managed_agent_request(
+            &admin.p,
+            &f.policy,
+            &r.id,
+            RevokeInput {
+                command_id: "revoke_after_declare".into(),
+                expected_revision: r.revision,
+            },
+        )
+        .await
+        .unwrap();
+    let cleanup = poll(&f).await;
+    assert_eq!(
+        submit(&f, &cleanup, fence_result(&cleanup, false))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "agent_executor_fence_conflict"
+    );
+    assert_eq!(
+        submit(&f, &cleanup, fence_at(&cleanup, 99))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "agent_executor_fence_conflict"
+    );
+    let reply = submit(&f, &cleanup, fence_result(&cleanup, true))
+        .await
+        .unwrap();
+    assert_eq!(reply.assignment.unwrap().state, "fenced");
 }

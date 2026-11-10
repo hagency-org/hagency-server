@@ -1580,3 +1580,51 @@ async fn shared_work_exact_mention_is_filtered_before_candidate_page_limit() {
         work.id
     );
 }
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_process_and_work_revisions_are_free_again_in_a_newly_declared_ledger() {
+    // The replaced ledger numbered its process evidence 200 and its work 201.
+    for free in [200, 201] {
+        let (f, r, admin, assignment, m) = Box::pin(prepared()).await;
+        let (d, a) = qualify(&f).await;
+        let old = started(&f, &r, &m, &a, "old_ledger_work").await;
+        let t = ticket(&f, &d, &old).await;
+        f.domain
+            .record_shared_work_result(&f.owner.p, &f.policy, &old.id, outcome(&d, &old, &t, 201, "completed"))
+            .await
+            .unwrap();
+        replace_ledger(&f).await;
+        let new = started(&f, &r, &m, &a, "new_ledger_work").await;
+        let t = ticket(&f, &d, &new).await;
+        f.domain
+            .record_shared_work_result(&f.owner.p, &f.policy, &new.id, outcome(&d, &new, &t, 202, "completed"))
+            .await
+            .unwrap();
+        attempts::stop(&f, &d, 203).await;
+        revoke(&f, &r, &admin).await;
+        let fence = poll(&f).await;
+        // The fence reports the usage of both work items.
+        let numbered = |revision: i64| {
+            let mut result = fence_at(&fence, revision);
+            let AgentExecutorReceipt::Fence(ref mut receipt) = result.receipt else {
+                panic!("fence")
+            };
+            receipt.known_consumed_tokens = 34;
+            result
+        };
+        for taken in [202, 203] {
+            assert_eq!(
+                submit(&f, &fence, numbered(taken)).await.unwrap_err().to_string(),
+                "agent_executor_ledger_revision_changed"
+            );
+        }
+        submit(&f, &fence, numbered(free)).await.unwrap();
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        for sql in [
+            "SELECT array_agg(o.ledger_epoch ORDER BY o.ledger_revision)=ARRAY[0,1]::bigint[] AS matched FROM hagency_agent_v1.management_shared_process_receipts o JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=o.runtime_id WHERE r.assignment_id=$1",
+            "SELECT array_agg(o.ledger_epoch ORDER BY o.ledger_revision)=ARRAY[0,1]::bigint[] AS matched FROM hagency_agent_v1.management_shared_work_receipts o JOIN hagency_agent_v1.management_shared_work w ON w.id=o.work_id JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1",
+        ] {
+            assert!(sql_query(sql).bind::<Text, _>(&assignment.id).get_result::<Check>(&mut db).await.unwrap().matched, "{sql}");
+        }
+    }
+}

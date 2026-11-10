@@ -91,6 +91,19 @@ older binary requires restoring a pre-cutover Hagency database or starting with
 a fresh Hagency database; replacing the executable alone is not a rollback.
 Matrix and Pasion databases are separate from that Hagency reset.
 
+Schema 35 lets an owner device replace its local ledger database. The device
+declares the new database's id with
+`POST /hagency/api/v1/management/executor-ledger/declare`; from then on the server
+checks its receipt numbers for reuse only against receipts numbered by that
+database. The migration is additive: existing receipts stay in epoch 0, and a
+device that never declares behaves as before, so the server can be deployed
+before any client changes. It is forward-only like schema 34: an older binary
+refuses a schema 35 database with `management_schema_incompatible`, and
+`management_executor_ledgers_down.sql` is a test fixture that refuses to run
+once any ledger has been declared. Ordering rules still compare bare numbers
+across ledgers: a grant, Agent or runtime created under the replaced database
+accepts later receipts only above the numbers that database reported.
+
 Registration is disabled by default. Initializers refuse to overwrite existing
 configuration. For existing data, see [migration instructions](docs/guide.md#upgrading-the-former-combined-database).
 

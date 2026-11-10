@@ -465,8 +465,8 @@ impl DomainStore {
             let old=sql_query("SELECT payload FROM hagency_agent_v1.management_shared_work_receipts WHERE id=$1").bind::<Text,_>(&input.receipt.observation_id).get_result::<Json>(db).await.optional()?;
             if let Some(old)=old {let old:SharedWorkReceipt=decode(&old.payload)?;if allocation_digest(&old)?!=digest {return Err(Error::Conflict("shared_work_receipt_changed"));}}
             else {
-                validate_work_receipt(db,&w,&r,&original,&input.receipt).await?;
-                sql_query("INSERT INTO hagency_agent_v1.management_shared_work_receipts VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(&input.receipt.observation_id).bind::<Text,_>(id).bind::<Text,_>(wire_with_limit(&input.receipt,48*1024)?).bind::<Text,_>(&digest).bind::<BigInt,_>(input.receipt.ledger_revision).execute(db).await?;
+                let epoch=validate_work_receipt(db,&w,&r,&original,&input.receipt).await?;
+                sql_query("INSERT INTO hagency_agent_v1.management_shared_work_receipts(id,work_id,payload,digest,ledger_revision,ledger_epoch) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&input.receipt.observation_id).bind::<Text,_>(id).bind::<Text,_>(wire_with_limit(&input.receipt,48*1024)?).bind::<Text,_>(&digest).bind::<BigInt,_>(input.receipt.ledger_revision).bind::<BigInt,_>(epoch).execute(db).await?;
                 let latest=latest_work_receipt(db,id,None).await?.unwrap();
                 if latest.observation_id==input.receipt.observation_id {
                     sql_query("UPDATE hagency_agent_v1.management_shared_work SET state=$2,call_id=coalesce(call_id,$3),latest_receipt=$4,known_consumed_tokens=$5,retained_tokens=$6,usage_complete=$7,completed_at_ms=CASE WHEN $2 IN('completed','failed') THEN coalesce(completed_at_ms,$8) ELSE completed_at_ms END WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(&latest.state).bind::<Text,_>(&latest.call_id).bind::<Text,_>(&latest.observation_id).bind::<BigInt,_>(latest.known_consumed_tokens).bind::<Nullable<BigInt>,_>(latest.retained_tokens).bind::<Bool,_>(latest.usage_complete).bind::<BigInt,_>(now).execute(db).await?;
@@ -533,13 +533,14 @@ impl DomainStore {
         }).await
     }
 }
+/// Returns the ledger epoch the accepted receipt is numbered in.
 async fn validate_work_receipt(
     db: &mut AsyncPgConnection,
     w: &WorkRow,
     r: &Runtime,
     original: &Work,
     v: &SharedWorkReceipt,
-) -> Result<()> {
+) -> Result<i64> {
     if w.call_id.as_ref().is_some_and(|id| id != &v.call_id) {
         return Err(Error::Conflict("shared_call_changed"));
     }
@@ -552,7 +553,7 @@ async fn validate_work_receipt(
     if v.ledger_revision <= qualified.now || v.ledger_revision == process.ledger_revision {
         return Err(Error::Conflict("shared_work_ledger_revision_changed"));
     }
-    super::super::validate_external_ledger_receipt(
+    let epoch = super::super::validate_external_ledger_receipt(
         db,
         &original.executor_owner_user_id,
         &original.executor_device_id,
@@ -560,7 +561,7 @@ async fn validate_work_receipt(
         v.ledger_revision,
     )
     .await?;
-    let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3 UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND ((receipt::jsonb->>'ledgerRevision')::bigint=$3 OR (receipt::jsonb->>'fenceRevision')::bigint=$3) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&original.executor_owner_user_id).bind::<Text,_>(&original.executor_device_id).bind::<BigInt,_>(v.ledger_revision).get_result::<Flag>(db).await?.matched;
+    let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3 UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$4 AND ((receipt::jsonb->>'ledgerRevision')::bigint=$3 OR (receipt::jsonb->>'fenceRevision')::bigint=$3) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&original.executor_owner_user_id).bind::<Text,_>(&original.executor_device_id).bind::<BigInt,_>(v.ledger_revision).bind::<BigInt,_>(epoch).get_result::<Flag>(db).await?.matched;
     if collision {
         return Err(Error::Conflict("shared_work_ledger_revision_changed"));
     }
@@ -586,7 +587,7 @@ async fn validate_work_receipt(
             return Err(Error::Conflict("shared_work_evidence_changed"));
         }
     }
-    Ok(())
+    Ok(epoch)
 }
 
 #[derive(QueryableByName)]

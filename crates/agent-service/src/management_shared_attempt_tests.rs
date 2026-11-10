@@ -657,7 +657,7 @@ async fn shared_attempt_schema13_upgrade_rolls_back_and_preserves_v1_bytes() {
         d.command_digest
     );
     assert!(
-        sql_query("SELECT version=34 AS matched FROM hagency_agent_v1.management_deployment")
+        sql_query("SELECT version=35 AS matched FROM hagency_agent_v1.management_deployment")
             .get_result::<Check>(&mut db)
             .await
             .unwrap()
@@ -1098,4 +1098,33 @@ async fn shared_permissions_owner_scope_session_decision_and_single_consumption(
     let third=post(&service,"shared-execution/approvals/register",&f.owner.token,expired,StatusCode::OK).await;
     {let mut db=AsyncPgConnection::establish(&f.url).await.unwrap();sql_query("UPDATE hagency_agent_v1.management_shared_approvals SET expires_at_ms=1 WHERE id=$1").bind::<Text,_>(format!("sap_expired_{}",w.id)).execute(&mut db).await.unwrap();}
     post(&service,"shared-execution/approvals/decide",&f.owner.token,json!({"id":format!("sap_expired_{}",w.id),"digest":third["digest"],"decision":"approve_once"}),StatusCode::CONFLICT).await;
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_attempt_process_revision_is_free_again_in_a_newly_declared_ledger() {
+    let (mut f, r, admin, assignment, m) = Box::pin(prepared()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = stop(&f, &d, 220).await;
+    f.policy = f.policy.with_shared_successors(true);
+    replace_ledger(&f).await;
+    let next = f
+        .domain
+        .start_shared_attempt(&f.owner.p, &f.policy, start(&d, &stopped), &m.gateway)
+        .await
+        .unwrap();
+    f.domain
+        .record_shared_attempt_process(&f.owner.p, &f.policy, &next.command.command_id, result(&next, "qualified", 240))
+        .await
+        .unwrap();
+    revoke(&f, &r, &admin).await;
+    // The successor's evidence 240 is the new ledger's and taken. The stop it
+    // succeeds was mutation 220 of the ledger that was replaced.
+    let fence = poll(&f).await;
+    assert_eq!(
+        submit(&f, &fence, fence_at(&fence, 240)).await.unwrap_err().to_string(),
+        "agent_executor_ledger_revision_changed"
+    );
+    submit(&f, &fence, fence_at(&fence, 220)).await.unwrap();
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    assert!(sql_query("SELECT array_agg(o.ledger_epoch ORDER BY o.ledger_revision)=ARRAY[0,0,1]::bigint[] AS matched FROM hagency_agent_v1.management_shared_process_receipts o JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=o.runtime_id WHERE r.assignment_id=$1").bind::<Text, _>(&assignment.id).get_result::<Check>(&mut db).await.unwrap().matched);
 }

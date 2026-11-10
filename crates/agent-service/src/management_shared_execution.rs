@@ -551,8 +551,8 @@ impl DomainStore {
                 if allocation_digest(&old)?!=digest {return Err(Error::Conflict("shared_process_receipt_changed"));}
             } else {
                 if input.receipt.state=="not_started" && (ticket_mode!="cleanup" || now<c.expires_at_ms || !r.permanent_fence || !matches!(r.state.as_str(),"pending"|"issued") || r.activity_epoch!=0 || r.process_digest.is_some()) {return Err(Error::Conflict("shared_original_not_unstarted"));}
-                validate_receipt(db,&r,&w,&input.receipt).await?;
-                sql_query("INSERT INTO hagency_agent_v1.management_shared_process_receipts VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(&input.receipt.observation_id).bind::<Text,_>(id).bind::<Text,_>(wire(&input.receipt)?).bind::<Text,_>(&digest).bind::<BigInt,_>(input.receipt.ledger_revision).execute(db).await?;
+                let epoch=validate_receipt(db,&r,&w,&input.receipt).await?;
+                sql_query("INSERT INTO hagency_agent_v1.management_shared_process_receipts(id,runtime_id,payload,digest,ledger_revision,ledger_epoch) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&input.receipt.observation_id).bind::<Text,_>(id).bind::<Text,_>(wire(&input.receipt)?).bind::<Text,_>(&digest).bind::<BigInt,_>(input.receipt.ledger_revision).bind::<BigInt,_>(epoch).execute(db).await?;
             }
             let fresh=latest(db,id,None).await?.unwrap();
                 if fresh.observation_id==input.receipt.observation_id {
@@ -688,12 +688,13 @@ async fn check_activity(
     }
     Ok(())
 }
+/// Returns the ledger epoch the accepted receipt is numbered in.
 async fn validate_receipt(
     db: &mut AsyncPgConnection,
     r: &Runtime,
     w: &Work,
     v: &SharedProcessReceipt,
-) -> Result<()> {
+) -> Result<i64> {
     let base: ManagedAgentReservationReceipt = decode(
         w.receipt
             .as_deref()
@@ -706,7 +707,7 @@ async fn validate_receipt(
     {
         return Err(Error::Conflict("shared_process_evidence_changed"));
     }
-    super::validate_external_ledger_receipt(
+    let epoch = super::validate_external_ledger_receipt(
         db,
         &w.executor_owner_user_id,
         &w.executor_device_id,
@@ -714,7 +715,7 @@ async fn validate_receipt(
         v.ledger_revision,
     )
     .await?;
-    let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3 UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND ((receipt::jsonb->>'ledgerRevision')::bigint=$3 OR (receipt::jsonb->>'fenceRevision')::bigint=$3) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&w.executor_owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(v.ledger_revision).get_result::<Flag>(db).await?.matched;
+    let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3 UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$4 AND ((receipt::jsonb->>'ledgerRevision')::bigint=$3 OR (receipt::jsonb->>'fenceRevision')::bigint=$3) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&w.executor_owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(v.ledger_revision).bind::<BigInt,_>(epoch).get_result::<Flag>(db).await?.matched;
     if collision {
         return Err(Error::Conflict("shared_process_evidence_changed"));
     }
@@ -737,7 +738,7 @@ async fn validate_receipt(
             return Err(Error::Conflict("shared_process_cannot_restart"));
         }
     }
-    Ok(())
+    Ok(epoch)
 }
 
 #[cfg(test)]

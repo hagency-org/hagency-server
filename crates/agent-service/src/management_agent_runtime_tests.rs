@@ -561,3 +561,31 @@ async fn runtime_stop_enqueue_failure_rolls_back_revocation_and_original_identit
     };
     assert_eq!(c.provision_command_digest, d.command_digest);
 }
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn runtime_observation_revision_is_free_again_in_a_newly_declared_ledger() {
+    let (f, r, admin, a, _m) = ready().await;
+    let d = poll_runtime(&f).await;
+    submit_runtime(&f, &d, result(&d, "qualified", 200))
+        .await
+        .unwrap();
+    replace_ledger(&f).await;
+    revoke(&f, &r, &admin).await;
+    let stop = poll_runtime(&f).await;
+    submit_runtime(&f, &stop, result(&stop, "stopped", 300))
+        .await
+        .unwrap();
+    // Observation 300 is the new ledger's and taken. Observation 200 was
+    // numbered by the ledger it replaced.
+    let fence = poll(&f).await;
+    assert_eq!(
+        submit(&f, &fence, fence_at(&fence, 300))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "agent_executor_ledger_revision_changed"
+    );
+    submit(&f, &fence, fence_at(&fence, 200)).await.unwrap();
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    assert!(sql_query("SELECT array_agg(o.ledger_epoch ORDER BY o.ledger_revision)=ARRAY[0,1]::bigint[] AS matched FROM hagency_agent_v1.management_agent_runtime_observations o JOIN hagency_agent_v1.management_agent_runtime_commands c ON c.id=o.command_id WHERE c.assignment_id=$1").bind::<Text,_>(&a.id).get_result::<Check>(&mut db).await.unwrap().matched);
+}

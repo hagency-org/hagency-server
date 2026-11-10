@@ -84,6 +84,17 @@ schema 34 的原生 CLI 切换要求配套的当前 Desktop 和 owner daemon。
 若要重新运行旧二进制，必须恢复切换前的 Hagency 数据库，或使用全新的 Hagency
 数据库；仅替换可执行文件不构成回滚。Matrix 和 Pasion 数据库不属于该 Hagency 重置范围。
 
+schema 35 允许所有者设备更换本地账本数据库。设备通过
+`POST /hagency/api/v1/management/executor-ledger/declare` 声明新数据库的标识，
+此后服务器只在该数据库编号的回执之间检查编号是否重复。
+这次迁移只新增表和列：已有回执保持在 epoch 0，从未声明的设备行为不变，
+因此可以先部署服务器，再更新客户端。
+与 schema 34 一样只支持向前升级：旧二进制遇到 schema 35 数据库会以
+`management_schema_incompatible` 拒绝；`management_executor_ledgers_down.sql`
+是测试夹具，一旦有设备声明过账本就拒绝执行。
+顺序规则仍然直接比较编号：在被替换的数据库下创建的授权、Agent 或运行，
+后续回执的编号必须大于该数据库已上报的编号。
+
 默认关闭注册。初始化工具不会覆盖已有配置。
 已有数据请先阅读[迁移说明](docs/guide.zh-CN.md#拆分旧的合并数据库)。
 

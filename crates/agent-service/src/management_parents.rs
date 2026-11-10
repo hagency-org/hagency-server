@@ -530,7 +530,7 @@ impl DomainStore {
             if r.fence_revision<=last_reserve{return Err(Error::Conflict("parent_fence_revision_conflict"));}
             let collision=sql_query("SELECT COUNT(*) AS amount FROM hagency_agent_v1.management_executor_commands w JOIN hagency_agent_v1.management_allocations a ON a.id=w.allocation_id WHERE a.grant_id=$1 AND ((w.receipt::jsonb->>'ledgerRevision')::bigint=$2 OR (w.receipt::jsonb->>'ledgerRevision')::bigint=$3)").bind::<Text,_>(&g.id).bind::<BigInt,_>(r.ledger_revision).bind::<BigInt,_>(r.fence_revision).get_result::<Amount>(db).await?.amount;
             if collision>0{return Err(Error::Conflict("parent_ledger_revision_conflict"));}
-            super::agents::executor::validate_external_ledger_receipt(db,&w.owner_user_id,&w.executor_device_id,r.ledger_revision,r.fence_revision).await?;
+            let epoch=super::agents::executor::validate_external_ledger_receipt(db,&w.owner_user_id,&w.executor_device_id,r.ledger_revision,r.fence_revision).await?;
             if a.latest_command_id!=id{return Err(Error::Conflict("parent_command_superseded"));}
             if let Some(previous)=a.receipt.as_deref().map(decode::<NativeGrantSettlementReceipt>).transpose()?
                 && (r.fence_revision!=previous.fence_revision || r.ledger_revision<=previous.ledger_revision || r.known_consumed_tokens<previous.known_consumed_tokens) {
@@ -538,7 +538,7 @@ impl DomainStore {
             }
             // A single irreversible native fence covers every child, including
             // unseen queued reserves. Central status never fabricates child receipts.
-            sql_query("UPDATE hagency_agent_v1.management_parent_commands SET state='recorded',receipt=$2,receipt_digest=$3 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(wire(r)?).bind::<Text,_>(&result_digest).execute(db).await?;
+            sql_query("UPDATE hagency_agent_v1.management_parent_commands SET state='recorded',receipt=$2,receipt_digest=$3,receipt_ledger_epoch=$4 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(wire(r)?).bind::<Text,_>(&result_digest).bind::<BigInt,_>(epoch).execute(db).await?;
             sql_query("UPDATE hagency_agent_v1.management_parent_settlements SET state=$2,receipt=$3,receipt_digest=$4,revision=revision+1 WHERE grant_id=$1").bind::<Text,_>(&g.id).bind::<Text,_>(&r.state).bind::<Text,_>(wire(r)?).bind::<Text,_>(&result_digest).execute(db).await?;
             changed(db,&g,p,policy,now).await?;Self::audit(db,p,"parent.executor.result",id,now).await?;
             Ok(ParentAcknowledgement{command_id:id.into(),command_digest:w.digest,receipt_digest:result_digest,settlement:view(db,&g.id,p,policy,now).await?})

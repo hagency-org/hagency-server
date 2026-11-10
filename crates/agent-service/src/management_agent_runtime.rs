@@ -289,8 +289,8 @@ impl DomainStore {
    if digest!=input.command_digest{return Err(Error::Conflict("runtime_command_changed"));}input.receipt.validate_for(&c)?;let receipt_digest=allocation_digest(&input.receipt)?;
    let old=sql_query("SELECT payload FROM hagency_agent_v1.management_agent_runtime_observations WHERE id=$1").bind::<Text,_>(&input.receipt.observation_id).get_result::<Json>(db).await.optional()?;
    if let Some(old)=old {if allocation_digest(&decode::<ManagedRuntimeReceipt>(&old.payload)?)?!=receipt_digest{return Err(Error::Conflict("runtime_observation_changed"));}}
-   else {if r.lease_until_ms<=now||r.lease_hash.as_deref()!=Some(hash(&input.token).as_str()){return Err(Error::Unauthorized("runtime_ticket_required"));}validate_receipt(db,&w,&r,&c,&input.receipt).await?;
-    sql_query("INSERT INTO hagency_agent_v1.management_agent_runtime_observations(id,command_id,payload,digest,ledger_revision) VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(&input.receipt.observation_id).bind::<Text,_>(id).bind::<Text,_>(wire(&input.receipt)?).bind::<Text,_>(&receipt_digest).bind::<BigInt,_>(input.receipt.ledger_revision).execute(db).await?;
+   else {if r.lease_until_ms<=now||r.lease_hash.as_deref()!=Some(hash(&input.token).as_str()){return Err(Error::Unauthorized("runtime_ticket_required"));}let epoch=validate_receipt(db,&w,&r,&c,&input.receipt).await?;
+    sql_query("INSERT INTO hagency_agent_v1.management_agent_runtime_observations(id,command_id,payload,digest,ledger_revision,ledger_epoch) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&input.receipt.observation_id).bind::<Text,_>(id).bind::<Text,_>(wire(&input.receipt)?).bind::<Text,_>(&receipt_digest).bind::<BigInt,_>(input.receipt.ledger_revision).bind::<BigInt,_>(epoch).execute(db).await?;
    }
    let now=clock(db).await?;let runtime=runtime_view(db,&r.assignment_id,now).await?;Self::authorize(db,p,crate::api::now_ms()).await?;Ok(ManagedRuntimeAcknowledgement{command_id:id.into(),command_digest:digest,receipt_digest,runtime})
   }).await
@@ -311,13 +311,14 @@ async fn runtime_sweep(db: &mut AsyncPgConnection, now: i64) -> Result<()> {
     sql_query("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE id IN(SELECT i.id FROM hagency_agent_v1.management_agent_runtime_commands c JOIN hagency_agent_v1.management_shared_assignments a ON a.id=c.assignment_id JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=a.request_id WHERE c.operation='agent.runtime.provision' AND c.expires_at_ms<=$1 AND i.state<>'fenced' AND NOT (i.payload::jsonb ? 'renewalMode') ORDER BY c.id LIMIT 64)").bind::<BigInt,_>(now).execute(db).await?;
     Ok(())
 }
+/// Returns the ledger epoch the accepted receipt is numbered in.
 async fn validate_receipt(
     db: &mut AsyncPgConnection,
     w: &Work,
     r: &RuntimeRow,
     c: &ManagedRuntimeCommand,
     v: &ManagedRuntimeReceipt,
-) -> Result<()> {
+) -> Result<i64> {
     let base: ManagedAgentReservationReceipt = decode(
         w.receipt
             .as_deref()
@@ -326,7 +327,7 @@ async fn validate_receipt(
     if v.ledger_revision <= base.ledger_revision {
         return Err(Error::Conflict("runtime_ledger_revision_changed"));
     }
-    super::validate_external_ledger_receipt(
+    let epoch = super::validate_external_ledger_receipt(
         db,
         &w.executor_owner_user_id,
         &w.executor_device_id,
@@ -334,7 +335,7 @@ async fn validate_receipt(
         v.ledger_revision,
     )
     .await?;
-    let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3 UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND ((receipt::jsonb->>'ledgerRevision')::bigint=$3 OR (receipt::jsonb->>'fenceRevision')::bigint=$3) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&w.executor_owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(v.ledger_revision).get_result::<Flag>(db).await?.matched;
+    let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3 UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$4 AND ((receipt::jsonb->>'ledgerRevision')::bigint=$3 OR (receipt::jsonb->>'fenceRevision')::bigint=$3) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&w.executor_owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(v.ledger_revision).bind::<BigInt,_>(epoch).get_result::<Flag>(db).await?.matched;
     if collision {
         return Err(Error::Conflict("runtime_ledger_revision_changed"));
     }
@@ -363,5 +364,5 @@ async fn validate_receipt(
             return Err(Error::Conflict("runtime_process_evidence_conflict"));
         }
     }
-    Ok(())
+    Ok(epoch)
 }

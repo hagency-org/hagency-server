@@ -448,8 +448,8 @@ pub(super) async fn record_in(
             let old=sql_query("SELECT payload FROM hagency_agent_v1.management_shared_process_receipts WHERE id=$1").bind::<Text,_>(&input.receipt.observation_id).get_result::<Json>(db).await.optional()?;
             if let Some(old)=old {let old:SharedAttemptProcessReceipt=decode(&old.payload)?;if allocation_digest(&old)?!=digest {return Err(Error::Conflict("shared_process_receipt_changed"));}}
             else {
-                validate_attempt_receipt(db,&r,&w,&c,&input.receipt,&ticket_mode,now).await?;
-                sql_query("INSERT INTO hagency_agent_v1.management_shared_process_receipts VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(&input.receipt.observation_id).bind::<Text,_>(id).bind::<Text,_>(wire(&input.receipt)?).bind::<Text,_>(&digest).bind::<BigInt,_>(input.receipt.ledger_revision).execute(db).await?;
+                let epoch=validate_attempt_receipt(db,&r,&w,&c,&input.receipt,&ticket_mode,now).await?;
+                sql_query("INSERT INTO hagency_agent_v1.management_shared_process_receipts(id,runtime_id,payload,digest,ledger_revision,ledger_epoch) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&input.receipt.observation_id).bind::<Text,_>(id).bind::<Text,_>(wire(&input.receipt)?).bind::<Text,_>(&digest).bind::<BigInt,_>(input.receipt.ledger_revision).bind::<BigInt,_>(epoch).execute(db).await?;
             }
             let fresh=latest_evidence(db,id,None).await?.unwrap();
                 if fresh.observation_id==input.receipt.observation_id {
@@ -465,6 +465,7 @@ pub(super) async fn record_in(
             let activity=if runtime_issuing(db,policy,&r).await?&&input.receipt.state=="qualified"&&ticket_mode=="execute" {let now=clock(db).await?;mint_activity(db,p,&r,&scope,now).await?}else{None};
             Ok(SharedAttemptAcknowledgement{observation_id:input.receipt.observation_id.clone(),receipt_digest:digest,activity,state:if r.permanent_fence&&r.state!="stopped" {"cleanup_pending".into()}else{r.state}})
 }
+/// Returns the ledger epoch the accepted receipt is numbered in.
 async fn validate_attempt_receipt(
     db: &mut AsyncPgConnection,
     r: &Runtime,
@@ -473,7 +474,7 @@ async fn validate_attempt_receipt(
     v: &SharedAttemptProcessReceipt,
     ticket_mode: &str,
     now: i64,
-) -> Result<()> {
+) -> Result<i64> {
     if v.state == "not_started" {
         // Exact local fence proof of non-issuance, accepted only on a cleanup
         // ticket after the attempt expired. A process, work item or any other
@@ -502,7 +503,7 @@ async fn validate_attempt_receipt(
     {
         return Err(Error::Conflict("shared_process_evidence_changed"));
     }
-    super::super::validate_external_ledger_receipt(
+    let epoch = super::super::validate_external_ledger_receipt(
         db,
         &w.executor_owner_user_id,
         &w.executor_device_id,
@@ -510,7 +511,7 @@ async fn validate_attempt_receipt(
         v.ledger_revision,
     )
     .await?;
-    let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3 UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND ((receipt::jsonb->>'ledgerRevision')::bigint=$3 OR (receipt::jsonb->>'fenceRevision')::bigint=$3) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&w.executor_owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(v.ledger_revision).get_result::<Flag>(db).await?.matched;
+    let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3 UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$4 AND ((receipt::jsonb->>'ledgerRevision')::bigint=$3 OR (receipt::jsonb->>'fenceRevision')::bigint=$3) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&w.executor_owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(v.ledger_revision).bind::<BigInt,_>(epoch).get_result::<Flag>(db).await?.matched;
     if collision {
         return Err(Error::Conflict("shared_process_evidence_changed"));
     }
@@ -533,5 +534,5 @@ async fn validate_attempt_receipt(
             return Err(Error::Conflict("shared_process_cannot_restart"));
         }
     }
-    Ok(())
+    Ok(epoch)
 }

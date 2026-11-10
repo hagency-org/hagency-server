@@ -9,6 +9,8 @@ use serde::de::DeserializeOwned;
 mod agents;
 #[path = "management_allocations.rs"]
 mod allocations;
+#[path = "management_executor_ledgers.rs"]
+mod ledgers;
 #[path = "management_parents.rs"]
 mod parents;
 #[path = "management_projects.rs"]

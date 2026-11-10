@@ -167,6 +167,30 @@ pub struct AgentExecutorAcknowledgement {
     pub assignment: Option<PendingManagedAssignment>,
 }
 
+/// The owner ledger database an executor device now numbers its receipts
+/// from. The id is chosen by the device when it creates that database.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutorLedgerInput {
+    pub ledger_id: String,
+}
+impl ExecutorLedgerInput {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !valid_digest(&self.ledger_id) {
+            return Err(Error::Invalid("invalid_agent_executor_ledger"));
+        }
+        Ok(())
+    }
+}
+/// Receipt numbers are unique within one epoch. Epoch 0 is a device that has
+/// never declared a ledger.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutorLedger {
+    pub ledger_id: String,
+    pub epoch: i64,
+}
+
 /// Immutable owner-authorized credit for exactly one calendar period. It is
 /// delivered through the enrolled executor queue and never mints central credit.
 #[derive(Clone, Debug, Serialize, Deserialize)]

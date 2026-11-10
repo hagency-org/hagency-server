@@ -834,9 +834,9 @@ impl DomainStore {
             if let Some(request)=&r.admission_request_id
                 && sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants g WHERE g.contribution_id=$1 AND g.receipt::jsonb->>'admissionRequestId'=$2 AND g.receipt::jsonb->>'periodKey'=$3 AND NOT (g.state='revoked' AND g.succession IS NOT DISTINCT FROM 'renewal' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests q WHERE q.pool_grant_id=g.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents i WHERE i.payload::jsonb->'poolGrant'->>'grantId'=g.id))) AS matched").bind::<Text,_>(id).bind::<Text,_>(request).bind::<Text,_>(&r.period_key).get_result::<Flag>(db).await?.matched
             {return Err(Error::Conflict("resource_grant_already_exists"));}
-            super::agents::executor::validate_external_ledger_receipt(db,&p.user_id,executor,r.ledger_revision,r.ledger_revision).await?;
-            sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms,chain_root_id,period_start_ms) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$1,$11)")
-                .bind::<Text,_>(&r.grant_id).bind::<Text,_>(id).bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(generation).bind::<Text,_>(wire(r)?).bind::<Text,_>(&receipt_digest).bind::<Text,_>(&r.period_key).bind::<BigInt,_>(r.delegation_expires_at_ms.min(r.period_end_ms)).bind::<BigInt,_>(now).bind::<BigInt,_>(r.period_start_ms).execute(db).await?;
+            let epoch=super::agents::executor::validate_external_ledger_receipt(db,&p.user_id,executor,r.ledger_revision,r.ledger_revision).await?;
+            sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms,chain_root_id,period_start_ms,ledger_epoch) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$1,$11,$12)")
+                .bind::<Text,_>(&r.grant_id).bind::<Text,_>(id).bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(generation).bind::<Text,_>(wire(r)?).bind::<Text,_>(&receipt_digest).bind::<Text,_>(&r.period_key).bind::<BigInt,_>(r.delegation_expires_at_ms.min(r.period_end_ms)).bind::<BigInt,_>(now).bind::<BigInt,_>(r.period_start_ms).bind::<BigInt,_>(epoch).execute(db).await?;
             if initial_publication {
                 sql_query("UPDATE hagency_agent_v1.management_contributions SET state='pending_admission',revision=revision+1,updated_at_ms=$2 WHERE id=$1").bind::<Text,_>(id).bind::<BigInt,_>(now).execute(db).await?;
                 sql_query("UPDATE hagency_agent_v1.management_requests SET state='pending',created_at_ms=$2,expires_at_ms=$3 WHERE id=$1 AND state='draft'").bind::<Text,_>(&c.request_id).bind::<BigInt,_>(now).bind::<BigInt,_>(now+TTL).execute(db).await?;
@@ -945,18 +945,18 @@ impl DomainStore {
             // still refuses to publish below what it knows the chain holds.
             let reserved=if r.calendar.is_some() && succession.renewal() {0}else{super::agents::chain_reserved_total(db,&pred.chain_root_id,&self.server).await?};
             if r.allocated_tokens<reserved {return Err(Error::Conflict("grant_successor_below_reserved"));}
-            if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(r.ledger_revision).get_result::<Flag>(db).await?.matched
+            let epoch=super::agents::executor::validate_external_ledger_receipt(db,&p.user_id,executor,r.ledger_revision,r.ledger_revision).await?;
+            if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(r.ledger_revision).bind::<BigInt,_>(epoch).get_result::<Flag>(db).await?.matched
             {return Err(Error::Conflict("agent_executor_ledger_revision_changed"));}
-            super::agents::executor::validate_external_ledger_receipt(db,&p.user_id,executor,r.ledger_revision,r.ledger_revision).await?;
             if !succession.renewal() {
                 // Supersede first: the (contribution, month) active index admits one.
                 let changed=sql_query("UPDATE hagency_agent_v1.management_resource_grants SET state='superseded',revision=revision+1 WHERE id=$1 AND state='active'").bind::<Text,_>(id).execute(db).await?;
                 if changed!=1 {return Err(Error::Conflict("grant_predecessor_not_effective"));}
             }
-            sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms,chain_root_id,predecessor_grant_id,succession,period_start_ms) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$11,$12,$13,$14)")
+            sql_query("INSERT INTO hagency_agent_v1.management_resource_grants(id,contribution_id,owner_user_id,executor_device_id,executor_generation,receipt,receipt_digest,state,period_key,expires_at_ms,observed_at_ms,chain_root_id,predecessor_grant_id,succession,period_start_ms,ledger_epoch) VALUES($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$11,$12,$13,$14,$15)")
                 .bind::<Text,_>(&r.grant_id).bind::<Text,_>(&pred.contribution_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(generation)
                 .bind::<Text,_>(wire(r)?).bind::<Text,_>(&receipt_digest).bind::<Text,_>(&r.period_key).bind::<BigInt,_>(r.delegation_expires_at_ms.min(r.period_end_ms)).bind::<BigInt,_>(now)
-                .bind::<Text,_>(&pred.chain_root_id).bind::<Text,_>(id).bind::<Text,_>(&succession.kind).bind::<BigInt,_>(r.period_start_ms).execute(db).await?;
+                .bind::<Text,_>(&pred.chain_root_id).bind::<Text,_>(id).bind::<Text,_>(&succession.kind).bind::<BigInt,_>(r.period_start_ms).bind::<BigInt,_>(epoch).execute(db).await?;
             let result=grant_view(&grant(db,&r.grant_id).await?,now)?;
             Self::audit(db,p,"grant.succeed",&r.grant_id,now).await?;receipt(db,p,&input.command_id,"grant.succeed",&payload_digest,&result).await?;Ok(result)
         }).await
@@ -1254,7 +1254,7 @@ impl DomainStore {
             let a=allocation(db,&w.allocation_id).await?;let g=grant(db,&a.grant_id).await?;
             if r.state=="released" && r.retained_tokens < super::usage::known(db,super::usage::Scope::Allocation(&a.id)).await? {return Err(Error::Conflict("executor_usage_changed"));}
             super::parents::validate_child_receipt(db,&a.grant_id,r).await?;
-            super::agents::executor::validate_external_ledger_receipt(db,&w.owner_user_id,&w.executor_device_id,r.ledger_revision,r.ledger_revision).await?;
+            let epoch=super::agents::executor::validate_external_ledger_receipt(db,&w.owner_user_id,&w.executor_device_id,r.ledger_revision,r.ledger_revision).await?;
             // Release cannot predate a reservation result already observed here.
             // A late historical reserve receipt is still accepted after a newer
             // release, but never replaces that release's projection.
@@ -1263,7 +1263,7 @@ impl DomainStore {
             if w.operation=="project.release" && previous_balance.iter().chain(previous_result.iter()).any(|previous| r.ledger_revision <= previous.ledger_revision) {return Err(Error::Conflict("executor_ledger_revision_changed"));}
             if w.operation=="project.reserve" && r.state=="reserved" && previous_balance.as_ref().is_some_and(|previous| previous.state=="released" && r.ledger_revision>=previous.ledger_revision) {return Err(Error::Conflict("executor_ledger_revision_changed"));}
             let advance_balance=r.state!="refused" && previous_balance.as_ref().is_none_or(|previous| r.ledger_revision>previous.ledger_revision);
-            sql_query("UPDATE hagency_agent_v1.management_executor_commands SET state='recorded',receipt=$2,receipt_digest=$3 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(wire(r)?).bind::<Text,_>(&result_digest).execute(db).await?;
+            sql_query("UPDATE hagency_agent_v1.management_executor_commands SET state='recorded',receipt=$2,receipt_digest=$3,receipt_ledger_epoch=$4 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(wire(r)?).bind::<Text,_>(&result_digest).bind::<BigInt,_>(epoch).execute(db).await?;
             let state=if w.operation=="project.release" {
                 if a.release_command_id.as_deref()!=Some(id){return Err(Error::Conflict("executor_command_superseded"));}
                 if r.state=="released"{"released"}else{"release_blocked"}

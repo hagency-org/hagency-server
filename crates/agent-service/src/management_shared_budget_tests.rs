@@ -821,7 +821,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
     for _ in 0..2 {
         f.domain = DomainStore::open(&f.url, "example.test", "_hagency_test_").await.unwrap();
     }
-    assert_eq!(sql_query("SELECT version::bigint AS version FROM hagency_agent_v1.management_deployment").get_result::<SchemaVersion>(&mut db).await.unwrap().version, 34);
+    assert_eq!(sql_query("SELECT version::bigint AS version FROM hagency_agent_v1.management_deployment").get_result::<SchemaVersion>(&mut db).await.unwrap().version, 35);
     let pin = apply_delta(&f, &r, &admin, 25, 230).await;
     let offered = f
         .domain
@@ -1427,4 +1427,23 @@ async fn budget_execution_v3_uncertain_claim_is_time_bounded_and_chain_continues
     assert!(next.execution_allowed);
     assert_eq!(next.command.process_attempt, d.command.process_attempt + 1);
     f.domain.reset_management_test_clock().await.unwrap();
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn budget_execution_v3_process_revision_is_free_again_in_a_newly_declared_ledger() {
+    let (f, r, admin, m, i) = Box::pin(fixture()).await;
+    let assignment = i.assignment_id.clone();
+    replace_ledger(&f).await;
+    started(&f, &m, i).await;
+    revoke(&f, &r, &admin).await;
+    // The budget successor's evidence 240 is the new ledger's and taken. The
+    // applied increase was mutation 230 of the ledger that was replaced.
+    let fence = poll(&f).await;
+    assert_eq!(
+        submit(&f, &fence, fence_at(&fence, 240)).await.unwrap_err().to_string(),
+        "agent_executor_ledger_revision_changed"
+    );
+    submit(&f, &fence, fence_at(&fence, 230)).await.unwrap();
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    assert!(sql_query("SELECT array_agg(o.ledger_epoch ORDER BY o.ledger_revision)=ARRAY[0,0,1]::bigint[] AS matched FROM hagency_agent_v1.management_shared_process_receipts o JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=o.runtime_id WHERE r.assignment_id=$1").bind::<Text, _>(&assignment).get_result::<Check>(&mut db).await.unwrap().matched);
 }

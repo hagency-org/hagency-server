@@ -1000,7 +1000,7 @@ async fn shared_runtime_v11_migration_is_atomic_preserves_original_v1() {
             .is_none()
     );
     assert!(
-        sql_query("SELECT version=34 AS matched FROM hagency_agent_v1.management_deployment")
+        sql_query("SELECT version=35 AS matched FROM hagency_agent_v1.management_deployment")
             .get_result::<Check>(&mut db)
             .await
             .unwrap()
