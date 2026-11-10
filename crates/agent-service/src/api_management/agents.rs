@@ -54,7 +54,7 @@ pub(super) async fn call(
         .map_err(|_| Error::Unavailable("encoding_failed"))?,
         (&Method::POST, ["executor-ledger", "declare"]) => serde_json::to_value(
             domain
-                .declare_executor_ledger(p, body(req).await?)
+                .declare_executor_ledger(p, policy, body(req).await?)
                 .await?,
         )
         .map_err(|_| Error::Unavailable("encoding_failed"))?,

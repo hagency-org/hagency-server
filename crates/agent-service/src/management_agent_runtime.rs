@@ -222,7 +222,7 @@ impl DomainStore {
         }
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;runtime_sweep(db,now).await?;sweep(db,p,now).await?;
-   let assignments=sql_query("SELECT id AS payload FROM hagency_agent_v1.management_shared_assignments WHERE executor_owner_user_id=$1 AND executor_device_id=$2 AND id>$3 ORDER BY id LIMIT 32").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).load::<Json>(db).await?;
+   let assignments=sql_query("SELECT id AS payload FROM hagency_agent_v1.management_shared_assignments WHERE executor_owner_user_id=$1 AND executor_device_id=$2 AND NOT hagency_agent_v1.executor_ledger_replaced_request(request_id) AND id>$3 ORDER BY id LIMIT 32").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).load::<Json>(db).await?;
    for a in assignments {
     let existing=sql_query("SELECT * FROM hagency_agent_v1.management_agent_runtime_commands WHERE assignment_id=$1 ORDER BY operation DESC").bind::<Text,_>(&a.payload).load::<RuntimeRow>(db).await?;
     for r in &existing {let d=runtime_delivery(db,p,policy,r,&self.server,false,None).await?;if d.execution_allowed{return Ok(Some(d));}}
@@ -329,6 +329,7 @@ async fn validate_receipt(
     }
     let epoch = super::validate_external_ledger_receipt(
         db,
+        crate::domain::management::ledgers::Subject::Request(&w.request_id),
         &w.executor_owner_user_id,
         &w.executor_device_id,
         v.ledger_revision,

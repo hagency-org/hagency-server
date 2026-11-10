@@ -248,11 +248,15 @@ async fn projection(
 // caller stores it with the receipt it accepts.
 pub(in crate::domain::management) async fn validate_external_ledger_receipt(
     db: &mut AsyncPgConnection,
+    subject: super::super::ledgers::Subject<'_>,
     owner: &str,
     device: &str,
     revision: i64,
     fence_revision: i64,
 ) -> Result<i64> {
+    // Every path that accepts a numbered receipt comes through here, so no
+    // receipt for anything of a replaced ledger database is ever stored.
+    super::super::ledgers::refuse_replaced(db, subject).await?;
     let epoch = super::super::ledgers::current_epoch(db, owner, device).await?;
     let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands w JOIN hagency_agent_v1.management_agent_intents i ON i.id=w.intent_id WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND w.receipt IS NOT NULL AND w.receipt_ledger_epoch=$5 AND ((w.receipt::jsonb->>'ledgerRevision')::bigint IN ($3,$4) OR (w.receipt::jsonb->>'fenceRevision')::bigint IN ($3,$4)) UNION ALL SELECT 1 FROM hagency_agent_v1.management_agent_runtime_observations o JOIN hagency_agent_v1.management_agent_runtime_commands c ON c.id=o.command_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=c.assignment_id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND o.ledger_epoch=$5 AND o.ledger_revision IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_shared_process_receipts o JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=o.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND o.ledger_epoch=$5 AND o.ledger_revision IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_shared_work_receipts o JOIN hagency_agent_v1.management_shared_work w ON w.id=o.work_id JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND o.ledger_epoch=$5 AND o.ledger_revision IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_agent_budget_results o JOIN hagency_agent_v1.management_agent_budget_commands c ON c.id=o.command_id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND o.ledger_epoch=$5 AND o.ledger_revision IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_agent_settlement_results o JOIN hagency_agent_v1.management_agent_settlement_commands c ON c.id=o.command_id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND o.ledger_epoch=$5 AND o.ledger_revision IN ($3,$4)) AS matched").bind::<Text,_>(owner).bind::<Text,_>(device).bind::<BigInt,_>(revision).bind::<BigInt,_>(fence_revision).bind::<BigInt,_>(epoch).get_result::<Flag>(db).await?.matched;
     if collision {
@@ -270,6 +274,9 @@ async fn deliver(
 ) -> Result<AgentExecutorDelivery> {
     owner(w, p)?;
     let (c, digest) = command(w, server)?;
+    if w.receipt.is_none() {
+        super::super::ledgers::refuse_replaced(db, super::super::ledgers::Subject::Request(&w.request_id)).await?;
+    }
     let now = clock(db).await?;
     let current = match &c {
         AgentExecutorCommand::Reserve(c) => live(db, w, c, now).await?,
@@ -367,7 +374,7 @@ async fn validate_result(
         _=>false,
     };
     if period_fence_conflict {return Err(Error::Conflict("agent_executor_fence_conflict"));}
-    let epoch=validate_external_ledger_receipt(db,&w.executor_owner_user_id,&w.executor_device_id,r.revision(),fence_revision).await?;
+    let epoch=validate_external_ledger_receipt(db,super::super::ledgers::Subject::Request(&w.request_id),&w.executor_owner_user_id,&w.executor_device_id,r.revision(),fence_revision).await?;
     let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$5 AND (receipt::jsonb->>'ledgerRevision')::bigint IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$5 AND ((receipt::jsonb->>'ledgerRevision')::bigint IN ($3,$4) OR (receipt::jsonb->>'fenceRevision')::bigint IN ($3,$4)) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND ledger_epoch=$5 AND (receipt::jsonb->>'ledgerRevision')::bigint IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_agent_runtime_observations o JOIN hagency_agent_v1.management_agent_runtime_commands c ON c.id=o.command_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=c.assignment_id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND o.ledger_epoch=$5 AND o.ledger_revision IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_shared_process_receipts o JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=o.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND o.ledger_epoch=$5 AND o.ledger_revision IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_shared_work_receipts o JOIN hagency_agent_v1.management_shared_work w ON w.id=o.work_id JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND o.ledger_epoch=$5 AND o.ledger_revision IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_agent_budget_results o JOIN hagency_agent_v1.management_agent_budget_commands c ON c.id=o.command_id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND o.ledger_epoch=$5 AND o.ledger_revision IN ($3,$4) UNION ALL SELECT 1 FROM hagency_agent_v1.management_agent_settlement_results o JOIN hagency_agent_v1.management_agent_settlement_commands c ON c.id=o.command_id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND o.ledger_epoch=$5 AND o.ledger_revision IN ($3,$4)) AS matched").bind::<Text,_>(&w.executor_owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(r.revision()).bind::<BigInt,_>(fence_revision).bind::<BigInt,_>(epoch).get_result::<Flag>(db).await?.matched;
     if collision {
         return Err(Error::Conflict("agent_executor_ledger_revision_changed"));
@@ -433,7 +440,7 @@ impl DomainStore {
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
    Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;sweep(db,p,now).await?;Box::pin(super::periods::automatic(db,p,now,&self.server)).await?;
-   let w=sql_query(format!("{WORK} WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND w.receipt IS NULL AND w.lease_until_ms<=$3 AND (w.operation<>'agent.period.renew' OR (w.command_payload::jsonb->>'expiresAtMs')::bigint>$3) ORDER BY (w.operation='agent.fence') DESC,(w.id<=$4),w.id LIMIT 1")).bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(now).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<Work>(db).await.optional()?;
+   let w=sql_query(format!("{WORK} WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND w.receipt IS NULL AND w.lease_until_ms<=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_request(i.request_id) AND (w.operation<>'agent.period.renew' OR (w.command_payload::jsonb->>'expiresAtMs')::bigint>$3) ORDER BY (w.operation='agent.fence') DESC,(w.id<=$4),w.id LIMIT 1")).bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(now).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<Work>(db).await.optional()?;
    match w {Some(w)=>Ok(Some(deliver(db,p,policy,&w,&self.server,false).await?)),None=>Ok(None)}
   }).await
     }
@@ -478,6 +485,7 @@ impl DomainStore {
    if let Some(saved)=&w.receipt_digest {
     if saved!=&receipt_digest{return Err(Error::Conflict("agent_executor_result_conflict"));}
    }else{
+    super::super::ledgers::refuse_replaced(db,super::super::ledgers::Subject::Request(&w.request_id)).await?;
     if w.lease_until_ms<=now || w.lease_hash.as_deref()!=Some(hash(&input.token).as_str()){return Err(Error::Unauthorized("agent_executor_ticket_required"));}
     let epoch=validate_result(db,&w,&c,&input.receipt).await?;
     sql_query("UPDATE hagency_agent_v1.management_agent_executor_commands SET state='recorded',receipt=$2,receipt_digest=$3,receipt_ledger_epoch=$4 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(wire(&input.receipt)?).bind::<Text,_>(&receipt_digest).bind::<BigInt,_>(epoch).execute(db).await?;

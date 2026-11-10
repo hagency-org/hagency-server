@@ -135,13 +135,32 @@ fn fence_at(d: &AgentExecutorDelivery, revision: i64) -> AgentExecutorResultInpu
     receipt.ledger_revision = revision;
     result
 }
-/// The owner device replaced its ledger database and declares the new one.
+/// The owner device declares a ledger database for the first time without
+/// calling it fresh: its receipts are numbered anew, and everything it
+/// reported before stays in place.
 async fn replace_ledger(f: &Fixture) {
     f.domain
         .declare_executor_ledger(
             &f.owner.p,
+            &f.policy,
             ExecutorLedgerInput {
                 ledger_id: crate::hash(&secret_token()),
+                fresh: false,
+            },
+        )
+        .await
+        .unwrap();
+}
+/// The owner device declares a ledger database it created empty: whatever
+/// the earlier database held is ended.
+async fn fresh_ledger(f: &Fixture) {
+    f.domain
+        .declare_executor_ledger(
+            &f.owner.p,
+            &f.policy,
+            ExecutorLedgerInput {
+                ledger_id: crate::hash(&secret_token()),
+                fresh: true,
             },
         )
         .await

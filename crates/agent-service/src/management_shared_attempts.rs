@@ -377,7 +377,7 @@ impl DomainStore {
             // A process stop does not acknowledge its work receipt. Recover
             // missing accounting with a history ticket, never execution authority.
             // A time-bound stop stays discoverable until its explicit evidence.
-            let id=sql_query("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE r.payload::jsonb->>'version'='2' AND a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND ($5 OR r.payload::jsonb->'originalRuntimeCommand'->>'version'='1') AND ((r.state<>'stopped' AND (r.state<>'qualified' OR r.permanent_fence OR r.activity_until_ms<=$4)) OR (r.state='stopped' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w WHERE w.runtime_id=r.id AND w.started_at_ms IS NOT NULL AND w.latest_receipt IS NULL)) OR (r.state='stopped' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_process_receipts o WHERE o.runtime_id=r.id AND o.payload::jsonb->>'state' IN ('stopped','not_started')))) ORDER BY (r.id<=$3),r.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<BigInt,_>(now).bind::<Bool,_>(allow_claude).get_result::<Id>(db).await.optional()?;
+            let id=sql_query("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE r.payload::jsonb->>'version'='2' AND a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id) AND ($5 OR r.payload::jsonb->'originalRuntimeCommand'->>'version'='1') AND ((r.state<>'stopped' AND (r.state<>'qualified' OR r.permanent_fence OR r.activity_until_ms<=$4)) OR (r.state='stopped' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w WHERE w.runtime_id=r.id AND w.started_at_ms IS NOT NULL AND w.latest_receipt IS NULL)) OR (r.state='stopped' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_process_receipts o WHERE o.runtime_id=r.id AND o.payload::jsonb->>'state' IN ('stopped','not_started')))) ORDER BY (r.id<=$3),r.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<BigInt,_>(now).bind::<Bool,_>(allow_claude).get_result::<Id>(db).await.optional()?;
             let Some(id)=id else{return Ok(None)};let r=runtime(db,&id.id).await?;Ok(Some(attempt_delivery(db,p,policy,&r,&self.server,false,None).await?))
         }).await
     }
@@ -505,6 +505,7 @@ async fn validate_attempt_receipt(
     }
     let epoch = super::super::validate_external_ledger_receipt(
         db,
+        crate::domain::management::ledgers::Subject::Request(&w.request_id),
         &w.executor_owner_user_id,
         &w.executor_device_id,
         v.ledger_revision,

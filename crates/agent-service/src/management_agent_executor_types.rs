@@ -173,6 +173,11 @@ pub struct AgentExecutorAcknowledgement {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutorLedgerInput {
     pub ledger_id: String,
+    /// The device knows this database holds nothing of an earlier one: it was
+    /// created empty. A first declaration then also ends what the device
+    /// reported before it declared anything. Every later new id does so anyway.
+    #[serde(default)]
+    pub fresh: bool,
 }
 impl ExecutorLedgerInput {
     pub(crate) fn validate(&self) -> Result<()> {

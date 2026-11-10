@@ -19,7 +19,14 @@ DO $$ BEGIN
    RETURN NEW;
   END;
   $fn$;
+  DROP TRIGGER retain_replaced_contribution ON hagency_agent_v1.management_contributions;
+  DROP INDEX hagency_agent_v1.management_contribution_resource;
+  ALTER TABLE hagency_agent_v1.management_contributions DROP COLUMN ledger_replaced_epoch;
+  ALTER TABLE hagency_agent_v1.management_contributions ADD UNIQUE(owner_user_id,executor_device_id,resource_id);
+  DROP FUNCTION hagency_agent_v1.executor_ledger_replaced_request(text);
+  DROP FUNCTION hagency_agent_v1.executor_ledger_replaced_grant(text);
   DROP TABLE hagency_agent_v1.management_executor_ledgers;
+  DROP FUNCTION hagency_agent_v1.retain_executor_ledger();
   ALTER TABLE hagency_agent_v1.management_agent_runtime_observations DROP COLUMN ledger_epoch;
   ALTER TABLE hagency_agent_v1.management_shared_process_receipts DROP COLUMN ledger_epoch;
   ALTER TABLE hagency_agent_v1.management_shared_work_receipts DROP COLUMN ledger_epoch;

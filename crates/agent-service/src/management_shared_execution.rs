@@ -448,7 +448,7 @@ impl DomainStore {
                 FROM hagency_agent_v1.management_shared_assignments a
                 LEFT JOIN hagency_agent_v1.management_shared_runtimes r ON r.assignment_id=a.id AND (r.payload::jsonb->>'version'='1' OR ($8 AND r.payload::jsonb->>'version'='4')) AND NOT r.issuance_void
                 LEFT JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id
-                WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND (
+                WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id) AND (
                     (r.id IS NOT NULL AND ((r.state<>'stopped' AND
                      (r.state<>'qualified' OR r.permanent_fence OR r.activity_until_ms<=$5))
                      OR (r.state='stopped' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w
@@ -709,6 +709,7 @@ async fn validate_receipt(
     }
     let epoch = super::validate_external_ledger_receipt(
         db,
+        crate::domain::management::ledgers::Subject::Request(&w.request_id),
         &w.executor_owner_user_id,
         &w.executor_device_id,
         v.ledger_revision,

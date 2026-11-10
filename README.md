@@ -100,9 +100,20 @@ device that never declares behaves as before, so the server can be deployed
 before any client changes. It is forward-only like schema 34: an older binary
 refuses a schema 35 database with `management_schema_incompatible`, and
 `management_executor_ledgers_down.sql` is a test fixture that refuses to run
-once any ledger has been declared. Ordering rules still compare bare numbers
-across ledgers: a grant, Agent or runtime created under the replaced database
-accepts later receipts only above the numbers that database reported.
+once any ledger has been declared.
+
+A declaration that replaces a declared database, or a first declaration sent
+with `"fresh": true`, ends what the earlier database held for that device, in
+the same transaction: its pools and grants are revoked, its pooled Agents are
+fenced, its project allocations and parent settlements are closed, and its
+unanswered commands are never delivered or answered again
+(`executor_ledger_replaced`). Recorded receipts and history are kept as they
+are, and usage the device never reported is not added. Other devices, other
+owners and the owner's local Agents are not touched. A first declaration
+without `fresh` only names the database the device already had and ends
+nothing. For what such a device keeps, ordering rules still compare bare
+numbers across ledgers: a grant, Agent or runtime created before the
+declaration accepts later receipts only above the numbers already reported.
 
 Registration is disabled by default. Initializers refuse to overwrite existing
 configuration. For existing data, see [migration instructions](docs/guide.md#upgrading-the-former-combined-database).

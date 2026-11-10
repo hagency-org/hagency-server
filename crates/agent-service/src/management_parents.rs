@@ -171,6 +171,31 @@ async fn view(
         0
     };
     let known = super::usage::known(db, super::usage::Scope::Grant(id)).await?;
+    if super::ledgers::replaced(db, super::ledgers::Subject::Grant(id)).await? {
+        // The ledger database that held this grant was replaced. Its holds
+        // went with it and nothing more will be reported: the grant is closed
+        // at the usage the server recorded. A stored receipt stays as it was.
+        let consumed = receipt
+            .as_ref()
+            .map_or(known, |r| r.known_consumed_tokens.max(known));
+        return Ok(ParentSettlement {
+            grant_id: id.into(),
+            grant_revision: g.revision,
+            revision: a.as_ref().map_or(0, |a| a.revision),
+            state: "closed".into(),
+            original_granted_tokens: original.allocated_tokens,
+            held_tokens: consumed,
+            known_consumed_tokens: (receipt.is_some() || consumed > 0).then_some(consumed),
+            unresolved_tokens: receipt.as_ref().map(|_| 0),
+            known_unused_released_tokens: original.allocated_tokens.saturating_sub(consumed).max(0),
+            overrun_tokens: consumed.saturating_sub(original.allocated_tokens).max(0),
+            unreconciled_child_tokens: 0,
+            can_close: false,
+            can_settle: false,
+            receipt,
+            receipt_digest: a.and_then(|a| a.receipt_digest),
+        });
+    }
     // A late call may arrive after a previously accepted zero settlement. Keep
     // original receipts immutable and conservatively add newly known liability
     // until a newer native aggregate explicitly includes it.
@@ -270,6 +295,11 @@ pub(super) async fn enqueue_close(
     now: i64,
 ) -> Result<()> {
     if !policy.parent_settlement() || parent(db, id).await?.is_some() {
+        return Ok(());
+    }
+    // The ledger database that held this grant is gone: there is no native
+    // close to ask for.
+    if super::ledgers::replaced(db, super::ledgers::Subject::Grant(id)).await? {
         return Ok(());
     }
     let g = grant(db, id).await?;
@@ -399,6 +429,7 @@ impl DomainStore {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;let g=grant(db,id).await?;
             if !reducing_actor(p,policy,&g){return Err(Error::Unauthorized("parent_close_forbidden"));}
             if let Some(saved)=replay::<ParentSettlement>(db,p,&input.command_id,"parent.settle",&digest).await?{return view(db,&saved.grant_id,p,policy,now).await;}
+            super::ledgers::refuse_replaced(db,super::ledgers::Subject::Grant(id)).await?;
             let a=parent(db,id).await?.ok_or(Error::Conflict("parent_close_required"))?;
             if a.revision!=input.expected_revision{return Err(Error::Conflict("management_revision_changed"));}
             if a.receipt_digest.is_none() || work(db,&a.latest_command_id).await?.state!="recorded"{return Err(Error::Conflict("parent_outcome_unknown"));}
@@ -440,6 +471,9 @@ async fn deliver(
     historical: bool,
 ) -> Result<ParentDelivery> {
     executor(w, p)?;
+    if w.receipt.is_none() {
+        super::ledgers::refuse_replaced(db, super::ledgers::Subject::Grant(&w.grant_id)).await?;
+    }
     let token = crate::secret_token();
     let until = now + 30000;
     sql_query("UPDATE hagency_agent_v1.management_parent_commands SET state=CASE WHEN state='pending' THEN 'issued' ELSE state END,lease_hash=$2,lease_until_ms=$3 WHERE id=$1").bind::<Text,_>(&w.id).bind::<Text,_>(hash(&token)).bind::<BigInt,_>(until).execute(db).await?;
@@ -467,7 +501,7 @@ impl DomainStore {
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
-            let w=sql_query("SELECT * FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND state<>'recorded' AND lease_until_ms<=$3 ORDER BY (id<=$4),id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(now).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<Work>(db).await.optional()?;
+            let w=sql_query("SELECT * FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND state<>'recorded' AND lease_until_ms<=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_grant(grant_id) ORDER BY (id<=$4),id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(now).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<Work>(db).await.optional()?;
             match w{Some(w)=>Ok(Some(deliver(db,p,&w,now,false).await?)),None=>Ok(None)}
         }).await
     }
@@ -520,6 +554,7 @@ impl DomainStore {
                 if previous!=&result_digest{return Err(Error::Conflict("executor_result_conflict"));}
                 return Ok(ParentAcknowledgement{command_id:id.into(),command_digest:w.digest,receipt_digest:result_digest,settlement:view(db,&w.grant_id,p,policy,now).await?});
             }
+            super::ledgers::refuse_replaced(db,super::ledgers::Subject::Grant(&w.grant_id)).await?;
             if w.lease_until_ms<=now || w.lease_hash.as_deref()!=Some(hash(&input.token).as_str()){return Err(Error::Unauthorized("executor_result_ticket_required"));}
             let g=grant(db,&w.grant_id).await?;let original:NativeGrantReceipt=decode(&g.receipt)?;let a=parent(db,&w.grant_id).await?.ok_or(Error::Unavailable("invalid_parent_record"))?;
             let r=&input.receipt;
@@ -530,7 +565,7 @@ impl DomainStore {
             if r.fence_revision<=last_reserve{return Err(Error::Conflict("parent_fence_revision_conflict"));}
             let collision=sql_query("SELECT COUNT(*) AS amount FROM hagency_agent_v1.management_executor_commands w JOIN hagency_agent_v1.management_allocations a ON a.id=w.allocation_id WHERE a.grant_id=$1 AND ((w.receipt::jsonb->>'ledgerRevision')::bigint=$2 OR (w.receipt::jsonb->>'ledgerRevision')::bigint=$3)").bind::<Text,_>(&g.id).bind::<BigInt,_>(r.ledger_revision).bind::<BigInt,_>(r.fence_revision).get_result::<Amount>(db).await?.amount;
             if collision>0{return Err(Error::Conflict("parent_ledger_revision_conflict"));}
-            let epoch=super::agents::executor::validate_external_ledger_receipt(db,&w.owner_user_id,&w.executor_device_id,r.ledger_revision,r.fence_revision).await?;
+            let epoch=super::agents::executor::validate_external_ledger_receipt(db,super::ledgers::Subject::Grant(&w.grant_id),&w.owner_user_id,&w.executor_device_id,r.ledger_revision,r.fence_revision).await?;
             if a.latest_command_id!=id{return Err(Error::Conflict("parent_command_superseded"));}
             if let Some(previous)=a.receipt.as_deref().map(decode::<NativeGrantSettlementReceipt>).transpose()?
                 && (r.fence_revision!=previous.fence_revision || r.ledger_revision<=previous.ledger_revision || r.known_consumed_tokens<previous.known_consumed_tokens) {

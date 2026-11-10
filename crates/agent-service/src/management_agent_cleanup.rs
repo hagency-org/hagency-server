@@ -39,13 +39,18 @@ impl DomainStore {
             let process = sql_query("SELECT json_build_object('kind',kind,'state',payload::jsonb->>'state','ledgerRevision',ledger_revision)::text AS payload FROM (SELECT 'shared_text' AS kind,o.payload,o.ledger_revision FROM hagency_agent_v1.management_shared_process_receipts o JOIN hagency_agent_v1.management_shared_runtimes x ON x.id=o.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=x.assignment_id WHERE a.request_id=$1 AND x.id=(SELECT head.id FROM hagency_agent_v1.management_shared_runtimes head WHERE head.assignment_id=a.id ORDER BY head.issuance_void,coalesce((head.payload::jsonb->>'processAttempt')::bigint,1) DESC LIMIT 1) UNION ALL SELECT 'qualification',o.payload,o.ledger_revision FROM hagency_agent_v1.management_agent_runtime_observations o JOIN hagency_agent_v1.management_agent_runtime_commands c ON c.id=o.command_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=c.assignment_id WHERE a.request_id=$1 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes head WHERE head.assignment_id=a.id)) observations ORDER BY ledger_revision DESC LIMIT 1").bind::<Text,_>(id).get_result::<Json>(db).await.optional()?.map(|v|decode::<AgentProcessObservation>(&v.payload)).transpose()?;
             let matrix = sql_query("SELECT json_build_object('state',m.state,'cleanupObservedAtMs',m.cleanup_observed_at_ms)::text AS payload FROM hagency_agent_v1.management_agent_matrix m JOIN hagency_agent_v1.management_shared_assignments a ON a.id=m.assignment_id WHERE a.request_id=$1").bind::<Text,_>(id).get_result::<Json>(db).await.optional()?.map(|v|decode::<AgentMatrixCleanup>(&v.payload)).transpose()?;
             let observed = sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work_receipts o JOIN hagency_agent_v1.management_shared_work w ON w.id=o.work_id JOIN hagency_agent_v1.management_shared_runtimes x ON x.id=w.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=x.assignment_id WHERE a.request_id=$1) AS matched").bind::<Text,_>(id).get_result::<Flag>(db).await?.matched;
+            // The owner device replaced the ledger database that held this
+            // fenced Agent. It cannot report on it again, so usage it never
+            // reported counts as none and the hold only that database could
+            // confirm is no longer shown as held.
+            let replaced = native_fence.is_some() && crate::domain::management::ledgers::replaced(db,crate::domain::management::ledgers::Subject::Request(id)).await?;
             let known = usage::known(db,usage::Scope::Agent(id)).await?;
-            let known = (observed || native.is_some()).then(||known.max(native.as_ref().map_or(0,|v|v.known_consumed_tokens)));
+            let known = (observed || native.is_some() || replaced).then(||known.max(native.as_ref().map_or(0,|v|v.known_consumed_tokens)));
             // Null/unknown cleanup cannot erase a previously confirmed hold.
             // Only a complete native fence can lower that original balance;
             // subsequent consumed usage remains an independent lower bound.
             let mut retained_floor = native.as_ref().and_then(|v|v.retained_tokens);
-            if native.as_ref().is_none_or(|v|!v.usage_complete) {
+            if !replaced && native.as_ref().is_none_or(|v|!v.usage_complete) {
                 retained_floor = retained_floor.into_iter().chain(original_reserve.as_ref().filter(|v|v.state=="reserved").map(|v|v.retained_tokens)).max();
                 retained_floor = retained_floor.into_iter().chain(budget::cleanup_commitment(db,id,&self.server).await?).max();
             }

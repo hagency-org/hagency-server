@@ -1628,3 +1628,76 @@ async fn shared_process_and_work_revisions_are_free_again_in_a_newly_declared_le
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_fresh_ledger_ends_a_shared_call_in_progress() {
+    let (f, r, _admin, assignment, m) = Box::pin(prepared()).await;
+    let (d, a) = qualify(&f).await;
+    let w = started(&f, &r, &m, &a, "call_in_progress").await;
+    let t = ticket(&f, &d, &w).await;
+    // The device replaces its ledger database while the call is running.
+    fresh_ledger(&f).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    for sql in [
+        // The Agent is fenced, its process is stopped for good, and the call
+        // is over with no outcome and no usage recorded for it.
+        "SELECT a.state='fenced' AND (SELECT i.state FROM hagency_agent_v1.management_agent_intents i WHERE i.request_id=a.request_id)='fenced' AS matched FROM hagency_agent_v1.management_shared_assignments a WHERE a.id=$1",
+        "SELECT bool_and(r.state='stopped' AND r.permanent_fence AND r.activity_until_ms=0) AS matched FROM hagency_agent_v1.management_shared_runtimes r WHERE r.assignment_id=$1",
+        "SELECT bool_and(w.state='unknown') AND count(*)=1 AS matched FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1",
+        "SELECT NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work_receipts o JOIN hagency_agent_v1.management_shared_work w ON w.id=o.work_id JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1) AS matched",
+        // The sweep recorded both.
+        "SELECT l.swept AND l.sweep::jsonb->>'sharedProcessesStopped'='1' AND l.sweep::jsonb->>'sharedWorkEnded'='1' AND l.sweep::jsonb->>'agentAssignmentsFenced'='1' AS matched FROM hagency_agent_v1.management_executor_ledgers l JOIN hagency_agent_v1.management_shared_assignments a ON a.executor_owner_user_id=l.owner_user_id AND a.executor_device_id=l.executor_device_id WHERE a.id=$1",
+    ] {
+        assert!(sql_query(sql).bind::<Text, _>(&assignment.id).get_result::<Check>(&mut db).await.unwrap().matched, "{sql}");
+    }
+    // The result of the call arrives late and is refused: the device no
+    // longer has the database that ran it. Nothing else is handed out.
+    for state in ["completed", "unknown"] {
+        assert_eq!(
+            f.domain
+                .record_shared_work_result(&f.owner.p, &f.policy, &w.id, outcome(&d, &w, &t, 201, state))
+                .await
+                .unwrap_err()
+                .to_string(),
+            "executor_ledger_replaced"
+        );
+    }
+    assert!(
+        f.domain
+            .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+            .await
+            .is_err()
+    );
+    assert!(
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .await
+            .is_err()
+    );
+    // No reply is sent for the call.
+    let s = sender().await;
+    f.domain
+        .send_shared_replies(&f.policy, &m.gateway, &s.matrix, &mut String::new())
+        .await
+        .unwrap();
+    assert!(s.calls.lock().unwrap().is_empty());
+    // The applicant's views of the Agent still answer.
+    let page = f
+        .domain
+        .shared_work_history(&f.outsider.p, &f.policy, &r.id, SharedWorkQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!((page.items[0].state.as_str(), page.items[0].reply_state.as_deref()), ("unknown", None));
+    assert!(page.items[0].usage.is_none());
+    let status = serde_json::to_value(f.domain.shared_execution_status(&f.outsider.p, &f.policy, &r.id).await.unwrap()).unwrap();
+    assert_eq!((&status["state"], &status["workAvailable"]), (&json!("stopped"), &json!(false)));
+    // Usage the device never reported counts as none.
+    let removal = f.domain.managed_agent_removal(&f.outsider.p, &r.id).await.unwrap();
+    assert!(removal.central_fenced);
+    assert_eq!(
+        (removal.usage.known_consumed_tokens, removal.usage.retained_tokens_floor, removal.usage.requires_reconciliation),
+        (Some(0), Some(0), false)
+    );
+}

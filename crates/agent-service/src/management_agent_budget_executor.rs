@@ -113,6 +113,9 @@ async fn deliver(
     let c = checked(w, server)?;
     let now = clock(db).await?;
     let saved = result(db, &w.id).await?;
+    if saved.is_none() {
+        crate::domain::management::ledgers::refuse_replaced(db, crate::domain::management::ledgers::Subject::Request(&w.request_id)).await?;
+    }
     let cancel = cancelled(db, &w.id).await?;
     let live = current(db, w, &c, now, server).await?;
     let application = !historical
@@ -183,6 +186,7 @@ async fn validate_ledger(
 ) -> Result<i64> {
     let epoch = super::super::executor::validate_external_ledger_receipt(
         db,
+        crate::domain::management::ledgers::Subject::Request(&w.request_id),
         &w.owner_user_id,
         &w.executor_device_id,
         r.ledger_revision,
@@ -208,7 +212,7 @@ impl DomainStore {
         }
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;
- let w=sql_query("SELECT c.* FROM hagency_agent_v1.management_agent_budget_commands c LEFT JOIN hagency_agent_v1.management_agent_budget_results r ON r.command_id=c.id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND r.command_id IS NULL ORDER BY (c.id<=$3),c.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<CommandRow>(db).await.optional()?;
+ let w=sql_query("SELECT c.* FROM hagency_agent_v1.management_agent_budget_commands c LEFT JOIN hagency_agent_v1.management_agent_budget_results r ON r.command_id=c.id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND r.command_id IS NULL AND NOT hagency_agent_v1.executor_ledger_replaced_request(c.request_id) ORDER BY (c.id<=$3),c.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<CommandRow>(db).await.optional()?;
  match w{Some(w)=>Ok(Some(deliver(db,p,policy,&w,&self.server,false).await?)),None=>Ok(None)}}).await
     }
     pub async fn recover_agent_budget(

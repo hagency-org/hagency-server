@@ -555,6 +555,7 @@ async fn validate_work_receipt(
     }
     let epoch = super::super::validate_external_ledger_receipt(
         db,
+        crate::domain::management::ledgers::Subject::Request(&original.request_id),
         &original.executor_owner_user_id,
         &original.executor_device_id,
         v.ledger_revision,
