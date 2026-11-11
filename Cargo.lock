@@ -3938,6 +3938,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hagency-gitfab-events"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "clap",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "hex",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "hagency-server"
 version = "0.1.0"
 dependencies = [
