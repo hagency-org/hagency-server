@@ -154,52 +154,6 @@ fn delivery_matches(d: &SharedReplyDelivery, w: &SharedWorkItem, content: &str) 
     Ok(())
 }
 
-#[cfg(test)]
-mod delivery_format_tests {
-    use super::*;
-
-    #[test]
-    fn shared_context_delivery_preserves_legacy_markdown_and_exact_rich_evidence() {
-        let fixture: Value = serde_json::from_str(include_str!(
-            "../tests/fixtures/management-shared-thread-context-v1.json"
-        ))
-        .unwrap();
-        let w: SharedWorkItem = serde_json::from_value(fixture["previousWork"].clone()).unwrap();
-        let mut d: SharedReplyDelivery =
-            serde_json::from_value(fixture["delivery"].clone()).unwrap();
-        d.body = "## Older answer\n\n**Markdown** remains unchanged.".into();
-        d.body_digest = hash(&d.body);
-        let legacy = serde_json::to_string(&d.content()).unwrap();
-        d.matrix_content_digest = hash(&legacy);
-        assert_ne!(
-            d.content(),
-            crate::workers::reply_content(false, &w.room_id, &w.thread_root, &d.body)
-        );
-        delivery_matches(&d, &w, &legacy).unwrap();
-        assert!(
-            serde_json::to_value(&d)
-                .unwrap()
-                .get("formattedBody")
-                .is_none()
-        );
-        let rich = crate::workers::reply_content(false, &w.room_id, &w.thread_root, &d.body);
-        d.formatted_body = Some(rich["formatted_body"].as_str().unwrap().into());
-        let rich = serde_json::to_string(&rich).unwrap();
-        d.matrix_content_digest = hash(&rich);
-        delivery_matches(&d, &w, &rich).unwrap();
-        let mut changed = d.clone();
-        changed.formatted_body.as_mut().unwrap().push('!');
-        assert!(delivery_matches(&changed, &w, &rich).is_err());
-        for field in ["body", "msgtype", "format", "m.relates_to", "unexpected"] {
-            let mut content: Value = serde_json::from_str(&rich).unwrap();
-            content[field] = json!("changed");
-            let content = serde_json::to_string(&content).unwrap();
-            let mut changed = d.clone();
-            changed.matrix_content_digest = hash(&content);
-            assert!(delivery_matches(&changed, &w, &content).is_err(), "{field}");
-        }
-    }
-}
 async fn delivery(
     db: &mut AsyncPgConnection,
     w: &SharedWorkItem,
@@ -678,5 +632,52 @@ impl DomainStore {
                 .await?
         }
         .start)
+    }
+}
+
+#[cfg(test)]
+mod delivery_format_tests {
+    use super::*;
+
+    #[test]
+    fn shared_context_delivery_preserves_legacy_markdown_and_exact_rich_evidence() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/management-shared-thread-context-v1.json"
+        ))
+        .unwrap();
+        let w: SharedWorkItem = serde_json::from_value(fixture["previousWork"].clone()).unwrap();
+        let mut d: SharedReplyDelivery =
+            serde_json::from_value(fixture["delivery"].clone()).unwrap();
+        d.body = "## Older answer\n\n**Markdown** remains unchanged.".into();
+        d.body_digest = hash(&d.body);
+        let legacy = serde_json::to_string(&d.content()).unwrap();
+        d.matrix_content_digest = hash(&legacy);
+        assert_ne!(
+            d.content(),
+            crate::workers::reply_content(false, &w.room_id, &w.thread_root, &d.body)
+        );
+        delivery_matches(&d, &w, &legacy).unwrap();
+        assert!(
+            serde_json::to_value(&d)
+                .unwrap()
+                .get("formattedBody")
+                .is_none()
+        );
+        let rich = crate::workers::reply_content(false, &w.room_id, &w.thread_root, &d.body);
+        d.formatted_body = Some(rich["formatted_body"].as_str().unwrap().into());
+        let rich = serde_json::to_string(&rich).unwrap();
+        d.matrix_content_digest = hash(&rich);
+        delivery_matches(&d, &w, &rich).unwrap();
+        let mut changed = d.clone();
+        changed.formatted_body.as_mut().unwrap().push('!');
+        assert!(delivery_matches(&changed, &w, &rich).is_err());
+        for field in ["body", "msgtype", "format", "m.relates_to", "unexpected"] {
+            let mut content: Value = serde_json::from_str(&rich).unwrap();
+            content[field] = json!("changed");
+            let content = serde_json::to_string(&content).unwrap();
+            let mut changed = d.clone();
+            changed.matrix_content_digest = hash(&content);
+            assert!(delivery_matches(&changed, &w, &content).is_err(), "{field}");
+        }
     }
 }
