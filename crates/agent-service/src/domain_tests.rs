@@ -562,7 +562,7 @@ fn policy_deny_priority_and_trusted_observation_requirements() {
     );
     f.service_can_invite = true;
     f.encrypted = true;
-    assert!(creating(&p, &f, "!room:s", "!space:s", &policy, &rp, None, *NOW).is_err());
+    assert!(creating(&p, &f, "!room:s", "!space:s", &policy, &rp, None, *NOW).is_ok());
 }
 
 #[tokio::test]
@@ -1389,6 +1389,7 @@ async fn postgres_membership_loss_is_durable_and_old_dispatch_cannot_revive() {
     };
     let (b, good) = &bindings[0];
     let delivery = DeliveryFacts {
+        requires_mention: true,
         owner_direct_valid: false,
         owner_mxid: p.mxid.clone(),
         requester_mxid: p.mxid.clone(),
@@ -2129,7 +2130,7 @@ async fn exercise_membership_controller(url: &str) {
         "example.test".into(),
     )
     .unwrap();
-    let worker = crate::workers::start_cleanup(domain.clone(), gateway, matrix);
+    let worker = crate::workers::start_cleanup(domain.clone(), gateway, matrix, None);
     let result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
             let mut complete = true;

@@ -1,0 +1,580 @@
+//! Closed wire contract for native-ledger project reservations. These reports
+//! are accepted only from the enrolled owner device, never from Splash authority.
+use crate::{Error, Result, hash, key};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeSet;
+
+pub const ALLOCATION_CAPABILITY: &str = "hagency.project_reservations.v1";
+pub const ALLOCATION_FEATURE: &str = "project-reservations-v1";
+pub const ALLOCATION_REVIEW_FEATURE: &str = "project-allocation-review-v1";
+pub const ADMISSION_BOUND_GRANTS_FEATURE: &str = "admission-bound-grants-v2";
+/// A v2 admission accepts one grant per UTC month, so its owner can grant the
+/// same pool again once the previous grant's month has ended.
+pub const POOL_MONTHLY_REGRANT_FEATURE: &str = "pool-monthly-regrant-v1";
+/// A pool's capacity is a chain of receipts on one admission: a v3 successor
+/// amends the current month or renews the next one, carrying reserved Agents.
+pub const POOL_GRANT_SUCCESSION_FEATURE: &str = "pool-grant-succession-v1";
+/// Earliest renewal: this long before the predecessor's UTC month ends.
+pub const RENEWAL_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+pub const MAX_NATIVE_GRANT_BYTES: usize = 12 * 1024;
+pub const MAX_EXACT: i64 = 9_007_199_254_740_991;
+
+/// Native successor link of a v3 receipt. It names the exact predecessor
+/// receipt and the reserved Agents' hold the successor must cover.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GrantSuccession {
+    /// "renewal" (the next UTC month) or "amendment" (the same month).
+    pub kind: String,
+    pub predecessor_grant_id: String,
+    /// Canonical digest of the predecessor receipt.
+    pub predecessor_receipt_digest: String,
+    /// Reserved Agents the successor carries when native created it.
+    pub carried_children: i64,
+    /// Their native hold, the successor's floor.
+    pub carried_retained_tokens: i64,
+}
+impl GrantSuccession {
+    pub fn renewal(&self) -> bool {
+        self.kind == "renewal"
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeGrantReceipt {
+    /// V6 pool-wide renewal authority, chosen by the resource owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renewal_mode: Option<crate::recurring_quota::RenewalMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_request_tokens: Option<i64>,
+
+    pub version: u16,
+    pub capability: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_request_id: Option<String>,
+    pub enrollment_id: String,
+    pub grant_id: String,
+    pub grant_revision: i64,
+    pub contribution_id: String,
+    pub resource_id: String,
+    pub resource_revision: String,
+    pub executor_device_id: String,
+    pub executor_generation: i64,
+    pub owner_mxid: String,
+    pub coordinator_mxid: String,
+    pub delegation_revision: i64,
+    pub delegation_expires_at_ms: i64,
+    pub allow_self_approval: bool,
+    pub eligible_managers: Vec<String>,
+    pub allocated_tokens: i64,
+    pub period_key: String,
+    pub period_start_ms: i64,
+    pub period_end_ms: i64,
+    pub ledger_revision: i64,
+    /// Present exactly on v3 successors; omitted so v1/v2 digests are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub succession: Option<GrantSuccession>,
+    /// V4 owner calendar. Omitted from historical receipt digests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<crate::recurring_quota::Calendar>,
+}
+impl NativeGrantReceipt {
+    pub(crate) fn request_limit(&self) -> i64 {
+        self.per_request_tokens.unwrap_or(self.allocated_tokens)
+    }
+    pub(crate) fn validate(&self, server: &str) -> Result<()> {
+        // Reserve envelope headroom below the 16 KiB management command cap.
+        // Native must apply the same limit before committing the parent hold.
+        if serde_json::to_vec(self)
+            .map_err(|_| Error::Invalid("invalid_resource_grant"))?
+            .len()
+            > MAX_NATIVE_GRANT_BYTES
+        {
+            return Err(Error::Invalid("resource_grant_too_large"));
+        }
+        for value in [
+            &self.enrollment_id,
+            &self.grant_id,
+            &self.contribution_id,
+            &self.resource_id,
+            &self.executor_device_id,
+        ] {
+            key(value)?;
+        }
+        for value in [
+            self.grant_revision,
+            self.executor_generation,
+            self.delegation_revision,
+            self.delegation_expires_at_ms,
+            self.allocated_tokens,
+            self.period_start_ms,
+            self.period_end_ms,
+            self.ledger_revision,
+        ] {
+            if !(1..=MAX_EXACT).contains(&value) {
+                return Err(Error::Invalid("invalid_allocation_number"));
+            }
+        }
+        for mxid in [&self.owner_mxid, &self.coordinator_mxid]
+            .into_iter()
+            .chain(&self.eligible_managers)
+        {
+            crate::management_types::local_user(mxid, server)?;
+        }
+        if !matches!(
+            (
+                self.version,
+                self.admission_request_id.as_ref(),
+                self.succession.as_ref()
+            ),
+            (1, None, None) | (2 | 4 | 5 | 6, Some(_), None) | (3..=6, Some(_), Some(_))
+        ) || (self.version < 5 && (self.version == 4) != self.calendar.is_some())
+            || (self.version >= 5) != self.per_request_tokens.is_some()
+            || (self.version == 6) != self.renewal_mode.is_some()
+            || (self.version == 6 && self.calendar.is_none())
+            || self
+                .per_request_tokens
+                .is_some_and(|n| n < 1 || n > self.allocated_tokens || n > MAX_EXACT)
+            || self.capability != ALLOCATION_CAPABILITY
+        {
+            return Err(Error::Invalid("unsupported_allocation_capability"));
+        }
+        if let Some(request) = &self.admission_request_id {
+            key(request)?;
+        }
+        if let Some(calendar) = &self.calendar {
+            let period = crate::recurring_quota::Period {
+                key: self.period_key.clone(),
+                start_ms: self.period_start_ms as u64,
+                end_ms: self.period_end_ms as u64,
+            };
+            calendar
+                .validate_period(&period)
+                .map_err(|_| Error::Invalid("invalid_resource_grant_calendar"))?;
+        }
+        if let Some(s) = &self.succession {
+            key(&s.predecessor_grant_id)?;
+            if !matches!(s.kind.as_str(), "renewal" | "amendment")
+                || s.predecessor_grant_id == self.grant_id
+                || !valid_digest(&s.predecessor_receipt_digest)
+                || !(0..=MAX_EXACT).contains(&s.carried_children)
+                || !(0..=MAX_EXACT).contains(&s.carried_retained_tokens)
+                || s.carried_retained_tokens > self.allocated_tokens
+                || self.grant_revision < 2
+            {
+                return Err(Error::Invalid("invalid_grant_succession"));
+            }
+        }
+        if self.eligible_managers.is_empty()
+            || self.eligible_managers.len() > 64
+            || self
+                .eligible_managers
+                .iter()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .ne(self.eligible_managers.iter())
+            || !valid_digest(&self.resource_revision)
+            || self.calendar.is_none() && self.period_key.len() != 7
+            || self.period_end_ms <= self.period_start_ms
+        {
+            return Err(Error::Invalid("invalid_resource_grant"));
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PublishGrantInput {
+    pub command_id: String,
+    pub expected_contribution_revision: i64,
+    pub receipt: NativeGrantReceipt,
+}
+/// Publication of an owner-confirmed v3 successor of one exact grant.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SucceedGrantInput {
+    pub command_id: String,
+    pub expected_contribution_revision: i64,
+    pub expected_predecessor_revision: i64,
+    pub receipt: NativeGrantReceipt,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceGrantView {
+    pub id: String,
+    pub receipt: NativeGrantReceipt,
+    pub receipt_digest: String,
+    pub state: String,
+    pub revision: i64,
+    pub observed_at_ms: i64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAllocation {
+    pub id: String,
+    pub project_id: String,
+    pub project_revision: i64,
+    pub grant_id: String,
+    pub requested_tokens: i64,
+    pub state: String,
+    pub revision: i64,
+    pub request_id: String,
+    pub requester_mxid: String,
+    pub coordinator_mxid: String,
+    pub period_key: String,
+    pub expires_at_ms: i64,
+    pub can_decide: bool,
+    pub can_release: bool,
+    pub blocking_reason: Option<String>,
+    pub result: Option<NativeAllocationReceipt>,
+    /// Last applied native balance. A refused release does not refund this hold.
+    pub balance: Option<NativeAllocationReceipt>,
+    /// Current central evidence floor, separate from immutable native receipts.
+    #[serde(default)]
+    pub observed_usage: Option<AllocationObservedUsage>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AllocationObservedUsage {
+    pub known_consumed_tokens: i64,
+    pub retained_tokens_floor: i64,
+    pub requires_reconciliation: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AllocationCommand {
+    pub version: u16,
+    pub command_id: String,
+    pub operation: String,
+    pub allocation_id: String,
+    pub project_id: String,
+    pub project_revision: i64,
+    pub request_id: String,
+    pub request_revision: i64,
+    pub decision_actor: String,
+    pub manager_mxid: String,
+    pub project_definition_digest: String,
+    pub grant_receipt: NativeGrantReceipt,
+    pub requested_tokens: i64,
+    pub reserve_command_id: Option<String>,
+    pub issued_at_ms: i64,
+    pub expires_at_ms: i64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeAllocationReceipt {
+    pub version: u16,
+    pub command_id: String,
+    pub allocation_id: String,
+    pub state: String,
+    pub ledger_revision: i64,
+    pub reserved_tokens: i64,
+    pub retained_tokens: i64,
+    pub period_key: String,
+    pub reason: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AllocationResultInput {
+    pub command_digest: String,
+    pub token: String,
+    pub receipt: NativeAllocationReceipt,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutorRecoverInput {
+    pub command_digest: String,
+}
+#[derive(Default, Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExecutorPollInput {
+    pub after: Option<String>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutorDelivery {
+    pub command: AllocationCommand,
+    pub command_digest: String,
+    pub token: String,
+    pub lease_until_ms: i64,
+    pub execution_allowed: bool,
+    pub recorded: Option<NativeAllocationReceipt>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllocationAcknowledgement {
+    pub command_id: String,
+    pub command_digest: String,
+    pub receipt_digest: String,
+    pub allocation: ProjectAllocation,
+}
+pub(crate) fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Byte-compatible with hagency_core::canonical for these closed DTOs: keys
+/// use JavaScript array-index then UTF-16 ordering; numbers are exact integers.
+pub fn allocation_digest<T: Serialize>(value: &T) -> Result<String> {
+    Ok(hash(&allocation_encoding(value)?))
+}
+
+/// Exact canonical bytes shared by immutable DTO digests and context rendering.
+pub fn allocation_encoding<T: Serialize>(value: &T) -> Result<String> {
+    fn index(key: &str) -> Option<u32> {
+        let n = key.parse::<u32>().ok()?;
+        (n < u32::MAX && n.to_string() == key).then_some(n)
+    }
+    fn write(value: &Value, out: &mut String, depth: usize) -> Result<()> {
+        if depth > 64 {
+            return Err(Error::Invalid("invalid_allocation_encoding"));
+        }
+        match value {
+            Value::Null => out.push_str("null"),
+            Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Value::String(s) => out.push_str(
+                &serde_json::to_string(s)
+                    .map_err(|_| Error::Invalid("invalid_allocation_encoding"))?,
+            ),
+            Value::Number(n) => {
+                let n = n
+                    .as_i64()
+                    .filter(|n| n.unsigned_abs() <= MAX_EXACT as u64)
+                    .ok_or(Error::Invalid("invalid_allocation_number"))?;
+                out.push_str(&n.to_string());
+            }
+            Value::Array(items) => {
+                out.push('[');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    write(item, out, depth + 1)?;
+                }
+                out.push(']');
+            }
+            Value::Object(items) => {
+                if items.contains_key("__proto__") {
+                    return Err(Error::Invalid("invalid_allocation_encoding"));
+                }
+                let mut keys = items.keys().collect::<Vec<_>>();
+                keys.sort_by(|a, b| match (index(a), index(b)) {
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => a.encode_utf16().cmp(b.encode_utf16()),
+                });
+                out.push('{');
+                for (i, key) in keys.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(
+                        &serde_json::to_string(key)
+                            .map_err(|_| Error::Invalid("invalid_allocation_encoding"))?,
+                    );
+                    out.push(':');
+                    write(&items[*key], out, depth + 1)?;
+                }
+                out.push('}');
+            }
+        }
+        Ok(())
+    }
+    let value =
+        serde_json::to_value(value).map_err(|_| Error::Invalid("invalid_allocation_encoding"))?;
+    let mut out = String::new();
+    write(&value, &mut out, 0)?;
+    Ok(out)
+}
+
+/// Public human review, separate from the native receipt and execution ticket.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllocationGrantSummary {
+    pub id: String,
+    pub revision: i64,
+    pub state: String,
+    pub owner_mxid: String,
+    pub coordinator_mxid: String,
+    pub total_tokens: i64,
+    pub period_key: String,
+    pub period_start_ms: i64,
+    pub period_end_ms: i64,
+    pub delegation_expires_at_ms: i64,
+    /// No central read can infer current physical headroom from absent receipts.
+    pub native_available_tokens: Option<i64>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAllocationDetail {
+    pub allocation: ProjectAllocation,
+    pub request: crate::management_types::ManagementRequest,
+    pub project_name: String,
+    pub resource_label: String,
+    pub grant: AllocationGrantSummary,
+}
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectAllocationsQuery {
+    pub after: Option<String>,
+    pub limit: Option<u16>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAllocationPage {
+    pub items: Vec<ProjectAllocationDetail>,
+    pub next_after: Option<String>,
+}
+
+#[cfg(test)]
+mod succession_vector_tests {
+    use super::*;
+    #[test]
+    fn calendar_v4_receipt_vectors_match_native_and_reject_calendar_tampering() {
+        let vectors: Vec<Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/pool-grant-calendar-v4.json"
+        ))
+        .unwrap();
+        for vector in vectors {
+            let receipt: NativeGrantReceipt =
+                serde_json::from_value(vector["receipt"].clone()).unwrap();
+            receipt.validate("example.test").unwrap();
+            assert_eq!(allocation_digest(&receipt).unwrap(), vector["digest"]);
+            let mut bad = receipt.clone();
+            bad.period_end_ms += 1;
+            assert!(bad.validate("example.test").is_err());
+            bad = receipt.clone();
+            bad.version = 2;
+            assert!(bad.validate("example.test").is_err());
+            bad = receipt.clone();
+            bad.calendar = None;
+            assert!(bad.validate("example.test").is_err());
+            bad = receipt;
+            bad.calendar.as_mut().unwrap().time_zone = "UTC".into();
+            assert!(bad.validate("example.test").is_err());
+        }
+    }
+    /// The same file and digests are asserted by hagency-client: both stores
+    /// must hash v2 and v3 receipts to identical bytes.
+    #[test]
+    fn shared_v3_vector_matches_the_native_store_digests() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/pool-grant-succession-v3.json"
+        ))
+        .unwrap();
+        let receipt = |name: &str| -> NativeGrantReceipt {
+            serde_json::from_value(fixture[name].clone()).unwrap()
+        };
+        let predecessor = receipt("predecessor");
+        let amendment = receipt("amendment");
+        let renewal = receipt("renewal");
+        assert_eq!(
+            allocation_digest(&predecessor).unwrap(),
+            "e75ea704484fca4a40db8387b855e0b2c2d438ec273d61e6dfd7c4543c8d3616"
+        );
+        assert_eq!(
+            allocation_digest(&amendment).unwrap(),
+            "c69dbd92dc068046cbf6930d455c0258d31dea9093dcd0d415f068c3dbba8937"
+        );
+        assert_eq!(
+            allocation_digest(&renewal).unwrap(),
+            "1fdb875c843afef52fc4f2ba2720395fda5445de37f1a0f8ada6c799874035ff"
+        );
+        for (name, value) in [
+            ("predecessorDigest", &predecessor),
+            ("amendmentDigest", &amendment),
+            ("renewalDigest", &renewal),
+        ] {
+            assert_eq!(fixture[name], allocation_digest(value).unwrap(), "{name}");
+            // The fixture bytes and the typed round trip hash identically.
+            assert_eq!(
+                allocation_digest(&fixture[name.trim_end_matches("Digest")]).unwrap(),
+                fixture[name]
+            );
+        }
+        let a = amendment.succession.as_ref().unwrap();
+        let r = renewal.succession.as_ref().unwrap();
+        assert_eq!(a.predecessor_receipt_digest, fixture["predecessorDigest"]);
+        assert_eq!(a.predecessor_grant_id, predecessor.grant_id);
+        assert_eq!(r.predecessor_receipt_digest, fixture["amendmentDigest"]);
+        assert_eq!(r.predecessor_grant_id, amendment.grant_id);
+        assert!(!a.renewal() && r.renewal());
+        for value in [&predecessor, &amendment, &renewal] {
+            value.validate("example.test").unwrap();
+        }
+        // A v2 receipt never serializes the optional succession field.
+        assert!(
+            serde_json::to_value(&predecessor)
+                .unwrap()
+                .get("succession")
+                .is_none()
+        );
+    }
+    #[test]
+    fn receipt_version_admission_and_succession_are_one_closed_matrix() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/pool-grant-succession-v3.json"
+        ))
+        .unwrap();
+        let amendment: NativeGrantReceipt =
+            serde_json::from_value(fixture["amendment"].clone()).unwrap();
+        let predecessor: NativeGrantReceipt =
+            serde_json::from_value(fixture["predecessor"].clone()).unwrap();
+        let rejects = |r: NativeGrantReceipt| assert!(r.validate("example.test").is_err());
+        // v2 cannot carry a succession, and v3 must.
+        let mut v = predecessor.clone();
+        v.succession = amendment.succession.clone();
+        rejects(v);
+        let mut v = amendment.clone();
+        v.succession = None;
+        rejects(v);
+        let mut v = amendment.clone();
+        v.admission_request_id = None;
+        rejects(v);
+        let mut v = amendment.clone();
+        v.version = 2;
+        rejects(v);
+        let changes: [fn(&mut GrantSuccession); 5] = [
+            |s: &mut GrantSuccession| s.kind = "transfer".into(),
+            |s: &mut GrantSuccession| s.predecessor_grant_id = "grant_pool_amendment_2".into(),
+            |s: &mut GrantSuccession| s.predecessor_receipt_digest = "A".repeat(64),
+            |s: &mut GrantSuccession| s.carried_children = -1,
+            |s: &mut GrantSuccession| s.carried_retained_tokens = 800_001,
+        ];
+        for change in changes {
+            let mut v = amendment.clone();
+            change(v.succession.as_mut().unwrap());
+            rejects(v);
+        }
+        let mut v = amendment.clone();
+        v.grant_revision = 1;
+        rejects(v);
+        // Unknown succession fields are refused like every other closed DTO.
+        let mut raw = fixture["amendment"].clone();
+        raw["succession"]["note"] = serde_json::json!("x");
+        assert!(serde_json::from_value::<NativeGrantReceipt>(raw).is_err());
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExpireGrantPublication {
+    pub operation: String,
+    pub target_id: String,
+    pub publication: serde_json::Value,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantPublicationExpiry {
+    pub status: String,
+    pub command_id: String,
+    pub publication_digest: String,
+    pub receipt_digest: String,
+    pub observed_at_ms: i64,
+    pub grant: Option<ResourceGrantView>,
+}

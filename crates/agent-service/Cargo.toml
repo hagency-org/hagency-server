@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 hagency-db-runtime = { path = "../db-runtime" }
+chrono.workspace = true
+chrono-tz = { version = "=0.10.4", default-features = false, features = ["std"] }
 diesel.workspace = true
 diesel-async = { workspace = true, features = ["deadpool"] }
 tokio.workspace = true
@@ -27,6 +29,7 @@ subtle.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 salvo.workspace = true
+palpo-core.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

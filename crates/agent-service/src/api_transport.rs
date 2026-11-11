@@ -248,6 +248,12 @@ pub(crate) async fn call(
             Ok(result)
         }
 
+        "/hagency/api/v1/execution/e2ee-candidates" => {
+            t.encrypted_candidates(p, body(req).await?).await
+        }
+        "/hagency/api/v1/execution/e2ee-confirm" => {
+            t.confirm_encrypted_candidate(p, body(req).await?, g).await
+        }
         "/hagency/api/v1/execution/history" => {
             let b: History = body(req).await?;
             Ok(
@@ -388,6 +394,17 @@ pub(crate) async fn call(
             let b: Reply = body(req).await?;
             let f = facts(t, g, p, &b.reply.dispatch_id).await?;
             Ok(json!({"reply":t.reconcile_known_reply(p,&b.lease,b.reply,&f,now_ms()).await?}))
+        }
+        "/hagency/api/v1/execution/replies/encrypted" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Encrypted {
+                lease: LeaseRef,
+                reply: crate::transport::EncryptedReply,
+            }
+            let b: Encrypted = body(req).await?;
+            let f = facts(t, g, p, &b.reply.dispatch_id).await?;
+            Ok(json!({"reply":t.record_encrypted_reply(p,&b.lease,b.reply,&f,now_ms()).await?}))
         }
         _ => Err(Error::Invalid("unsupported_operation")),
     }

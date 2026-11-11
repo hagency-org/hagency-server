@@ -1,0 +1,39 @@
+# Managed agent first text turn: implementation checkpoint
+
+This follows central schema 11 / native schema 79 and the validated installed-Codex metadata qualifier. Default-disabled implementation; no live activation. It is the first execution acceptance, not the final resource/agent feature set. Coding tools, workspace consent, task workflows, top-up, statistics, restart and multi-provider parity remain required by the retained Hagency parity inventory.
+
+## One concrete path
+
+An adopted resource owner keeps the canonical owner registry and explicit enrollment. The project manager requests an agent and the assigned project administrator approves. The existing native reserve and real Matrix-membership protocols establish that exact child and puppet. The executor accepts a new `codex_text_v1` runtime policy on a **never-issued** assignment, qualifies the actual retained Codex process, and holds a renewable same-process activity lease. An explicit manager mention in the exact project discussion room is durably received, claimed once, answered by one model turn, durably metered, then sent with one immutable Matrix transaction ID. Original process stop and unknown usage are recorded separately.
+
+V1 metadata commands remain byte-for-byte recoverable and never acquire work permission. Their fixed instruction file forbids model turns and their `ManagedProcessSource` retires on thread/turn start. They cannot simply be relabeled as execution-ready. New execution uses a distinct closed policy/receipt, a fresh unissued assignment and an explicit sealed transition to the ordinary runtime observation source. No re-spawn or replacement command after uncertain issuance is introduced.
+
+## Central scope and contracts
+
+Reserve management schema 12 for additive shared execution records. Preserve personal `execution_leases`, owner/device FKs and generic managed-project bind denials. Shared authority records explicitly carry immutable manager owner, resource-owner executor, enrolled device/generation, assignment/child/reserve receipt, original project/room and policy. Never synthesize a Principal for the manager using the executor device.
+
+The central API lives under `management/shared-execution`. Separate immutable runtime issuance from finite activity authority: original spawn deadline is at most 30 seconds; activity epochs/deadlines may renew only for the same acknowledged retained process and current authority, before prior expiry. Recovery grants observation/upload only. A stale/unknown/expired process cannot recover execution or spawn again. Existing v1 runtime provisioning and new execution claim are mutually exclusive per assignment.
+
+Closed operations are runtime poll/recover/qualify, activity renew, work poll/ack/start, result/recover and stop. Each effect pins original command digest, assignment generation and current finite lease; result receipts retain exact native ledger/observation identities. Work start is recorded once; a repeated response says `newlyStarted:false` and never authorizes another model call. Cancellation fences first and enqueues exact cleanup in the same transaction. Late results may retain accounting/history without restoring reply permission.
+
+Use additive shared event/reply tables to keep the personal authorization/SQL path unchanged. Reuse existing AS transaction ingestion, `workers::parse_event`, Gateway delivery facts, immutable reply formatting and Matrix `send`/transaction recovery; shared selection and transition checks remain explicit. Only an explicit manager mention in the exact room enters this first capability. Unsupported/encrypted/edited/oversized content is not converted into a prompt. Verify real room/project/puppet/requester membership before body delivery, start and send, with final transactional authority checks after each network await. Worker uncertainty preserves the original transaction; it never invents a second reply ID.
+
+Read-only agent detail will expose separate execution state, current observation time, pending work/history and canonical usage completeness. `matrix_verified`, metadata `qualified`, capacity reservation, live process, model completion and settled usage remain distinct. No inferred available-token number or runnable=true is returned from old receipts. UI work/history routes are additive and manager/current assigned-admin scoped; executor access is limited to its exact assignment.
+
+## Native reuse and missing bridges
+
+- Keep `AdoptedManagementSelection` / fresh adopted NativeOwner / canonical OwnerResourceRegistry; no archived legacy execution and no fabricated Registration.
+- Reuse `OwnedSession`, its real thread/turn decoder, `next_observed_update`, source/sequence checks, refusal of unsupported tool/server requests, and existing metering normalization. The existing warm-idle transition proves an original process can transition without replacing its supervisor; any renewable activity adapter must preserve finite per-operation bounds and monotonic source identity.
+- Create a sealed current shared-work authority from authenticated exact transport, never mini-app JSON. Reuse `prepare_managed_call` / `issue_managed_call` and their one-shot history semantics after a sealed actual-process provision observation. `ManagedCallAuthority` and `ManagedUsageObservation` currently have only test constructors; add production constructors only around this exact native provenance.
+- The legacy managed provision row and schema79 runtime observation are intentionally separate today. Connect the new execution policy to an actual retained qualification observation before allowing `live_call`; do not manufacture `qualified` from a wire receipt or overwrite v1 history.
+- Persist bounded original prompt, execution identity and result journal before ACK/result delivery. Issue custody before a model effect; cancellation after issuance retains history. Keep pending usage writes until the exact canonical acknowledgement. A terminal stream event alone is not complete usage.
+- For the first serial turn, reserve the currently available child allowance conservatively under the existing same-ledger collector; never treat it as a provider-enforced billing cap. Actual overrun remains charged. Unknown usage blocks further admission/release and no `unreported-zero` policy is imported from the personal ledger.
+- Retained manager owns the actual process, call sink, task and pending result across receiver cancellation. NativeOwner retirement/source adoption synchronously cancels and then drains exact task/result before worker shutdown. Empty manager maps do not prove cleanup.
+
+## Acceptance gates
+
+Central real PostgreSQL/HTTP: migration rollback; manager ownership and executor FK; unassigned admin/coordinator denial; exact current setup/allocation/device/account bindings; v1/v2 mutual exclusion; duplicate AS transaction; pre-start retry versus started history; late/replayed lease renewal; revoke/start/send races; body-before-authorization denial; one Matrix transaction across send timeout; old personal tests unchanged.
+
+Native real SQLite/supervised fixtures: never-issued-only claim; original source and policy transition; durable call before model turn; account/config change; exact usage source sequence and late/unknown evidence; pending result survives reply loss; receiver cancellation retains process; expiry/retirement stops original; no restart/respawn from history; cross-profile/seat conservation.
+
+Paired acceptance uses the actual selected Codex profile and a disposable project/test event only after parent-controlled activation: one explicit Matrix text request, one actual turn, one real reply event, durable native usage and observed stop. No coding/tools or full lifecycle completion claim is made from that one-turn test. Those follow using the existing qualified policy/tool adapters without adding a second human resource-coordinator approval.

@@ -3,6 +3,7 @@ pub mod api;
 mod api_configuration;
 #[cfg(test)]
 mod api_discovery_tests;
+mod api_management;
 mod api_transport;
 pub mod appservice;
 pub mod attachments;
@@ -10,14 +11,40 @@ pub mod attachments;
 mod configuration_tests;
 pub mod configuration_types;
 mod database;
+#[cfg(test)]
+mod device_resume_tests;
 pub mod domain;
+mod executor_matrix_device;
 pub mod file_delivery;
 mod schema;
 pub use domain::project_board;
 mod api_project_board;
 pub mod gateway;
 pub mod identity;
+pub mod management_agent_budget_types;
+pub mod management_agent_cleanup_types;
+pub mod management_agent_executor_types;
+pub mod management_agent_matrix_types;
+pub mod management_agent_runtime_types;
+pub mod management_agent_settlement_types;
+pub mod management_agent_types;
+pub mod management_allocation_types;
+pub mod management_parent_types;
+pub mod management_pool_types;
+pub mod management_setup_types;
+pub mod management_shared_attempt_types;
+pub mod management_shared_budget_types;
+pub mod management_shared_context_types;
+pub mod management_shared_demand_types;
+pub mod management_shared_execution_types;
+pub mod management_shared_intake_types;
+pub mod management_shared_work_types;
+#[cfg(test)]
+mod management_tests;
+pub mod management_types;
 pub mod matrix_client;
+pub mod recurring_quota;
+mod reply_format;
 pub mod store;
 pub mod transport;
 #[cfg(test)]
@@ -122,3 +149,5 @@ mod id_tests {
         }
     }
 }
+
+pub mod management_shared_tool_policy;

@@ -24,7 +24,8 @@ def main():
                                             cwd=ROOT, env=env, text=True)
         path = ROOT / "crates/agent-service/src/schema" / f"{key}.rs"
         if args.write:
-            path.write_text(generated, encoding="utf-8", newline="\n")
+            with path.open("w", encoding="utf-8", newline="\n") as output:
+                output.write(generated)
         elif path.read_text(encoding="utf-8") != generated:
             raise SystemExit(f"{path.relative_to(ROOT)} differs from Diesel CLI output; run with --write")
     print("Diesel schemas match the complete startup upgrade path")

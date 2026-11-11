@@ -1,3 +1,4 @@
+use crate::management_shared_context_types::{RevisionKind, RoutedRevision};
 use crate::worker_runtime::{QueueContext, WorkerRuntime};
 use crate::{
     Error, Result,
@@ -13,12 +14,13 @@ use std::collections::BTreeSet;
 /// The durable context root fixes reply shape for the lifetime of the intent.
 /// Only newly routed top-level owner DMs store their exact Room ID here; old
 /// event-root intents retain their original thread content and transaction ID.
-fn reply_content(owner_direct: bool, room: &str, root: &str, body: &str) -> Value {
+pub(crate) fn reply_content(owner_direct: bool, room: &str, root: &str, body: &str) -> Value {
     let mut content = json!({"msgtype":"m.text","body":body});
     if !owner_direct || root != room {
         content["m.relates_to"] = json!({"rel_type":"m.thread","event_id":root,
             "is_falling_back":true,"m.in_reply_to":{"event_id":root}});
     }
+    crate::reply_format::add_markdown(&mut content);
     content
 }
 
@@ -55,8 +57,12 @@ fn request_notice_content(
 }
 
 /// Only canonical plaintext text/media events enter the model queue. In particular,
-/// HTML-looking mentions, edits, and encrypted bodies do not create prompts.
-fn parse_event(raw: &Value) -> Option<RoutedEvent> {
+/// HTML-looking mentions and edits do not create prompts. Encrypted events carry
+/// only routing metadata; the executor holding the Agent's room keys reads them.
+pub(crate) fn parse_event(raw: &Value) -> Option<RoutedEvent> {
+    if raw["type"] == "m.room.encrypted" {
+        return parse_encrypted(raw);
+    }
     if raw["type"] != "m.room.message"
         || raw.get("state_key").is_some()
         || !matches!(
@@ -113,11 +119,94 @@ fn parse_event(raw: &Value) -> Option<RoutedEvent> {
         is_edit: false,
     })
 }
+/// Edits and redactions of earlier plaintext events. They never become prompts
+/// (`parse_event` rejects them); the shared journal retains them so a later
+/// context quotes the latest edit and drops redacted exchanges. Encrypted
+/// edits carry no readable body and are not revisions here.
+pub(crate) fn parse_revision(raw: &Value) -> Option<RoutedRevision> {
+    if raw.get("state_key").is_some() {
+        return None;
+    }
+    let c = &raw["content"];
+    let (target, kind) = if raw["type"] == "m.room.redaction" {
+        // Room versions before 11 carry `redacts` at the top level.
+        let target = c["redacts"].as_str().or_else(|| raw["redacts"].as_str())?;
+        (target, RevisionKind::Redaction)
+    } else if raw["type"] == "m.room.message" && c["m.relates_to"]["rel_type"] == "m.replace" {
+        let new = &c["m.new_content"];
+        if new["msgtype"] != "m.text" {
+            return None;
+        }
+        let body = new["body"].as_str()?;
+        (
+            c["m.relates_to"]["event_id"].as_str()?,
+            RevisionKind::Edit {
+                body: body.to_owned(),
+            },
+        )
+    } else {
+        return None;
+    };
+    let revision = RoutedRevision {
+        revision_event_id: raw["event_id"].as_str()?.to_owned(),
+        room_id: raw["room_id"].as_str()?.to_owned(),
+        target_event_id: target.to_owned(),
+        sender_mxid: raw["sender"].as_str()?.to_owned(),
+        kind,
+    };
+    revision.validate().ok()?;
+    Some(revision)
+}
+/// Matrix keeps `m.relates_to` outside the ciphertext, so the sender, Room and
+/// thread are known here; the body and mentions are not. Edits and annotations
+/// relate to earlier events and never become prompts.
+fn parse_encrypted(raw: &Value) -> Option<RoutedEvent> {
+    let c = &raw["content"];
+    let relation = &c["m.relates_to"];
+    if raw.get("state_key").is_some()
+        || c["algorithm"] != "m.megolm.v1.aes-sha2"
+        || relation["rel_type"] == "m.replace"
+        || relation["rel_type"] == "m.annotation"
+    {
+        return None;
+    }
+    let event_id = raw["event_id"].as_str()?;
+    let room = raw["room_id"].as_str()?;
+    let sender = raw["sender"].as_str()?;
+    if !event_id.starts_with('$')
+        || !room.starts_with('!')
+        || !sender.starts_with('@')
+        || event_id.len() > 255
+        || room.len() > 255
+        || sender.len() > 255
+    {
+        return None;
+    }
+    let thread_root = if relation["rel_type"] == "m.thread" {
+        Some(relation["event_id"].as_str()?.to_owned())
+    } else {
+        None
+    };
+    Some(RoutedEvent {
+        event_id: event_id.into(),
+        room_id: room.into(),
+        sender_mxid: sender.into(),
+        body: String::new(),
+        mentioned_mxids: BTreeSet::new(),
+        thread_root,
+        encrypted: true,
+        is_edit: false,
+    })
+}
 pub(crate) async fn route_controlled(
     inbox: &Inbox,
     t: &TransportStore,
     g: &Gateway,
     cursor: &mut String,
+    shared: Option<&(
+        crate::domain::DomainStore,
+        crate::management_types::ManagementPolicy,
+    )>,
     ctx: &QueueContext,
 ) -> Result<()> {
     let transactions = if cursor.is_empty() {
@@ -141,13 +230,35 @@ pub(crate) async fn route_controlled(
                 Ok(false) => {}
                 Err(error) => return Err(error),
             }
-            let plain = parse_event(raw);
-            let cipher = if raw["type"] == "m.room.encrypted" {
+            if let Some((domain, _)) = shared
+                && let Some(revision) = parse_revision(raw)
+            {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    domain.retain_shared_revision(&revision, transaction.received_at_ms),
+                )
+                .await
+                {
+                    Ok(
+                        Ok(())
+                        | Err(Error::Unauthorized(_) | Error::Invalid(_) | Error::Conflict(_)),
+                    ) => (),
+                    _ => retry = true,
+                }
+            }
+            // An encrypted event is routed as metadata for the executor that
+            // holds the Agent's Matrix device. Pooled Agents always use that
+            // design; for personal Agents the transport says which design
+            // takes the event, and the ciphertext inbox is the other one.
+            let event = parse_event(raw);
+            let cipher = if raw["type"] == "m.room.encrypted"
+                && t.encrypted_delivery() == crate::transport::EncryptedDelivery::CiphertextInbox
+            {
                 crate::transport::ciphertexts::parse(raw).ok()
             } else {
                 None
             };
-            let (event_id, room_id, sender) = if let Some(event) = &plain {
+            let (event_id, room_id, sender) = if let Some(event) = &event {
                 (
                     event.event_id.as_str(),
                     event.room_id.as_str(),
@@ -162,6 +273,22 @@ pub(crate) async fn route_controlled(
             } else {
                 continue;
             };
+            if let Some((domain, policy)) = shared
+                && let Some(event) = &event
+            {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    domain.route_shared_event(policy, event, transaction.received_at_ms, g),
+                )
+                .await
+                {
+                    Ok(
+                        Ok(())
+                        | Err(Error::Unauthorized(_) | Error::Invalid(_) | Error::Conflict(_)),
+                    ) => (),
+                    _ => retry = true,
+                }
+            }
             let scopes = match t.routing_scopes(room_id).await {
                 Ok(scopes) => scopes,
                 Err(_) => {
@@ -204,11 +331,14 @@ pub(crate) async fn route_controlled(
                 if ctx.stopping() {
                     return Ok(());
                 }
-                let routed = if let Some(event) = &plain {
+                let routed = if cipher.is_some() {
+                    t.ingest_ciphertext(&transaction.id, &scope.binding_id, raw, &f, now_ms())
+                        .await
+                } else if let Some(event) = &event {
                     t.ingest_routed_attachment_received(
                         &scope.binding_id,
                         event.clone(),
-                        if raw["content"]["msgtype"] == "m.text" {
+                        if event.encrypted || raw["content"]["msgtype"] == "m.text" {
                             None
                         } else {
                             Some(crate::attachments::Attachment::from_content(
@@ -222,8 +352,7 @@ pub(crate) async fn route_controlled(
                     .await
                     .map(|_| ())
                 } else {
-                    t.ingest_ciphertext(&transaction.id, &scope.binding_id, raw, &f, now_ms())
-                        .await
+                    continue;
                 };
                 match routed {
                     // A permanently rejected message cannot block subsequent
@@ -688,9 +817,22 @@ pub(crate) async fn route(
     g: &Gateway,
     cursor: &mut String,
 ) -> Result<()> {
+    route_with_shared(inbox, t, g, cursor, None).await
+}
+#[cfg(test)]
+pub(crate) async fn route_with_shared(
+    inbox: &Inbox,
+    t: &TransportStore,
+    g: &Gateway,
+    cursor: &mut String,
+    shared: Option<&(
+        crate::domain::DomainStore,
+        crate::management_types::ManagementPolicy,
+    )>,
+) -> Result<()> {
     let runtime = WorkerRuntime::default();
     let ctx = runtime.queue("test");
-    let result = route_controlled(inbox, t, g, cursor, &ctx).await;
+    let result = route_controlled(inbox, t, g, cursor, shared, &ctx).await;
     runtime.begin_shutdown();
     result
 }
@@ -752,14 +894,34 @@ pub(crate) fn start(
     t: TransportStore,
     g: Gateway,
     m: MatrixClient,
+    shared: Option<(
+        crate::domain::DomainStore,
+        crate::management_types::ManagementPolicy,
+    )>,
 ) -> tokio::task::JoinHandle<()> {
-    start_controlled(inbox, t, g, m, WorkerRuntime::default())
+    start_shared_controlled(inbox, t, g, m, shared, WorkerRuntime::default())
 }
+/// The personal workers alone, as the file delivery tests start them.
+#[cfg(test)]
 pub(crate) fn start_controlled(
     inbox: Inbox,
     t: TransportStore,
     g: Gateway,
     m: MatrixClient,
+    control: WorkerRuntime,
+) -> tokio::task::JoinHandle<()> {
+    start_shared_controlled(inbox, t, g, m, None, control)
+}
+/// `shared`: the Domain and management policy when pooled Agents execute here.
+pub(crate) fn start_shared_controlled(
+    inbox: Inbox,
+    t: TransportStore,
+    g: Gateway,
+    m: MatrixClient,
+    shared: Option<(
+        crate::domain::DomainStore,
+        crate::management_types::ManagementPolicy,
+    )>,
     control: WorkerRuntime,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -768,6 +930,7 @@ pub(crate) fn start_controlled(
         let mut processing_cursor = String::new();
         let mut pause_cursor = String::new();
         let mut request_cursor = String::new();
+        let mut shared_reply_cursor = String::new();
         let mut file_cursor = String::new();
         // Each durable queue advances on its own clock. A slow Matrix lookup
         // or retry in one queue must not stall intake or another queue's replies.
@@ -794,6 +957,11 @@ pub(crate) fn start_controlled(
             worker_loop!("dispatch_expiry", ctx, async {
                 t.invalidate_stale_dispatches(now_ms()).await.map(|_| ())
             }),
+            worker_loop!(
+                "matrix_device_expiry",
+                ctx,
+                t.revoke_stale_matrix_devices(&m)
+            ),
             worker_loop!("file_expiry", ctx, t.expire_files(now_ms())),
             worker_loop!(
                 "files",
@@ -803,7 +971,7 @@ pub(crate) fn start_controlled(
             worker_loop!(
                 "routing",
                 ctx,
-                route_controlled(&inbox, &t, &g, &mut route_cursor, &ctx)
+                route_controlled(&inbox, &t, &g, &mut route_cursor, shared.as_ref(), &ctx)
             ),
             worker_loop!(
                 "replies",
@@ -824,7 +992,19 @@ pub(crate) fn start_controlled(
                 "request_notices",
                 ctx,
                 send_request_notices_controlled(&t, &g, &m, &mut request_cursor, &ctx)
-            )
+            ),
+            async {
+                if let Some((domain, policy)) = &shared {
+                    worker_loop!(
+                        "shared_replies",
+                        ctx,
+                        domain.send_shared_replies(policy, &g, &m, &mut shared_reply_cursor)
+                    )
+                    .await;
+                } else {
+                    control.stopped().await;
+                }
+            }
         );
     })
 }
@@ -833,13 +1013,15 @@ pub(crate) fn start_cleanup(
     domain: crate::domain::DomainStore,
     g: Gateway,
     m: MatrixClient,
+    management: Option<crate::management_types::ManagementPolicy>,
 ) -> tokio::task::JoinHandle<()> {
-    start_cleanup_controlled(domain, g, m, WorkerRuntime::default())
+    start_cleanup_controlled(domain, g, m, management, WorkerRuntime::default())
 }
 pub(crate) fn start_cleanup_controlled(
     domain: crate::domain::DomainStore,
     g: Gateway,
     m: MatrixClient,
+    management: Option<crate::management_types::ManagementPolicy>,
     control: WorkerRuntime,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -847,6 +1029,8 @@ pub(crate) fn start_cleanup_controlled(
         let mut cursor = String::new();
         let mut cleanup_cursor = (String::new(), String::new());
         let mut identity_cursor = String::new();
+        let mut managed_matrix_cursor = String::new();
+        let mut shared_room_cursor = String::new();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -865,6 +1049,31 @@ pub(crate) fn start_cleanup_controlled(
                 Err(error) => {
                     ctx.finish(&Err(error));
                     continue;
+                }
+            }
+            if let Ok(ids) = domain.shared_room_candidates(&shared_room_cursor).await {
+                if ids.is_empty() {
+                    shared_room_cursor.clear();
+                }
+                for id in ids {
+                    shared_room_cursor = id.clone();
+                    let _ = domain.reconcile_shared_room(&id, &g, &m).await;
+                }
+            }
+            let _ = domain.revoke_shared_crypto_devices(&m).await;
+            let _ = domain.sweep_managed_runtime().await;
+            if let Ok(ids) = domain
+                .managed_matrix_candidates(&managed_matrix_cursor, 20)
+                .await
+            {
+                if ids.is_empty() {
+                    managed_matrix_cursor.clear();
+                }
+                for id in ids {
+                    managed_matrix_cursor = id.clone();
+                    let _ = domain
+                        .reconcile_managed_agent_matrix(&id, &g, &m, management.as_ref())
+                        .await;
                 }
             }
             let agents = domain
@@ -1196,6 +1405,63 @@ mod tests {
         let mut encrypted = raw;
         encrypted["type"] = json!("m.room.encrypted");
         assert!(parse_event(&encrypted).is_none());
+    }
+    #[test]
+    fn edits_and_redactions_are_revisions_of_known_events_never_prompts() {
+        let edit = json!({"type":"m.room.message","event_id":"$edit","room_id":"!r:x","sender":"@u:x",
+            "content":{"msgtype":"m.text","body":"* fixed","m.new_content":{"msgtype":"m.text","body":"fixed"},
+            "m.relates_to":{"rel_type":"m.replace","event_id":"$orig"}}});
+        assert!(parse_event(&edit).is_none());
+        let parsed = parse_revision(&edit).unwrap();
+        assert_eq!(parsed.target_event_id, "$orig");
+        assert_eq!(
+            parsed.kind,
+            RevisionKind::Edit {
+                body: "fixed".into()
+            }
+        );
+        let mut notice = edit.clone();
+        notice["content"]["m.new_content"]["msgtype"] = json!("m.notice");
+        assert!(parse_revision(&notice).is_none());
+        let mut encrypted = edit.clone();
+        encrypted["type"] = json!("m.room.encrypted");
+        assert!(parse_revision(&encrypted).is_none() && parse_event(&encrypted).is_none());
+        for redaction in [
+            json!({"type":"m.room.redaction","event_id":"$red","room_id":"!r:x","sender":"@mod:x","content":{"redacts":"$orig","reason":"spam"}}),
+            json!({"type":"m.room.redaction","event_id":"$red","room_id":"!r:x","sender":"@mod:x","redacts":"$orig","content":{}}),
+        ] {
+            assert!(parse_event(&redaction).is_none());
+            let parsed = parse_revision(&redaction).unwrap();
+            assert_eq!(
+                (parsed.target_event_id.as_str(), parsed.kind.clone()),
+                ("$orig", RevisionKind::Redaction)
+            );
+        }
+        let plain = json!({"type":"m.room.message","event_id":"$e","room_id":"!r:x","sender":"@u:x","content":{"msgtype":"m.text","body":"hello"}});
+        assert!(parse_revision(&plain).is_none() && parse_event(&plain).is_some());
+        let mut self_target = edit;
+        self_target["m.relates_to"] = json!({});
+        self_target["content"]["m.relates_to"]["event_id"] = json!("$edit");
+        assert!(parse_revision(&self_target).is_none());
+    }
+    #[test]
+    fn encrypted_events_carry_only_cleartext_routing_metadata() {
+        let mut raw = json!({"type":"m.room.encrypted","event_id":"$e","room_id":"!r:x","sender":"@u:x",
+            "content":{"algorithm":"m.megolm.v1.aes-sha2","ciphertext":"opaque","sender_key":"k","session_id":"s","device_id":"D"}});
+        let parsed = parse_event(&raw).unwrap();
+        assert!(parsed.encrypted && parsed.body.is_empty() && parsed.mentioned_mxids.is_empty());
+        assert_eq!(parsed.thread_root, None);
+        raw["content"]["m.relates_to"] = json!({"rel_type":"m.thread","event_id":"$root"});
+        assert_eq!(
+            parse_event(&raw).unwrap().thread_root.as_deref(),
+            Some("$root")
+        );
+        for ignored in ["m.replace", "m.annotation"] {
+            raw["content"]["m.relates_to"]["rel_type"] = json!(ignored);
+            assert!(parse_event(&raw).is_none(), "{ignored}");
+        }
+        raw["content"] = json!({"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":{}});
+        assert!(parse_event(&raw).is_none());
     }
 }
 

@@ -15,6 +15,8 @@ use std::{collections::BTreeSet, sync::Arc};
 mod attachments;
 #[path = "transport_ciphertexts.rs"]
 pub(crate) mod ciphertexts;
+#[path = "transport_e2ee.rs"]
+mod e2ee;
 #[path = "encrypted_dispatches.rs"]
 pub(crate) mod encrypted;
 #[path = "encrypted_execution.rs"]
@@ -91,7 +93,7 @@ pub struct Lease {
 }
 /// Canonical event parsed from a verified Appservice transaction, never from a
 /// client request. Mentions and relation fields retain canonical Matrix meaning.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RoutedEvent {
     pub event_id: String,
     pub room_id: String,
@@ -119,6 +121,8 @@ pub struct DeliveryFacts {
     pub puppet_can_send_message: bool,
     pub encrypted: bool,
     pub owner_direct_valid: bool,
+    /// Fresh room membership, independent of m.direct and binding scope.
+    pub requires_mention: bool,
 }
 #[derive(Debug, Serialize, diesel::Queryable, diesel::QueryableByName)]
 #[serde(rename_all = "camelCase")]
@@ -180,6 +184,14 @@ pub struct SubmitReply {
     pub dispatch_id: String,
     pub execution_id: String,
     pub body: String,
+}
+/// An executor's own encrypted reply, already sent with the Agent's device.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EncryptedReply {
+    pub dispatch_id: String,
+    pub execution_id: String,
+    pub matrix_event_id: String,
 }
 #[derive(Debug, Serialize, diesel::Queryable, diesel::QueryableByName)]
 #[serde(rename_all = "camelCase")]
@@ -277,6 +289,11 @@ struct Flag {
     #[diesel(sql_type=Bool)]
     matched: bool,
 }
+#[derive(diesel::QueryableByName)]
+struct Puppet {
+    #[diesel(sql_type=Text)]
+    puppet_mxid: String,
+}
 #[derive(diesel::Queryable, diesel::QueryableByName)]
 struct Clock {
     #[diesel(sql_type=BigInt)]
@@ -299,10 +316,23 @@ struct Existing {
     #[diesel(sql_type=Text)]
     digest: String,
 }
+/// Which design receives `m.room.encrypted` events for personal Agents. The
+/// two cannot both take the same event: ciphertext kept for the server-brokered
+/// design counts against the owner's queue and nothing else would consume it.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EncryptedDelivery {
+    /// The executor holds the Agent's Matrix device and decrypts locally.
+    #[default]
+    ExecutorDevice,
+    /// The server keeps the ciphertext and brokers the Agent's crypto.
+    CiphertextInbox,
+}
 #[derive(Clone)]
 pub struct TransportStore {
     db: Arc<crate::database::Database>,
     limits: Limits,
+    encrypted_delivery: EncryptedDelivery,
 }
 impl TransportStore {
     /// Initialize only new transport tables in the fixed new-domain database.
@@ -361,6 +391,8 @@ impl TransportStore {
             db.batch_execute("SELECT id FROM hagency_agent_v1.file_sendable LIMIT 0").await.map_err(|_|Error::Conflict("file_delivery_schema_incompatible"))?;
             db.batch_execute("SELECT dispatch_id,descriptor,descriptor_digest FROM hagency_agent_v1.event_attachments LIMIT 0").await
                 .map_err(|_| Error::Conflict("attachment_schema_incompatible"))?;
+            // Refresh the derived view for existing installations without changing journals.
+            db.batch_execute(include_str!("request_notice_needed.sql")).await?;
             db.batch_execute("SELECT id FROM hagency_agent_v1.processing_sendable LIMIT 0").await
                 .map_err(|_| Error::Conflict("processing_schema_incompatible"))?;
             db.batch_execute("SELECT delivery_epoch FROM hagency_agent_v1.reply_outbox LIMIT 0")
@@ -372,7 +404,15 @@ impl TransportStore {
         Ok(Self {
             db: Arc::new(crate::database::Database::business(url)?),
             limits,
+            encrypted_delivery: EncryptedDelivery::default(),
         })
+    }
+    pub fn with_encrypted_delivery(mut self, design: EncryptedDelivery) -> Self {
+        self.encrypted_delivery = design;
+        self
+    }
+    pub fn encrypted_delivery(&self) -> EncryptedDelivery {
+        self.encrypted_delivery
     }
     async fn clock(db: &mut AsyncPgConnection, now: i64) -> Result<i64> {
         Ok(sql_query(
@@ -583,6 +623,21 @@ impl TransportStore {
         sql_query("SELECT agent_id,owner_user_id,device_id,device_generation,epoch,expires_at_ms FROM hagency_agent_v1.execution_leases WHERE agent_id=$1 AND owner_user_id=$2 AND device_id=$3 AND device_generation=$4 AND epoch=$5 AND expires_at_ms>greatest($6,(extract(epoch from clock_timestamp())*1000)::bigint)")
             .bind::<Text,_>(&reference.agent_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(id).bind::<BigInt,_>(generation).bind::<BigInt,_>(reference.epoch).bind::<BigInt,_>(now).get_result(db).await.map_err(unauthorized)
     }
+    /// Read-only proof that this device holds the live lease of its assigned,
+    /// active personal Agent. Returns the puppet for device-scoped Matrix issuance.
+    pub async fn leased_puppet(
+        &self,
+        p: &Principal,
+        reference: &LeaseRef,
+        now: i64,
+    ) -> Result<String> {
+        let mut guard = self.db.lock().await?;
+        let db = &mut *guard;
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            let (now,_)=Self::authenticate(db,p,now).await?;Self::agent_active(db,p,&reference.agent_id).await?;Self::lease(db,p,reference,now).await?;
+            Ok(sql_query("SELECT puppet_mxid FROM hagency_agent_v1.agents WHERE id=$1 AND owner_user_id=$2 AND execution_kind='personal'").bind::<Text,_>(&reference.agent_id).bind::<Text,_>(&p.user_id).get_result::<Puppet>(db).await.map_err(unauthorized)?.puppet_mxid)
+        }).await
+    }
     pub async fn renew_lease(
         &self,
         p: &Principal,
@@ -745,6 +800,34 @@ impl TransportStore {
         received_at_ms: i64,
         now: i64,
     ) -> Result<RouteResult> {
+        self.ingest_routed_inner(binding, event, attachment, f, received_at_ms, now, false)
+            .await
+    }
+    /// `confirmed`: the executor holding the Agent's Matrix device has decrypted
+    /// this encrypted event and reported who it addresses.
+    async fn ingest_routed_confirmed(
+        &self,
+        binding: &str,
+        event: RoutedEvent,
+        f: &DeliveryFacts,
+        received_at_ms: i64,
+        now: i64,
+        confirmed: bool,
+    ) -> Result<RouteResult> {
+        self.ingest_routed_inner(binding, event, None, f, received_at_ms, now, confirmed)
+            .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn ingest_routed_inner(
+        &self,
+        binding: &str,
+        event: RoutedEvent,
+        attachment: Option<crate::attachments::Attachment>,
+        f: &DeliveryFacts,
+        received_at_ms: i64,
+        now: i64,
+        confirmed: bool,
+    ) -> Result<RouteResult> {
         if let Some(a) = &attachment {
             a.validate()?;
         }
@@ -754,8 +837,15 @@ impl TransportStore {
         matrix_id(&event.event_id, '$')?;
         matrix_id(&event.room_id, '!')?;
         matrix_id(&event.sender_mxid, '@')?;
-        message(&event.body, self.limits.max_message_bytes)?;
-        if event.encrypted || f.encrypted {
+        if !event.encrypted {
+            message(&event.body, self.limits.max_message_bytes)?;
+        } else if !event.body.is_empty() {
+            return Err(Error::Invalid("invalid_message_body"));
+        }
+        // Encrypted prompts need matching Room encryption. The executor
+        // decrypts with the Agent's device and confirms group addressing.
+        // Plaintext in an encrypted Room is never a canonical prompt.
+        if event.encrypted != f.encrypted {
             return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
         }
         if event.is_edit {
@@ -786,12 +876,21 @@ impl TransportStore {
                     .get_result::<Existing>(db)
                     .await
             }.optional()?;
-            if let Some(old)=existing {if old.digest!=digest {return Err(Error::Conflict("event_payload_changed"));}return Ok(RouteResult::Duplicate{dispatch_id:old.id});}
+            if let Some(old)=existing {if old.digest!=digest && !(event.encrypted && !confirmed) {return Err(Error::Conflict("event_payload_changed"));}return Ok(RouteResult::Duplicate{dispatch_id:old.id});}
             if let Some(duplicate)=Self::existing_pause_notice(db,binding,&event.event_id,&digest).await? {return Ok(duplicate);}
             let puppet_sender=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agents WHERE puppet_mxid=$1) AS matched").bind::<Text,_>(&event.sender_mxid).get_result::<Flag>(db).await?;
             if puppet_sender.matched || event.sender_mxid.starts_with("@_hagency_") {return Ok(RouteResult::Ignored);}
-            let known=match &event.thread_root {Some(root)=>sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agent_threads WHERE binding_id=$1 AND thread_root=$2) AS matched").bind::<Text,_>(binding).bind::<Text,_>(root).get_result::<Flag>(db).await?.matched,None=>false};
-            if !scope.space_id.is_empty()&&!event.mentioned_mxids.contains(&scope.puppet_mxid)&&!(scope.thread_auto_reply && known) {return Ok(RouteResult::Ignored);}
+            if event.encrypted && (f.requires_mention || event.sender_mxid != scope.owner_mxid) && !confirmed {
+                sql_query("DELETE FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1 AND received_at_ms<=$2").bind::<Text,_>(binding).bind::<BigInt,_>(now-self.limits.event_ttl_ms).execute(db).await?;
+                if sql_query("SELECT count(*)>=10000 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1 AND event_id=$2) AS matched FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1").bind::<Text,_>(binding).bind::<Text,_>(&event.event_id).get_result::<Flag>(db).await?.matched {return Err(Error::Unavailable("encrypted_candidate_capacity"));}
+                let payload=serde_json::to_string(&event).map_err(|_|Error::Invalid("invalid_event"))?;
+                sql_query("INSERT INTO hagency_agent_v1.personal_e2ee_candidates(binding_id,event_id,payload,received_at_ms) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind::<Text,_>(binding).bind::<Text,_>(&event.event_id).bind::<Text,_>(payload).bind::<BigInt,_>(received_at_ms).execute(db).await?;
+                return Ok(RouteResult::Ignored);
+            }
+            if (f.requires_mention || event.sender_mxid != scope.owner_mxid)
+                && !event.mentioned_mxids.contains(&scope.puppet_mxid) {
+                return Ok(RouteResult::Ignored);
+            }
             if scope.service_paused {
                 return self.queue_pause_notice(db,&scope,&event,&digest,received_at_ms,now).await;
             }
@@ -983,7 +1082,9 @@ impl TransportStore {
                 "encrypted_dispatch_requires_ciphertext_api",
             ));
         }
-        facts(&scope, &event.requester_mxid, f, now)?;
+        // The executor holds the Agent's Matrix device, so an encrypted Room
+        // is accepted as it is; only what the server itself sends stays plaintext.
+        facts_in_room(&scope, &event.requester_mxid, f, now)?;
         Ok(scope)
     }
     pub async fn claim_event(
@@ -1207,6 +1308,9 @@ impl TransportStore {
         key(&request.dispatch_id)?;
         key(&request.execution_id)?;
         message(&request.body, self.limits.max_message_bytes)?;
+        if f.encrypted {
+            return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
+        }
         let digest =
             hash(&serde_json::to_string(&request).map_err(|_| Error::Invalid("invalid_reply"))?);
         self.db
@@ -1285,6 +1389,41 @@ impl TransportStore {
             })
             .await
     }
+    /// The executor already sent an encrypted reply with the Agent's own device.
+    /// Record it as sent under the same dispatch, epoch and transaction ID, with
+    /// no plaintext: the server never holds the decrypted conversation.
+    pub async fn record_encrypted_reply(
+        &self,
+        p: &Principal,
+        reference: &LeaseRef,
+        request: EncryptedReply,
+        f: &DeliveryFacts,
+        now: i64,
+    ) -> Result<ReplyIntent> {
+        self.observe_event_authority(p, &request.dispatch_id, f, now)
+            .await?;
+        key(&request.dispatch_id)?;
+        key(&request.execution_id)?;
+        matrix_id(&request.matrix_event_id, '$')?;
+        if !f.encrypted {
+            return Err(Error::Conflict("encrypted_reply_requires_encrypted_room"));
+        }
+        let digest =
+            hash(&serde_json::to_string(&request).map_err(|_| Error::Invalid("invalid_reply"))?);
+        let mut guard = self.db.lock().await?;
+        let db = &mut *guard;
+        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            let (now,_)=Self::authenticate(db,p,now).await?;let e=Self::dispatch(db,p,&request.dispatch_id).await?;let scope=Self::dispatch_scope(db,p,reference,&e,f,now).await?;fenced(&e,p,reference)?;
+            let old=Self::reply_for_event(db,&e.id).await?;
+            if let Some(old)=old {if old.payload_digest!=digest {return Err(Error::Conflict("reply_payload_changed"));}return Ok(old);}
+            if e.state!="running"||e.execution_id.as_deref()!=Some(&request.execution_id) {return Err(Error::Conflict("execution_not_running"));}
+            let id=format!("rep_{}",entity_id()?);let txn=format!("hagency_{}",hash(&e.id));
+            sql_query("INSERT INTO hagency_agent_v1.reply_outbox(id,owner_event_id,agent_id,binding_id,owner_user_id,room_id,puppet_mxid,thread_root,body,payload_digest,matrix_txn_id,binding_generation,dispatch_epoch,delivery_epoch,state,matrix_event_id,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'',$9,$10,$11,$12,$12,'sent',$13,$14)")
+                .bind::<Text,_>(&id).bind::<Text,_>(&e.id).bind::<Text,_>(&e.agent_id).bind::<Text,_>(&e.binding_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&e.room_id).bind::<Text,_>(&scope.puppet_mxid).bind::<Text,_>(&e.thread_root).bind::<Text,_>(&digest).bind::<Text,_>(&txn).bind::<BigInt,_>(e.binding_generation).bind::<BigInt,_>(reference.epoch).bind::<Text,_>(&request.matrix_event_id).bind::<BigInt,_>(now).execute(db).await?;
+            sql_query("UPDATE hagency_agent_v1.owner_events SET state='completed',outcome='replied' WHERE id=$1").bind::<Text,_>(&e.id).execute(db).await?;
+            Self::reply(db,&id).await
+        }).await
+    }
     /// Explicit recovery of a locally durable known result under current authority.
     /// This never reruns execution, changes its original epoch or resolves unknown
     /// model usage/tool side effects. It does not unblock a denied Matrix delivery.
@@ -1301,6 +1440,9 @@ impl TransportStore {
         key(&request.dispatch_id)?;
         key(&request.execution_id)?;
         message(&request.body, self.limits.max_message_bytes)?;
+        if f.encrypted {
+            return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
+        }
         let digest =
             hash(&serde_json::to_string(&request).map_err(|_| Error::Invalid("invalid_reply"))?);
         self.db.with_connection(async |db| {
@@ -1458,7 +1600,7 @@ impl TransportStore {
                     .await
             }.map_err(unauthorized)?;
             let scope=Self::scope(db,&e.binding_id).await?;observation(&scope,&e.requester_mxid,f,now)?;
-            let denied=scope.binding_generation!=e.binding_generation||facts(&scope,&e.requester_mxid,f,now).is_err();
+            let denied=scope.binding_generation!=e.binding_generation||facts_in_room(&scope,&e.requester_mxid,f,now).is_err();
             if !denied||!matches!(e.state.as_str(),"pending"|"offered"|"acknowledged"|"running") {return Ok(false);}
             sql_query("UPDATE hagency_agent_v1.owner_events SET state=CASE WHEN state='running' THEN 'unknown' ELSE 'cancelled' END WHERE id=$1").bind::<Text,_>(id).execute(db).await?;Ok(true)
         }).await
@@ -1477,7 +1619,7 @@ impl TransportStore {
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;let intent=Self::reply(db,id).await?;
             let scope=Self::scope(db,&intent.binding_id).await?;observation(&scope,&intent.requester_mxid,f,now)?;
-            let denied=scope.binding_generation!=intent.binding_generation||facts(&scope,&intent.requester_mxid,f,now).is_err();
+            let denied=scope.binding_generation!=intent.binding_generation||plaintext_sendable(&scope,&intent.requester_mxid,f,now).is_err();
             if !denied||intent.state=="sent"||intent.delivery_blocked {return Ok(false);}
             sql_query("UPDATE hagency_agent_v1.reply_outbox SET delivery_blocked=true,state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END WHERE id=$1").bind::<Text,_>(id).execute(db).await?;Ok(true)
         }).await
@@ -1840,12 +1982,29 @@ fn observation(scope: &RoutingScope, requester: &str, f: &DeliveryFacts, now: i6
 fn facts(scope: &RoutingScope, requester: &str, f: &DeliveryFacts, now: i64) -> Result<()> {
     facts_mode(scope, requester, f, now, false)
 }
+/// `encrypted = true` is the server-brokered ciphertext pipeline. It serves the
+/// owner's own conversation only, so there the requester must be the owner.
 fn facts_mode(
     scope: &RoutingScope,
     requester: &str,
     f: &DeliveryFacts,
     now: i64,
     encrypted: bool,
+) -> Result<()> {
+    delivery_facts(scope, requester, f, now, encrypted, encrypted)
+}
+/// The executor holds the Agent's Matrix device, so the Room's own encryption
+/// state is accepted; whoever addressed the Agent there may be the requester.
+fn facts_in_room(scope: &RoutingScope, requester: &str, f: &DeliveryFacts, now: i64) -> Result<()> {
+    delivery_facts(scope, requester, f, now, f.encrypted, false)
+}
+fn delivery_facts(
+    scope: &RoutingScope,
+    requester: &str,
+    f: &DeliveryFacts,
+    now: i64,
+    encrypted: bool,
+    owner_only: bool,
 ) -> Result<()> {
     let now = now.max(crate::api::now_ms());
     if f.observed_at_ms < 0 || f.observed_at_ms > now || now - f.observed_at_ms > 30_000 {
@@ -1859,7 +2018,7 @@ fn facts_mode(
         || requester != f.requester_mxid
         || !f.owner_in_room
         || (if scope.space_id.is_empty() {
-            !f.owner_direct_valid || requester != scope.owner_mxid
+            !f.owner_direct_valid || (owner_only && requester != scope.owner_mxid)
         } else {
             !f.owner_in_space || !f.room_in_space
         })
@@ -1870,6 +2029,20 @@ fn facts_mode(
         return Err(Error::Unauthorized("room_delivery_denied"));
     }
     if f.encrypted != encrypted {
+        return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
+    }
+    Ok(())
+}
+/// Facts for anything the server itself sends: replies, status notices and
+/// reactions are plaintext, so they never go into an encrypted Room.
+fn plaintext_sendable(
+    scope: &RoutingScope,
+    requester: &str,
+    f: &DeliveryFacts,
+    now: i64,
+) -> Result<()> {
+    facts(scope, requester, f, now)?;
+    if f.encrypted {
         return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
     }
     Ok(())

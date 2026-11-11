@@ -716,3 +716,68 @@ async fn postgres_encrypted_execution_and_original_publication_are_fenced_and_ne
         "encrypted_completed"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn encrypted_worker_routes_personal_events_to_the_selected_delivery_path() {
+    let source = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let name = format!(
+        "hagency_crypto_mode_{}",
+        &crate::hash(&secret_token())[..16]
+    );
+    let mut control = AsyncPgConnection::establish(&source).await.unwrap();
+    control
+        .batch_execute(&format!("CREATE DATABASE {name}"))
+        .await
+        .unwrap();
+    let mut url = url::Url::parse(&source).unwrap();
+    url.set_path(&format!("/{name}"));
+    let result = tokio::spawn(async move {
+        for mode in [EncryptedDelivery::ExecutorDevice, EncryptedDelivery::CiphertextInbox] {
+            let f = fixture_at(url.as_str()).await;
+            let inbox = Inbox::open(url.as_str(), "h".repeat(64)).await.unwrap();
+            let transport = f.transport.clone().with_encrypted_delivery(mode);
+            let room = f.facts.room_id.clone();
+            let space = f.facts.space_id.clone();
+            let owner = f.facts.owner_mxid.clone();
+            let requester = f.facts.requester_mxid.clone();
+            let puppet = f.facts.puppet_mxid.clone();
+            let room_state = vec![
+                json!({"type":"m.room.member","state_key":owner,"content":{"membership":"join"}}),
+                json!({"type":"m.room.member","state_key":requester,"content":{"membership":"join"}}),
+                json!({"type":"m.room.member","state_key":puppet,"content":{"membership":"join"}}),
+                json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}),
+            ];
+            let space_state = vec![
+                json!({"type":"m.room.member","state_key":owner,"content":{"membership":"join"}}),
+                json!({"type":"m.space.child","state_key":room,"content":{"via":["example.test"]}}),
+            ];
+            let gateway = crate::gateway::Gateway::new(
+                Arc::new(move |id| {
+                    let states = if id == room { Some(room_state.clone()) }
+                        else if id == space { Some(space_state.clone()) } else { None };
+                    Box::pin(async move { states.ok_or(Error::Unavailable("test_room_unavailable")) })
+                }),
+                "@_hagency_service:example.test".into(),
+            );
+            let event = raw(&f, &format!("mode_{mode:?}"));
+            let transaction = secret_token();
+            inbox.accept(&transaction, json!({"events":[event]}), crate::api::now_ms()).await.unwrap();
+            crate::workers::route(&inbox, &transport, &gateway, &mut String::new()).await.unwrap();
+            let mut db = AsyncPgConnection::establish(url.as_str()).await.unwrap();
+            let candidates = sql_query("SELECT count(*) AS total FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1")
+                .bind::<Text,_>(&f.binding).get_result::<Count>(&mut db).await.unwrap().total;
+            let ciphertexts = sql_query("SELECT count(*) AS total FROM hagency_agent_v1.ciphertext_inbox WHERE binding_id=$1")
+                .bind::<Text,_>(&f.binding).get_result::<Count>(&mut db).await.unwrap().total;
+            assert_eq!((candidates, ciphertexts), match mode {
+                EncryptedDelivery::ExecutorDevice => (1, 0),
+                EncryptedDelivery::CiphertextInbox => (0, 1),
+            });
+        }
+    }).await;
+    control
+        .batch_execute(&format!("DROP DATABASE {name} WITH (FORCE)"))
+        .await
+        .unwrap();
+    result.unwrap();
+}

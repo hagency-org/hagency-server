@@ -174,7 +174,7 @@ def validate(doc):
                 require(operation['security'] == [{'deviceBearer': []}], 'Agent crypto device security drift')
             elif path.startswith('/hagency/api/v1/execution/'):
                 require(operation['security'] == [{'deviceBearer': []}] and method == 'post', 'execution bearer/method drift')
-            elif '/configuration' in path or path.startswith('/hagency/api/v1/device-configuration/'):
+            elif path == '/hagency/api/v1/devices/current' or '/configuration' in path or path.startswith('/hagency/api/v1/device-configuration/'):
                 require(operation['security'] == [{'deviceBearer': []}], 'configuration device security drift')
             elif (path == '/hagency/api/v1/agents' and method == 'post') or (path == '/hagency/api/v1/agents/{agentId}/execution-device' and method == 'put'):
                 require(operation['security'] == [{'deviceBearer': []}], 'device management security drift')
@@ -189,6 +189,7 @@ def validate(doc):
         api += (ROOT / 'crates/agent-service/src/api_configuration.rs').read_text()
         literal = set((p, m.lower()) for p, m in re.findall(r'path\s*==\s*"(/hagency/api/v1/[^"]+)"\s*&&\s*method\s*==\s*salvo::http::Method::(\w+)', api))
         literal |= {(p, 'post') for p in re.findall(r'"(/hagency/api/v1/execution/[^"]+)" =>', transport)}
+        literal |= {(p, 'post') for p in re.findall(r'"(/hagency/api/v1/execution/e2ee-device(?:/revoke)?)" =>', api)}
         require(literal <= operations, 'source literal route omitted: ' + str(literal - operations))
         require({p for p, _ in operations if p.startswith('/hagency/api/v1/execution/')} == {p for p, _ in literal if p.startswith('/hagency/api/v1/execution/')}, 'invented transport route')
         require(('/hagency/api/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
@@ -217,10 +218,14 @@ def validate(doc):
             require(operation['responses']['200']['content']['application/json']['schema'] == {'type':'object','properties':{'admission':{'$ref':'#/components/schemas/EncryptedAdmission'}},'required':['admission'],'additionalProperties':False}, 'encrypted admission response drift')
         action = doc['components']['schemas']['EncryptedAction']
         require(set(action['properties']) == {'lease','dispatchId','executionId','action','requestId','kind','payload'} and action.get('additionalProperties') is False, 'encrypted action must contain metadata and sealed payload only')
+        executor_reply = doc['components']['schemas']['EncryptedReply']
+        require(set(executor_reply['properties']) == {'dispatchId','executionId','matrixEventId'} and executor_reply.get('additionalProperties') is False, 'executor reply must contain metadata only')
+        candidate = doc['components']['schemas']['ExecutorCryptoCandidateInput']
+        require(set(candidate['properties']) == {'lease','bindingId','eventId','mentions','threadRoot'} and candidate.get('additionalProperties') is False, 'executor candidate confirmation must contain metadata only')
         worker_health = doc['paths']['/workers-healthz']['get']
         require(worker_health['security'] == [] and set(worker_health['responses']) == {'200', '503'}, 'worker health security/status drift')
         require(set(doc['components']['schemas']['WorkerQueueHealth']['properties']) == {'name', 'running', 'consecutiveFailures', 'lastSuccessAgeMs', 'lastActivityAgeMs', 'error'}, 'worker health must remain aggregate and body-free')
-        require(len(operations) == 129, 'reviewed owner route count drift')
+        require(len(operations) == 136, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -239,6 +244,12 @@ class GuardTests(unittest.TestCase):
         self.rejection(lambda d: d['paths']['/workers-healthz']['get']['responses'].pop('503'))
     def test_encrypted_action_never_accepts_plaintext_body(self):
         self.rejection(lambda d: d['components']['schemas']['EncryptedAction']['properties'].update(body={'type':'string'}))
+    def test_executor_reply_never_accepts_plaintext_body(self):
+        self.rejection(lambda d: d['components']['schemas']['EncryptedReply']['properties'].update(body={'type':'string'}))
+    def test_missing_executor_device_route(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/e2ee-device'))
+    def test_executor_confirmation_never_accepts_plaintext_body(self):
+        self.rejection(lambda d: d['components']['schemas']['ExecutorCryptoCandidateInput']['properties'].update(body={'type':'string'}))
     def test_missing_encrypted_execution_action(self):
         self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/execution/encrypted/action'))
     def test_missing_owner_key_claim(self):

@@ -24,6 +24,7 @@ pub struct App {
     matrix_client: Option<crate::matrix_client::MatrixClient>,
     domain: Option<(crate::domain::DomainStore, crate::gateway::Gateway)>,
     transport: Option<crate::transport::TransportStore>,
+    management: Option<crate::management_types::ManagementPolicy>,
     board_enabled: bool,
 }
 impl App {
@@ -45,8 +46,16 @@ impl App {
             matrix_client: None,
             domain: None,
             transport: None,
+            management: None,
             board_enabled: true,
         }
+    }
+    pub fn with_management(mut self, policy: crate::management_types::ManagementPolicy) -> Self {
+        if let Some((domain, _)) = &self.domain {
+            domain.set_pool_grant_succession(policy.pool_grant_succession());
+        }
+        self.management = Some(policy);
+        self
     }
     pub fn with_matrix_client(mut self, matrix: crate::matrix_client::MatrixClient) -> Self {
         self.startup_ready.store(false, Ordering::Release);
@@ -74,11 +83,15 @@ impl App {
         &self,
         inbox: crate::appservice::Inbox,
     ) -> Option<tokio::task::JoinHandle<()>> {
-        Some(crate::workers::start_controlled(
+        Some(crate::workers::start_shared_controlled(
             inbox,
             self.transport.clone()?,
             self.domain.as_ref()?.1.clone(),
             self.matrix_client.clone()?,
+            self.management
+                .clone()
+                .filter(|p| p.shared_execution())
+                .map(|p| (self.domain.as_ref().unwrap().0.clone(), p)),
             self.workers.clone(),
         ))
     }
@@ -88,6 +101,7 @@ impl App {
             domain.clone(),
             gateway.clone(),
             self.matrix_client.clone()?,
+            self.management.clone(),
             self.workers.clone(),
         ))
     }
@@ -189,6 +203,58 @@ impl App {
         Ok(
             json!({"commandState":if creation.binding.state=="active"{"active"}else{"pending"},"creation":creation,"pendingReason":null}),
         )
+    }
+    /// The device holding a personal Agent's live lease receives a token for the
+    /// Agent's dedicated Matrix device, so it can decrypt and encrypt locally in
+    /// encrypted Rooms; it can also revoke that device. The device ID is derived
+    /// from the Agent and executing device generation, so reissuing rotates the
+    /// token of the same device and its crypto store stays valid.
+    async fn e2ee_device(
+        &self,
+        t: &crate::transport::TransportStore,
+        p: &crate::store::Principal,
+        path: &str,
+        req: &mut Request,
+    ) -> Result<Value> {
+        if req.method() != salvo::http::Method::POST {
+            return Err(Error::Invalid("unsupported_operation"));
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Input {
+            lease: crate::transport::LeaseRef,
+        }
+        let input: Input = req
+            .parse_json()
+            .await
+            .map_err(|_| Error::Invalid("invalid_arguments"))?;
+        let (Some(device), Some(generation)) = (p.device_id.as_deref(), p.device_generation) else {
+            return Err(Error::Unauthorized("device_authorization_required"));
+        };
+        let matrix = self
+            .matrix_client
+            .as_ref()
+            .ok_or(Error::Unavailable("matrix_unavailable"))?;
+        let puppet = t.leased_puppet(p, &input.lease, now_ms()).await?;
+        let digest = crate::hash(&format!("{}:{device}:{generation}", input.lease.agent_id));
+        let matrix_device = format!("HAGE2EE{}", digest[..16].to_ascii_uppercase());
+        match path {
+            "/hagency/api/v1/execution/e2ee-device" => {
+                let (matrix_device, token) = t
+                    .issue_matrix_device(p, &input.lease, &puppet, &matrix_device, matrix)
+                    .await?;
+                Ok(
+                    json!({"userId":puppet,"deviceId":matrix_device,"accessToken":token,"homeserver":self.public}),
+                )
+            }
+            "/hagency/api/v1/execution/e2ee-device/revoke" => {
+                let matrix_device = t
+                    .revoke_current_matrix_device(p, &input.lease, &puppet, &matrix_device, matrix)
+                    .await?;
+                Ok(json!({"revoked":true,"deviceId":matrix_device}))
+            }
+            _ => Err(Error::Invalid("unsupported_operation")),
+        }
     }
     fn native_request(&self, req: &Request) -> Result<()> {
         let hosts = req.headers().get_all("host").iter().collect::<Vec<_>>();
@@ -301,9 +367,62 @@ impl App {
             return Ok(json!({"startupRoundtripConfirmed":self.startup_ready()}));
         }
         if path == "/hagency/api/v1/discovery" && method == salvo::http::Method::GET {
+            let mut capabilities = vec![
+                "pasion-oauth",
+                "owner-agent-appservice-v1",
+                "projects-matrix-spaces-v1",
+                "device-execution-v1",
+                "execution-history-v1",
+                "global-agent-identity-v2",
+                "execution-device-v1",
+                "owner-direct-v1",
+                "agent-e2ee-device-v1",
+                "shared-agent-e2ee-v1",
+                "processing-reaction-v1",
+                "execution-configuration-v1",
+                "shared-durable-demand-v1",
+                "shared-thread-context-v1",
+                "shared-thread-context-v2",
+                "managed-agent-budget-delta-v1",
+                "shared-budget-execution-v1",
+                "agent-settlement-v1",
+            ];
+            let transport = self.transport.is_some();
+            let transport_matrix = transport && self.matrix_client.is_some();
+            let domain_matrix = self.domain.is_some() && self.matrix_client.is_some();
+            // Only the design that receives encrypted events for personal
+            // Agents is advertised; the other one would never see an event.
+            let inbox = self.transport.as_ref().is_some_and(|t| {
+                t.encrypted_delivery() == crate::transport::EncryptedDelivery::CiphertextInbox
+            });
+            if inbox {
+                capabilities.retain(|c| *c != "agent-e2ee-device-v1");
+            }
+            capabilities.extend(
+                transport
+                    .then_some(crate::attachments::CAPABILITY)
+                    .into_iter()
+                    .chain(inbox.then_some(crate::transport::ciphertexts::CAPABILITY))
+                    .chain(inbox.then_some(crate::transport::encrypted::CAPABILITY))
+                    .chain(
+                        (inbox && transport_matrix)
+                            .then_some(crate::transport::encrypted_execution::CAPABILITY),
+                    )
+                    .chain(transport_matrix.then_some(crate::file_delivery::CAPABILITY))
+                    .chain(transport.then_some(crate::file_delivery::HISTORY_CAPABILITY))
+                    .chain(domain_matrix.then_some(crate::domain::agent_crypto::CAPABILITY))
+                    .chain(
+                        domain_matrix.then_some(crate::domain::agent_crypto::receive::CAPABILITY),
+                    )
+                    .chain(
+                        (self.board_enabled && self.domain.is_some())
+                            .then_some(crate::project_board::CAPABILITY),
+                    ),
+            );
             return Ok(
                 json!({"product":"hagency-server","version":env!("CARGO_PKG_VERSION"),
-                "capabilities":(["pasion-oauth","owner-agent-appservice-v1","projects-matrix-spaces-v1","device-execution-v1","execution-history-v1","global-agent-identity-v2","execution-device-v1","owner-direct-v1","processing-reaction-v1","execution-configuration-v1"].into_iter().chain(self.transport.as_ref().map(|_|crate::attachments::CAPABILITY)).chain(self.transport.as_ref().map(|_|crate::transport::ciphertexts::CAPABILITY)).chain(self.transport.as_ref().map(|_|crate::transport::encrypted::CAPABILITY)).chain((self.transport.is_some()&&self.matrix_client.is_some()).then_some(crate::transport::encrypted_execution::CAPABILITY)).chain((self.transport.is_some()&&self.matrix_client.is_some()).then_some(crate::file_delivery::CAPABILITY)).chain(self.transport.as_ref().map(|_|crate::file_delivery::HISTORY_CAPABILITY)).chain((self.domain.is_some()&&self.matrix_client.is_some()).then_some(crate::domain::agent_crypto::CAPABILITY)).chain((self.domain.is_some()&&self.matrix_client.is_some()).then_some(crate::domain::agent_crypto::receive::CAPABILITY)).chain(if self.board_enabled && self.domain.is_some() {Some(crate::project_board::CAPABILITY)}else{None}).collect::<Vec<_>>()),
+                "capabilities":capabilities,
+                "managementProtocol":self.management.as_ref().map(|_|crate::management_types::PROTOCOL),
                 "protocolVersion":3,"serverName":self.server_name,"homeserver":self.public,
                 "serviceMxid":format!("@_hagency_service:{}",self.server_name),"issuer":self.issuer,"authorizationEndpoint":self.issuer.join("authorize").unwrap(),
                 "tokenEndpoint":self.issuer.join("oauth2/token").unwrap(),
@@ -373,6 +492,34 @@ impl App {
                 json!({"userId":p.user_id,"mxid":p.mxid,"subject":p.subject,"clientId":p.client_id,"validUntilMs":p.valid_until_ms,"issuer":self.issuer}),
             );
         }
+        if path == "/hagency/api/v1/devices/current" && method == salvo::http::Method::GET {
+            if req.uri().query().is_some() {
+                return Err(Error::Invalid("invalid_arguments"));
+            }
+            let before = self.store.authenticate(&credential, now_ms(), true).await?;
+            // Loading a saved credential is not proof of its current generation.
+            // Recheck the original device immediately before returning its
+            // finite, observation-only identity. No registration or mutation.
+            let current = self.store.authenticate(&credential, now_ms(), true).await?;
+            if before.user_id != current.user_id
+                || before.session_id != current.session_id
+                || before.device_id != current.device_id
+                || before.device_generation != current.device_generation
+            {
+                return Err(Error::Unauthorized("authorization_expired"));
+            }
+            let device_id = current
+                .device_id
+                .ok_or(Error::Unauthorized("device_required"))?;
+            let generation = current
+                .device_generation
+                .ok_or(Error::Unauthorized("device_required"))?;
+            return Ok(
+                json!({"userId":current.user_id,"mxid":current.mxid,"subject":current.subject,
+                "clientId":current.client_id,"issuer":self.issuer,"deviceId":device_id,
+                "generation":generation,"validUntilMs":current.valid_until_ms}),
+            );
+        }
         if path == "/hagency/api/v1/devices" && method == salvo::http::Method::POST {
             let body: RegisterDevice = req
                 .parse_json()
@@ -402,6 +549,9 @@ impl App {
                 .as_ref()
                 .ok_or(Error::Unavailable("domain_unavailable"))?
                 .1;
+            if path.starts_with("/hagency/api/v1/execution/e2ee-device") {
+                return self.e2ee_device(transport, &principal, &path, req).await;
+            }
             return crate::api_transport::call(
                 transport,
                 gateway,
@@ -410,6 +560,20 @@ impl App {
                 req,
             )
             .await;
+        }
+        if let Some((domain, gateway)) = &self.domain
+            && let Some(value) = Box::pin(crate::api_management::call(
+                req,
+                &self.store,
+                domain,
+                self.management.as_ref(),
+                &credential,
+                gateway,
+                self.matrix_client.as_ref(),
+            ))
+            .await?
+        {
+            return Ok(value);
         }
         if let Some((domain, _)) = &self.domain
             && let Some(value) =
@@ -436,6 +600,9 @@ impl App {
             .authenticate(&credential, now, device_management)
             .await?;
         if let Some((domain, gateway)) = &self.domain {
+            if path == "/hagency/api/v1/room-agents" && method == salvo::http::Method::GET {
+                return Ok(json!({"agents":domain.room_agents(&principal,now).await?}));
+            }
             if path == "/hagency/api/v1/agents" && method == salvo::http::Method::GET {
                 return Ok(json!({"agents":domain.agents(&principal,now).await?}));
             }
@@ -927,6 +1094,19 @@ impl App {
                         .parse_json()
                         .await
                         .map_err(|_| Error::Invalid("invalid_arguments"))?;
+                    domain.room_agent(&principal, parts[5], now_ms()).await?;
+                    domain
+                        .project(&principal, &body.project_id, now_ms())
+                        .await?;
+                    self.accept_service_invitation(gateway, &body.room_id)
+                        .await?;
+                    if let Some(matrix) = &self.matrix_client
+                        && let Some(creation) = domain
+                            .try_bind_shared_room(&principal, parts[5], &body, gateway, matrix)
+                            .await?
+                    {
+                        return Ok(json!({"creation":creation}));
+                    }
                     let agent = domain.agent(&principal, parts[5], now_ms()).await?;
                     let project = domain
                         .project(&principal, &body.project_id, now_ms())

@@ -8,6 +8,10 @@ palpo_config = "palpo.toml"
 pasion_config = "pasion.toml"
 # Compiled Dioxus assets; the host reads them on each request.
 public_dir = "../../resources/frontend/public"
+# Personal encrypted messages use the executor device by default. Set to
+# "ciphertext_inbox" for the server-brokered personal-Agent protocol instead.
+# Pooled Agents always use an executor-held device.
+# personal_encrypted_delivery = "executor_device"
 
 [queue]
 # Do not start stale offline requests; trusted server receipt time, 24h default.
