@@ -34,6 +34,17 @@ pub struct HostConfig {
     pub palpo_config: PathBuf,
     #[serde(default)]
     pub management: Option<ManagementConfig>,
+    /// GitFab acceptance event signing. Absent leaves it off; existing hosts need no new input.
+    #[serde(default)]
+    pub gitfab: Option<GitfabConfig>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitfabConfig {
+    /// Base64 Ed25519 seed, mode 0600, outside the image and Git. Not the Palpo server key.
+    pub signing_key_file: PathBuf,
+    /// Published with the public key and recorded in every signature.
+    pub signing_key_id: String,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -152,6 +163,9 @@ impl Config {
             *p = resolve(base, p);
         }
         host.data_dir = resolve(base, &host.data_dir);
+        if let Some(gitfab) = &mut host.gitfab {
+            gitfab.signing_key_file = resolve(base, &gitfab.signing_key_file);
+        }
         host.palpo_config = resolve(base, &host.palpo_config)
             .canonicalize()
             .context("cannot open palpo_config")?;
@@ -234,6 +248,9 @@ impl Config {
         Ok(())
     }
     pub fn validate(&self) -> anyhow::Result<()> {
+        if let Some(gitfab) = &self.gitfab {
+            crate::gitfab::Signer::load(gitfab)?;
+        }
         if let Some(management) = &self.management {
             hagency_agent_service::management_types::ManagementPolicy::new(
                 management.administrator.clone(),

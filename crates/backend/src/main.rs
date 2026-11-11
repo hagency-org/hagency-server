@@ -265,6 +265,11 @@ async fn run() -> anyhow::Result<()> {
             .push(app.readiness_router())
             .push(app.worker_health_router());
     }
+    if let Some(gitfab) = &conf.gitfab {
+        let signer = hagency_server::gitfab::Signer::load(gitfab)?;
+        tracing::info!(key_id = %signer.key().id, "GitFab event signing key loaded");
+        router = router.push(signer.router());
+    }
     let frontend = Frontend::new(&conf);
     frontend.preserve_assets().await?;
     let mut router = router

@@ -3967,6 +3967,7 @@ dependencies = [
  "diesel-async",
  "figment",
  "hagency-agent-service",
+ "hagency-gitfab-events",
  "hex",
  "libc",
  "palpo",
