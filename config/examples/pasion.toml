@@ -12,6 +12,20 @@ delegate_matrix_auth = true
 # password_registration_enabled = true
 # password_registration_contact_required = false
 
+# Production email through AgentMail's SMTP service. Use your existing inbox
+# address and API key, and keep the deployed file private (mode 0600). Never
+# commit the real API key. Without an email provider, Pasion discards email.
+# [email]
+# from = "Hagency <your-inbox@agentmail.to>"
+# reply_to = "your-inbox@agentmail.to"
+# [email.provider]
+# type = "smtp"
+# mode = "tls"
+# hostname = "smtp.agentmail.to"
+# port = 465
+# username = "your-inbox@agentmail.to"
+# password = "YOUR_AGENTMAIL_API_KEY"
+
 # Local tests only: persist this email/SMS verification code without sending it.
 # [experimental]
 # fixed_verification_code = "123456"
