@@ -1,0 +1,34 @@
+{
+  "work": {
+    "id": "swork_fixture",
+    "assignmentId": "mas_fixture",
+    "runtimeCommandDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78",
+    "eventId": "$event_fixture",
+    "roomId": "!discussion:example.test",
+    "requesterMxid": "@manager:example.test",
+    "threadRoot": "$event_fixture",
+    "body": "Reply with hello. 你好。",
+    "bodyDigest": "83af04d5012845d82352add660a304d7e5dc00f8ba36dce597f3ae9686d0a8f1",
+    "executionId": "sexecution_fixture",
+    "createdAtMs": 1792108805000
+  },
+  "workDigest": "26dfa9bc86aa7d82dcca787f207680f9cc1050919988c4d6846f98dea436695f",
+  "receipt": {
+    "version": 1,
+    "observationId": "susage_fixture",
+    "workId": "swork_fixture",
+    "workDigest": "26dfa9bc86aa7d82dcca787f207680f9cc1050919988c4d6846f98dea436695f",
+    "executionId": "sexecution_fixture",
+    "callId": "native_call_fixture",
+    "runtimeCommandDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78",
+    "processDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "ledgerRevision": 202,
+    "state": "completed",
+    "knownConsumedTokens": 17,
+    "retainedTokens": 17,
+    "usageComplete": true,
+    "body": "Hello. 你好。",
+    "bodyDigest": "2f04b88e56e0fecf37378d0d6efe81fb3834b17b278bffe69a19ea954cc96cb1"
+  },
+  "receiptDigest": "2261c68191942e9c9def906f192ebb55030c9085f3b6be5f913c99341a04e982"
+}

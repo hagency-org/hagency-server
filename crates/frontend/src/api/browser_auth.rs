@@ -68,6 +68,19 @@ async fn fetch(
     csrf: Option<&str>,
     token: Option<&str>,
 ) -> Result<Value, HttpError> {
+    fetch_marked(path, method, body, csrf, token, false).await
+}
+
+/// `fresh_oauth` marks the first bind after an OAuth exchange, so the host can
+/// wait for that login's identity to become ready instead of rejecting it.
+async fn fetch_marked(
+    path: &str,
+    method: &str,
+    body: Option<Value>,
+    csrf: Option<&str>,
+    token: Option<&str>,
+    fresh_oauth: bool,
+) -> Result<Value, HttpError> {
     let mut request = match method {
         "POST" => Request::post(path),
         "PUT" => Request::put(path),
@@ -82,6 +95,9 @@ async fn fetch(
     }
     if let Some(token) = token {
         request = request.header("Authorization", &format!("Bearer {token}"));
+    }
+    if fresh_oauth {
+        request = request.header("X-Hagency-Fresh-OAuth", "1");
     }
     let request = if let Some(body) = body {
         request
@@ -115,6 +131,9 @@ async fn probe_session(bind: bool) -> Result<Session, HttpError> {
     if !storage::session_state().allows_browser_session() {
         return Err(changed_session());
     }
+    // Only the explicit bind that follows an OAuth exchange asks the host to
+    // wait for that login's identity; a recovered session keeps one-shot checks.
+    let fresh_oauth = bind;
     // An explicit new OAuth login must establish its own cookie before any GET
     // can accept the previous account's still-live HttpOnly cookie.
     let bind =
@@ -130,7 +149,7 @@ async fn probe_session(bind: bool) -> Result<Session, HttpError> {
         existing
     } else {
         let future = async move {
-            let result = probe_session_once(bind, generation).await;
+            let result = probe_session_once(bind, fresh_oauth, generation).await;
             PROBE.with(|p| {
                 if p.borrow()
                     .as_ref()
@@ -153,7 +172,11 @@ fn changed_session() -> HttpError {
     HttpError::from_status(401, "The browser session changed. Sign in again.")
 }
 
-async fn probe_session_once(bind: bool, generation: u64) -> Result<Session, HttpError> {
+async fn probe_session_once(
+    bind: bool,
+    fresh_oauth: bool,
+    generation: u64,
+) -> Result<Session, HttpError> {
     let value = if bind {
         None
     } else {
@@ -173,12 +196,13 @@ async fn probe_session_once(bind: bool, generation: u64) -> Result<Session, Http
                 let token = snapshot
                     .access_token
                     .ok_or_else(|| HttpError::from_status(401, "Sign in first."))?;
-                fetch(
+                fetch_marked(
                     "/hagency/api/login/token",
                     "POST",
                     Some(json!({})),
                     None,
                     Some(&token),
+                    fresh_oauth,
                 )
                 .await
             })

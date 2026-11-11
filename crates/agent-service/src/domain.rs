@@ -16,6 +16,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 #[path = "domain_discovery.rs"]
 mod discovery;
+#[path = "management.rs"]
+mod management;
 pub use discovery::RoomAgent;
 #[path = "agent_crypto.rs"]
 pub(crate) mod agent_crypto;
@@ -25,6 +27,8 @@ mod execution_configuration;
 mod execution_devices;
 #[path = "owner_direct.rs"]
 mod owner_direct;
+#[path = "shared_rooms.rs"]
+mod shared_rooms;
 pub(crate) use execution_devices::require_assigned;
 pub use execution_devices::{OwnerDevice, SetExecutionDevice};
 
@@ -237,10 +241,6 @@ fn creating(
         return Err(Error::Unauthorized("service_invitation_denied"));
     }
 
-    if f.encrypted && !(space.is_empty() && f.owner_direct_valid) {
-        return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
-    }
-
     Ok(())
 }
 
@@ -449,6 +449,12 @@ pub struct DomainStore {
 }
 
 impl DomainStore {
+    /// [management] enable_pool_grant_succession: a reserved pool Agent's
+    /// lifetime follows its pool's capacity chain instead of its reserve
+    /// command's expiry. Applied to every database session of this store.
+    pub fn set_pool_grant_succession(&self, enabled: bool) {
+        self.db.set_pool_chain_lifetime(enabled);
+    }
     /// Trusted Appservice existence query; cannot allocate an ownerless puppet.
     pub async fn known_puppet(&self, mxid: &str) -> Result<bool> {
         self.db
@@ -510,8 +516,80 @@ impl DomainStore {
                 db.batch_execute(include_str!("owner_direct_schema.sql")).await?;
             }
             db.batch_execute(include_str!("configuration_schema.sql")).await?;
+            let management=sql_query("SELECT to_regclass('hagency_agent_v1.management_deployment') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !management.matched { db.batch_execute(include_str!("management_schema.sql")).await?; }
+            let management=sql_query("SELECT version=1 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_verification_schema.sql")).await?; }
+            let management=sql_query("SELECT version=2 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_projects_schema.sql")).await?; }
+            let management=sql_query("SELECT version=3 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_allocations_schema.sql")).await?; }
+            let management=sql_query("SELECT version=4 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_parents_schema.sql")).await?; }
+            let management=sql_query("SELECT version=5 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_setup_schema.sql")).await?; }
+            let management=sql_query("SELECT version=6 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_setup_recovery_schema.sql")).await?; }
+            let management=sql_query("SELECT version=7 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_agents_schema.sql")).await?; }
+            let management=sql_query("SELECT version=8 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_agent_executor_schema.sql")).await?; }
+            let management=sql_query("SELECT version=9 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_agent_matrix_schema.sql")).await?; }
+            let management=sql_query("SELECT version=10 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_agent_runtime_schema.sql")).await?; }
+            let management=sql_query("SELECT version=11 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_shared_execution_schema.sql")).await?; }
+            let management=sql_query("SELECT version=12 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_shared_work_schema.sql")).await?; }
+            let management=sql_query("SELECT version=13 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_shared_attempts_schema.sql")).await?; }
+            let management=sql_query("SELECT version=14 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_shared_ticket_schema.sql")).await?; }
+            let management=sql_query("SELECT version=15 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_shared_intake_schema.sql")).await?; }
+            let management=sql_query("SELECT version=16 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_shared_demand_schema.sql")).await?; }
+            let management=sql_query("SELECT version=17 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_shared_context_schema.sql")).await?; }
+            let management=sql_query("SELECT version=18 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_agent_budget_schema.sql")).await?; }
+            let management=sql_query("SELECT version=19 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_shared_budget_schema.sql")).await?; }
+            let management=sql_query("SELECT version=20 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_agent_settlement_schema.sql")).await?; }
+            let management=sql_query("SELECT version=21 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_project_manager_schema.sql")).await?; }
+            let management=sql_query("SELECT version=22 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_owner_coordinator_schema.sql")).await?; }
+            let management=sql_query("SELECT version=23 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched { db.batch_execute(include_str!("management_pool_agents_schema.sql")).await?; }
+            let management=sql_query("SELECT version=24 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_shared_approvals_schema.sql")).await?;}
+            let management=sql_query("SELECT version=25 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_shared_block_proof_schema.sql")).await?;}
+            let management=sql_query("SELECT version=26 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_shared_unstarted_schema.sql")).await?;}
+            let management=sql_query("SELECT version=27 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_shared_room_members_schema.sql")).await?;}
+            let management=sql_query("SELECT version=28 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_pool_succession_schema.sql")).await?;}
+            let management=sql_query("SELECT version=29 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_agent_periods_schema.sql")).await?;}
+            let management=sql_query("SELECT version=30 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_publication_first_schema.sql")).await?;}
+            let management=sql_query("SELECT version=31 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_shared_context_v2_schema.sql")).await?;}
+            let management=sql_query("SELECT version=32 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if !management.matched { return Err(Error::Conflict("management_schema_incompatible")); }
+            db.batch_execute(include_str!("management_pool_limits_validation.sql")).await?;
+            db.batch_execute(include_str!("management_agent_periods_recovery.sql")).await?;
+            db.batch_execute(include_str!("management_shared_e2ee_schema.sql")).await?;
+            db.batch_execute(include_str!("shared_rooms_schema.sql")).await?;
+            db.batch_execute("CREATE INDEX IF NOT EXISTS management_command_recovery ON hagency_agent_v1.management_commands(actor_user_id,device_id,command_id)").await?;
             db.batch_execute(include_str!("visibility_schema.sql")).await?;
             db.batch_execute(include_str!("agent_crypto_schema.sql")).await?;
+
             let pause_initialized=sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='bindings' AND column_name='owner_service_paused') AS matched").get_result::<Flag>(db).await?;
             if !pause_initialized.matched {
                 db.batch_execute("ALTER TABLE hagency_agent_v1.bindings ADD COLUMN owner_service_paused boolean NOT NULL DEFAULT false").await?;
@@ -672,7 +750,11 @@ impl DomainStore {
             let params = (id, &p.user_id);
             q::table
                 .select(crate::domain::Agent::as_select())
-                .filter(((q::id).eq(&params.0)).and((q::owner_user_id).eq(&params.1)))
+                .filter(
+                    ((q::id).eq(&params.0))
+                        .and((q::owner_user_id).eq(&params.1))
+                        .and((q::execution_kind).eq("personal")),
+                )
                 .get_result(db)
                 .await
         }
@@ -688,6 +770,7 @@ impl DomainStore {
         project_id: &str,
         room_id: &str,
     ) -> Result<(Project, CreationPolicy, RoomCreationPolicy)> {
+        Self::require_unmanaged_binding(db, Some(project_id), room_id).await?;
         let project = Self::project_db(db, project_id).await?;
 
         let room = Self::room_db(db, room_id, project_id).await?;
@@ -758,21 +841,16 @@ impl DomainStore {
             return Err(Error::Invalid("project_requires_space"));
         }
 
-        self.db.with_connection(async |db| {
-
-
-        db.transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection| {
-
-            Self::authorize(db, p, now).await?;
-            administer(p, f, space, now)?;
-
-            let project=sql_query("INSERT INTO hagency_agent_v1.projects(id,space_id,creation_policy) VALUES($1,$2,$3) ON CONFLICT(space_id) DO UPDATE SET space_id=EXCLUDED.space_id RETURNING id,space_id,active,archived,creation_policy,revision").bind::<Text,_>(format!("prj_{}",entity_id()?)).bind::<Text,_>(space).bind::<Text,_>(encode(&CreationPolicy::default())?).get_result::<Project>(db).await?;
-
-            Self::audit(db, p, "project.register", &project.id, now).await?;
-            Ok(project)
-        }
-).await
-    }).await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
+                    Self::authorize(db, p, now).await?;
+                    administer(p, f, space, now)?;
+                    Self::register_project_transaction(db, p, space, now).await
+                })
+                .await
+            })
+            .await
     }
 
     pub async fn register_room(
@@ -802,45 +880,66 @@ impl DomainStore {
                         return Err(Error::Invalid("room_requires_space_child"));
                     }
 
-                    let existing = {
-                        use crate::schema::agent_tables::rooms as q;
-                        let params = (room,);
-                        q::table
-                            .select(crate::domain::Room::as_select())
-                            .filter((q::room_id).eq(&params.0))
-                            .get_result::<Room>(db)
-                            .await
-                    }
-                    .optional()?;
-
-                    if let Some(existing) = existing {
-                        if existing.project_id != project_id {
-                            return Err(Error::Conflict("room_already_registered"));
-                        }
-                        return Ok(existing);
-                    }
-
-                    let result = {
-                        use crate::schema::agent_tables::rooms as q;
-                        let params = (room, project_id, encode(&RoomCreationPolicy::default())?);
-                        diesel::insert_into(q::table)
-                            .values((
-                                q::room_id.eq(&params.0),
-                                q::project_id.eq(&params.1),
-                                q::creation_policy.eq(&params.2),
-                            ))
-                            .returning(crate::domain::Room::as_select())
-                            .get_result::<Room>(db)
-                            .await
-                    }?;
-                    Self::audit(db, p, "room.register", room, now).await?;
-                    Ok(result)
+                    Self::register_room_transaction(db, p, project_id, room, now).await
                 })
                 .await
             })
             .await
     }
 
+    /// The registration itself, for callers that already hold the transaction
+    /// and have checked the caller's authority over the Space.
+    async fn register_project_transaction(
+        db: &mut AsyncPgConnection,
+        p: &Principal,
+        space: &str,
+        now: i64,
+    ) -> Result<Project> {
+        let project=sql_query("INSERT INTO hagency_agent_v1.projects(id,space_id,creation_policy) VALUES($1,$2,$3) ON CONFLICT(space_id) DO UPDATE SET space_id=EXCLUDED.space_id RETURNING id,space_id,active,archived,creation_policy,revision").bind::<Text,_>(format!("prj_{}",entity_id()?)).bind::<Text,_>(space).bind::<Text,_>(encode(&CreationPolicy::default())?).get_result::<Project>(db).await?;
+        Self::audit(db, p, "project.register", &project.id, now).await?;
+        Ok(project)
+    }
+    async fn register_room_transaction(
+        db: &mut AsyncPgConnection,
+        p: &Principal,
+        project_id: &str,
+        room: &str,
+        now: i64,
+    ) -> Result<Room> {
+        let existing = {
+            use crate::schema::agent_tables::rooms as q;
+            let params = (room,);
+            q::table
+                .select(crate::domain::Room::as_select())
+                .filter((q::room_id).eq(&params.0))
+                .get_result::<Room>(db)
+                .await
+        }
+        .optional()?;
+
+        if let Some(existing) = existing {
+            if existing.project_id != project_id {
+                return Err(Error::Conflict("room_already_registered"));
+            }
+            return Ok(existing);
+        }
+
+        let result = {
+            use crate::schema::agent_tables::rooms as q;
+            let params = (room, project_id, encode(&RoomCreationPolicy::default())?);
+            diesel::insert_into(q::table)
+                .values((
+                    q::room_id.eq(&params.0),
+                    q::project_id.eq(&params.1),
+                    q::creation_policy.eq(&params.2),
+                ))
+                .returning(crate::domain::Room::as_select())
+                .get_result::<Room>(db)
+                .await
+        }?;
+        Self::audit(db, p, "room.register", room, now).await?;
+        Ok(result)
+    }
     pub async fn set_project_policy(
         &self,
         p: &Principal,
@@ -945,6 +1044,11 @@ impl DomainStore {
             .with_connection(async |db| {
                 db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
                     Self::authorize(db, p, now).await?;
+                    if operation == "agent.bind"
+                        && let Some(saved) = Self::shared_room_command(db, p, command_key).await?
+                    {
+                        return Ok(saved);
+                    }
                     let command = {
                         use crate::schema::agent_tables::domain_commands as q;
                         let params = (&p.user_id, operation, command_key);
@@ -979,6 +1083,9 @@ impl DomainStore {
         k: &str,
         digest: &str,
     ) -> Result<Option<AgentBinding>> {
+        if op == "agent.bind" && Self::shared_room_command(db, p, k).await?.is_some() {
+            return Err(Error::Conflict("idempotency_key_reused"));
+        }
         let c = {
             use crate::schema::agent_tables::domain_commands as q;
             let params = (&p.user_id, op, k);
@@ -1128,7 +1235,7 @@ impl DomainStore {
         }
         self.db.with_connection(async |db| {
 
-        Ok(sql_query("SELECT a.id,a.owner_user_id,a.puppet_mxid,a.display_name,a.state,a.generation,a.owner_direct_room_id,a.execution_device_id,a.visibility FROM hagency_agent_v1.agents a JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id WHERE a.state='creating' AND u.active ORDER BY (a.id<=$1),a.id LIMIT $2").bind::<Text,_>(after).bind::<BigInt,_>(limit).load(&mut *db).await?)
+        Ok(sql_query("SELECT a.id,a.owner_user_id,a.puppet_mxid,a.display_name,a.state,a.generation,a.owner_direct_room_id,a.execution_device_id,a.visibility FROM hagency_agent_v1.agents a JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id WHERE a.state='creating' AND a.execution_kind='personal' AND u.active ORDER BY (a.id<=$1),a.id LIMIT $2").bind::<Text,_>(after).bind::<BigInt,_>(limit).load(&mut *db).await?)
     }).await
     }
     /// Only after the trusted worker verified the exact puppet through Matrix.
@@ -1137,10 +1244,23 @@ impl DomainStore {
 
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
-            let n=sql_query("UPDATE hagency_agent_v1.agents a SET state='active' WHERE id=$1 AND generation=$2 AND state='creating' AND EXISTS(SELECT 1 FROM hagency_agent_v1.users u WHERE u.id=a.owner_user_id AND u.active)").bind::<Text,_>(id).bind::<BigInt,_>(generation).execute(db).await?;
+            let n=sql_query("UPDATE hagency_agent_v1.agents a SET state='active' WHERE id=$1 AND generation=$2 AND state='creating' AND execution_kind='personal' AND EXISTS(SELECT 1 FROM hagency_agent_v1.users u WHERE u.id=a.owner_user_id AND u.active)").bind::<Text,_>(id).bind::<BigInt,_>(generation).execute(db).await?;
             if n!=1 {return Err(Error::Conflict("provisioning_intent_stale"));}Ok(())
         }).await
     }).await
+    }
+
+    async fn require_unmanaged_binding(
+        db: &mut AsyncPgConnection,
+        project: Option<&str>,
+        room: &str,
+    ) -> Result<()> {
+        let managed=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_project_setups WHERE domain_project_id=$1 OR room_id=$2 OR domain_project_id IN (SELECT project_id FROM hagency_agent_v1.rooms WHERE room_id=$2)) AS matched").bind::<Nullable<Text>,_>(project).bind::<Text,_>(room).get_result::<Flag>(db).await?.matched;
+        if managed {
+            Err(Error::Unauthorized("managed_agent_admission_required"))
+        } else {
+            Ok(())
+        }
     }
 
     async fn insert_binding(
@@ -1606,9 +1726,6 @@ impl DomainStore {
                     {
                         return Err(Error::Unauthorized("provisioning_authority_revoked"));
                     }
-                    if f.encrypted && b.scope_kind != "owner_direct" {
-                        return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
-                    }
                     if !f.puppet_in_room && !f.service_can_invite && !f.owner_direct_valid {
                         return Err(Error::Unauthorized("service_invitation_denied"));
                     }
@@ -1921,10 +2038,6 @@ impl DomainStore {
                         return Err(Error::Unauthorized("puppet_not_joined"));
                     }
 
-                    if f.encrypted && b.scope_kind != "owner_direct" {
-                        return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
-                    }
-
                     Ok(AgentBinding {
                         agent: a,
                         binding: b,
@@ -2064,7 +2177,10 @@ impl DomainStore {
                         let params = (&p.user_id,);
                         q::table
                             .select(crate::domain::Agent::as_select())
-                            .filter((q::owner_user_id).eq(&params.0))
+                            .filter(
+                                ((q::owner_user_id).eq(&params.0))
+                                    .and((q::execution_kind).eq("personal")),
+                            )
                             .order((q::id.asc(),))
                             .load(db)
                             .await
@@ -2334,9 +2450,6 @@ impl DomainStore {
 
                     if !f.puppet_in_room || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid) {
                         return Err(Error::Conflict("puppet_join_not_confirmed"));
-                    }
-                    if f.encrypted && b.scope_kind != "owner_direct" {
-                        return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
                     }
 
                     let result = {

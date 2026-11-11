@@ -152,6 +152,7 @@ async fn fixture_at(url: &str) -> Fixture {
     let p = auth.authenticate(&first.token, now, true).await.unwrap();
     let second = auth.authenticate(&second.token, now, true).await.unwrap();
     let facts = DeliveryFacts {
+        requires_mention: true,
         owner_direct_valid: false,
         owner_mxid: user.mxid,
         requester_mxid: "@requester:example.test".into(),
@@ -282,7 +283,7 @@ async fn postgres_queue_ack_execution_reply_and_unknown_retry_are_distinct() {
             )
             .await
             .unwrap(),
-        RouteResult::Queued { .. }
+        RouteResult::Ignored
     ));
     let lease = f
         .transport
@@ -2422,6 +2423,7 @@ async fn postgres_paused_owner_direct_notices_require_the_exact_owner_and_privat
     let now = crate::api::now_ms();
     let room = format!("!pause_direct_{}:example.test", secret_token());
     let direct = DeliveryFacts {
+        requires_mention: false,
         requester_mxid: f.p.mxid.clone(),
         room_id: room.clone(),
         space_id: String::new(),
@@ -2467,6 +2469,7 @@ async fn postgres_paused_owner_direct_notices_require_the_exact_owner_and_privat
     assert_eq!(n.thread_root, room, "private notice remains a normal DM");
     let mut outsider = direct.clone();
     outsider.requester_mxid = "@outsider:example.test".into();
+    outsider.requester_in_room = false;
     let mut outsiders_event = e.clone();
     outsiders_event.event_id = "$private-outsider".into();
     outsiders_event.sender_mxid = outsider.requester_mxid.clone();
@@ -2495,7 +2498,7 @@ async fn postgres_paused_owner_direct_notices_require_the_exact_owner_and_privat
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
-async fn postgres_thread_auto_reply_is_owner_opt_in_and_binding_scoped() {
+async fn postgres_group_mentions_override_legacy_thread_auto_reply() {
     let f = fixture().await;
     let now = crate::api::now_ms();
     enqueue(&f, "reply-policy-root").await;
@@ -2563,7 +2566,7 @@ async fn postgres_thread_auto_reply_is_owner_opt_in_and_binding_scoped() {
             )
             .await
             .unwrap(),
-        RouteResult::Queued { .. }
+        RouteResult::Ignored
     ));
     let mut member_event = event(&f, "member-followup", false, Some("$reply-policy-root"));
     let mut member_facts = f.facts.clone();
@@ -2574,7 +2577,7 @@ async fn postgres_thread_auto_reply_is_owner_opt_in_and_binding_scoped() {
             .ingest_routed(&f.binding, member_event, &member_facts, now)
             .await
             .unwrap(),
-        RouteResult::Queued { .. }
+        RouteResult::Ignored
     ));
     assert!(matches!(
         f.transport
@@ -2726,6 +2729,116 @@ async fn postgres_failed_request_feedback_is_idempotent_and_next_request_runs() 
             .await
             .unwrap()
             .is_none()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_delivery_feedback_uses_reply_age_and_suppresses_sent_answers() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    let lease = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: f
+            .transport
+            .acquire_for_test(&f.p, &f.agent, 30_000, false, now)
+            .await
+            .unwrap()
+            .epoch,
+    };
+    let id = enqueue(&f, "delivery-after-slow-model").await;
+    running(&f, &lease, &id, "slow-model-run").await;
+    {
+        let mut db = f.transport.db.lock().await.unwrap();
+        sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=$1 WHERE id=$2")
+            .bind::<BigInt, _>(now - 60_000)
+            .bind::<Text, _>(&id)
+            .execute(&mut *db)
+            .await
+            .unwrap();
+        sql_query("UPDATE hagency_agent_v1.request_notice_deployment SET since_ms=$1")
+            .bind::<BigInt, _>(now - 61_000)
+            .execute(&mut *db)
+            .await
+            .unwrap();
+        // Exercise an upgrade of the already initialized transport too.
+        let old = include_str!("request_notice_needed.sql")
+            .replace("AND r.created_at_ms<=", "AND e.created_at_ms<=");
+        db.batch_execute(&old).await.unwrap();
+    }
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    TransportStore::open(&url, Limits::default()).await.unwrap();
+    let reply = f
+        .transport
+        .submit_reply(
+            &f.p,
+            &lease,
+            SubmitReply {
+                dispatch_id: id.clone(),
+                execution_id: "slow-model-run".into(),
+                body: "The answer is ready".into(),
+            },
+            &f.facts,
+            now,
+        )
+        .await
+        .unwrap();
+    assert!(
+        f.transport
+            .request_notice_candidates("", now)
+            .await
+            .unwrap()
+            .iter()
+            .all(|n| n.owner_event_id != id),
+        "model time must not make a newly created answer look undeliverable"
+    );
+    {
+        let mut db = f.transport.db.lock().await.unwrap();
+        sql_query("UPDATE hagency_agent_v1.reply_outbox SET created_at_ms=$1 WHERE id=$2")
+            .bind::<BigInt, _>(now - 31_000)
+            .bind::<Text, _>(&reply.id)
+            .execute(&mut *db)
+            .await
+            .unwrap();
+    }
+    let candidates = f
+        .transport
+        .request_notice_candidates("", now)
+        .await
+        .unwrap();
+    let notice = candidates.iter().find(|n| n.owner_event_id == id).unwrap();
+    assert_eq!(
+        notice.kind, "delivery",
+        "genuinely delayed delivery still gets feedback"
+    );
+    let sending = f
+        .transport
+        .claim_reply(&reply.id, &f.facts, now)
+        .await
+        .unwrap();
+    f.transport
+        .confirm_reply(
+            &reply.id,
+            sending.worker_token.as_deref().unwrap(),
+            Some("$delivered-answer:test"),
+            now,
+        )
+        .await
+        .unwrap();
+    assert!(
+        f.transport
+            .claim_request_notice(&notice.id, &f.facts, now)
+            .await
+            .is_err(),
+        "a queued warning must not be sent after the answer is confirmed"
+    );
+    assert!(
+        f.transport
+            .request_notice_candidates("", now)
+            .await
+            .unwrap()
+            .iter()
+            .all(|n| n.owner_event_id != id)
     );
 }
 
@@ -3077,3 +3190,102 @@ mod ciphertext_tests;
 
 #[path = "transport_scaling_tests.rs"]
 mod scaling_tests;
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn encrypted_personal_group_waits_for_local_addressing_before_dispatch() {
+    let mut f = fixture().await;
+    f.facts.encrypted = true;
+    let matrix = crate::matrix_client::MatrixClient::new(
+        url::Url::parse("http://127.0.0.1:1").unwrap(),
+        "test-only".into(),
+        "example.test".into(),
+    )
+    .unwrap();
+    f.transport
+        .revoke_stale_matrix_devices(&matrix)
+        .await
+        .unwrap();
+    let now = crate::api::now_ms();
+    let mut e = event(&f, "encrypted_group", false, None);
+    e.encrypted = true;
+    e.body.clear();
+    assert!(matches!(
+        f.transport
+            .ingest_routed(&f.binding, e.clone(), &f.facts, now)
+            .await
+            .unwrap(),
+        RouteResult::Ignored
+    ));
+    let lease = f
+        .transport
+        .acquire_for_test(&f.p, &f.agent, 30_000, false, now)
+        .await
+        .unwrap();
+    let reference = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: lease.epoch,
+    };
+    let poll = || e2ee::CryptoCandidateInput {
+        lease: reference.clone(),
+        binding_id: f.binding.clone(),
+        event_id: None,
+        mentions: Default::default(),
+        thread_root: None,
+    };
+    let candidates = f
+        .transport
+        .encrypted_candidates(&f.p, poll())
+        .await
+        .unwrap();
+    assert_eq!(candidates["events"].as_array().unwrap().len(), 1);
+    assert!(
+        f.transport
+            .encrypted_candidates(&f.second, poll())
+            .await
+            .is_err()
+    );
+    let unavailable = crate::gateway::Gateway::new(
+        Arc::new(|_| Box::pin(async { Err(Error::Unavailable("test_gateway_offline")) })),
+        "@service:example.test".into(),
+    );
+    let mut confirmation = poll();
+    confirmation.event_id = Some(e.event_id.clone());
+    assert!(matches!(
+        f.transport
+            .confirm_encrypted_candidate(&f.p, confirmation, &unavailable)
+            .await,
+        Err(Error::Unavailable("test_gateway_offline"))
+    ));
+    let mut changed = poll();
+    changed.event_id = Some(e.event_id.clone());
+    changed.thread_root = Some("$changed".into());
+    assert!(matches!(
+        f.transport
+            .confirm_encrypted_candidate(&f.p, changed, &unavailable)
+            .await,
+        Err(Error::Conflict("encrypted_confirmation_changed"))
+    ));
+    assert!(matches!(
+        f.transport
+            .ingest_routed_confirmed(&f.binding, e.clone(), &f.facts, now, now, true)
+            .await
+            .unwrap(),
+        RouteResult::Ignored
+    ));
+    e.mentioned_mxids.insert(f.facts.puppet_mxid.clone());
+    assert!(matches!(
+        f.transport
+            .ingest_routed_confirmed(&f.binding, e.clone(), &f.facts, now, now, true)
+            .await
+            .unwrap(),
+        RouteResult::Queued { .. }
+    ));
+    assert!(matches!(
+        f.transport
+            .ingest_routed_confirmed(&f.binding, e, &f.facts, now, now, true)
+            .await
+            .unwrap(),
+        RouteResult::Duplicate { .. }
+    ));
+}

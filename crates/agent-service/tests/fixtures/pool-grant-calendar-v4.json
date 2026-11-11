@@ -1,0 +1,101 @@
+[
+  {
+    "receipt": {
+      "version": 4,
+      "capability": "hagency.project_reservations.v1",
+      "admissionRequestId": "mrq_pool_admission_1",
+      "enrollmentId": "men_pool_enrollment_1",
+      "grantId": "calendar_daily",
+      "grantRevision": 1,
+      "contributionId": "mco_pool_1",
+      "resourceId": "resource_pool_1",
+      "resourceRevision": "c5315a239be32f7d5e62583a7bf855c6faaeeafd507bf4f6349751fe0ee977af",
+      "executorDeviceId": "DEVICE1",
+      "executorGeneration": 1,
+      "ownerMxid": "@owner:example.test",
+      "coordinatorMxid": "@owner:example.test",
+      "delegationRevision": 1,
+      "delegationExpiresAtMs": 1793606400000,
+      "allowSelfApproval": false,
+      "eligibleManagers": [
+        "@manager:example.test"
+      ],
+      "allocatedTokens": 1000000,
+      "periodKey": "2026-11-01",
+      "periodStartMs": 1793516400000,
+      "periodEndMs": 1793606400000,
+      "ledgerRevision": 40,
+      "calendar": {
+        "cadence": "daily",
+        "timeZone": "America/Los_Angeles"
+      }
+    },
+    "digest": "2c941f47aa70b16d2c2ecfdb3a72f1280dda4d195cdf55d50c4515275b9757ad"
+  },
+  {
+    "receipt": {
+      "version": 4,
+      "capability": "hagency.project_reservations.v1",
+      "admissionRequestId": "mrq_pool_admission_1",
+      "enrollmentId": "men_pool_enrollment_1",
+      "grantId": "calendar_weekly",
+      "grantRevision": 1,
+      "contributionId": "mco_pool_1",
+      "resourceId": "resource_pool_1",
+      "resourceRevision": "c5315a239be32f7d5e62583a7bf855c6faaeeafd507bf4f6349751fe0ee977af",
+      "executorDeviceId": "DEVICE1",
+      "executorGeneration": 1,
+      "ownerMxid": "@owner:example.test",
+      "coordinatorMxid": "@owner:example.test",
+      "delegationRevision": 1,
+      "delegationExpiresAtMs": 1793606400000,
+      "allowSelfApproval": false,
+      "eligibleManagers": [
+        "@manager:example.test"
+      ],
+      "allocatedTokens": 1000000,
+      "periodKey": "2026-10-26",
+      "periodStartMs": 1792998000000,
+      "periodEndMs": 1793606400000,
+      "ledgerRevision": 40,
+      "calendar": {
+        "cadence": "weekly",
+        "timeZone": "America/Los_Angeles"
+      }
+    },
+    "digest": "dbb2bff3edf14ce67a8c9d446ccd262cc5923cc08fe0292dd2ff909bc2e408e5"
+  },
+  {
+    "receipt": {
+      "version": 4,
+      "capability": "hagency.project_reservations.v1",
+      "admissionRequestId": "mrq_pool_admission_1",
+      "enrollmentId": "men_pool_enrollment_1",
+      "grantId": "calendar_monthly",
+      "grantRevision": 1,
+      "contributionId": "mco_pool_1",
+      "resourceId": "resource_pool_1",
+      "resourceRevision": "c5315a239be32f7d5e62583a7bf855c6faaeeafd507bf4f6349751fe0ee977af",
+      "executorDeviceId": "DEVICE1",
+      "executorGeneration": 1,
+      "ownerMxid": "@owner:example.test",
+      "coordinatorMxid": "@owner:example.test",
+      "delegationRevision": 1,
+      "delegationExpiresAtMs": 1796112000000,
+      "allowSelfApproval": false,
+      "eligibleManagers": [
+        "@manager:example.test"
+      ],
+      "allocatedTokens": 1000000,
+      "periodKey": "2026-11",
+      "periodStartMs": 1793516400000,
+      "periodEndMs": 1796112000000,
+      "ledgerRevision": 40,
+      "calendar": {
+        "cadence": "monthly",
+        "timeZone": "America/Los_Angeles"
+      }
+    },
+    "digest": "eb1118811abe4a95b812acd9e78fb4c9691a0ef066f99b47585492e285a4e837"
+  }
+]

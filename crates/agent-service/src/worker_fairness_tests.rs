@@ -268,6 +268,7 @@ async fn exercise(url: &str) {
         epoch: lease.epoch,
     };
     let delivery = |room: &str| DeliveryFacts {
+        requires_mention: true,
         owner_direct_valid: false,
         owner_mxid: p.mxid.clone(),
         requester_mxid: p.mxid.clone(),
@@ -632,6 +633,7 @@ async fn exercise(url: &str) {
         transport.clone(),
         slow_gateway,
         status_matrix.clone(),
+        None,
     );
     tokio::time::timeout(std::time::Duration::from_secs(2), slow_seen.notified())
         .await

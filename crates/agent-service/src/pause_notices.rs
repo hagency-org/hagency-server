@@ -36,7 +36,7 @@ pub(super) fn routing_facts(
 ) -> Result<()> {
     let mut authorized = scope.clone();
     authorized.active |= authorized.service_paused;
-    facts(&authorized, requester, f, now)
+    facts_in_room(&authorized, requester, f, now)
 }
 impl TransportStore {
     pub(super) async fn existing_pause_notice(
@@ -213,7 +213,8 @@ impl TransportStore {
             let scope = Self::scope(db,&n.binding_id).await?;
             let valid = scope.service_paused && scope.binding_generation == n.binding_generation;
             let authorized = if valid {
-                match routing_facts(&scope,&n.requester_mxid,f,now) {
+                // Pause notices are plaintext and never go into an encrypted Room.
+                match routing_facts(&scope,&n.requester_mxid,f,now).and_then(|()| if f.encrypted {Err(Error::Conflict("encrypted_room_requires_client_crypto"))} else {Ok(())}) {
                     Ok(()) => true,
                     Err(e @ Error::Unavailable(_)) => return Err(e),
                     Err(_) => false,

@@ -1,0 +1,590 @@
+//! A pool owner approves an applicant-owned Agent directly against one grant.
+//! Creation never inserts a project, project setup or project allocation.
+use super::*;
+use crate::management_allocation_types::ResourceGrantView;
+use crate::management_pool_types::*;
+
+fn enabled_pool(policy: &ManagementPolicy) -> Result<()> {
+    if policy.agent_admission() && policy.project_reservations() {
+        Ok(())
+    } else {
+        Err(Error::Unavailable("pool_agents_unavailable"))
+    }
+}
+
+#[derive(QueryableByName)]
+struct PoolPeople {
+    #[diesel(sql_type=Text)]
+    manager: String,
+    #[diesel(sql_type=Text)]
+    owner: String,
+    #[diesel(sql_type=Bool)]
+    active: bool,
+}
+
+async fn people(db: &mut AsyncPgConnection, r: &Row) -> Result<PoolPeople> {
+    sql_query("SELECT m.mxid AS manager,o.mxid AS owner,(m.active AND o.active) AS active FROM hagency_agent_v1.users m CROSS JOIN hagency_agent_v1.users o WHERE m.id=$1 AND o.id=$2")
+        .bind::<Text,_>(&r.manager_user_id).bind::<Text,_>(&r.administrator_user_id).get_result(db).await.map_err(hidden)
+}
+
+async fn pool_row(db: &mut AsyncPgConnection, id: &str, p: &Principal) -> Result<Row> {
+    let r = row(db, id).await?;
+    if r.pool_contribution_id.is_none()
+        || (r.manager_user_id != p.user_id && r.administrator_user_id != p.user_id)
+    {
+        return Err(Error::NotFound("pool_agent_request_not_found"));
+    }
+    Ok(r)
+}
+
+/// The pool's effective grant, while it still authorizes request `r`: `r`'s
+/// original grant is that grant or one of its predecessors (renewals and
+/// amendments carry Agents), the people are active, the resource owner is
+/// unchanged and the manager is still eligible.
+pub(super) async fn effective_grant(
+    db: &mut AsyncPgConnection,
+    r: &Row,
+    now: i64,
+) -> Result<ResourceGrantView> {
+    effective_grant_for(db, r, now, false).await
+}
+async fn effective_grant_for(
+    db: &mut AsyncPgConnection,
+    r: &Row,
+    now: i64,
+    retention: bool,
+) -> Result<ResourceGrantView> {
+    let pool = r
+        .pool_contribution_id
+        .as_deref()
+        .ok_or(Error::Conflict("pool_agent_required"))?;
+    let original = r
+        .pool_grant_id
+        .as_deref()
+        .ok_or(Error::Conflict("pool_agent_required"))?;
+    let grant = if retention {
+        allocations::retained_grant_for_pool(db, pool, now).await?
+    } else {
+        allocations::live_grant_for_pool(db, pool, now).await?
+    }
+    .ok_or(Error::Conflict("pool_capacity_unavailable"))?;
+    let persons = people(db, r).await?;
+    if !persons.active
+        || grant.receipt.owner_mxid != persons.owner
+        || !grant.receipt.eligible_managers.contains(&persons.manager)
+        || !allocations::chain_contains(db, original, &grant.id).await?
+    {
+        return Err(Error::Conflict("pool_agent_authority_changed"));
+    }
+    Ok(grant)
+}
+
+/// A pending request is decided against the effective grant of its own UTC
+/// month: pending requests never cross a period boundary (E21).
+pub(super) async fn current_grant(
+    db: &mut AsyncPgConnection,
+    r: &Row,
+    now: i64,
+) -> Result<ResourceGrantView> {
+    let grant = effective_grant(db, r, now).await?;
+    if grant.receipt.period_key != r.period_key {
+        return Err(Error::Conflict("pool_agent_authority_changed"));
+    }
+    Ok(grant)
+}
+
+/// The native ledger recorded this request's reservation.
+pub(super) async fn reserved(db: &mut AsyncPgConnection, request: &str) -> Result<bool> {
+    Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_executor_commands w JOIN hagency_agent_v1.management_agent_intents i ON i.id=w.intent_id WHERE i.request_id=$1 AND w.operation='agent.reserve' AND w.receipt::jsonb->>'state'='reserved') AS matched")
+        .bind::<Text,_>(request).get_result::<Flag>(db).await?.matched)
+}
+
+/// The exact reserve command still has authority. A reserved Agent follows its
+/// pool's chain: its command's grant must be the effective grant or one of its
+/// predecessors. An intent that never reserved stays bound to its exact grant.
+pub(super) async fn command_live(
+    db: &mut AsyncPgConnection,
+    r: &Row,
+    c: &ManagedAgentReserveCommand,
+    now: i64,
+) -> Result<bool> {
+    command_valid(db, r, c, now, false).await
+}
+pub(super) async fn command_retained(
+    db: &mut AsyncPgConnection,
+    r: &Row,
+    c: &ManagedAgentReserveCommand,
+    now: i64,
+) -> Result<bool> {
+    command_valid(db, r, c, now, true).await
+}
+/// Expiry stops execution, not the Agent's identity or room membership. Verify
+/// the last effective grant against *current* owners, devices and revocations;
+/// only its time window is evaluated at the last instant it covered. This is
+/// never spend authority and must not be used by work admission. Legacy
+/// non-calendar allocations also retain identity here; they acquire recurring
+/// terms only through an explicit owner stop/fence and calendar reallocation.
+pub(super) async fn period_paused(
+    db: &mut AsyncPgConnection,
+    r: &Row,
+    c: &ManagedAgentReserveCommand,
+    now: i64,
+) -> Result<bool> {
+    if r.pool_contribution_id.is_none() || !reserved(db, &r.id).await? {
+        return Ok(false);
+    }
+    if allocations::retained_grant_for_pool(db, r.pool_contribution_id.as_deref().unwrap(), now)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let ended = sql_query("SELECT expires_at_ms AS now FROM hagency_agent_v1.management_resource_grants WHERE contribution_id=$1 AND state='active' AND period_start_ms<=$2 AND expires_at_ms<=$2 ORDER BY expires_at_ms DESC,id DESC LIMIT 1")
+        .bind::<Nullable<Text>, _>(r.pool_contribution_id.as_deref())
+        .bind::<BigInt, _>(now)
+        .get_result::<Clock>(db).await.optional()?;
+    let Some(ended) = ended else { return Ok(false) };
+    command_retained(db, r, c, ended.now.saturating_sub(1)).await
+}
+async fn command_valid(
+    db: &mut AsyncPgConnection,
+    r: &Row,
+    c: &ManagedAgentReserveCommand,
+    now: i64,
+    retention: bool,
+) -> Result<bool> {
+    let Some(original) = &c.pool_grant else {
+        return Ok(false);
+    };
+    let current = match effective_grant_for(db, r, now, retention).await {
+        Ok(g) => g,
+        Err(Error::Conflict(_) | Error::NotFound(_)) => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let persons = people(db, r).await?;
+    let digest = allocation_digest(original)?;
+    let stored = sql_query("SELECT receipt_digest AS payload FROM hagency_agent_v1.management_resource_grants WHERE id=$1 AND contribution_id=$2")
+        .bind::<Text,_>(&original.grant_id).bind::<Text,_>(r.pool_contribution_id.as_deref().unwrap_or_default())
+        .get_result::<AgentPerson>(db).await.optional()?;
+    let request_grant = r.pool_grant_id.as_deref().unwrap_or_default();
+    if !(c.version == 2
+        && c.request_id == r.id
+        && c.proposed_agent_id == r.proposed_agent_id
+        && c.room_id == r.room_id
+        && c.definition_digest == r.definition_digest
+        && c.requested_tokens == r.requested_tokens
+        && c.manager_mxid == persons.manager
+        && c.decision_actor_mxid == persons.owner
+        && c.grant_receipt_digest == digest
+        && stored.is_some_and(|g| g.payload == digest))
+    {
+        return Ok(false);
+    }
+    if original.grant_id != current.id && !reserved(db, &r.id).await? {
+        return Ok(false);
+    }
+    if !retention && !Box::pin(super::periods::authorized(db, c, now)).await? {
+        return Ok(false);
+    }
+    Ok(
+        allocations::chain_contains(db, request_grant, &original.grant_id).await?
+            && allocations::chain_contains(db, &original.grant_id, &current.id).await?,
+    )
+}
+
+/// How long a reserved, authorized Agent keeps its authority (see
+/// `executor::reserve_lifetime`), never past its effective grant's chain.
+async fn authority_until(db: &mut AsyncPgConnection, r: &Row, now: i64) -> Result<Option<i64>> {
+    let Some(intent) = sql_query(
+        "SELECT payload FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1",
+    )
+    .bind::<Text, _>(&r.id)
+    .get_result::<AgentPerson>(db)
+    .await
+    .optional()?
+    else {
+        return Ok(None);
+    };
+    let c: ManagedAgentReserveCommand = decode(&intent.payload)?;
+    let effective = match effective_grant(db, r, now).await {
+        Ok(g) => g,
+        Err(Error::Conflict(_) | Error::NotFound(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let lifetime = super::executor::reserve_lifetime(db, &c, now).await?;
+    Ok(Some(
+        lifetime.min(allocations::chain_until(db, &effective.id).await?),
+    ))
+}
+pub(super) async fn view_pool(
+    db: &mut AsyncPgConnection,
+    id: &str,
+    p: &Principal,
+    now: i64,
+) -> Result<PoolAgentRequest> {
+    let r = pool_row(db, id, p).await?;
+    let persons = people(db, &r).await?;
+    let pool_id = r.pool_contribution_id.as_deref().unwrap();
+    let (_, contribution) = contribution(db, pool_id).await?;
+    let mut blocked = if r.state == "pending_approval" {
+        match current_grant(db, &r, now).await {
+            Ok(g) if r.requested_tokens > g.receipt.request_limit() => {
+                Some("pool_agent_resource_mismatch".to_owned())
+            }
+            Ok(_) => None,
+            Err(Error::Conflict(reason) | Error::NotFound(reason)) => Some(reason.to_owned()),
+            Err(e) => return Err(e),
+        }
+    } else {
+        match effective_grant(db, &r, now).await {
+            Ok(_) => None,
+            Err(Error::Conflict(reason) | Error::NotFound(reason)) => Some(reason.to_owned()),
+            Err(e) => return Err(e),
+        }
+    };
+    // An approval that never reserved stays bound to its exact grant: its
+    // intent is fenced when that grant is superseded.
+    if blocked.is_none()
+        && r.state == "approved_waiting_executor"
+        && sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1 AND state='fenced') AS matched")
+            .bind::<Text,_>(&r.id).get_result::<Flag>(db).await?.matched
+    {
+        blocked = Some("pool_agent_authority_changed".into());
+    }
+    let expired = r.state == "pending_approval" && r.expires_at_ms <= now;
+    if expired {
+        blocked = Some("pool_agent_request_expired".into());
+    }
+    let open = matches!(
+        r.state.as_str(),
+        "pending_approval" | "approved_waiting_executor"
+    );
+    let authority_until = if r.state == "approved_waiting_executor"
+        && blocked.is_none()
+        && reserved(db, &r.id).await?
+    {
+        authority_until(db, &r, now).await?
+    } else {
+        None
+    };
+    if r.state == "approved_waiting_executor" && let Some(intent) = sql_query("SELECT payload FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1 AND state<>'fenced'")
+            .bind::<Text, _>(&r.id).get_result::<AgentPerson>(db).await.optional()?
+        {
+            let c: ManagedAgentReserveCommand = decode(&intent.payload)?;
+            if authority_until.is_some_and(|until| until <= now)
+                || period_paused(db, &r, &c, now).await?
+            {
+                blocked = Some("agent_period_ended".into());
+            }
+    }
+    let progress=sql_query("SELECT json_build_object('assignment',a.id,'membership',m.state,'runtime',CASE WHEN x.state='stopped' THEN 'stopped' WHEN x.permanent_fence THEN 'cleanup_pending' ELSE x.state END)::text AS payload FROM hagency_agent_v1.management_shared_assignments a LEFT JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id LEFT JOIN LATERAL (SELECT state,permanent_fence FROM hagency_agent_v1.management_shared_runtimes WHERE assignment_id=a.id AND NOT issuance_void ORDER BY created_at_ms DESC,id DESC LIMIT 1) x ON true WHERE a.request_id=$1").bind::<Text,_>(&r.id).get_result::<AgentPerson>(db).await.optional()?.map(|r|decode::<Value>(&r.payload)).transpose()?.unwrap_or(Value::Null);
+    let reservation=sql_query("SELECT w.receipt AS payload FROM hagency_agent_v1.management_agent_executor_commands w JOIN hagency_agent_v1.management_agent_intents i ON i.id=w.intent_id WHERE i.request_id=$1 AND w.operation='agent.reserve' AND w.receipt IS NOT NULL").bind::<Text,_>(&r.id).get_result::<AgentPerson>(db).await.optional()?.map(|r|decode::<Value>(&r.payload)).transpose()?.unwrap_or(Value::Null);
+    let (mut calendar, renewal_mode, current_period, can_renew) =
+        Box::pin(super::periods::projection(db, &r, p, now)).await?;
+    if let Some(period) = &current_period
+        && period.state != "available"
+    {
+        blocked = Some(format!("agent_period_{}", period.state));
+    }
+    let current_grant_revision = allocations::live_grant_for_pool(db, pool_id, now)
+        .await?
+        .map(|g| g.receipt.grant_revision);
+    let recovery = Box::pin(super::periods::recovery_grant(db, &r, p, now)).await?;
+    let can_reallocate = recovery.is_some();
+    if let Some(g) = recovery {
+        calendar = g.receipt.calendar;
+    }
+    let rooms_requiring_reinvite=sql_query("SELECT count(*)::bigint AS now FROM (SELECT b.room_id FROM hagency_agent_v1.shared_agent_rooms b WHERE b.assignment_id=hagency_agent_v1.previous_agent_assignment($1) AND b.state IN ('left','leaving') AND b.departure_reason IS DISTINCT FROM 'allocation_ended' UNION SELECT b.room_id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.shared_agent_rooms b ON b.assignment_id=a.id WHERE a.request_id=$1 AND b.state IN ('left','leaving') AND b.restoration_requires_membership) skipped WHERE NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.shared_agent_rooms b ON b.assignment_id=a.id WHERE a.request_id=$1 AND b.room_id=skipped.room_id AND b.state IN ('joining','active'))").bind::<Text,_>(&r.id).get_result::<Clock>(db).await?.now;
+    Ok(PoolAgentRequest {
+        calendar,
+        renewal_mode,
+        current_period,
+        can_renew,
+        can_reallocate,
+        current_grant_revision,
+        rooms_requiring_reinvite,
+        id: r.id,
+        pool_id: pool_id.into(),
+        pool_label: contribution.label,
+        resource_owner_mxid: persons.owner,
+        manager_mxid: persons.manager,
+        agent_id: r.proposed_agent_id,
+        room_id: r.room_id,
+        assignment_id: progress["assignment"].as_str().map(str::to_owned),
+        membership_state: progress["membership"].as_str().map(str::to_owned),
+        runtime_state: progress["runtime"].as_str().map(str::to_owned),
+        reservation_state: reservation["state"].as_str().map(str::to_owned),
+        reservation_reason: reservation["reason"].as_str().map(str::to_owned),
+        definition: decode(&r.definition)?,
+        requested_tokens: r.requested_tokens,
+        period_key: r.period_key,
+        state: if expired {
+            "expired".into()
+        } else {
+            r.state.clone()
+        },
+        revision: r.revision,
+        created_at_ms: r.created_at_ms,
+        expires_at_ms: r.expires_at_ms,
+        can_decide: r.state == "pending_approval"
+            && !expired
+            && p.user_id == r.administrator_user_id,
+        can_cancel: open && p.user_id == r.manager_user_id,
+        can_stop_supply: open && p.user_id == r.administrator_user_id,
+        authority_until_ms: authority_until,
+        blocking_reason: blocked,
+    })
+}
+
+async fn notice_pool(db: &mut AsyncPgConnection, r: &PoolAgentRequest, now: i64) -> Result<()> {
+    sql_query("UPDATE hagency_agent_v1.management_agent_outbox SET state='cancelled' WHERE request_id=$1 AND state='pending'")
+        .bind::<Text,_>(&r.id).execute(db).await?;
+    for recipient in BTreeSet::from([&r.manager_mxid, &r.resource_owner_mxid]) {
+        let id = format!("mano_{}", entity_id()?);
+        sql_query("INSERT INTO hagency_agent_v1.management_agent_outbox(id,request_id,request_revision,recipient_mxid,transaction_id,created_at_ms) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(request_id,request_revision,recipient_mxid) DO NOTHING")
+            .bind::<Text,_>(&id).bind::<Text,_>(&r.id).bind::<BigInt,_>(r.revision)
+            .bind::<Text,_>(recipient).bind::<Text,_>(format!("hagency-{id}")).bind::<BigInt,_>(now).execute(db).await?;
+    }
+    Ok(())
+}
+
+impl DomainStore {
+    pub async fn recover_pool_agent_command(
+        &self,
+        p: &Principal,
+        id: &str,
+        input: RecoverCommandInput,
+    ) -> Result<Value> {
+        key(id)?;
+        let (device, _) = device(p)?;
+        if !matches!(
+            input.operation.as_str(),
+            "pool_agent.request"
+                | "pool_agent.decide"
+                | "pool_agent.stop"
+                | "pool_agent.renew"
+                | "pool_agent.reallocate"
+        ) {
+            return Err(Error::Invalid("invalid_management_operation"));
+        }
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
+            let rows=sql_query("SELECT operation,digest,result FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND device_id=$2 AND command_id=$3 ORDER BY device_generation LIMIT 2").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(id).load::<Receipt>(db).await?;
+            if rows.len()>1 {return Err(Error::Conflict("management_command_conflict"));}
+            let Some(r)=rows.as_slice().first() else {return Ok(json!({"recorded":false,"request":null}));};
+            if r.operation!=input.operation {return Err(Error::Conflict("management_command_conflict"));}
+            let saved:PoolAgentRequest=decode(&r.result)?;
+            Ok(json!({"recorded":true,"request":view_pool(db,&saved.id,p,now).await?}))
+        }).await
+    }
+    pub async fn resource_pools(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        query: CatalogQuery,
+    ) -> Result<ManagementPage<ResourcePool>> {
+        enabled_pool(policy)?;
+        if let Some(after) = &query.after {
+            key(after)?;
+        }
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db: &mut AsyncPgConnection| {
+            Self::authorize(db,p,crate::api::now_ms()).await?;
+            let now=clock(db).await?;
+            let rows=sql_query(format!("{CONTRIBUTIONS} WHERE c.state='admitted' AND c.id>$1 AND ($2::text IS NULL OR c.capabilities::jsonb ? $2) ORDER BY c.id LIMIT 17"))
+                .bind::<Text,_>(query.after.as_deref().unwrap_or(""))
+                .bind::<Nullable<Text>,_>(query.capability.as_deref()).load::<ContributionRow>(db).await?;
+            let more=rows.len()>16;
+            let mut items=Vec::new();
+            for row in rows.into_iter().take(16) {
+                let c: Contribution=decode(&row.payload)?;
+                let grant=allocations::live_grant_for_pool(db,&c.id,now).await?;
+                let eligible=grant.as_ref().is_some_and(|g|g.receipt.eligible_managers.contains(&p.mxid));
+                let visible=eligible || row.owner_user_id==p.user_id;
+                let renewal=match grant.as_ref().filter(|_|visible) {
+                    Some(g)=>allocations::scheduled_renewal(db,&g.id,now).await?.map(|s|PoolRenewal { per_request_tokens: Some(s.receipt.request_limit()),period_key:s.receipt.period_key,period_start_ms:s.receipt.period_start_ms,published_tokens:s.receipt.allocated_tokens,grant_revision:s.receipt.grant_revision}),
+                    None=>None,
+                };
+                items.push(ResourcePool { renewal_mode: grant.as_ref().filter(|_|visible).and_then(|g|g.receipt.renewal_mode), per_request_tokens: grant.as_ref().filter(|_|visible).map(|g|g.receipt.request_limit()),calendar:grant.as_ref().filter(|_|visible).and_then(|g|g.receipt.calendar.clone()),id:c.id,label:c.label,revision:c.revision,owner_mxid:c.owner_mxid,
+                    runtime:c.runtime,capabilities:c.capabilities,
+                    grant_revision:grant.as_ref().filter(|_|visible).map(|g|g.receipt.grant_revision),
+                    published_tokens:grant.as_ref().filter(|_|visible).map(|g|g.receipt.allocated_tokens),
+                    current_period_end_ms:grant.as_ref().filter(|_|visible).map(|g|g.receipt.period_end_ms),
+                    renewal,
+                    native_available_tokens:None,can_request:eligible,
+                    blocking_reason:if eligible {None} else {Some(if grant.is_some() {"pool_not_shared_with_account"}else{"pool_capacity_unavailable"}.into())}});
+            }
+            let next_after=if more {items.last().map(|p|p.id.clone())}else{None};
+            Ok(ManagementPage {protocol:PROTOCOL,observed_at_ms:now,items,next_after})
+        }).await
+    }
+
+    pub async fn request_pool_agent(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        pool: &str,
+        input: RequestPoolAgent,
+    ) -> Result<PoolAgentRequest> {
+        enabled_pool(policy)?;
+        key(pool)?;
+        input.validate()?;
+        device(p)?;
+        let payload = digest(pool, &input)?;
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            Self::authorize(db,p,crate::api::now_ms()).await?; let now=clock(db).await?;
+            if let Some(saved)=replay::<PoolAgentRequest>(db,p,&input.command_id,"pool_agent.request",&payload).await? {
+                return view_pool(db,&saved.id,p,now).await;
+            }
+            let (owner,c)=contribution(db,pool).await?;
+            if c.state!="admitted" {return Err(Error::Conflict("pool_capacity_unavailable"));}
+            if c.revision!=input.expected_pool_revision {return Err(Error::Conflict("management_revision_changed"));}
+            let grant=allocations::live_grant_for_pool(db,pool,now).await?.ok_or(Error::Conflict("pool_capacity_unavailable"))?;
+            let g=&grant.receipt;
+            let renewal_mode = if let Some(mode) = g.renewal_mode {
+                if input.renewal_mode.is_some_and(|requested| requested != mode) {return Err(Error::Conflict("pool_renewal_policy_changed"));}
+                Some(mode)
+            } else { input.renewal_mode };
+            if (g.calendar.is_some())!=renewal_mode.is_some() {return Err(Error::Invalid("pool_agent_renewal_mode_required"));}
+            if !g.eligible_managers.contains(&p.mxid) {return Err(Error::Unauthorized("pool_not_shared_with_account"));}
+            if g.grant_revision!=input.expected_grant_revision {return Err(Error::Conflict("management_revision_changed"));}
+            if input.requested_tokens>g.request_limit() || !c.capabilities.contains(&input.definition.capability) {
+                return Err(Error::Conflict("pool_agent_resource_mismatch"));
+            }
+            let full=sql_query("SELECT count(*)>=1000 AS matched FROM hagency_agent_v1.management_agent_requests WHERE manager_user_id=$1 AND pool_contribution_id IS NOT NULL AND state IN ('pending_approval','approved_waiting_executor')")
+                .bind::<Text,_>(&p.user_id).get_result::<Flag>(db).await?.matched;
+            if full {return Err(Error::Conflict("pool_agent_request_capacity"));}
+            let id=format!("par_{}",entity_id()?); let proposed=format!("agt_{}",entity_id()?);
+            let expires=(now+TTL).min(g.period_end_ms).min(g.delegation_expires_at_ms);
+            sql_query("INSERT INTO hagency_agent_v1.management_agent_requests(id,setup_binding_revision,allocation_receipt_digest,manager_user_id,room_id,proposed_agent_id,definition,definition_digest,requested_tokens,period_key,administrator_user_id,authority_revision,state,created_at_ms,expires_at_ms,pool_contribution_id,pool_grant_id) VALUES($1,0,'',$2,$14,$3,$4,$5,$6,$7,$8,$9,'pending_approval',$10,$11,$12,$13)")
+                .bind::<Text,_>(&id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&proposed)
+                .bind::<Text,_>(wire(&input.definition)?).bind::<Text,_>(allocation_digest(&input.definition)?)
+                .bind::<BigInt,_>(input.requested_tokens).bind::<Text,_>(&g.period_key).bind::<Text,_>(&owner)
+                .bind::<BigInt,_>(g.grant_revision).bind::<BigInt,_>(now).bind::<BigInt,_>(expires)
+                .bind::<Text,_>(pool).bind::<Text,_>(&grant.id).bind::<Text,_>(&input.room_id).execute(db).await?;
+            if let Some(mode)=renewal_mode {sql_query("INSERT INTO hagency_agent_v1.management_agent_recurring_terms(request_id,calendar,renewal_mode) VALUES($1,$2,$3)").bind::<Text,_>(&id).bind::<Text,_>(wire(g.calendar.as_ref().unwrap())?).bind::<Text,_>(if mode==crate::recurring_quota::RenewalMode::Automatic {"automatic"}else{"owner"}).execute(db).await?;}
+            let result=view_pool(db,&id,p,now).await?; notice_pool(db,&result,now).await?;
+            Self::audit(db,p,"pool_agent.request",&id,now).await?;
+            receipt(db,p,&input.command_id,"pool_agent.request",&payload,&result).await?;
+            Ok(result)
+        }).await
+    }
+
+    pub async fn pool_agent_request(&self, p: &Principal, id: &str) -> Result<PoolAgentRequest> {
+        key(id)?;
+        let mut db = self.db.lock().await?;
+        (*db)
+            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, crate::api::now_ms()).await?;
+                let now = clock(db).await?;
+                view_pool(db, id, p, now).await
+            })
+            .await
+    }
+
+    pub async fn pool_agent_requests(
+        &self,
+        p: &Principal,
+        input: PoolAgentQuery,
+    ) -> Result<ManagementPage<PoolAgentRequest>> {
+        for id in [&input.after, &input.pool_id].into_iter().flatten() {
+            key(id)?;
+        }
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
+            let rows=sql_query("SELECT * FROM hagency_agent_v1.management_agent_request_read WHERE pool_contribution_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_reallocations x WHERE x.previous_request_id=management_agent_request_read.id) AND (manager_user_id=$1 OR administrator_user_id=$1) AND (NOT $2 OR administrator_user_id=$1 AND state='pending_approval' AND expires_at_ms>$3) AND id>$4 AND ($5::text IS NULL OR pool_contribution_id=$5) ORDER BY id LIMIT 17")
+                .bind::<Text,_>(&p.user_id).bind::<Bool,_>(input.needs_my_action).bind::<BigInt,_>(now)
+                .bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<Nullable<Text>,_>(input.pool_id.as_deref()).load::<Row>(db).await?;
+            let more=rows.len()>16;let mut items=Vec::new();
+            for r in rows.into_iter().take(16) {items.push(view_pool(db,&r.id,p,now).await?);}
+            let next_after=if more {items.last().map(|r|r.id.clone())}else{None};
+            Ok(ManagementPage {protocol:PROTOCOL,observed_at_ms:now,items,next_after})
+        }).await
+    }
+
+    pub async fn decide_pool_agent(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        id: &str,
+        input: DecidePoolAgent,
+    ) -> Result<PoolAgentRequest> {
+        enabled_pool(policy)?;
+        key(id)?;
+        key(&input.command_id)?;
+        device(p)?;
+        if input.expected_revision < 1 {
+            return Err(Error::Invalid("invalid_management_revision"));
+        }
+        let payload = digest(id, &input)?;
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
+            sql_query("SELECT id AS payload FROM hagency_agent_v1.management_agent_requests WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<AgentPerson>(db).await.map_err(hidden)?;
+            let r=pool_row(db,id,p).await?;
+            if r.administrator_user_id!=p.user_id {return Err(Error::Unauthorized("pool_resource_owner_required"));}
+            if let Some(saved)=replay::<PoolAgentRequest>(db,p,&input.command_id,"pool_agent.decide",&payload).await? {
+                return view_pool(db,&saved.id,p,now).await;
+            }
+            if r.revision!=input.expected_revision {return Err(Error::Conflict("management_revision_changed"));}
+            if r.state!="pending_approval" || r.expires_at_ms<=now {return Err(Error::Conflict("pool_agent_request_closed"));}
+            let approve=matches!(input.decision,Decision::Approve);
+            let verdict=if approve {"approve"}else{"reject"};
+            let verdict_digest=allocation_digest(&json!({"version":1,"requestId":r.id,"requestRevision":r.revision,"resourceOwnerMxid":p.mxid,"commandId":input.command_id,"decision":verdict}))?;
+            let mut authority_revision=r.authority_revision;
+            if approve {
+                // A request made before an amendment is decided against the
+                // effective successor; above its per-request limit it cannot be approved.
+                let grant=current_grant(db,&r,now).await?;let persons=people(db,&r).await?;let g=grant.receipt;
+                if r.requested_tokens>g.request_limit() {return Err(Error::Conflict("pool_agent_resource_mismatch"));}
+                authority_revision=g.grant_revision;
+                let command=ManagedAgentReserveCommand { renewal_mode: g.renewal_mode.or(super::periods::terms(db,&r.id).await?.map(|t|t.renewal_mode)), allocation_generation: None,version:2,pool_grant:Some(g.clone()),capability:"hagency.pool_agents.v1".into(),operation:"agent.reserve".into(),command_id:format!("mae_{}",entity_id()?),request_id:r.id.clone(),request_revision:r.revision+1,proposed_agent_id:r.proposed_agent_id.clone(),manager_mxid:persons.manager,project_id:String::new(),project_revision:0,setup_id:String::new(),setup_binding_revision:0,domain_project_id:String::new(),room_id:r.room_id.clone(),authority_revision:g.grant_revision,decision_actor_mxid:p.mxid.clone(),decision_digest:verdict_digest.clone(),allocation_id:r.id.clone(),allocation_receipt_digest:String::new(),grant_receipt_digest:grant.receipt_digest,enrollment_id:g.enrollment_id.clone(),executor_device_id:g.executor_device_id.clone(),executor_generation:g.executor_generation,resource_id:g.resource_id.clone(),resource_revision:g.resource_revision.clone(),definition:decode(&r.definition)?,definition_digest:r.definition_digest.clone(),requested_tokens:r.requested_tokens,period_key:r.period_key.clone(),issued_at_ms:now,expires_at_ms:if g.calendar.is_some() {g.period_end_ms.min(g.delegation_expires_at_ms)}else{r.expires_at_ms.min(g.period_end_ms).min(g.delegation_expires_at_ms)}};
+                command.validate(&self.server)?;
+                sql_query("INSERT INTO hagency_agent_v1.management_agent_intents(id,request_id,executor_owner_user_id,executor_device_id,executor_generation,payload,digest) VALUES($1,$2,$3,$4,$5,$6,$7)")
+                    .bind::<Text,_>(&command.command_id).bind::<Text,_>(&r.id).bind::<Text,_>(&p.user_id)
+                    .bind::<Text,_>(&g.executor_device_id).bind::<BigInt,_>(g.executor_generation)
+                    .bind::<Text,_>(wire(&command)?).bind::<Text,_>(allocation_digest(&command)?).execute(db).await?;
+            }
+            sql_query("INSERT INTO hagency_agent_v1.management_agent_decisions(request_id,request_revision,administrator_user_id,authority_revision,command_id,digest,decision,decided_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+                .bind::<Text,_>(&r.id).bind::<BigInt,_>(r.revision).bind::<Text,_>(&p.user_id)
+                .bind::<BigInt,_>(authority_revision).bind::<Text,_>(&input.command_id).bind::<Text,_>(&verdict_digest)
+                .bind::<Text,_>(verdict).bind::<BigInt,_>(now).execute(db).await?;
+            sql_query("UPDATE hagency_agent_v1.management_agent_requests SET state=$2,revision=revision+1,authority_revision=$3 WHERE id=$1")
+                .bind::<Text,_>(&r.id).bind::<Text,_>(if approve {"approved_waiting_executor"}else{"rejected"}).bind::<BigInt,_>(authority_revision).execute(db).await?;
+            let result=view_pool(db,&r.id,p,now).await?;notice_pool(db,&result,now).await?;
+            Self::audit(db,p,"pool_agent.decide",&r.id,now).await?;
+            receipt(db,p,&input.command_id,"pool_agent.decide",&payload,&result).await?;Ok(result)
+        }).await
+    }
+
+    pub async fn stop_pool_agent(
+        &self,
+        p: &Principal,
+        id: &str,
+        input: RevokeInput,
+    ) -> Result<PoolAgentRequest> {
+        key(id)?;
+        key(&input.command_id)?;
+        device(p)?;
+        let payload = digest(id, &input)?;
+        let mut db = self.db.lock().await?;
+        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+            Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
+            sql_query("SELECT id AS payload FROM hagency_agent_v1.management_agent_requests WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<AgentPerson>(db).await.map_err(hidden)?;
+            let r=pool_row(db,id,p).await?;
+            if let Some(saved)=replay::<PoolAgentRequest>(db,p,&input.command_id,"pool_agent.stop",&payload).await? {
+                return view_pool(db,&saved.id,p,now).await;
+            }
+            if r.revision!=input.expected_revision {return Err(Error::Conflict("management_revision_changed"));}
+            if !matches!(r.state.as_str(),"pending_approval"|"approved_waiting_executor") {return Err(Error::Conflict("pool_agent_request_closed"));}
+            sql_query("UPDATE hagency_agent_v1.management_agent_requests SET state=$2,revision=revision+1 WHERE id=$1")
+                .bind::<Text,_>(id).bind::<Text,_>(if p.user_id==r.manager_user_id {"cancelled"}else{"revoked"}).execute(db).await?;
+            let result=view_pool(db,id,p,now).await?;notice_pool(db,&result,now).await?;
+            Self::audit(db,p,"pool_agent.stop",id,now).await?;
+            receipt(db,p,&input.command_id,"pool_agent.stop",&payload,&result).await?;Ok(result)
+        }).await
+    }
+}

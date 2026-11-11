@@ -3,8 +3,7 @@ use crate::gateway::Gateway;
 use serde_json::json;
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
-async fn postgres_owner_direct_is_private_independent_and_executes_only_owner_with_assigned_device()
-{
+async fn postgres_owner_direct_switches_to_group_mentions_with_assigned_device() {
     let f = fixture().await;
     let now = crate::api::now_ms();
     let room = format!("!direct_{}:example.test", crate::secret_token());
@@ -64,12 +63,17 @@ async fn postgres_owner_direct_is_private_independent_and_executes_only_owner_wi
         .room(&room, "", &f.p.mxid, Some(&f.facts.puppet_mxid))
         .await
         .unwrap();
-    assert!(!third_facts.owner_direct_valid);
     assert!(
-        f.domain
-            .adopt_owner_direct(&f.p, &f.agent, &room, &third_facts, now)
-            .await
-            .is_err()
+        third_facts.owner_direct_valid,
+        "inviting a person keeps the owner's original room valid"
+    );
+    let group = gateway
+        .delivery(&room, "", &f.p.mxid, &f.p.mxid, &f.facts.puppet_mxid)
+        .await
+        .unwrap();
+    assert!(
+        group.requires_mention,
+        "the owner must mention once another person is invited"
     );
     states
         .write()
@@ -284,6 +288,42 @@ async fn postgres_owner_direct_is_private_independent_and_executes_only_owner_wi
         .await
         .unwrap();
     assert_eq!(threaded.thread_root, "$explicit-thread");
+    states.write().unwrap().push(json!({"type":"m.room.member","state_key":"@third:example.test","content":{"membership":"join"}}));
+    for (index, sender) in [&f.p.mxid, "@third:example.test"].into_iter().enumerate() {
+        let facts = gateway
+            .delivery(&room, "", &f.p.mxid, sender, &f.facts.puppet_mxid)
+            .await
+            .unwrap();
+        let mut event = direct_event(&format!("group-plain-{index}"));
+        event.sender_mxid = sender.to_owned();
+        assert!(matches!(
+            f.transport
+                .ingest_routed(&created.binding.id, event.clone(), &facts, now)
+                .await
+                .unwrap(),
+            RouteResult::Ignored
+        ));
+        event.event_id = format!("$group-mentioned-{index}");
+        event.mentioned_mxids.insert(f.facts.puppet_mxid.clone());
+        let RouteResult::Queued { dispatch_id } = f
+            .transport
+            .ingest_routed(&created.binding.id, event, &facts, now)
+            .await
+            .unwrap()
+        else {
+            panic!("joined group member's mention must queue")
+        };
+        let dispatch = f
+            .transport
+            .claim_event(&f.p, &lease, &dispatch_id, &facts, now)
+            .await
+            .unwrap();
+        assert_eq!(dispatch.requester_mxid, sender);
+    }
+    states
+        .write()
+        .unwrap()
+        .retain(|e| e["state_key"] != "@third:example.test");
     f.transport
         .acknowledge(&f.p, &lease, &id, now)
         .await
