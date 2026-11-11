@@ -8,11 +8,14 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use hagency_gitfab_events::ledger::Ledger;
 use hagency_gitfab_events::sign::{Key, Keyring};
-use hagency_gitfab_events::{Error, canonical, schema};
+use hagency_gitfab_events::{Error, canonical, identity, schema};
 use serde_json::{Value, json};
 
 #[derive(Parser)]
-#[command(name = "gitfab", about = "Canonicalize, sign, verify and total GitFab acceptance events")]
+#[command(
+    name = "gitfab",
+    about = "Canonicalize, sign, verify and total GitFab acceptance events"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -44,7 +47,8 @@ enum Command {
         public_key_ref: Option<String>,
         file: Option<PathBuf>,
     },
-    /// Check every event in JSONL files: schema, then signature where present or required.
+    /// Check every event in JSONL files: schema, signature where present or required, and that each signed
+    /// key event has a matching identity event.
     Verify {
         /// Directory of `<key-id>.pub` files.
         #[arg(long)]
@@ -79,22 +83,36 @@ fn run(command: Command) -> Result<bool, String> {
             write_private(&private, &key.seed_base64())?;
             let public = dir.join(format!("{key_id}.pub"));
             std::fs::write(&public, key.public_base64() + "\n").map_err(|e| e.to_string())?;
-            print(&json!({"key_id": key_id, "public_key": key.public_base64(), "public_key_file": public}));
+            print(
+                &json!({"key_id": key_id, "public_key": key.public_base64(), "public_key_file": public}),
+            );
             Ok(true)
         }
         Command::Canonicalize { digest, file } => {
             let event = read_event(file.as_deref())?;
-            let out = if digest { canonical::payload_digest(&event) } else { canonical::canonical(&event) };
+            let out = if digest {
+                canonical::payload_digest(&event)
+            } else {
+                canonical::canonical(&event)
+            };
             println!("{}", out.map_err(|e| e.to_string())?);
             Ok(true)
         }
-        Command::Sign { key, key_id, public_key_ref, file } => {
+        Command::Sign {
+            key,
+            key_id,
+            public_key_ref,
+            file,
+        } => {
             let event = read_event(file.as_deref())?;
             let key = Key::load(&key, &key_id).map_err(|e| e.to_string())?;
             let reference = public_key_ref.unwrap_or_else(|| format!("keys/{key_id}.pub"));
             let signed = key.sign(&event, &reference).map_err(|e| e.to_string())?;
             schema::validate(&signed).map_err(|e| format!("signed event fails the schema: {e}"))?;
-            println!("{}", canonical::canonical(&signed).map_err(|e| e.to_string())?);
+            println!(
+                "{}",
+                canonical::canonical(&signed).map_err(|e| e.to_string())?
+            );
             Ok(true)
         }
         Command::Verify { keys, files } => {
@@ -102,18 +120,38 @@ fn run(command: Command) -> Result<bool, String> {
             let mut failures = Vec::new();
             let mut checked = 0;
             let mut signed = Vec::new();
+            // Events that passed their own checks, for the identity cross-check.
+            let (mut valid, mut places) = (Vec::new(), Vec::new());
             for file in &files {
-                for (line, raw) in read(file)?.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+                for (line, raw) in read(file)?
+                    .lines()
+                    .enumerate()
+                    .filter(|(_, l)| !l.trim().is_empty())
+                {
                     checked += 1;
                     let at = json!({"file": file, "line": line + 1});
                     match verify_line(&ring, raw) {
-                        Ok(Some(digest)) => signed.push(digest),
-                        Ok(None) => {}
-                        Err(e) => failures.push(merge(at, json!({"code": e.code(), "message": e.to_string()}))),
+                        Ok((event, digest)) => {
+                            signed.extend(digest);
+                            valid.push(event);
+                            places.push(at);
+                        }
+                        Err(e) => failures.push(merge(
+                            at,
+                            json!({"code": e.code(), "message": e.to_string()}),
+                        )),
                     }
                 }
             }
-            print(&json!({"ok": failures.is_empty(), "events": checked, "signed": signed.len(), "failures": failures}));
+            for (i, e) in identity::check(&valid) {
+                failures.push(merge(
+                    places[i].clone(),
+                    json!({"code": e.code(), "message": e.to_string()}),
+                ));
+            }
+            print(
+                &json!({"ok": failures.is_empty(), "events": checked, "signed": signed.len(), "failures": failures}),
+            );
             Ok(failures.is_empty())
         }
         Command::Ledger { files } => {
@@ -139,15 +177,19 @@ fn run(command: Command) -> Result<bool, String> {
     }
 }
 
-/// Returns the payload digest of a verified signed event, `None` for a valid unsigned one.
-fn verify_line(ring: &Keyring, raw: &str) -> Result<Option<String>, Error> {
+/// Returns the event and, when it is signed and verified, its payload digest.
+fn verify_line(ring: &Keyring, raw: &str) -> Result<(Value, Option<String>), Error> {
     let event: Value = serde_json::from_str(raw).map_err(|e| Error::Json(e.to_string()))?;
     schema::validate(&event)?;
     if event.get("signature").is_none_or(Value::is_null) {
-        return Ok(None);
+        return Ok((event, None));
     }
     ring.verify(&event)?;
-    Ok(Some(event["signature"]["payload_digest"].as_str().unwrap_or_default().to_owned()))
+    let digest = event["signature"]["payload_digest"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    Ok((event, Some(digest)))
 }
 
 fn read_event(file: Option<&Path>) -> Result<Value, String> {
@@ -155,7 +197,9 @@ fn read_event(file: Option<&Path>) -> Result<Value, String> {
         Some(path) => read(path)?,
         None => {
             let mut s = String::new();
-            std::io::stdin().read_to_string(&mut s).map_err(|e| e.to_string())?;
+            std::io::stdin()
+                .read_to_string(&mut s)
+                .map_err(|e| e.to_string())?;
             s
         }
     };
@@ -172,8 +216,11 @@ fn write_private(path: &Path, contents: &str) -> Result<(), String> {
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    file.write_all(format!("{contents}\n").as_bytes()).map_err(|e| e.to_string())
+    let mut file = options
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    file.write_all(format!("{contents}\n").as_bytes())
+        .map_err(|e| e.to_string())
 }
 
 fn merge(mut a: Value, b: Value) -> Value {

@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod canonical;
+pub mod identity;
 pub mod ledger;
 pub mod schema;
 pub mod sign;
@@ -31,6 +32,10 @@ pub enum Error {
     BadSignature(String),
     #[error("signature required for {0} events")]
     MissingSignature(String),
+    #[error("no identity event attests this {0} event")]
+    MissingIdentity(String),
+    #[error("identity event attests no event in this set")]
+    OrphanIdentity,
     #[error("key file: {0}")]
     Key(String),
 }
@@ -49,6 +54,8 @@ impl Error {
             Self::UnknownKey(_) => "unknown_key",
             Self::BadSignature(_) => "bad_signature",
             Self::MissingSignature(_) => "missing_signature",
+            Self::MissingIdentity(_) => "missing_identity",
+            Self::OrphanIdentity => "orphan_identity",
             Self::Key(_) => "key_file",
         }
     }

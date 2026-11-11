@@ -32,6 +32,9 @@ JSON on stdout with a stable `code` per failure.
 - **Ledger.** Idempotent by `event_id` (`release_id` for releases). An identical duplicate counts once; the
   same key with different canonical content fails the ledger with `conflict`. Corrections are new events
   whose `corrects` names an earlier token event. Sums are checked 64-bit integers.
+- **Identity events.** `verify` requires every signed key event (and every release record) to have one
+  identity event with the same event type, project, task, key, payload digest and signature, and reports
+  `missing_identity` or `orphan_identity` otherwise.
 
 ## Keys
 
@@ -39,5 +42,4 @@ Private keys are files of a base64 32-byte seed and must be mode 0600; `sign` re
 others. Event signing keys belong to the server and are configured at deployment; Runner deployment
 receipts use the Runner's own key. Only public keys are delivered.
 
-Not yet covered: identity events are schema-checked but not yet matched to the key event they attest, and
-the server does not yet write these events.
+Not yet covered: the server does not yet write these events.
