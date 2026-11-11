@@ -42,4 +42,12 @@ Private keys are files of a base64 32-byte seed and must be mode 0600; `sign` re
 others. Event signing keys belong to the server and are configured at deployment; Runner deployment
 receipts use the Runner's own key. Only public keys are delivered.
 
-Not yet covered: the server does not yet write these events.
+## Journal
+
+`journal::Journal` appends events to a JSONL file and is what a writer uses instead of writing lines
+itself. Memory, token and release events and key task events are signed on the way in; a key event is
+followed by its identity event in the same write and sync. Appending an event key again with the same
+content writes nothing; different content is refused with `conflict`. Opening a journal re-validates
+every line and refuses a file that already holds a conflicting duplicate.
+
+Not yet covered: the server does not yet call the journal; that comes with the workflow orchestrator.

@@ -4,6 +4,7 @@
 
 pub mod canonical;
 pub mod identity;
+pub mod journal;
 pub mod ledger;
 pub mod schema;
 pub mod sign;
@@ -36,6 +37,10 @@ pub enum Error {
     MissingIdentity(String),
     #[error("identity event attests no event in this set")]
     OrphanIdentity,
+    #[error("{0} was already recorded with different content")]
+    Conflict(String),
+    #[error("journal: {0}")]
+    Io(String),
     #[error("key file: {0}")]
     Key(String),
 }
@@ -56,6 +61,8 @@ impl Error {
             Self::MissingSignature(_) => "missing_signature",
             Self::MissingIdentity(_) => "missing_identity",
             Self::OrphanIdentity => "orphan_identity",
+            Self::Conflict(_) => "conflict",
+            Self::Io(_) => "io",
             Self::Key(_) => "key_file",
         }
     }
