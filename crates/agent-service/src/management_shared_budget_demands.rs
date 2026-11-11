@@ -223,6 +223,7 @@ impl DomainStore {
                     if q.expires_at_ms<=now {
                         if let Some(d)=existing{terminal(db,&d,"expired").await?;}else{intake::expire(db,&id.id,now).await?;}continue;
                     }
+                    if existing.is_none()&&awaits_first_start(db,&q,&h).await?{break;}
                     let d=if let Some(d)=existing{d}else{ensure(db,&q,&h).await?};let o=offer(&d,&q)?;
                     if super::started(db,&d.id).await?.is_some()||super::binding(db,&d.id).await?.is_some(){break;}
                     let (pin,_,known)=super::super::super::super::budget::execution_head(db,&w.request_id,&self.server).await?;

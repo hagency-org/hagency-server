@@ -2781,6 +2781,18 @@ async fn initial_command_no_issue_proof_for(cap: Option<i64>, pool_policy: bool)
         .unwrap();
     let first = shared_poll(&f).await;
     assert!(first.execution_allowed);
+    // The executor also asks for demands while its first command has not
+    // started. On River this pinned the waiting message to that command, and
+    // the message ended as head_changed when the command was replaced.
+    let early = f
+        .domain
+        .poll_shared_demand(&f.owner.p, &f.policy, Default::default())
+        .await
+        .unwrap();
+    assert!(
+        early.demand.is_none(),
+        "no demand names a first command that has not started"
+    );
     assert_eq!(
         first
             .command
