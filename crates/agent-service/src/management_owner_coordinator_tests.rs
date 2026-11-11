@@ -87,6 +87,7 @@ async fn owner_coordination_upgrade_preserves_grant_bytes_and_moves_pending_deci
         let raw = serde_json::to_string(&legacy).unwrap();
         let digest = allocation_digest(&legacy).unwrap();
         let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        db.batch_execute(include_str!("management_shared_claude_down.sql")).await.unwrap();
         db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
         db.batch_execute(include_str!("management_pool_agents_remove_test.sql")).await.unwrap();
     db.batch_execute(include_str!("management_owner_coordinator_remove_test.sql")).await.unwrap();

@@ -43,7 +43,7 @@ pub(super) async fn call(
             }
             let input: Send = body(req).await?;
             domain
-                .authorize_shared_encrypted_reply(p, policy, &input.work_id, gateway)
+                .authorize_shared_room_send(p, policy, &input.work_id, gateway)
                 .await?;
             json!({"authorized":true})
         }
@@ -112,6 +112,12 @@ pub(super) async fn call(
             .map_err(|_| Error::Unavailable("encoding_failed"))?
         }
 
+        (&Method::POST, ["shared-execution", "demands", "poll-v4"]) => serde_json::to_value(
+            domain
+                .poll_shared_demand_v4(p, policy, body(req).await?)
+                .await?,
+        )
+        .map_err(|_| Error::Unavailable("encoding_failed"))?,
         (&Method::POST, ["shared-execution", "demands", "poll"]) => serde_json::to_value(
             domain
                 .poll_shared_demand(p, policy, body(req).await?)
@@ -124,6 +130,12 @@ pub(super) async fn call(
         (&Method::POST, ["shared-execution", "demands", id, "recover"]) => {
             json!({"demand":domain.recover_shared_demand(p,id,body(req).await?).await?})
         }
+        (&Method::POST, ["shared-execution", "demands", id, "retry"]) => serde_json::to_value(
+            domain
+                .retry_shared_demand(p, policy, id, body(req).await?)
+                .await?,
+        )
+        .map_err(|_| Error::Unavailable("encoding_failed"))?,
         (&Method::POST, ["shared-execution", "demands", id, "block"]) => {
             json!({"demand":domain.block_shared_demand(p,id,body(req).await?).await?})
         }
@@ -165,6 +177,9 @@ pub(super) async fn call(
 
         (&Method::POST, ["shared-execution", "attempts", "start"]) => {
             json!({"delivery":domain.start_shared_attempt(p,policy,body(req).await?,gateway).await?})
+        }
+        (&Method::POST, ["shared-execution", "attempts", "poll-v4"]) => {
+            json!({"delivery":domain.poll_shared_attempt_v4(p,policy,body(req).await?).await?})
         }
         (&Method::POST, ["shared-execution", "attempts", "poll"]) => {
             json!({"delivery":domain.poll_shared_attempt(p,policy,body(req).await?).await?})
@@ -209,11 +224,17 @@ pub(super) async fn call(
         (&Method::POST, ["agent-requests", id, "work", "query"]) => {
             json!({"work":domain.shared_work_history(p,policy,id,body(req).await?).await?})
         }
+        (&Method::POST, ["shared-execution", "runtime", "poll-v4"]) => {
+            json!({"delivery":domain.poll_shared_runtime_v4(p,policy,body(req).await?).await?})
+        }
         (&Method::POST, ["shared-execution", "runtime", "poll"]) => {
             json!({"delivery":domain.poll_shared_runtime(p,policy,body(req).await?).await?})
         }
         (&Method::POST, ["shared-execution", "runtime", id, "recover"]) => {
             json!({"delivery":domain.recover_shared_runtime(p,policy,id,body(req).await?).await?})
+        }
+        (&Method::POST, ["shared-execution", "runtime", id, "session-route"]) => {
+            json!({"route":domain.shared_native_session_route(p,policy,id,body(req).await?,gateway).await?})
         }
         (&Method::POST, ["shared-execution", "runtime", id, "result"]) => serde_json::to_value(
             domain

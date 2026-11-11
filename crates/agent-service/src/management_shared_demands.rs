@@ -6,6 +6,10 @@ use crate::{
 };
 #[path = "management_shared_budget_demands.rs"]
 pub(super) mod budget;
+#[path = "management_shared_demand_retries.rs"]
+mod retries;
+#[path = "management_shared_session_route.rs"]
+mod session_route;
 #[path = "management_shared_demand_start.rs"]
 mod start;
 // Decode only server-owned retained bytes, never an external AS authority.
@@ -175,7 +179,8 @@ async fn block(
 async fn status(db: &mut AsyncPgConnection, d: &Demand) -> Result<SharedDemandStatus> {
     let q = queued(db, &d.intake_id).await?;
     let o = offer(d, &q)?;
-    let s = started(db, &d.id).await?;
+    let s = retries::latest_start(db, &d.id).await?;
+    let offered = retries::offered(db, &d.id).await?;
     let b = binding(db, &d.id).await?;
     let reason=sql_query("SELECT reason AS payload FROM hagency_agent_v1.management_shared_demand_blocks WHERE demand_id=$1").bind::<Text,_>(&d.id).get_result::<Json>(db).await.optional()?;
     let state = if b.is_some() {
@@ -184,11 +189,17 @@ async fn status(db: &mut AsyncPgConnection, d: &Demand) -> Result<SharedDemandSt
         r.payload
     } else if q.state != "pending" {
         q.state
+    } else if offered.is_some() {
+        "retry_offered".into()
     } else if s.is_some() {
         "start_committed".into()
     } else {
         "offered".into()
     };
+    let retry = offered
+        .as_ref()
+        .map(|r| r.retry)
+        .or_else(|| s.as_ref().map(|s| s.retry).filter(|n| *n > 0));
     Ok(SharedDemandStatus {
         offer: o,
         demand_digest: d.digest.clone(),
@@ -197,7 +208,32 @@ async fn status(db: &mut AsyncPgConnection, d: &Demand) -> Result<SharedDemandSt
             .map(|s| s.runtime_id)
             .or_else(|| b.as_ref().map(|b| b.runtime_command_id.clone())),
         binding: b,
+        retry,
     })
+}
+/// The status an executor can read. One that does not run retries never sees
+/// `retry_offered` or `retry`: an unbound retry it cannot finish ends the
+/// event as before (head_changed), and a bound one reads as bound.
+async fn visible(
+    db: &mut AsyncPgConnection,
+    d: &Demand,
+    retries: bool,
+) -> Result<SharedDemandStatus> {
+    let mut s = status(db, d).await?;
+    if retries || s.retry.is_none() {
+        return Ok(s);
+    }
+    if s.binding.is_none() && matches!(s.state.as_str(), "retry_offered" | "start_committed") {
+        let q = queued(db, &d.intake_id).await?;
+        let running = sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_controls c WHERE c.assignment_id=$1 AND c.mode='running' AND c.revision=$2) AS matched")
+            .bind::<Text, _>(&q.assignment_id).bind::<BigInt, _>(q.control_revision).get_result::<Flag>(db).await?.matched;
+        if running {
+            block(db, d, &q, "head_changed", "\"retry_unsupported\"").await?;
+            s = status(db, d).await?;
+        }
+    }
+    s.retry = None;
+    Ok(s)
 }
 async fn authorize(
     db: &mut AsyncPgConnection,
@@ -209,6 +245,9 @@ async fn authorize(
 ) -> Result<Work> {
     let w = intake::assignment(db, &q.assignment_id).await?;
     owner(&w, p)?;
+    if fresh {
+        worker_protocol::require(db, p, now).await?;
+    }
     if fresh && !sql_query("SELECT (room_binding_id IS NULL OR EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m WHERE m.binding_id=q.room_binding_id AND m.binding_generation=q.room_binding_generation)) AS matched FROM hagency_agent_v1.management_shared_intake q WHERE id=$1").bind::<Text,_>(&q.id).get_result::<Flag>(db).await?.matched {
         return Err(Error::Conflict("shared_room_binding_changed"));
     }
@@ -263,13 +302,52 @@ async fn refresh(db: &mut AsyncPgConnection, d: &Demand, q: &Queued, h: &Runtime
         return Ok(());
     }
     let o = offer(d, q)?;
-    let s = started(db, &d.id).await?;
+    let s = retries::latest_start(db, &d.id).await?;
     let expected = s
         .as_ref()
         .map(|s| s.runtime_id.as_str())
         .unwrap_or(&o.predecessor_command_id);
-    if h.id != expected || (s.is_some() && h.state == "stopped") {
-        block(db, d, q, "head_changed", "\"head_changed\"").await?;
+    if h.id != expected {
+        return block(db, d, q, "head_changed", "\"head_changed\"").await;
+    }
+    if s.is_none() || h.state != "stopped" || retries::offered(db, &d.id).await?.is_some() {
+        return Ok(());
+    }
+    // An attempt that never reported a process, stopped by the time bound,
+    // waits for the executor's evidence: not_started may still retry its
+    // event, and only the executor can prove it (ADR-193 amendment).
+    if h.process_digest.is_none()
+        && h.activity_epoch == 0
+        && attempts::latest_evidence(db, &h.id, None).await?.is_none()
+    {
+        return Ok(());
+    }
+    block(db, d, q, "head_changed", "\"head_changed\"").await
+}
+/// The time bound stopped `runtime` without a work binding. If it reported a
+/// process, end the demand that started it now (as a later poll would). A v2
+/// attempt that never did keeps its demand for the executor's evidence (see
+/// refresh): only that evidence may retry the event. Only a still-current,
+/// unbound, unblocked demand changes.
+pub(super) async fn interrupt(db: &mut AsyncPgConnection, runtime: &str) -> Result<()> {
+    let v2 = sql_query("SELECT s.demand_id AS id FROM (SELECT demand_id,runtime_id FROM hagency_agent_v1.management_shared_demand_starts UNION ALL SELECT demand_id,runtime_id FROM hagency_agent_v1.management_shared_demand_retry_starts) s JOIN hagency_agent_v1.management_shared_demands d ON d.id=s.demand_id JOIN hagency_agent_v1.management_shared_intake q ON q.id=d.intake_id JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=s.runtime_id WHERE s.runtime_id=$1 AND (r.process_digest IS NOT NULL OR r.activity_epoch>0) AND q.state='pending' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks k WHERE k.demand_id=d.id) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_controls c WHERE c.assignment_id=q.assignment_id AND c.mode='running' AND c.revision=q.control_revision)")
+        .bind::<Text, _>(runtime)
+        .get_result::<Id>(db)
+        .await
+        .optional()?;
+    if let Some(id) = v2 {
+        let d = load(db, &id.id).await?;
+        let q = queued(db, &d.intake_id).await?;
+        block(db, &d, &q, "head_changed", "\"head_changed\"").await?;
+    }
+    let v3 = sql_query("SELECT s.demand_id AS id FROM hagency_agent_v1.management_shared_budget_demand_starts s WHERE s.runtime_id=$1 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_bindings b WHERE b.demand_id=s.demand_id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=s.demand_id)")
+        .bind::<Text, _>(runtime)
+        .get_result::<Id>(db)
+        .await
+        .optional()?;
+    if let Some(id) = v3 {
+        let d = load(db, &id.id).await?;
+        budget::terminal(db, &d, "head_changed").await?;
     }
     Ok(())
 }
@@ -279,7 +357,7 @@ pub(super) async fn current(db: &mut AsyncPgConnection, r: &Runtime, now: i64) -
     if !budget::current(db, r, now).await? {
         return Ok(false);
     }
-    Ok(sql_query("SELECT NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demands d JOIN hagency_agent_v1.management_shared_intake q ON q.id=d.intake_id JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=q.assignment_id WHERE (EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_starts s WHERE s.demand_id=d.id AND s.runtime_id=$1) OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings b WHERE b.demand_id=d.id AND b.runtime_id=$1)) AND (c.mode<>'running' OR c.revision<>q.control_revision OR q.state NOT IN('pending','bound') OR (q.state='pending' AND q.expires_at_ms<=$2) OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks k WHERE k.demand_id=d.id))) AS matched").bind::<Text,_>(&r.id).bind::<BigInt,_>(now).get_result::<Flag>(db).await?.matched)
+    Ok(sql_query("SELECT NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demands d JOIN hagency_agent_v1.management_shared_intake q ON q.id=d.intake_id JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=q.assignment_id WHERE (EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_starts s WHERE s.demand_id=d.id AND s.runtime_id=$1) OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_retry_starts s WHERE s.demand_id=d.id AND s.runtime_id=$1) OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings b WHERE b.demand_id=d.id AND b.runtime_id=$1)) AND (c.mode<>'running' OR c.revision<>q.control_revision OR q.state NOT IN('pending','bound') OR (q.state='pending' AND q.expires_at_ms<=$2) OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks k WHERE k.demand_id=d.id))) AS matched").bind::<Text,_>(&r.id).bind::<BigInt,_>(now).get_result::<Flag>(db).await?.matched)
 }
 pub(super) async fn allowed(
     db: &mut AsyncPgConnection,
@@ -292,14 +370,31 @@ pub(super) async fn allowed(
     if budget::linked(db, &r.id).await? {
         return Ok(false);
     }
-    Ok(!sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_starts WHERE runtime_id=$1 UNION ALL SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings WHERE runtime_id=$1) AS matched").bind::<Text,_>(&r.id).get_result::<Flag>(db).await?.matched)
+    Ok(!sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_starts WHERE runtime_id=$1 UNION ALL SELECT 1 FROM hagency_agent_v1.management_shared_demand_retry_starts WHERE runtime_id=$1 UNION ALL SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings WHERE runtime_id=$1) AS matched").bind::<Text,_>(&r.id).get_result::<Flag>(db).await?.matched)
 }
 impl DomainStore {
     pub async fn poll_shared_demand(
         &self,
         p: &Principal,
         policy: &ManagementPolicy,
-        input: ExecutorPollInput,
+        input: SharedDemandPollInput,
+    ) -> Result<SharedDemandPoll> {
+        self.poll_shared_demand_inner(p, policy, input, false).await
+    }
+    pub async fn poll_shared_demand_v4(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        input: SharedDemandPollInput,
+    ) -> Result<SharedDemandPoll> {
+        self.poll_shared_demand_inner(p, policy, input, true).await
+    }
+    async fn poll_shared_demand_inner(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        input: SharedDemandPollInput,
+        allow_claude: bool,
     ) -> Result<SharedDemandPoll> {
         enabled_demand(policy)?;
         if let Some(a) = &input.after {
@@ -308,8 +403,8 @@ impl DomainStore {
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
  Self::authorize(db,p,0).await?;let (device,generation)=device(p)?;let now=clock(db).await?;
- let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND c.mode='running' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.control_revision=c.revision AND q.state='pending') ORDER BY (a.id<=$4),a.id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(input.after.as_deref().unwrap_or("")).load::<Id>(db).await?;
- let mut after=None;for id in ids {after=Some(id.id.clone());intake::expire(db,&id.id,now).await?;let revision=intake::running_revision(db,&id.id).await?;let Some(q)=oldest(db,&id.id,revision).await? else{continue};let w=match authorize(db,p,&q,&self.server,now,true).await {Ok(w)=>w,Err(Error::Conflict(_)|Error::NotFound(_))=>continue,Err(e)=>return Err(e)};let Some(h)=head(db,&id.id).await? else{continue};if runtime_version(&h)?==3 || has_applied_budget(db,&w.request_id).await? {continue;}let d=ensure(db,&q,&h).await?;refresh(db,&d,&q,&h).await?;if status(db,&d).await?.state!="offered" && started(db,&d.id).await?.is_none(){continue}let c:ManagedAgentReserveCommand=decode(&w.payload)?;if known(db,&id.id).await?>=c.requested_tokens && started(db,&d.id).await?.is_none(){block(db,&d,&q,"budget_blocked","\"known_consumption_exhausted\"").await?;}let value=status(db,&d).await?;if matches!(value.state.as_str(),"offered"|"start_committed"){return Ok(SharedDemandPoll{demand:Some(value),next_after:after})}}
+ let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id) AND c.mode='running' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes root WHERE root.assignment_id=a.id AND NOT root.issuance_void AND (root.payload::jsonb->>'version'='1' OR ($5 AND root.payload::jsonb->>'version'='4'))) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.control_revision=c.revision AND q.state='pending') ORDER BY (a.id<=$4),a.id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<Bool,_>(allow_claude).load::<Id>(db).await?;
+ let mut after=None;for id in ids {after=Some(id.id.clone());intake::expire(db,&id.id,now).await?;let revision=intake::running_revision(db,&id.id).await?;let Some(q)=oldest(db,&id.id,revision).await? else{continue};let w=match authorize(db,p,&q,&self.server,now,true).await {Ok(w)=>w,Err(Error::Conflict(_)|Error::NotFound(_))=>continue,Err(e)=>return Err(e)};let Some(h)=head(db,&id.id).await? else{continue};if runtime_version(&h)?==3 || has_applied_budget(db,&w.request_id).await? {continue;}let d=ensure(db,&q,&h).await?;refresh(db,&d,&q,&h).await?;if status(db,&d).await?.state!="offered" && started(db,&d.id).await?.is_none(){continue}let c:ManagedAgentReserveCommand=decode(&w.payload)?;if known(db,&id.id).await?>=c.requested_tokens && started(db,&d.id).await?.is_none(){block(db,&d,&q,"budget_blocked","\"known_consumption_exhausted\"").await?;}let value=visible(db,&d,input.retries).await?;if matches!(value.state.as_str(),"offered"|"start_committed"|"retry_offered"){return Ok(SharedDemandPoll{demand:Some(value),next_after:after})}}
  Ok(SharedDemandPoll{demand:None,next_after:after})
  }).await
     }
@@ -331,7 +426,7 @@ impl DomainStore {
                 return Err(Error::Conflict("shared_demand_changed"));
             }
             intake::expire(db, &q.assignment_id, now).await?;
-            status(db, &d).await
+            visible(db, &d, input.retries).await
         })
         .await
     }
@@ -343,7 +438,7 @@ impl DomainStore {
     ) -> Result<Option<SharedDemandWorkBinding>> {
         key(id)?;
         let mut g = self.db.lock().await?;
-        (*g).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,0).await?;let row=sql_query("SELECT w.runtime_id,w.payload,w.digest FROM hagency_agent_v1.management_shared_work w WHERE w.id=$1").bind::<Text,_>(id).get_result::<Started>(db).await.map_err(hidden)?;let r=runtime(db,&row.runtime_id).await?;owner(&original(db,&r).await?,p)?;WorkProtocol::Legacy.check(&r)?;if row.digest!=input.work_digest||r.digest!=input.runtime_command_digest{return Err(Error::Conflict("shared_work_changed"));}let did=sql_query("SELECT demand_id AS id FROM hagency_agent_v1.management_shared_demand_bindings WHERE work_id=$1").bind::<Text,_>(id).get_result::<Id>(db).await.optional()?;let Some(did)=did else{return Ok(None)};let d=load(db,&did.id).await?;let q=queued(db,&d.intake_id).await?;Ok(Some(SharedDemandWorkBinding{offer:offer(&d,&q)?,demand_digest:d.digest.clone(),binding:binding(db,&d.id).await?.ok_or(Error::Conflict("shared_binding_missing"))?}))}).await
+        (*g).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,0).await?;let row=sql_query("SELECT w.runtime_id,w.payload,w.digest FROM hagency_agent_v1.management_shared_work w WHERE w.id=$1").bind::<Text,_>(id).get_result::<Started>(db).await.map_err(hidden)?;let r=runtime(db,&row.runtime_id).await?;owner(&original(db,&r).await?,p)?;WorkProtocol::Assignment.check(&r)?;if row.digest!=input.work_digest||r.digest!=input.runtime_command_digest{return Err(Error::Conflict("shared_work_changed"));}let did=sql_query("SELECT demand_id AS id FROM hagency_agent_v1.management_shared_demand_bindings WHERE work_id=$1").bind::<Text,_>(id).get_result::<Id>(db).await.optional()?;let Some(did)=did else{return Ok(None)};let d=load(db,&did.id).await?;let q=queued(db,&d.intake_id).await?;Ok(Some(SharedDemandWorkBinding{offer:offer(&d,&q)?,demand_digest:d.digest.clone(),binding:binding(db,&d.id).await?.ok_or(Error::Conflict("shared_binding_missing"))?}))}).await
     }
 }
 /// Called in the existing live work-poll transaction, after current Matrix

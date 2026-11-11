@@ -27,6 +27,7 @@ async fn split_role_upgrade_is_atomic_fences_work_and_retains_history() {
         let a = record(&f, &d, "reserved", 11).await.allocation;
         let former = actor(&f.auth, "former_project_administrator").await;
         let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        db.batch_execute(include_str!("management_shared_claude_down.sql")).await.unwrap();
         db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
         db.batch_execute(include_str!("management_pool_agents_remove_test.sql")).await.unwrap();
     db.batch_execute(include_str!("management_project_manager_remove_test.sql")).await.unwrap();

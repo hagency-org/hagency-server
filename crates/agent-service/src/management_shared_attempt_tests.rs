@@ -2,6 +2,8 @@ use super::*;
 use crate::{management_shared_attempt_types::*, management_shared_work_types::*};
 
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
+    // ADR-193 amendment retry tables depend on the tables below.
+    db.batch_execute("DROP TABLE IF EXISTS hagency_agent_v1.management_shared_demand_retry_starts,hagency_agent_v1.management_shared_demand_retries;DROP FUNCTION IF EXISTS hagency_agent_v1.validate_shared_demand_retry()").await.unwrap();
     ticket_tests::remove_migration(db).await;
     // Tests rewind a shared disposable database. Discard only rows introduced
     // by the newer protocol; preserve every original v1 row under test.
@@ -105,6 +107,7 @@ pub(super) fn result(
             process_digest: Some("d".repeat(64)),
             state: state.into(),
             policy_digest: (state == "qualified").then(|| "b".repeat(64)),
+            reason: None,
         },
     }
 }
@@ -261,6 +264,66 @@ fn shared_attempt_fixture_preserves_original_and_allows_new_spawn_window_only() 
     bad.predecessor.process_attempt = 2;
     assert!(bad.validate("example.test").is_err());
     assert!(serde_json::from_value::<SharedProcessReceipt>(fixture["receipt"].clone()).is_err());
+}
+#[test]
+fn shared_attempt_v2_unstarted_and_timeout_receipts_are_explicit_and_closed() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/management-shared-attempt-v2.json"
+    ))
+    .unwrap();
+    let c: SharedAttemptCommand = serde_json::from_value(fixture["command"].clone()).unwrap();
+    // Non-issuance names no process; the time bound names only a known one.
+    let unstarted: SharedAttemptProcessReceipt =
+        serde_json::from_value(fixture["unstartedReceipt"].clone()).unwrap();
+    unstarted.validate_for(&c).unwrap();
+    assert_eq!(
+        allocation_digest(&unstarted).unwrap(),
+        fixture["unstartedReceiptDigest"]
+    );
+    let timeout: SharedAttemptProcessReceipt =
+        serde_json::from_value(fixture["timeoutReceipt"].clone()).unwrap();
+    timeout.validate_for(&c).unwrap();
+    assert_eq!(timeout.reason.as_deref(), Some(UNCERTAIN_TIMEOUT));
+    assert_eq!(
+        allocation_digest(&timeout).unwrap(),
+        fixture["timeoutReceiptDigest"]
+    );
+    // Existing receipts carry no reason field; their bytes and digest stay.
+    let receipt: SharedAttemptProcessReceipt =
+        serde_json::from_value(fixture["receipt"].clone()).unwrap();
+    assert!(
+        serde_json::to_value(&receipt)
+            .unwrap()
+            .get("reason")
+            .is_none()
+    );
+    for (state, process, reason) in [
+        ("not_started", Some("d".repeat(64)), None),
+        ("not_started", None, Some(UNCERTAIN_TIMEOUT)),
+        ("stopped", None, Some(UNCERTAIN_TIMEOUT)),
+        ("qualified", Some("d".repeat(64)), Some(UNCERTAIN_TIMEOUT)),
+        ("unknown", Some("d".repeat(64)), Some(UNCERTAIN_TIMEOUT)),
+        ("stopped", Some("d".repeat(64)), Some("stalled")),
+    ] {
+        let mut bad = timeout.clone();
+        bad.state = state.into();
+        bad.process_digest = process;
+        bad.reason = reason.map(str::to_owned);
+        bad.policy_digest = (state == "qualified").then(|| "b".repeat(64));
+        assert!(bad.validate_for(&c).is_err(), "{state} {:?}", bad.reason);
+    }
+    // Only a later attempt may follow a never-started predecessor.
+    let mut first = c.clone();
+    first.predecessor.process_digest = String::new();
+    assert!(first.validate("example.test").is_err());
+    let mut later = c.clone();
+    later.process_attempt = 3;
+    later.predecessor.process_attempt = 2;
+    later.predecessor.command_id = "sat_unstarted".into();
+    later.predecessor.process_digest = String::new();
+    later.validate("example.test").unwrap();
+    later.predecessor.process_digest = "x".into();
+    assert!(later.validate("example.test").is_err());
 }
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
@@ -653,7 +716,7 @@ async fn shared_attempt_schema13_upgrade_rolls_back_and_preserves_v1_bytes() {
         d.command_digest
     );
     assert!(
-        sql_query("SELECT version=32 AS matched FROM hagency_agent_v1.management_deployment")
+        sql_query("SELECT version=35 AS matched FROM hagency_agent_v1.management_deployment")
             .get_result::<Check>(&mut db)
             .await
             .unwrap()
@@ -1322,4 +1385,41 @@ async fn shared_permissions_owner_scope_session_decision_and_single_consumption(
         .unwrap();
     }
     post(&service,"shared-execution/approvals/decide",&f.owner.token,json!({"id":format!("sap_expired_{}",w.id),"digest":third["digest"],"decision":"approve_once"}),StatusCode::CONFLICT).await;
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_attempt_process_revision_is_free_again_in_a_newly_declared_ledger() {
+    let (mut f, r, admin, assignment, m) = Box::pin(prepared()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = stop(&f, &d, 220).await;
+    f.policy = f.policy.with_shared_successors(true);
+    replace_ledger(&f).await;
+    let next = f
+        .domain
+        .start_shared_attempt(&f.owner.p, &f.policy, start(&d, &stopped), &m.gateway)
+        .await
+        .unwrap();
+    f.domain
+        .record_shared_attempt_process(
+            &f.owner.p,
+            &f.policy,
+            &next.command.command_id,
+            result(&next, "qualified", 240),
+        )
+        .await
+        .unwrap();
+    revoke(&f, &r, &admin).await;
+    // The successor's evidence 240 is the new ledger's and taken. The stop it
+    // succeeds was mutation 220 of the ledger that was replaced.
+    let fence = poll(&f).await;
+    assert_eq!(
+        submit(&f, &fence, fence_at(&fence, 240))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "agent_executor_ledger_revision_changed"
+    );
+    submit(&f, &fence, fence_at(&fence, 220)).await.unwrap();
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    assert!(sql_query("SELECT array_agg(o.ledger_epoch ORDER BY o.ledger_revision)=ARRAY[0,0,1]::bigint[] AS matched FROM hagency_agent_v1.management_shared_process_receipts o JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=o.runtime_id WHERE r.assignment_id=$1").bind::<Text, _>(&assignment.id).get_result::<Check>(&mut db).await.unwrap().matched);
 }

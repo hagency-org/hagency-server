@@ -1062,6 +1062,8 @@ pub(crate) fn start_cleanup_controlled(
             }
             let _ = domain.revoke_shared_crypto_devices(&m).await;
             let _ = domain.sweep_managed_runtime().await;
+            // Uncertain shared attempts are time-bounded even with no executor.
+            let _ = domain.sweep_shared_attempt_timeouts().await;
             if let Ok(ids) = domain
                 .managed_matrix_candidates(&managed_matrix_cursor, 20)
                 .await

@@ -1192,6 +1192,9 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
     reserve(&f, &carried.id, 100).await;
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     // Back to schema 28 with the committed lossy downgrade (no v3 rows yet).
+    db.batch_execute(include_str!("management_shared_claude_down.sql"))
+        .await
+        .unwrap();
     db.batch_execute(include_str!("management_shared_context_v2_down.sql"))
         .await
         .unwrap();
@@ -1214,7 +1217,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
         .await
         .unwrap();
     let upgraded = schema_state(&mut db).await;
-    assert_eq!((upgraded.version, upgraded.columns), (32, true));
+    assert_eq!((upgraded.version, upgraded.columns), (35, true));
     let rows = chain(&f, &a.contribution.id).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(
@@ -1242,6 +1245,9 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
             &root.id,
             succeed(&a, &root, successor(&root, "amendment", 800_000, 20)),
         )
+        .await
+        .unwrap();
+    db.batch_execute(include_str!("management_shared_claude_down.sql"))
         .await
         .unwrap();
     db.batch_execute(include_str!("management_shared_context_v2_down.sql"))
@@ -1275,7 +1281,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
     crate::domain::DomainStore::open(&f.url, "example.test", "_hagency_test_")
         .await
         .unwrap();
-    assert_eq!(schema_state(&mut db).await.version, 32);
+    assert_eq!(schema_state(&mut db).await.version, 35);
 }
 
 #[tokio::test]
@@ -1846,5 +1852,7 @@ async fn a_cancelled_renewal_leaves_its_month_open_for_one_regrant() {
     );
 }
 
+#[path = "management_executor_ledger_tests.rs"]
+mod ledgers;
 #[path = "management_agent_period_tests.rs"]
 mod periods;

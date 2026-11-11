@@ -316,6 +316,7 @@ pub mod hagency_agent_v1 {
             ledger_revision -> Int8,
             state -> Text,
             budget_revision -> Int8,
+            ledger_epoch -> Int8,
         }
     }
 
@@ -357,6 +358,7 @@ pub mod hagency_agent_v1 {
             receipt_digest -> Nullable<Text>,
             command_payload -> Nullable<Text>,
             period_key -> Nullable<Text>,
+            receipt_ledger_epoch -> Int8,
         }
     }
 
@@ -488,6 +490,7 @@ pub mod hagency_agent_v1 {
             payload -> Text,
             digest -> Text,
             ledger_revision -> Int8,
+            ledger_epoch -> Int8,
         }
     }
 
@@ -518,6 +521,7 @@ pub mod hagency_agent_v1 {
             payload -> Text,
             digest -> Text,
             ledger_revision -> Int8,
+            ledger_epoch -> Int8,
         }
     }
 
@@ -599,6 +603,7 @@ pub mod hagency_agent_v1 {
             created_at_ms -> Int8,
             updated_at_ms -> Int8,
             publication_first -> Bool,
+            ledger_replaced_epoch -> Nullable<Int8>,
         }
     }
 
@@ -624,6 +629,19 @@ pub mod hagency_agent_v1 {
             lease_until_ms -> Int8,
             receipt -> Nullable<Text>,
             receipt_digest -> Nullable<Text>,
+            receipt_ledger_epoch -> Int8,
+        }
+    }
+
+    diesel::table! {
+        hagency_agent_v1.management_executor_ledgers (owner_user_id, executor_device_id, epoch) {
+            owner_user_id -> Text,
+            executor_device_id -> Text,
+            ledger_id -> Text,
+            epoch -> Int8,
+            declared_at_ms -> Int8,
+            swept -> Bool,
+            sweep -> Nullable<Text>,
         }
     }
 
@@ -677,6 +695,7 @@ pub mod hagency_agent_v1 {
             lease_until_ms -> Int8,
             receipt -> Nullable<Text>,
             receipt_digest -> Nullable<Text>,
+            receipt_ledger_epoch -> Int8,
         }
     }
 
@@ -787,6 +806,7 @@ pub mod hagency_agent_v1 {
             predecessor_grant_id -> Nullable<Text>,
             succession -> Nullable<Text>,
             period_start_ms -> Int8,
+            ledger_epoch -> Int8,
         }
     }
 
@@ -998,6 +1018,27 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
+        hagency_agent_v1.management_shared_demand_retries (demand_id, retry) {
+            demand_id -> Text,
+            retry -> Int8,
+            previous_runtime_id -> Text,
+            receipt_id -> Text,
+            created_at_ms -> Int8,
+        }
+    }
+
+    diesel::table! {
+        hagency_agent_v1.management_shared_demand_retry_starts (demand_id, retry) {
+            demand_id -> Text,
+            retry -> Int8,
+            start_intent_id -> Text,
+            runtime_id -> Text,
+            payload -> Text,
+            digest -> Text,
+        }
+    }
+
+    diesel::table! {
         hagency_agent_v1.management_shared_demand_starts (demand_id) {
             demand_id -> Text,
             start_intent_id -> Text,
@@ -1051,6 +1092,18 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
+        hagency_agent_v1.management_shared_executor_protocols (device_id) {
+            device_id -> Text,
+            owner_user_id -> Text,
+            generation -> Int8,
+            session_id -> Text,
+            qualified -> Bool,
+            observed_at_ms -> Int8,
+            expires_at_ms -> Int8,
+        }
+    }
+
+    diesel::table! {
         hagency_agent_v1.management_shared_input_modes (work_id) {
             work_id -> Text,
             mode -> Text,
@@ -1081,6 +1134,7 @@ pub mod hagency_agent_v1 {
             payload -> Text,
             digest -> Text,
             ledger_revision -> Int8,
+            ledger_epoch -> Int8,
         }
     }
 
@@ -1173,6 +1227,7 @@ pub mod hagency_agent_v1 {
             payload -> Text,
             digest -> Text,
             ledger_revision -> Int8,
+            ledger_epoch -> Int8,
         }
     }
 
@@ -1540,6 +1595,11 @@ pub mod hagency_agent_v1 {
     diesel::joinable!(management_shared_demand_bindings -> management_shared_runtimes (runtime_id));
     diesel::joinable!(management_shared_demand_bindings -> management_shared_work (work_id));
     diesel::joinable!(management_shared_demand_blocks -> management_shared_demands (demand_id));
+    diesel::joinable!(management_shared_demand_retries -> management_shared_demands (demand_id));
+    diesel::joinable!(management_shared_demand_retries -> management_shared_process_receipts (receipt_id));
+    diesel::joinable!(management_shared_demand_retries -> management_shared_runtimes (previous_runtime_id));
+    diesel::joinable!(management_shared_demand_retry_starts -> management_shared_attempts (start_intent_id));
+    diesel::joinable!(management_shared_demand_retry_starts -> management_shared_runtimes (runtime_id));
     diesel::joinable!(management_shared_demand_starts -> management_shared_attempts (start_intent_id));
     diesel::joinable!(management_shared_demand_starts -> management_shared_demands (demand_id));
     diesel::joinable!(management_shared_demand_starts -> management_shared_runtimes (runtime_id));
@@ -1634,6 +1694,7 @@ pub mod hagency_agent_v1 {
         management_contributions,
         management_deployment,
         management_executor_commands,
+        management_executor_ledgers,
         management_grant_publication_tombstones,
         management_outbox,
         management_owner_coordination_merges,
@@ -1663,11 +1724,14 @@ pub mod hagency_agent_v1 {
         management_shared_controls,
         management_shared_demand_bindings,
         management_shared_demand_blocks,
+        management_shared_demand_retries,
+        management_shared_demand_retry_starts,
         management_shared_demand_starts,
         management_shared_demands,
         management_shared_e2ee_candidates,
         management_shared_event_pins,
         management_shared_event_revisions,
+        management_shared_executor_protocols,
         management_shared_input_modes,
         management_shared_intake,
         management_shared_process_receipts,

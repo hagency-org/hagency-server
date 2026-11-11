@@ -1009,3 +1009,101 @@ async fn settlement_later_cancellation_evidence_queues_new_observation_and_canno
             .is_none()
     );
 }
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn agent_budget_revision_is_free_again_in_a_newly_declared_ledger() {
+    let (f, r, a) = ready().await;
+    let t = request_delta(&f, &r, "old_ledger_delta", 10).await;
+    approve_delta(&f, &a, &t.top_up).await;
+    let old = delivered(&f).await;
+    record(&f, &old, applied(&old, 101)).await.unwrap();
+    replace_ledger(&f).await;
+    let t = request_delta(&f, &r, "new_ledger_delta", 5).await;
+    approve_delta(&f, &a, &t.top_up).await;
+    let new = delivered(&f).await;
+    record(&f, &new, applied(&new, 102)).await.unwrap();
+    f.domain
+        .revoke_managed_agent_request(
+            &a.p,
+            &f.policy,
+            &r.id,
+            RevokeInput {
+                command_id: "revoke_after_deltas".into(),
+                expected_revision: r.revision,
+            },
+        )
+        .await
+        .unwrap();
+    // Increase 102 is the new ledger's and taken. Increase 101 was numbered by
+    // the ledger it replaced.
+    let fence = poll(&f).await;
+    assert_eq!(
+        submit(&f, &fence, fence_at(&fence, 102))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "agent_executor_ledger_revision_changed"
+    );
+    submit(&f, &fence, fence_at(&fence, 101)).await.unwrap();
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    assert!(sql_query("SELECT (SELECT ledger_epoch FROM hagency_agent_v1.management_agent_budget_results WHERE command_id=$1)=0 AND (SELECT ledger_epoch FROM hagency_agent_v1.management_agent_budget_results WHERE command_id=$2)=1 AS matched").bind::<Text,_>(&old.command.command_id).bind::<Text,_>(&new.command.command_id).get_result::<Check>(&mut db).await.unwrap().matched);
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn settlement_revision_is_free_again_in_a_newly_declared_ledger() {
+    for replaced_before_settlement in [false, true] {
+        let (f, r, a) = ready().await;
+        let topup = request_delta(&f, &r, "other_ledger_delta", 25).await;
+        approve_delta(&f, &a, &topup.top_up).await;
+        f.domain
+            .revoke_managed_agent_request(
+                &a.p,
+                &f.policy,
+                &r.id,
+                RevokeInput {
+                    command_id: "other_ledger_revoke".into(),
+                    expected_revision: r.revision,
+                },
+            )
+            .await
+            .unwrap();
+        let d = poll(&f).await;
+        submit(&f, &d, fence_result(&d, true)).await.unwrap();
+        if replaced_before_settlement {
+            replace_ledger(&f).await;
+        }
+        let settlement = super::settlement::poll_settlement(&f).await;
+        let settled = super::settlement::result(&f, &settlement, 120, 40, 40, true).await;
+        super::settlement::record(&f, &settlement, settled)
+            .await
+            .unwrap();
+        if !replaced_before_settlement {
+            replace_ledger(&f).await;
+        }
+        let delta = delivered(&f).await;
+        assert!(delta.cancellation_requested);
+        let mut cancelled = applied(&delta, 120);
+        cancelled.receipt.state = "cancelled_before_apply".into();
+        cancelled.receipt.budget_revision = 1;
+        cancelled.receipt.budget_digest = delta.command.expected_budget_digest.clone();
+        cancelled.receipt.applied_delta_tokens = 0;
+        cancelled.receipt.effective_ceiling_tokens = 100;
+        cancelled.receipt.reason = Some("cancelled".into());
+        // The cancelled increase cannot be mutation 120 of the ledger that
+        // settled as 120. It can be mutation 120 of the ledger replacing it.
+        if replaced_before_settlement {
+            assert_eq!(
+                record(&f, &delta, cancelled.clone())
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "agent_executor_ledger_revision_changed"
+            );
+            cancelled.receipt.ledger_revision = 130;
+        }
+        record(&f, &delta, cancelled).await.unwrap();
+        let settlement_epoch = i64::from(replaced_before_settlement);
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        assert!(sql_query("SELECT (SELECT ledger_epoch FROM hagency_agent_v1.management_agent_settlement_results WHERE command_id=$1)=$2 AND (SELECT ledger_epoch FROM hagency_agent_v1.management_agent_budget_results WHERE command_id=$3)=1 AS matched").bind::<Text,_>(&settlement.command.command_id).bind::<BigInt,_>(settlement_epoch).bind::<Text,_>(&delta.command.command_id).get_result::<Check>(&mut db).await.unwrap().matched);
+    }
+}

@@ -1,6 +1,10 @@
 use super::*;
 use crate::management_shared_demand_types::*;
+#[path = "management_shared_session_route_tests.rs"]
+mod session_route_tests;
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
+    // ADR-193 amendment retry tables depend on the tables below.
+    db.batch_execute("DROP TABLE IF EXISTS hagency_agent_v1.management_shared_demand_retry_starts,hagency_agent_v1.management_shared_demand_retries;DROP FUNCTION IF EXISTS hagency_agent_v1.validate_shared_demand_retry()").await.unwrap();
     context_tests::remove_migration(db).await;
     db.batch_execute("DROP TABLE hagency_agent_v1.management_shared_demand_bindings,hagency_agent_v1.management_shared_demand_starts,hagency_agent_v1.management_shared_demand_blocks,hagency_agent_v1.management_shared_demands;DROP FUNCTION hagency_agent_v1.validate_shared_demand(),hagency_agent_v1.retain_shared_demand();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=16;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=16)").await.unwrap();
     // This disposable test DB can contain newer rows from earlier test cases.
@@ -60,7 +64,7 @@ async fn retain(f: &Fixture, r: &ManagedAgentRequest, m: &MatrixFixture, id: &st
 }
 async fn demand(f: &Fixture) -> SharedDemandStatus {
     f.domain
-        .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
         .await
         .unwrap()
         .demand
@@ -75,6 +79,7 @@ fn start_input(
         demand_digest: d.demand_digest.clone(),
         expected_control_revision: d.offer.control_revision,
         start: attempts::start(original, stop),
+        retry: None,
     }
 }
 #[test]
@@ -148,6 +153,7 @@ async fn shared_demand_idle_promotion_preserves_original_event_and_one_work() {
             &offered.offer.demand_id,
             SharedDemandRecoverInput {
                 demand_digest: offered.demand_digest,
+                retries: true,
             },
         )
         .await
@@ -217,6 +223,7 @@ async fn recovered(f: &Fixture, o: &SharedDemandStatus) -> SharedDemandStatus {
             &o.offer.demand_id,
             SharedDemandRecoverInput {
                 demand_digest: o.demand_digest.clone(),
+                retries: true,
             },
         )
         .await
@@ -256,7 +263,8 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
                     &who.p,
                     &o.offer.demand_id,
                     SharedDemandRecoverInput {
-                        demand_digest: o.demand_digest.clone()
+                        demand_digest: o.demand_digest.clone(),
+                        retries: true
                     }
                 )
                 .await
@@ -306,7 +314,8 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
                 &p,
                 &o.offer.demand_id,
                 SharedDemandRecoverInput {
-                    demand_digest: o.demand_digest.clone()
+                    demand_digest: o.demand_digest.clone(),
+                    retries: true
                 }
             )
             .await
@@ -349,7 +358,7 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
     );
     assert!(
         f.domain
-            .poll_shared_demand(&p, &f.policy, ExecutorPollInput::default())
+            .poll_shared_demand(&p, &f.policy, SharedDemandPollInput::default())
             .await
             .unwrap()
             .demand
@@ -363,7 +372,7 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
         .with_shared_successors(false);
     assert!(
         f.domain
-            .poll_shared_demand(&p, &f.policy, ExecutorPollInput::default())
+            .poll_shared_demand(&p, &f.policy, SharedDemandPollInput::default())
             .await
             .is_err()
     );
@@ -373,7 +382,8 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
                 &p,
                 &o.offer.demand_id,
                 SharedDemandRecoverInput {
-                    demand_digest: o.demand_digest
+                    demand_digest: o.demand_digest,
+                    retries: true
                 }
             )
             .await
@@ -513,7 +523,7 @@ async fn shared_demand_unrelated_head_advance_retains_offer_and_blocks_replaceme
         .unwrap();
     assert!(
         f.domain
-            .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
             .await
             .unwrap()
             .demand
@@ -697,6 +707,7 @@ async fn shared_demand_budget_block_retains_unknown_or_overflow_without_start_id
             }
             .into(),
             budget: (!unknown).then_some(budget),
+            retries: false,
         };
         for _ in 0..2 {
             assert_eq!(
@@ -726,7 +737,7 @@ async fn shared_demand_budget_block_retains_unknown_or_overflow_without_start_id
         retain(&f, &r, &m, &format!("demand_budget_later_{}", r.id)).await;
         let later = f
             .domain
-            .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
             .await
             .unwrap()
             .demand
@@ -777,7 +788,7 @@ async fn shared_demand_known_overrun_retains_actual_usage_and_zero_remaining_wit
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input, &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input, &m.gateway)
             .await
             .unwrap()
             .newly_started
@@ -795,7 +806,7 @@ async fn shared_demand_known_overrun_retains_actual_usage_and_zero_remaining_wit
     retain(&f, &r, &m, "demand_after_overrun").await;
     assert!(
         f.domain
-            .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
             .await
             .unwrap()
             .demand
@@ -909,7 +920,7 @@ async fn shared_demand_schema16_upgrade_atomic_original_bytes_and_controls_prese
     );
     assert_eq!(history(&f, &d).await.command_digest, d.command_digest);
     let o = reopened
-        .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
         .await
         .unwrap()
         .demand
@@ -983,6 +994,7 @@ async fn shared_demand_blocked_assignment_does_not_starve_another_owner_assignme
                 expected_control_revision: o.offer.control_revision,
                 reason: "usage_unrepresentable".into(),
                 budget: None,
+                retries: false,
             },
         )
         .await
@@ -1001,8 +1013,9 @@ async fn shared_demand_blocked_assignment_does_not_starve_another_owner_assignme
         .poll_shared_demand(
             &f.owner.p,
             &f.policy,
-            ExecutorPollInput {
+            SharedDemandPollInput {
                 after: Some(b.id.clone()),
+                retries: false,
             },
         )
         .await
@@ -1014,8 +1027,9 @@ async fn shared_demand_blocked_assignment_does_not_starve_another_owner_assignme
         .poll_shared_demand(
             &f.owner.p,
             &f.policy,
-            ExecutorPollInput {
+            SharedDemandPollInput {
                 after: later.next_after,
+                retries: false,
             },
         )
         .await
@@ -1065,7 +1079,7 @@ async fn acknowledge_start_item(
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input, &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input, &m.gateway)
             .await
             .unwrap()
             .newly_started
@@ -1361,3 +1375,6 @@ async fn shared_demand_control_readiness_distinguishes_roles_mode_policy_and_bus
         .unwrap();
     assert!(both.can_stop && both.requires_local_stop && !both.can_run);
 }
+
+#[path = "management_shared_timeout_tests.rs"]
+mod timeout_tests;

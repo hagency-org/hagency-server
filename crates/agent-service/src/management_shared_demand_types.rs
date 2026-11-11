@@ -2,8 +2,13 @@
 use crate::{
     Error, Result, key,
     management_allocation_types::{MAX_EXACT, allocation_digest, valid_digest},
-    management_shared_attempt_types::{SharedAttemptStartInput, SharedBudgetObservation},
+    management_shared_attempt_types::{
+        SharedAttemptAcknowledgement, SharedAttemptResultInput, SharedAttemptStartInput,
+        SharedBudgetObservation,
+    },
 };
+/// Retries per event after a provably never-started attempt (ADR-193 amendment).
+pub const MAX_DEMAND_RETRIES: i64 = 3;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -47,15 +52,25 @@ pub struct SharedDemandStartInput {
     pub demand_digest: String,
     pub expected_control_revision: i64,
     pub start: SharedAttemptStartInput,
+    /// A retry names the demand's not_started attempt, not the offer's
+    /// predecessor. Omitted for the original start (bytes unchanged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<i64>,
 }
 impl SharedDemandStartInput {
     pub fn validate_for(&self, o: &SharedDemandOffer) -> Result<()> {
         self.start.validate()?;
-        if self.demand_digest != allocation_digest(o)?
+        let predecessor = match self.retry {
+            None => {
+                self.start.predecessor.command_id != o.predecessor_command_id
+                    || self.start.predecessor.command_digest != o.predecessor_command_digest
+            }
+            Some(n) => !(1..=MAX_DEMAND_RETRIES).contains(&n),
+        };
+        if predecessor
+            || self.demand_digest != allocation_digest(o)?
             || self.expected_control_revision != o.control_revision
             || self.start.assignment_id != o.assignment_id
-            || self.start.predecessor.command_id != o.predecessor_command_id
-            || self.start.predecessor.command_digest != o.predecessor_command_digest
             || serde_json::to_vec(self).map_or(true, |v| v.len() > 16384)
         {
             return Err(Error::Conflict("shared_demand_changed"));
@@ -86,6 +101,41 @@ pub struct SharedDemandStatus {
     pub state: String,
     pub runtime_command_id: Option<String>,
     pub binding: Option<SharedDemandBinding>,
+    /// The latest retry, once the executor has asked for one. Never present
+    /// for an executor that has not (the old client never sees it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<i64>,
+}
+/// The executor's not_started evidence for the demand's latest attempt, with
+/// its request to retry the same event in place. Only the executor proves
+/// non-execution; the server never retries on its own.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedDemandRetryInput {
+    pub demand_digest: String,
+    pub expected_control_revision: i64,
+    pub retry: i64,
+    pub attempt_id: String,
+    pub result: SharedAttemptResultInput,
+}
+impl SharedDemandRetryInput {
+    pub fn validate(&self) -> Result<()> {
+        key(&self.attempt_id)?;
+        if !valid_digest(&self.demand_digest)
+            || !(1..=MAX_EXACT).contains(&self.expected_control_revision)
+            || !(1..=MAX_DEMAND_RETRIES + 1).contains(&self.retry)
+            || self.result.receipt.state != "not_started"
+        {
+            return Err(Error::Invalid("invalid_shared_demand_retry"));
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedDemandRetryReply {
+    pub acknowledgement: SharedAttemptAcknowledgement,
+    pub demand: SharedDemandStatus,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -93,10 +143,22 @@ pub struct SharedDemandPoll {
     pub demand: Option<SharedDemandStatus>,
     pub next_after: Option<String>,
 }
+/// A demand poll. `retries`: the executor runs retries, so a status may say
+/// `retry_offered` and carry `retry` (ADR-193 amendment).
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedDemandPollInput {
+    pub after: Option<String>,
+    #[serde(default)]
+    pub retries: bool,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SharedDemandRecoverInput {
     pub demand_digest: String,
+    /// The executor runs retries; only then may a status say so.
+    #[serde(default)]
+    pub retries: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -118,6 +180,8 @@ pub struct SharedDemandBlockInput {
     pub expected_control_revision: i64,
     pub reason: String,
     pub budget: Option<SharedBudgetObservation>,
+    #[serde(default)]
+    pub retries: bool,
 }
 /// Role/configuration observations only, never native liveness or free capacity.
 #[derive(Clone, Debug, Serialize, Deserialize)]
