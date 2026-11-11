@@ -92,13 +92,16 @@ async fn save_pin(
     }
     Ok(())
 }
-async fn terminal(db: &mut AsyncPgConnection, d: &Demand, reason: &str) -> Result<()> {
+pub(super) async fn terminal(db: &mut AsyncPgConnection, d: &Demand, reason: &str) -> Result<()> {
     let payload = wire(&json!({"demandDigest":d.digest,"reason":reason}))?;
     sql_query("INSERT INTO hagency_agent_v1.management_shared_budget_demand_terminals VALUES($1,$2,$3,$4) ON CONFLICT(demand_id) DO NOTHING")
         .bind::<Text,_>(&d.id).bind::<Text,_>(reason).bind::<Text,_>(&payload).bind::<Text,_>(hash(&payload)).execute(db).await?;
     Ok(())
 }
-async fn status(db: &mut AsyncPgConnection, d: &Demand) -> Result<SharedBudgetDemandStatus> {
+pub(super) async fn status(
+    db: &mut AsyncPgConnection,
+    d: &Demand,
+) -> Result<SharedBudgetDemandStatus> {
     let q = queued(db, &d.intake_id).await?;
     let pin = latest_pin(db, &d.id).await?;
     let s = started(db, &d.id).await?;
@@ -133,7 +136,11 @@ async fn status(db: &mut AsyncPgConnection, d: &Demand) -> Result<SharedBudgetDe
         binding: b,
     })
 }
-async fn oldest(db: &mut AsyncPgConnection, id: &str, revision: i64) -> Result<Option<Queued>> {
+pub(super) async fn oldest(
+    db: &mut AsyncPgConnection,
+    id: &str,
+    revision: i64,
+) -> Result<Option<Queued>> {
     let start = super::period_start(db, id).await?;
     Ok(sql_query("SELECT q.* FROM hagency_agent_v1.management_shared_intake q LEFT JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=q.id WHERE q.assignment_id=$1 AND q.control_revision=$2 AND q.received_at_ms>=$3 AND (q.state='pending' OR q.state='blocked') AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=d.id) ORDER BY q.received_at_ms,q.id LIMIT 1")
         .bind::<Text,_>(id).bind::<BigInt,_>(revision).bind::<BigInt,_>(start).get_result(db).await.optional()?)
@@ -177,6 +184,25 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: ExecutorPollInput,
     ) -> Result<SharedBudgetDemandPoll> {
+        self.poll_shared_budget_demand_inner(p, policy, input, false)
+            .await
+    }
+    pub async fn poll_shared_budget_demand_v4(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        input: ExecutorPollInput,
+    ) -> Result<SharedBudgetDemandPoll> {
+        self.poll_shared_budget_demand_inner(p, policy, input, true)
+            .await
+    }
+    async fn poll_shared_budget_demand_inner(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        input: ExecutorPollInput,
+        allow_claude: bool,
+    ) -> Result<SharedBudgetDemandPoll> {
         enabled_budget(policy)?;
         if let Some(a) = &input.after {
             key(a)?;
@@ -184,8 +210,8 @@ impl DomainStore {
         let mut g = self.db.lock().await?;
         (*g).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
             Self::authorize(db,p,0).await?;let(device,generation)=device(p)?;let now=clock(db).await?;
-            let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND c.mode='running' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_budget_commands bc JOIN hagency_agent_v1.management_agent_budget_results br ON br.command_id=bc.id WHERE bc.request_id=a.request_id AND br.state='applied') AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.control_revision=c.revision AND q.state IN('pending','blocked')) ORDER BY (a.id<=$4),a.id LIMIT 16")
-                .bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(input.after.as_deref().unwrap_or("")).load::<Id>(db).await?;
+            let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id) AND c.mode='running' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes root WHERE root.assignment_id=a.id AND NOT root.issuance_void AND (root.payload::jsonb->>'version'='1' OR ($5 AND root.payload::jsonb->>'version'='4'))) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_budget_commands bc JOIN hagency_agent_v1.management_agent_budget_results br ON br.command_id=bc.id WHERE bc.request_id=a.request_id AND br.state='applied') AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.control_revision=c.revision AND q.state IN('pending','blocked')) ORDER BY (a.id<=$4),a.id LIMIT 16")
+                .bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<Bool,_>(allow_claude).load::<Id>(db).await?;
             let mut after=None;
             for id in ids {after=Some(id.id.clone());let revision=intake::running_revision(db,&id.id).await?;
                 // Bounded expired-head draining; the next page resumes without

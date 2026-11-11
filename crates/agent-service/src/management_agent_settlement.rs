@@ -284,6 +284,13 @@ async fn deliver(
     owner(w, p)?;
     let c = checked(w, server)?;
     let recorded = saved(db, &w.id).await?;
+    if recorded.is_none() {
+        crate::domain::management::ledgers::refuse_replaced(
+            db,
+            crate::domain::management::ledgers::Subject::Request(&w.request_id),
+        )
+        .await?;
+    }
     let now = clock(db).await?;
     let until = sql_query(
         "SELECT least(valid_until_ms,$2+30000) AS now FROM hagency_agent_v1.sessions WHERE id=$1",
@@ -397,9 +404,9 @@ impl DomainStore {
         (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;
             // Only agents already explicitly enrolled by a new fence/request are
             // candidates. New source evidence drives one new observation, not time.
-            let candidate=sql_query("SELECT c.request_id AS id FROM hagency_agent_v1.management_agent_settlement_commands c JOIN hagency_agent_v1.management_agent_settlement_results r ON r.command_id=c.id JOIN hagency_agent_v1.management_agent_settlement_evidence e ON e.request_id=c.request_id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND c.executor_generation<=$3 AND e.ledger_revision>r.ledger_revision AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_settlement_commands nc JOIN hagency_agent_v1.management_agent_settlement_results nr ON nr.command_id=nc.id WHERE nc.request_id=c.request_id AND nr.ledger_revision>r.ledger_revision) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_settlement_commands nc WHERE nc.request_id=c.request_id AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_settlement_results nr WHERE nr.command_id=nc.id)) ORDER BY c.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(dev).bind::<BigInt,_>(p.device_generation.unwrap()).get_result::<Key>(db).await.optional()?;
+            let candidate=sql_query("SELECT c.request_id AS id FROM hagency_agent_v1.management_agent_settlement_commands c JOIN hagency_agent_v1.management_agent_settlement_results r ON r.command_id=c.id JOIN hagency_agent_v1.management_agent_settlement_evidence e ON e.request_id=c.request_id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND c.executor_generation<=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_request(c.request_id) AND e.ledger_revision>r.ledger_revision AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_settlement_commands nc JOIN hagency_agent_v1.management_agent_settlement_results nr ON nr.command_id=nc.id WHERE nc.request_id=c.request_id AND nr.ledger_revision>r.ledger_revision) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_settlement_commands nc WHERE nc.request_id=c.request_id AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_settlement_results nr WHERE nr.command_id=nc.id)) ORDER BY c.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(dev).bind::<BigInt,_>(p.device_generation.unwrap()).get_result::<Key>(db).await.optional()?;
             if let Some(c)=candidate{enqueue(db,&c.id,&self.server).await?;}
-            let w=sql_query("SELECT c.* FROM hagency_agent_v1.management_agent_settlement_commands c WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND c.executor_generation<=$3 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_settlement_results r WHERE r.command_id=c.id) ORDER BY (c.id<=$4),c.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(dev).bind::<BigInt,_>(p.device_generation.unwrap()).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<CommandRow>(db).await.optional()?;
+            let w=sql_query("SELECT c.* FROM hagency_agent_v1.management_agent_settlement_commands c WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND c.executor_generation<=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_request(c.request_id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_settlement_results r WHERE r.command_id=c.id) ORDER BY (c.id<=$4),c.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(dev).bind::<BigInt,_>(p.device_generation.unwrap()).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<CommandRow>(db).await.optional()?;
             match w{Some(w)=>Ok(Some(deliver(db,p,&w,&self.server,false).await?)),None=>Ok(None)}
         }).await
     }
@@ -447,10 +454,10 @@ impl DomainStore {
             let (f,fc,fr)=fence(db,&w.request_id,&self.server).await?.ok_or(Error::Conflict("agent_fence_receipt_required"))?;
             let r=&input.receipt;
             if allocation_digest(&fc)?!=allocation_digest(&c.fence_command)? || f.receipt_digest!=c.fence_receipt_digest || r.fence_revision!=fr.fence_revision || r.agent_reservation_id!=fr.agent_reservation_id || r.ledger_revision<=fr.ledger_revision || r.known_consumed_tokens<fr.known_consumed_tokens{return Err(Error::Conflict("agent_settlement_fence_changed"))}
-            executor::validate_external_ledger_receipt(db,&w.owner_user_id,&w.executor_device_id,r.ledger_revision,r.ledger_revision).await?;
-            let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3 UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND ((receipt::jsonb->>'ledgerRevision')::bigint=$3 OR (receipt::jsonb->>'fenceRevision')::bigint=$3) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&w.owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(r.ledger_revision).get_result::<Flag>(db).await?.matched;
+            let epoch=executor::validate_external_ledger_receipt(db,crate::domain::management::ledgers::Subject::Request(&w.request_id),&w.owner_user_id,&w.executor_device_id,r.ledger_revision,r.ledger_revision).await?;
+            let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3 UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$4 AND ((receipt::jsonb->>'ledgerRevision')::bigint=$3 OR (receipt::jsonb->>'fenceRevision')::bigint=$3) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&w.owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(r.ledger_revision).bind::<BigInt,_>(epoch).get_result::<Flag>(db).await?.matched;
             if collision{return Err(Error::Conflict("agent_settlement_ledger_changed"))}
-            sql_query("INSERT INTO hagency_agent_v1.management_agent_settlement_results VALUES($1,$2,$3,$4)").bind::<Text,_>(id).bind::<Text,_>(wire(r)?).bind::<Text,_>(allocation_digest(r)?).bind::<BigInt,_>(r.ledger_revision).execute(db).await?;
+            sql_query("INSERT INTO hagency_agent_v1.management_agent_settlement_results(command_id,payload,digest,ledger_revision,ledger_epoch) VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(id).bind::<Text,_>(wire(r)?).bind::<Text,_>(allocation_digest(r)?).bind::<BigInt,_>(r.ledger_revision).bind::<BigInt,_>(epoch).execute(db).await?;
             Self::audit(db,p,"agent.settlement.result",id,now).await?;Ok(input.receipt)
         }).await
     }

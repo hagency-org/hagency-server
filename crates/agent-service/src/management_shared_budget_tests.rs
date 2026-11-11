@@ -163,6 +163,7 @@ fn evidence(
             process_digest: Some("d".repeat(64)),
             state: state.into(),
             policy_digest: (state == "qualified").then(|| "e".repeat(64)),
+            reason: None,
         },
     }
 }
@@ -280,7 +281,7 @@ async fn stopped_missing_usage_v3_remains_discoverable_without_execution_authori
         .await
         .unwrap();
     f.domain
-        .start_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .start_current_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await
         .unwrap();
     f.domain
@@ -364,14 +365,14 @@ async fn budget_execution_v3_original_assignment_applied_head_replay_and_old_rou
     );
     assert!(
         f.domain
-            .start_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .start_current_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
             .await
             .unwrap()
             .newly_started
     );
     assert!(
         !f.domain
-            .start_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .start_current_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
             .await
             .unwrap()
             .newly_started
@@ -387,10 +388,25 @@ async fn budget_execution_v3_head_change_produces_permanent_exact_no_start_fence
         .acknowledge_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await
         .unwrap();
+    let context = f
+        .domain
+        .freeze_shared_budget_context(
+            &f.owner.p,
+            &f.policy,
+            &w.id,
+            crate::management_shared_context_types::SharedContextInput {
+                authority: a.authority.clone(),
+                work_digest: allocation_digest(&w).unwrap(),
+                version: 3,
+            },
+            &m.gateway,
+        )
+        .await
+        .unwrap();
     let proof = SharedBudgetWorkRefusalInput {
         runtime_command_digest: d.command_digest.clone(),
         work_digest: allocation_digest(&w).unwrap(),
-        input_digest: w.body_digest.clone(),
+        input_digest: context.input_digest,
     };
     assert!(
         f.domain
@@ -401,7 +417,7 @@ async fn budget_execution_v3_head_change_produces_permanent_exact_no_start_fence
     let newer = apply_delta(&f, &r, &admin, 10, 250).await;
     assert!(
         f.domain
-            .start_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .start_current_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
             .await
             .is_err()
     );
@@ -466,7 +482,7 @@ async fn budget_execution_v3_later_head_preserves_issued_usage_reply_and_stop() 
         .await
         .unwrap();
     f.domain
-        .start_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .start_current_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await
         .unwrap();
     apply_delta(&f, &r, &admin, 10, 250).await;
@@ -624,7 +640,7 @@ async fn budget_execution_v3_context_exact_input_old_routes_and_http_recovery() 
             SharedContextInput {
                 authority: a.authority.clone(),
                 work_digest: allocation_digest(&w).unwrap(),
-                budget: None,
+                version: 3,
             },
             &m.gateway,
         )
@@ -789,7 +805,11 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         .unwrap();
     let old = f
         .domain
-        .poll_shared_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .poll_shared_demand(
+            &f.owner.p,
+            &f.policy,
+            crate::management_shared_demand_types::SharedDemandPollInput::default(),
+        )
         .await
         .unwrap()
         .demand
@@ -802,6 +822,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         expected_control_revision: old.offer.control_revision,
         reason: "budget_blocked".into(),
         budget: Some(old_start.budget_observation.clone()),
+        retries: false,
     };
     let original_block_payload = serde_json::to_string(&original_block_input).unwrap();
     let original_block_digest = crate::hash(&original_block_payload);
@@ -825,6 +846,9 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         .next()
         .unwrap();
     db.batch_execute(&format!("CREATE OR REPLACE FUNCTION hagency_agent_v1.validate_shared_budget_demand(){legacy_validator}")).await.unwrap();
+    db.batch_execute(include_str!("management_shared_claude_down.sql"))
+        .await
+        .unwrap();
     db.batch_execute(include_str!("management_shared_context_v2_down.sql"))
         .await
         .unwrap();
@@ -868,7 +892,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
             .await
             .unwrap()
             .version,
-        32
+        35
     );
     let pin = apply_delta(&f, &r, &admin, 25, 230).await;
     let offered = f
@@ -918,6 +942,26 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         )
         .await
         .unwrap();
+    // The original v3 execute ticket can read the exact next session route;
+    // this neither qualifies its process nor promotes the retained work.
+    let route_input = crate::management_shared_session_types::SharedSessionRouteInput {
+        command_digest: d.command_digest.clone(),
+        token: d.token.clone(),
+    };
+    let route = f
+        .domain
+        .shared_native_session_route(
+            &f.owner.p,
+            &f.policy,
+            &d.command.command_id,
+            route_input.clone(),
+            &m.gateway,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.event_id, offered.offer.event_id);
+    assert_eq!(route.runtime_command_digest, d.command_digest);
     let disabled = f.policy.clone().with_shared_budget_execution(false);
     #[derive(QueryableByName)]
     struct RetainedOriginalBlock {
@@ -944,6 +988,33 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         .unwrap();
     assert_eq!(replay.command_digest, d.command_digest);
     assert!(!replay.execution_allowed);
+    assert!(
+        f.domain
+            .shared_native_session_route(
+                &f.owner.p,
+                &f.policy,
+                &d.command.command_id,
+                crate::management_shared_session_types::SharedSessionRouteInput {
+                    command_digest: replay.command_digest.clone(),
+                    token: replay.token.clone(),
+                },
+                &m.gateway
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        f.domain
+            .shared_native_session_route(
+                &f.owner.p,
+                &disabled,
+                &d.command.command_id,
+                route_input,
+                &m.gateway
+            )
+            .await
+            .is_err()
+    );
     let activity = f
         .domain
         .record_shared_budget_attempt_process(
@@ -990,6 +1061,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
             &old.offer.demand_id,
             SharedDemandRecoverInput {
                 demand_digest: old.demand_digest,
+                retries: true,
             },
         )
         .await
@@ -1148,6 +1220,7 @@ async fn budget_execution_v3_stop_run_aba_retains_original_event_and_rejects_old
             &old.offer.demand_id,
             SharedDemandRecoverInput {
                 demand_digest: old.demand_digest.clone(),
+                retries: true,
             },
         )
         .await
@@ -1212,6 +1285,7 @@ async fn budget_execution_v3_unrelated_head_advance_retains_terminal_original_of
             &old.offer.demand_id,
             SharedDemandRecoverInput {
                 demand_digest: old.demand_digest.clone(),
+                retries: true,
             },
         )
         .await
@@ -1242,6 +1316,9 @@ async fn budget_execution_v3_schema19_atomic_upgrade_reopen_preserves_original_r
             .unwrap()
     );
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute(include_str!("management_shared_claude_down.sql"))
+        .await
+        .unwrap();
     db.batch_execute(include_str!("management_shared_context_v2_down.sql"))
         .await
         .unwrap();
@@ -1445,7 +1522,7 @@ async fn budget_execution_v3_long_reply_http_recovery_and_matrix_delivery() {
         let(d,a)=started(&f,&m,i).await;
         let w=queued(&f,&r,&m,&a,&format!("long_answer_{index}")).await;
         f.domain.acknowledge_shared_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
-        f.domain.start_shared_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
+        f.domain.start_current_budget_work(&f.owner.p,&f.policy,input(&a,&w),&m.gateway).await.unwrap();
         let mut upload=usage(&f,&d,&w,260,37,"completed").await;
         upload.receipt.body=Some(body.clone());upload.receipt.body_digest=Some(crate::hash(&body));
         let svc=service(&f,true);
@@ -1500,11 +1577,9 @@ async fn encrypted_shared_budget_work_keeps_plaintext_out_of_results_and_sends()
     e.body.clear();
     e.mentioned_mxids.clear();
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
-    let now = sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now")
-        .get_result::<Clock>(&mut db)
-        .await
-        .unwrap()
-        .now;
+    // Ingress uses the application clock. PostgreSQL's bigint cast rounds and
+    // can put this event one millisecond in the future relative to that clock.
+    let now = crate::api::now_ms();
     f.domain
         .route_shared_event(&f.policy, &e, now, &m.gateway)
         .await
@@ -1536,11 +1611,11 @@ async fn encrypted_shared_budget_work_keeps_plaintext_out_of_results_and_sends()
         .await
         .unwrap();
     f.domain
-        .start_shared_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .start_current_budget_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await
         .unwrap();
     f.domain
-        .authorize_shared_encrypted_reply(&f.owner.p, &f.policy, &w.id, &m.gateway)
+        .authorize_shared_room_send(&f.owner.p, &f.policy, &w.id, &m.gateway)
         .await
         .unwrap();
     let puppet = read_matrix(&f, &r).await.puppet_mxid;
@@ -1664,4 +1739,111 @@ async fn encrypted_shared_budget_work_keeps_plaintext_out_of_results_and_sends()
         calls,
         "server must never publish encrypted answers as plaintext"
     );
+}
+
+async fn wait_for_db_time(f: &Fixture, at: i64) {
+    loop {
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        let now = sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now")
+            .get_result::<Clock>(&mut db)
+            .await
+            .unwrap()
+            .now;
+        if now > at {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis((at - now + 20) as u64)).await;
+    }
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn budget_execution_v3_uncertain_claim_is_time_bounded_and_chain_continues() {
+    let (f, _r, _admin, m, mut i) = Box::pin(fixture()).await;
+    let (d, a) = started(&f, &m, i.clone()).await;
+    // Claimed and qualified, then silent. Lapsed leases are awaited for real.
+    wait_for_db_time(&f, d.command.expires_at_ms.max(a.expires_at_ms)).await;
+    let deadline = d.command.expires_at_ms + 30_000 + 180_000;
+    let mut timeout = evidence(&d, "stopped", 245);
+    timeout.receipt.reason = Some("uncertain_timeout".into());
+    f.domain
+        .set_management_test_clock(deadline - 1000)
+        .await
+        .unwrap();
+    let fenced = f
+        .domain
+        .poll_shared_budget_attempt(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fenced.command.command_id, d.command.command_id);
+    assert!(fenced.cleanup_allowed && !fenced.execution_allowed);
+    timeout.token = fenced.token.clone();
+    assert!(
+        f.domain
+            .record_shared_budget_attempt_process(
+                &f.owner.p,
+                &f.policy,
+                &d.command.command_id,
+                timeout.clone()
+            )
+            .await
+            .is_err(),
+        "within the grace period"
+    );
+    f.domain
+        .set_management_test_clock(deadline + 1000)
+        .await
+        .unwrap();
+    let swept = f
+        .domain
+        .poll_shared_budget_attempt(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(swept.command.command_id, d.command.command_id);
+    assert!(swept.cleanup_allowed && !swept.execution_allowed);
+    timeout.token = swept.token.clone();
+    let ack = f
+        .domain
+        .record_shared_budget_attempt_process(&f.owner.p, &f.policy, &d.command.command_id, timeout)
+        .await
+        .unwrap();
+    assert_eq!(ack.state, "stopped");
+    i.start_intent_id = "after_uncertain_v3".into();
+    i.predecessor.command_id = d.command.command_id.clone();
+    i.predecessor.command_digest = d.command_digest.clone();
+    i.predecessor.process_attempt = d.command.process_attempt;
+    i.predecessor.stopped_receipt_digest = ack.receipt_digest;
+    i.predecessor.process_digest = "d".repeat(64);
+    i.budget_observation.observed_ledger_revision = 246;
+    let next = f
+        .domain
+        .start_shared_budget_attempt(&f.owner.p, &f.policy, i, &m.gateway)
+        .await
+        .unwrap();
+    assert!(next.execution_allowed);
+    assert_eq!(next.command.process_attempt, d.command.process_attempt + 1);
+    f.domain.reset_management_test_clock().await.unwrap();
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn budget_execution_v3_process_revision_is_free_again_in_a_newly_declared_ledger() {
+    let (f, r, admin, m, i) = Box::pin(fixture()).await;
+    let assignment = i.assignment_id.clone();
+    replace_ledger(&f).await;
+    started(&f, &m, i).await;
+    revoke(&f, &r, &admin).await;
+    // The budget successor's evidence 240 is the new ledger's and taken. The
+    // applied increase was mutation 230 of the ledger that was replaced.
+    let fence = poll(&f).await;
+    assert_eq!(
+        submit(&f, &fence, fence_at(&fence, 240))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "agent_executor_ledger_revision_changed"
+    );
+    submit(&f, &fence, fence_at(&fence, 230)).await.unwrap();
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    assert!(sql_query("SELECT array_agg(o.ledger_epoch ORDER BY o.ledger_revision)=ARRAY[0,0,1]::bigint[] AS matched FROM hagency_agent_v1.management_shared_process_receipts o JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=o.runtime_id WHERE r.assignment_id=$1").bind::<Text, _>(&assignment).get_result::<Check>(&mut db).await.unwrap().matched);
 }

@@ -14,6 +14,8 @@ mod activity_tests;
 mod demand_tests;
 #[path = "management_shared_intake_tests.rs"]
 mod intake_tests;
+#[path = "management_shared_protocol_tests.rs"]
+mod protocol_tests;
 #[path = "management_shared_ticket_tests.rs"]
 mod ticket_tests;
 
@@ -57,6 +59,7 @@ async fn prepared_pool_limits(
         .with_agent_executor(true)
         .with_agent_matrix_provisioning(true)
         .with_shared_execution(true)
+        .with_shared_thread_context(true)
         .with_shared_successors(true)
         .with_shared_durable_intake(durable)
         .with_shared_demands(durable);
@@ -191,6 +194,55 @@ async fn prepared_pool_limits(
     (f, request, assignment, matrix)
 }
 
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_claude_opt_in_replays_original_root_and_prevents_unsafe_downgrade() {
+    // Retained v4 authority intentionally prevents downgrades. Keep this case
+    // isolated from the migration tests that exercise the shared v1 database.
+    let (f, request, _assignment, _matrix) = Box::pin(prepared_pool(false)).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("UPDATE hagency_agent_v1.management_contributions SET runtime='claude' WHERE id=(SELECT pool_contribution_id FROM hagency_agent_v1.management_agent_requests WHERE id=$1)")
+        .bind::<Text, _>(&request.id).execute(&mut db).await.unwrap();
+    assert!(
+        f.domain
+            .poll_shared_runtime(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let claude = f
+        .domain
+        .poll_shared_runtime_v4(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await
+        .unwrap()
+        .expect("v4 executor can claim Claude");
+    assert_eq!(claude.command.version, 4);
+    assert_eq!(claude.command.runtime().unwrap(), "claude");
+    assert!(
+        f.domain
+            .poll_shared_runtime(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .await
+            .unwrap()
+            .is_none(),
+        "legacy executor must not see or duplicate a Claude root"
+    );
+    let replay = f
+        .domain
+        .poll_shared_runtime_v4(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay.command_digest, claude.command_digest);
+    assert_eq!(replay.command.command_id, claude.command.command_id);
+    assert!(
+        db.batch_execute(include_str!("management_shared_claude_down.sql"))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("shared_claude_downgrade_has_runtime")
+    );
+}
+
 /// A carried pool Agent's activity lease follows its pool's capacity chain:
 /// with chain lifetimes on it outlasts the month its reserve command names.
 #[tokio::test]
@@ -203,6 +255,7 @@ async fn carried_pool_agent_activity_lease_follows_the_capacity_chain() {
         .policy
         .with_agent_matrix_provisioning(true)
         .with_shared_execution(true)
+        .with_shared_thread_context(true)
         .with_shared_successors(true);
     let pool = admitted(&f).await;
     // The root's month ends in 20 s; its renewal follows without a gap.
@@ -368,7 +421,7 @@ async fn pool_agent_reaches_private_room_and_runtime_without_any_project() {
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input, &matrix.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input, &matrix.gateway)
             .await
             .unwrap()
             .newly_started
@@ -789,7 +842,7 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         .await
         .unwrap();
     f.domain
-        .start_shared_work(&f.owner.p, &f.policy, input, &matrix.gateway)
+        .start_current_work(&f.owner.p, &f.policy, input, &matrix.gateway)
         .await
         .unwrap();
     let value = f
@@ -1095,7 +1148,7 @@ async fn pool_private_chat_without_mentions_retains_promotes_and_resumes_only_ap
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input, &matrix.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input, &matrix.gateway)
             .await
             .unwrap()
             .newly_started
@@ -1136,6 +1189,7 @@ async fn pool_private_chat_without_mentions_retains_promotes_and_resumes_only_ap
                 demand_digest: demand.demand_digest,
                 expected_control_revision: demand.offer.control_revision,
                 start: attempts::start(&runtime, &stopped),
+                retry: None,
             },
             &matrix.gateway,
         )
@@ -1263,6 +1317,9 @@ async fn pool_schema_upgrade_preserves_existing_capacity_and_rolls_back_atomical
         .publish_management_grant(&f.owner.p, &f.policy, &contribution.contribution.id, input)
         .await
         .unwrap();
+    db.batch_execute(include_str!("management_shared_claude_down.sql"))
+        .await
+        .unwrap();
     db.batch_execute(include_str!("management_shared_context_v2_down.sql"))
         .await
         .unwrap();
@@ -1318,6 +1375,8 @@ async fn pool_schema_upgrade_preserves_existing_capacity_and_rolls_back_atomical
 }
 
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
+    // ADR-193 amendment retry tables depend on the tables below.
+    db.batch_execute("DROP TABLE IF EXISTS hagency_agent_v1.management_shared_demand_retry_starts,hagency_agent_v1.management_shared_demand_retries;DROP FUNCTION IF EXISTS hagency_agent_v1.validate_shared_demand_retry()").await.unwrap();
     work::remove_migration(db).await;
 
     db.batch_execute("DROP TRIGGER fence_shared_runtime ON hagency_agent_v1.management_shared_assignments;DROP TRIGGER exclude_shared_runtime_v1 ON hagency_agent_v1.management_agent_runtime_commands;DROP TABLE hagency_agent_v1.management_shared_activity_renewals,hagency_agent_v1.management_shared_process_receipts,hagency_agent_v1.management_shared_runtimes;DROP FUNCTION hagency_agent_v1.fence_shared_runtime(),hagency_agent_v1.exclude_shared_runtime_v1(),hagency_agent_v1.retain_shared_runtime(),hagency_agent_v1.validate_shared_runtime();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=11;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=11)").await.unwrap();
@@ -1330,7 +1389,10 @@ async fn prepared() -> (
     MatrixFixture,
 ) {
     let (mut f, r, admin, a, m) = Box::pin(ready()).await;
-    f.policy = f.policy.with_shared_execution(true);
+    f.policy = f
+        .policy
+        .with_shared_execution(true)
+        .with_shared_thread_context(true);
     (f, r, admin, a, m)
 }
 async fn shared_poll(f: &Fixture) -> SharedRuntimeDelivery {
@@ -1403,6 +1465,7 @@ async fn shared_runtime_requires_closed_policy_current_codex_and_real_matrix() {
     f.policy = f
         .policy
         .with_shared_execution(true)
+        .with_shared_thread_context(true)
         .with_agent_runtime_provisioning(true);
     assert!(
         f.domain
@@ -1873,7 +1936,7 @@ async fn shared_runtime_v11_migration_is_atomic_preserves_original_v1() {
             .is_none()
     );
     assert!(
-        sql_query("SELECT version=32 AS matched FROM hagency_agent_v1.management_deployment")
+        sql_query("SELECT version=35 AS matched FROM hagency_agent_v1.management_deployment")
             .get_result::<Check>(&mut db)
             .await
             .unwrap()
@@ -2795,4 +2858,48 @@ async fn initial_command_no_issue_proof(cap: Option<i64>) {
         history(&f, &first).await.recorded.is_some(),
         "old command remains recoverable after replacement"
     );
+}
+
+#[test]
+fn shared_claude_root_cannot_relabel_legacy_codex_or_broaden_owner_policy() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/management-shared-execution-v1.json"
+    ))
+    .unwrap();
+    let original: SharedRuntimeCommand =
+        serde_json::from_value(fixture["command"].clone()).unwrap();
+    let mut claude = original.clone();
+    claude.version = 4;
+    claude.capability = SHARED_CLAUDE_CAPABILITY.into();
+    claude.policy = SHARED_CLAUDE_POLICY.into();
+    claude.validate("example.test").unwrap();
+    assert_eq!(claude.runtime().unwrap(), "claude");
+    assert_eq!(
+        claude.execution_policy(true, Some("standard")).unwrap(),
+        "claude_tools_standard_web_v1"
+    );
+    assert!(claude.execution_policy(true, Some("arbitrary")).is_err());
+    assert_ne!(
+        allocation_digest(&claude).unwrap(),
+        fixture["commandDigest"]
+    );
+    assert_eq!(
+        allocation_digest(&original).unwrap(),
+        fixture["commandDigest"]
+    );
+    assert_eq!(
+        allocation_digest(&claude.reserve_command).unwrap(),
+        original.reserve_command_digest
+    );
+    for field in ["version", "capability", "policy"] {
+        let mut mixed = serde_json::to_value(&claude).unwrap();
+        mixed[field] = fixture["command"][field].clone();
+        assert!(
+            serde_json::from_value::<SharedRuntimeCommand>(mixed)
+                .unwrap()
+                .validate("example.test")
+                .is_err(),
+            "{field}"
+        );
+    }
 }

@@ -27,6 +27,8 @@ mod execution_configuration;
 mod execution_devices;
 #[path = "owner_direct.rs"]
 mod owner_direct;
+#[path = "management_shared_protocol.rs"]
+pub(crate) mod shared_protocol;
 #[path = "shared_rooms.rs"]
 mod shared_rooms;
 pub(crate) use execution_devices::require_assigned;
@@ -581,11 +583,19 @@ impl DomainStore {
             let management=sql_query("SELECT version=31 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
             if management.matched {db.batch_execute(include_str!("management_shared_context_v2_schema.sql")).await?;}
             let management=sql_query("SELECT version=32 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_shared_claude_schema.sql")).await?;}
+            let management=sql_query("SELECT version=33 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_shared_protocol_schema.sql")).await?;}
+            let management=sql_query("SELECT version=34 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_executor_ledgers_schema.sql")).await?;}
+            let management=sql_query("SELECT version=35 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
             if !management.matched { return Err(Error::Conflict("management_schema_incompatible")); }
             db.batch_execute(include_str!("management_pool_limits_validation.sql")).await?;
             db.batch_execute(include_str!("management_agent_periods_recovery.sql")).await?;
             db.batch_execute(include_str!("management_shared_e2ee_schema.sql")).await?;
+            db.batch_execute(include_str!("management_shared_native_context_schema.sql")).await?;
             db.batch_execute(include_str!("shared_rooms_schema.sql")).await?;
+            db.batch_execute(include_str!("management_shared_demand_retry_schema.sql")).await?;
             db.batch_execute("CREATE INDEX IF NOT EXISTS management_command_recovery ON hagency_agent_v1.management_commands(actor_user_id,device_id,command_id)").await?;
             db.batch_execute(include_str!("visibility_schema.sql")).await?;
             db.batch_execute(include_str!("agent_crypto_schema.sql")).await?;

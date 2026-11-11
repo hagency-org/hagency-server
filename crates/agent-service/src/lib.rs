@@ -38,6 +38,7 @@ pub mod management_shared_context_types;
 pub mod management_shared_demand_types;
 pub mod management_shared_execution_types;
 pub mod management_shared_intake_types;
+pub mod management_shared_session_types;
 pub mod management_shared_work_types;
 #[cfg(test)]
 mod management_tests;

@@ -78,6 +78,43 @@ Proxy `https://palpo.instance` to `127.0.0.1:8088`, preserving paths and the pub
 Host header. Open `https://palpo.instance/login` and sign in through Pasion as `admin`.
 For later starts, use `just docker-up`.
 
+The schema 34 native CLI cutover requires matching current Desktop and owner-daemon
+builds. Actual worker requests declare `native-context-v3;claude-v4`; the declaration
+expires after five minutes. An outdated or offline worker leaves incoming messages
+pending with a visible update/reconnect reason. Reconnecting resumes the original
+message, and declaration expiry never blocks settlement of work already started.
+Treat it as a forward-only deployment: the SQL files named `*_down.sql`
+are test fixtures, not a supported production rollback. In particular, lowering
+the version does not restore the previous context-validation trigger, and a
+Claude runtime cannot be represented by the previous schema. Returning to an
+older binary requires restoring a pre-cutover Hagency database or starting with
+a fresh Hagency database; replacing the executable alone is not a rollback.
+Matrix and Pasion databases are separate from that Hagency reset.
+
+Schema 35 lets an owner device replace its local ledger database. The device
+declares the new database's id with
+`POST /hagency/api/v1/management/executor-ledger/declare`; from then on the server
+checks its receipt numbers for reuse only against receipts numbered by that
+database. The migration is additive: existing receipts stay in epoch 0, and a
+device that never declares behaves as before, so the server can be deployed
+before any client changes. It is forward-only like schema 34: an older binary
+refuses a schema 35 database with `management_schema_incompatible`, and
+`management_executor_ledgers_down.sql` is a test fixture that refuses to run
+once any ledger has been declared.
+
+A declaration that replaces a declared database, or a first declaration sent
+with `"fresh": true`, ends what the earlier database held for that device, in
+the same transaction: its pools and grants are revoked, its pooled Agents are
+fenced, its project allocations and parent settlements are closed, and its
+unanswered commands are never delivered or answered again
+(`executor_ledger_replaced`). Recorded receipts and history are kept as they
+are, and usage the device never reported is not added. Other devices, other
+owners and the owner's local Agents are not touched. A first declaration
+without `fresh` only names the database the device already had and ends
+nothing. For what such a device keeps, ordering rules still compare bare
+numbers across ledgers: a grant, Agent or runtime created before the
+declaration accepts later receipts only above the numbers already reported.
+
 Registration is disabled by default. Initializers refuse to overwrite existing
 configuration. For existing data, see [migration instructions](docs/guide.md#upgrading-the-former-combined-database).
 

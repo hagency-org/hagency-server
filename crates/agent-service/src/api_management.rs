@@ -44,6 +44,23 @@ pub(crate) async fn call(
         .authenticate(credential, crate::api::now_ms(), true)
         .await?;
     let parts = suffix.split('/').collect::<Vec<_>>();
+    if req.method() == Method::POST
+        && let Some(required) = crate::domain::shared_protocol::worker_route(&parts)
+    {
+        let mut values = req
+            .headers()
+            .get_all(crate::domain::shared_protocol::HEADER)
+            .iter();
+        let current = values.next().is_some_and(|value| {
+            value.as_bytes() == crate::domain::shared_protocol::CURRENT.as_bytes()
+        }) && values.next().is_none();
+        if current || required {
+            domain.observe_shared_daemon_protocol(&p, current).await?;
+        }
+        if required && !current {
+            return Err(Error::Conflict("owner_daemon_update_required"));
+        }
+    }
     // Separate protocol groups keep the debug poll stack bounded as routes grow.
     let mut result = if let Some(value) =
         Box::pin(session::call(req, domain, policy, &p, gateway, &parts)).await?

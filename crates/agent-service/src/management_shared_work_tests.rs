@@ -60,7 +60,7 @@ pub(super) async fn started(
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(a, &w), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(a, &w), &m.gateway)
             .await
             .unwrap()
             .newly_started
@@ -318,7 +318,7 @@ async fn shared_work_exact_intake_ack_start_result_history_and_matrix_reply() {
     let w = queued(&f, &r, &m, &a, "first_work").await;
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
             .await
             .is_err()
     );
@@ -328,13 +328,13 @@ async fn shared_work_exact_intake_ack_start_result_history_and_matrix_reply() {
         .unwrap();
     let one = f
         .domain
-        .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await
         .unwrap();
     assert!(one.newly_started);
     let again = f
         .domain
-        .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await
         .unwrap();
     assert!(!again.newly_started);
@@ -447,7 +447,7 @@ async fn shared_work_unknown_matrix_reply_retries_exact_transaction_without_seco
     }
     assert!(
         !f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
             .await
             .unwrap()
             .newly_started
@@ -508,7 +508,7 @@ async fn shared_work_late_result_after_revoke_retains_usage_without_reply_or_ree
     assert!(page.items[0].usage.as_ref().unwrap().complete);
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
             .await
             .is_err()
     );
@@ -621,7 +621,7 @@ async fn shared_work_incomplete_usage_blocks_next_start_and_changed_receipt_roll
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(&a, &next), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &next), &m.gateway)
             .await
             .is_err()
     );
@@ -645,7 +645,7 @@ async fn shared_work_incomplete_usage_blocks_next_start_and_changed_receipt_roll
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(&a, &next), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &next), &m.gateway)
             .await
             .unwrap()
             .newly_started
@@ -727,24 +727,31 @@ async fn shared_work_actual_appservice_and_closed_executor_http_are_idempotent()
         StatusCode::OK,
     )
     .await;
-    let first = post(
+    post(
         &api,
         "shared-execution/work/start",
         &f.owner.token,
         serde_json::to_value(input(&a, &w)).unwrap(),
-        StatusCode::OK,
+        StatusCode::CONFLICT,
     )
     .await;
-    assert_eq!(first["newlyStarted"], true);
-    let replay = post(
+    let context = post(
         &api,
-        "shared-execution/work/start",
+        &format!("shared-execution/work/{}/context", w.id),
         &f.owner.token,
-        serde_json::to_value(input(&a, &w)).unwrap(),
+        json!({"authority":a.authority,"workDigest":allocation_digest(&w).unwrap(),"version":3}),
         StatusCode::OK,
     )
     .await;
-    assert_eq!(replay["newlyStarted"], false);
+    assert_eq!(context["context"]["version"], 3);
+    assert_eq!(context["context"]["history"], json!([]));
+    let start = json!({"authority":a.authority,"workDigest":allocation_digest(&w).unwrap(),
+        "contextDigest":context["contextDigest"],"inputDigest":context["inputDigest"]});
+    let route = format!("shared-execution/work/{}/context/start", w.id);
+    let first = post(&api, &route, &f.owner.token, start.clone(), StatusCode::OK).await;
+    assert_eq!(first["start"]["newlyStarted"], true);
+    let replay = post(&api, &route, &f.owner.token, start, StatusCode::OK).await;
+    assert_eq!(replay["start"]["newlyStarted"], false);
     let ticket_reply=post(&api,&format!("shared-execution/work/{}/recover",w.id),&f.owner.token,json!({"runtimeCommandDigest":d.command_digest,"workDigest":allocation_digest(&w).unwrap(),"observationId":null}),StatusCode::OK).await;
     let t: SharedWorkResultTicket = serde_json::from_value(ticket_reply["ticket"].clone()).unwrap();
     assert_eq!(t.state, "started");
@@ -1631,5 +1638,183 @@ async fn shared_work_exact_mention_is_filtered_before_candidate_page_limit() {
             .unwrap()
             .id,
         work.id
+    );
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_process_and_work_revisions_are_free_again_in_a_newly_declared_ledger() {
+    // The replaced ledger numbered its process evidence 200 and its work 201.
+    for free in [200, 201] {
+        let (f, r, admin, assignment, m) = Box::pin(prepared()).await;
+        let (d, a) = qualify(&f).await;
+        let old = started(&f, &r, &m, &a, "old_ledger_work").await;
+        let t = ticket(&f, &d, &old).await;
+        f.domain
+            .record_shared_work_result(
+                &f.owner.p,
+                &f.policy,
+                &old.id,
+                outcome(&d, &old, &t, 201, "completed"),
+            )
+            .await
+            .unwrap();
+        replace_ledger(&f).await;
+        let new = started(&f, &r, &m, &a, "new_ledger_work").await;
+        let t = ticket(&f, &d, &new).await;
+        f.domain
+            .record_shared_work_result(
+                &f.owner.p,
+                &f.policy,
+                &new.id,
+                outcome(&d, &new, &t, 202, "completed"),
+            )
+            .await
+            .unwrap();
+        attempts::stop(&f, &d, 203).await;
+        revoke(&f, &r, &admin).await;
+        let fence = poll(&f).await;
+        // The fence reports the usage of both work items.
+        let numbered = |revision: i64| {
+            let mut result = fence_at(&fence, revision);
+            let AgentExecutorReceipt::Fence(ref mut receipt) = result.receipt else {
+                panic!("fence")
+            };
+            receipt.known_consumed_tokens = 34;
+            result
+        };
+        for taken in [202, 203] {
+            assert_eq!(
+                submit(&f, &fence, numbered(taken))
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "agent_executor_ledger_revision_changed"
+            );
+        }
+        submit(&f, &fence, numbered(free)).await.unwrap();
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        for sql in [
+            "SELECT array_agg(o.ledger_epoch ORDER BY o.ledger_revision)=ARRAY[0,1]::bigint[] AS matched FROM hagency_agent_v1.management_shared_process_receipts o JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=o.runtime_id WHERE r.assignment_id=$1",
+            "SELECT array_agg(o.ledger_epoch ORDER BY o.ledger_revision)=ARRAY[0,1]::bigint[] AS matched FROM hagency_agent_v1.management_shared_work_receipts o JOIN hagency_agent_v1.management_shared_work w ON w.id=o.work_id JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1",
+        ] {
+            assert!(
+                sql_query(sql)
+                    .bind::<Text, _>(&assignment.id)
+                    .get_result::<Check>(&mut db)
+                    .await
+                    .unwrap()
+                    .matched,
+                "{sql}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_fresh_ledger_ends_a_shared_call_in_progress() {
+    let (f, r, _admin, assignment, m) = Box::pin(prepared()).await;
+    let (d, a) = qualify(&f).await;
+    let w = started(&f, &r, &m, &a, "call_in_progress").await;
+    let t = ticket(&f, &d, &w).await;
+    // The device replaces its ledger database while the call is running.
+    fresh_ledger(&f).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    for sql in [
+        // The Agent is fenced, its process is stopped for good, and the call
+        // is over with no outcome and no usage recorded for it.
+        "SELECT a.state='fenced' AND (SELECT i.state FROM hagency_agent_v1.management_agent_intents i WHERE i.request_id=a.request_id)='fenced' AS matched FROM hagency_agent_v1.management_shared_assignments a WHERE a.id=$1",
+        "SELECT bool_and(r.state='stopped' AND r.permanent_fence AND r.activity_until_ms=0) AS matched FROM hagency_agent_v1.management_shared_runtimes r WHERE r.assignment_id=$1",
+        "SELECT bool_and(w.state='unknown') AND count(*)=1 AS matched FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1",
+        "SELECT NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work_receipts o JOIN hagency_agent_v1.management_shared_work w ON w.id=o.work_id JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1) AS matched",
+        // The sweep recorded both.
+        "SELECT l.swept AND l.sweep::jsonb->>'sharedProcessesStopped'='1' AND l.sweep::jsonb->>'sharedWorkEnded'='1' AND l.sweep::jsonb->>'agentAssignmentsFenced'='1' AS matched FROM hagency_agent_v1.management_executor_ledgers l JOIN hagency_agent_v1.management_shared_assignments a ON a.executor_owner_user_id=l.owner_user_id AND a.executor_device_id=l.executor_device_id WHERE a.id=$1",
+    ] {
+        assert!(
+            sql_query(sql)
+                .bind::<Text, _>(&assignment.id)
+                .get_result::<Check>(&mut db)
+                .await
+                .unwrap()
+                .matched,
+            "{sql}"
+        );
+    }
+    // The result of the call arrives late and is refused: the device no
+    // longer has the database that ran it. Nothing else is handed out.
+    for state in ["completed", "unknown"] {
+        assert_eq!(
+            f.domain
+                .record_shared_work_result(
+                    &f.owner.p,
+                    &f.policy,
+                    &w.id,
+                    outcome(&d, &w, &t, 201, state)
+                )
+                .await
+                .unwrap_err()
+                .to_string(),
+            "executor_ledger_replaced"
+        );
+    }
+    assert!(
+        f.domain
+            .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+            .await
+            .is_err()
+    );
+    assert!(
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .await
+            .is_err()
+    );
+    // No reply is sent for the call.
+    let s = sender().await;
+    f.domain
+        .send_shared_replies(&f.policy, &m.gateway, &s.matrix, &mut String::new())
+        .await
+        .unwrap();
+    assert!(s.calls.lock().unwrap().is_empty());
+    // The applicant's views of the Agent still answer.
+    let page = f
+        .domain
+        .shared_work_history(&f.outsider.p, &f.policy, &r.id, SharedWorkQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(
+        (
+            page.items[0].state.as_str(),
+            page.items[0].reply_state.as_deref()
+        ),
+        ("unknown", None)
+    );
+    assert!(page.items[0].usage.is_none());
+    let status = serde_json::to_value(
+        f.domain
+            .shared_execution_status(&f.outsider.p, &f.policy, &r.id)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        (&status["state"], &status["workAvailable"]),
+        (&json!("stopped"), &json!(false))
+    );
+    // Usage the device never reported counts as none.
+    let removal = f
+        .domain
+        .managed_agent_removal(&f.outsider.p, &r.id)
+        .await
+        .unwrap();
+    assert!(removal.central_fenced);
+    assert_eq!(
+        (
+            removal.usage.known_consumed_tokens,
+            removal.usage.retained_tokens_floor,
+            removal.usage.requires_reconciliation
+        ),
+        (Some(0), Some(0), false)
     );
 }

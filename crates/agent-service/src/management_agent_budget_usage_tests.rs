@@ -258,7 +258,7 @@ async fn started_on_database_clock(
         .unwrap();
     assert!(
         f.domain
-            .start_shared_work(&f.owner.p, &f.policy, input(a, &w), &m.gateway)
+            .start_current_work(&f.owner.p, &f.policy, input(a, &w), &m.gateway)
             .await
             .unwrap()
             .newly_started

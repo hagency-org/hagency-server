@@ -7,6 +7,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 pub const SHARED_EXECUTION_CAPABILITY: &str = "hagency.managed_agents.execution.v1";
 pub const SHARED_TEXT_POLICY: &str = "codex_text_v1";
+pub const SHARED_CLAUDE_CAPABILITY: &str = "hagency.managed_agents.execution.v4";
+pub const SHARED_CLAUDE_POLICY: &str = "claude_text_v1";
 pub const MAX_SHARED_TEXT: usize = 4096;
 pub const MAX_SHARED_REPLY: usize = 32 * 1024;
 fn exact(n: i64) -> bool {
@@ -34,6 +36,32 @@ pub struct SharedRuntimeCommand {
     pub expires_at_ms: i64,
 }
 impl SharedRuntimeCommand {
+    /// V1 is permanently Codex. Claude uses a distinct signed root command;
+    /// existing command IDs, payload bytes and retry digests remain unchanged.
+    pub fn runtime(&self) -> Result<&'static str> {
+        match (self.version, self.capability.as_str(), self.policy.as_str()) {
+            (1, SHARED_EXECUTION_CAPABILITY, SHARED_TEXT_POLICY) => Ok("codex"),
+            (4, SHARED_CLAUDE_CAPABILITY, SHARED_CLAUDE_POLICY) => Ok("claude"),
+            _ => Err(invalid()),
+        }
+    }
+    pub fn execution_policy(&self, web: bool, mode: Option<&str>) -> Result<&'static str> {
+        match (self.runtime()?, mode, web) {
+            ("codex", None, false) => Ok("codex_text_v1"),
+            ("codex", None, true) => Ok("codex_text_live_web_v1"),
+            ("codex", Some("standard"), false) => Ok("codex_tools_standard_v1"),
+            ("codex", Some("standard"), true) => Ok("codex_tools_standard_web_v1"),
+            ("codex", Some("yolo"), false) => Ok("codex_tools_yolo_v1"),
+            ("codex", Some("yolo"), true) => Ok("codex_tools_yolo_web_v1"),
+            ("claude", None, false) => Ok("claude_text_v1"),
+            ("claude", None, true) => Ok("claude_text_live_web_v1"),
+            ("claude", Some("standard"), false) => Ok("claude_tools_standard_v1"),
+            ("claude", Some("standard"), true) => Ok("claude_tools_standard_web_v1"),
+            ("claude", Some("yolo"), false) => Ok("claude_tools_yolo_v1"),
+            ("claude", Some("yolo"), true) => Ok("claude_tools_yolo_web_v1"),
+            _ => Err(invalid()),
+        }
+    }
     pub fn validate(&self, server: &str) -> Result<()> {
         for id in [
             &self.command_id,
@@ -43,11 +71,9 @@ impl SharedRuntimeCommand {
             key(id)?;
         }
         self.reserve_command.validate(server)?;
-        if self.version != 1
-            || self.capability != SHARED_EXECUTION_CAPABILITY
+        if self.runtime().is_err()
             || self.operation != "agent.execution.provision"
             || self.assignment_generation != 1
-            || self.policy != SHARED_TEXT_POLICY
             || self.reserve_command.definition.tool_mode != "none"
             || self.reserve_command_digest != allocation_digest(&self.reserve_command)?
             || !valid_digest(&self.reserve_receipt_digest)

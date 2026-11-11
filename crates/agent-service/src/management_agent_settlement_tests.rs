@@ -2,6 +2,9 @@ use super::*;
 use crate::management_agent_settlement_types::*;
 use crate::management_allocation_types::{ExecutorRecoverInput, allocation_digest};
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
+    db.batch_execute(include_str!("management_shared_claude_down.sql"))
+        .await
+        .unwrap();
     db.batch_execute(include_str!("management_shared_context_v2_down.sql"))
         .await
         .unwrap();

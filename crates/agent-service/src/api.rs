@@ -381,12 +381,19 @@ impl App {
                 "processing-reaction-v1",
                 "execution-configuration-v1",
                 "shared-durable-demand-v1",
-                "shared-thread-context-v1",
-                "shared-thread-context-v2",
+                "shared-native-context-v3",
                 "managed-agent-budget-delta-v1",
                 "shared-budget-execution-v1",
+                "shared-claude-execution-v1",
                 "agent-settlement-v1",
             ];
+            if self
+                .management
+                .as_ref()
+                .is_some_and(|p| p.shared_demand_retries())
+            {
+                capabilities.insert(13, "shared-demand-retry-v1");
+            }
             let transport = self.transport.is_some();
             let transport_matrix = transport && self.matrix_client.is_some();
             let domain_matrix = self.domain.is_some() && self.matrix_client.is_some();

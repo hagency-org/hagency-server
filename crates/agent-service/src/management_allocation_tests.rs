@@ -448,24 +448,37 @@ async fn coordinator_decision_is_separate_from_admission_and_exact_executor_rece
         .unwrap();
     assert_eq!(inbox.items.len(), 1);
     assert!(inbox.items[0].can_decide);
-    let admin_history = f
-        .domain
-        .management_inbox(
-            &f.admin.p,
-            &f.policy,
-            ManagementQuery {
-                include_allocations: true,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert!(
-        admin_history
+    // Administrators can inspect allocations from every owner. The shared
+    // integration database may already contain more than one result page.
+    let mut after = None;
+    loop {
+        let page = f
+            .domain
+            .management_inbox(
+                &f.admin.p,
+                &f.policy,
+                ManagementQuery {
+                    include_allocations: true,
+                    after: after.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        if let Some(row) = page
             .items
             .iter()
-            .any(|r| r.allocation_id.as_deref() == Some(a.id.as_str()) && !r.can_decide)
-    );
+            .find(|r| r.allocation_id.as_deref() == Some(a.id.as_str()))
+        {
+            assert!(!row.can_decide);
+            break;
+        }
+        let next = page
+            .next_after
+            .expect("allocation must remain visible to the administrator");
+        assert!(after.as_ref().is_none_or(|previous| previous < &next));
+        after = Some(next);
+    }
     let approved = accepted(&f, &a).await;
     assert_eq!(approved.state, "approved_waiting_executor");
     assert!(approved.result.is_none());
@@ -1093,7 +1106,7 @@ async fn v3_allocation_migration_is_atomic_and_preserves_existing_project_intent
         db.batch_execute("DROP TABLE hagency_agent_v1.management_allocations").await.unwrap();
         let domain=DomainStore::open(url.as_str(),"example.test","_hagency_test_").await.unwrap();
         let p=domain.management_project(&owner.p,&policy,"legacy_project").await.unwrap();assert_eq!(p.state,"approved");assert_eq!(p.requested_tokens,1234);assert_eq!(p.request.revision,2);assert!(p.request.allocation_id.is_none());
-        assert!(sql_query("SELECT version=32 AS matched FROM hagency_agent_v1.management_deployment").get_result::<State>(&mut db).await.unwrap().matched);
+        assert!(sql_query("SELECT version=35 AS matched FROM hagency_agent_v1.management_deployment").get_result::<State>(&mut db).await.unwrap().matched);
         let again=DomainStore::open(url.as_str(),"example.test","_hagency_test_").await.unwrap();assert_eq!(again.management_project(&owner.p,&policy,"legacy_project").await.unwrap().revision,2);
     }).await;
     control
