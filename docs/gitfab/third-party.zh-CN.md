@@ -40,6 +40,15 @@
 | anchore/syft 镜像（默认 v1.18.1） | 运行时（容器） | Apache-2.0 | Runner 生成 SPDX SBOM；可用 GITFAB_SYFT_IMAGE 替换 |
 | busybox 镜像 | 仅本机测试 | GPL-2.0 | 部署与回退实测用的示例服务，不随交付物分发 |
 
+## 原有组件的依赖变化
+
+GitFab 对原有组件只做增补，下表是相对各自 main 分支新增的直接依赖（核对 Cargo.toml 与 Cargo.lock 的差异）。
+
+| 组件 | 新增直接依赖 | 许可证 | 说明 |
+|---|---|---|---|
+| 服务端 agent-service、backend | hagency-gitfab-events、hagency-gitfab-forge（本仓库） | 随本仓库 | 不新增外部 crate；其依赖已计入下方清单 |
+| 桌面端（修复分支 fix/server-clock-skew、fix/hagency-panel-jit） | httpdate 1.0.3 | MIT OR Apache-2.0 | 原已是 hyper 的传递依赖，锁文件不新增包，只新增一条直接依赖 |
+
 ## Rust crate
 
 | crate | 版本 | 许可证 |
