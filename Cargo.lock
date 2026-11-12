@@ -3968,6 +3968,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hagency-gitfab-runner"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "hagency-gitfab-events",
+ "hex",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+]
+
+[[package]]
 name = "hagency-server"
 version = "0.1.0"
 dependencies = [
