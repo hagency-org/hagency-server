@@ -342,7 +342,10 @@ pub(crate) struct OrchestratorRunInit {
     pub room_id: String,
     pub thread_root: String,
     pub requester_mxid: String,
+    /// `{"coordinator","implementer","reviewer"}` → binding ID.
     pub bindings: serde_json::Value,
+    /// `{"goal","gitBackend","repoRef","baselineSha","specRef"}`, recorded in every task event.
+    pub context: serde_json::Value,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OrchestratorRun {
@@ -351,6 +354,18 @@ pub(crate) struct OrchestratorRun {
     pub state: crate::orchestrator_flow::State,
     pub revision: i64,
     pub dispatch_id: Option<String>,
+    /// The last stage's reply, passed on in the next stage message.
+    pub handoff: Option<String>,
+    /// Journal entries decided with this revision and not yet confirmed written.
+    pub pending_events: serde_json::Value,
+    pub updated_at_ms: i64,
+}
+/// What one transition of a run saves.
+pub(crate) struct OrchestratorRunUpdate<'a> {
+    pub state: &'a crate::orchestrator_flow::State,
+    pub dispatch_id: Option<&'a str>,
+    pub handoff: Option<&'a str>,
+    pub pending_events: &'a serde_json::Value,
 }
 #[derive(diesel::QueryableByName)]
 struct OrchestratorRunRow {
@@ -361,9 +376,13 @@ struct OrchestratorRunRow {
     #[diesel(sql_type = Text)] thread_root: String,
     #[diesel(sql_type = Text)] requester_mxid: String,
     #[diesel(sql_type = Text)] bindings: String,
+    #[diesel(sql_type = Text)] context: String,
     #[diesel(sql_type = Text)] state: String,
     #[diesel(sql_type = BigInt)] revision: i64,
     #[diesel(sql_type = Nullable<Text>)] dispatch_id: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)] handoff: Option<String>,
+    #[diesel(sql_type = Text)] pending_events: String,
+    #[diesel(sql_type = BigInt)] updated_at_ms: i64,
 }
 impl OrchestratorRunRow {
     fn into_run(self) -> Result<OrchestratorRun> {
@@ -374,12 +393,25 @@ impl OrchestratorRunRow {
             init: OrchestratorRunInit {
                 project_id: self.project_id, task_id: self.task_id, room_id: self.room_id,
                 thread_root: self.thread_root, requester_mxid: self.requester_mxid, bindings: parse(&self.bindings)?,
+                context: parse(&self.context)?,
             },
-            state, revision: self.revision, dispatch_id: self.dispatch_id,
+            state, revision: self.revision, dispatch_id: self.dispatch_id, handoff: self.handoff,
+            pending_events: parse(&self.pending_events)?, updated_at_ms: self.updated_at_ms,
         })
     }
 }
-const ORCHESTRATOR_RUN_COLUMNS: &str = "id,project_id,task_id,room_id,thread_root,requester_mxid,bindings::text AS bindings,state::text AS state,revision,dispatch_id";
+const ORCHESTRATOR_RUN_COLUMNS: &str = "id,project_id,task_id,room_id,thread_root,requester_mxid,bindings::text AS bindings,context::text AS context,state::text AS state,revision,dispatch_id,handoff,pending_events::text AS pending_events,updated_at_ms";
+/// Workflow roles a run must bind, and the context every task event carries.
+pub(crate) const ORCHESTRATOR_ROLES: &[&str] = &["coordinator", "implementer", "reviewer"];
+fn valid_orchestrator_init(init: &OrchestratorRunInit) -> bool {
+    let text = |v: &serde_json::Value, k: &str| v[k].as_str().is_some_and(|s| !s.trim().is_empty() && s.len() <= 4096);
+    let sha = init.context["baselineSha"].as_str().is_some_and(|s| matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+    ORCHESTRATOR_ROLES.iter().all(|r| text(&init.bindings, r))
+        && ["goal", "repoRef", "specRef"].iter().all(|k| text(&init.context, k))
+        && matches!(init.context["gitBackend"].as_str(), Some("github" | "gitcode"))
+        && sha
+        && !init.project_id.trim().is_empty() && !init.task_id.trim().is_empty()
+}
 /// Which dispatch of an orchestrator run a stage message belongs to.
 #[derive(Clone, Debug)]
 pub(crate) struct OrchestratedStage {
@@ -896,14 +928,14 @@ impl TransportStore {
         matrix_id(&init.room_id, '!')?;
         matrix_id(&init.thread_root, '$')?;
         matrix_id(&init.requester_mxid, '@')?;
-        if !init.bindings.is_object() { return Err(Error::Invalid("invalid_orchestrator_bindings")); }
+        if !valid_orchestrator_init(init) { return Err(Error::Invalid("invalid_orchestrator_run")); }
         let id = format!("orun_{}", entity_id()?);
         let state = crate::orchestrator_flow::State::NotStarted.to_json().to_string();
         self.db.with_connection(async |db| {
-            sql_query("INSERT INTO hagency_agent_v1.orchestrator_runs(id,project_id,task_id,room_id,thread_root,requester_mxid,bindings,state,created_at_ms,updated_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$9) ON CONFLICT (room_id,thread_root) DO NOTHING")
+            sql_query("INSERT INTO hagency_agent_v1.orchestrator_runs(id,project_id,task_id,room_id,thread_root,requester_mxid,bindings,context,state,created_at_ms,updated_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10,$10) ON CONFLICT (room_id,thread_root) DO NOTHING")
                 .bind::<Text,_>(&id).bind::<Text,_>(&init.project_id).bind::<Text,_>(&init.task_id).bind::<Text,_>(&init.room_id)
                 .bind::<Text,_>(&init.thread_root).bind::<Text,_>(&init.requester_mxid).bind::<Text,_>(init.bindings.to_string())
-                .bind::<Text,_>(&state).bind::<BigInt,_>(now).execute(db).await?;
+                .bind::<Text,_>(init.context.to_string()).bind::<Text,_>(&state).bind::<BigInt,_>(now).execute(db).await?;
             let row = sql_query(format!("SELECT {ORCHESTRATOR_RUN_COLUMNS} FROM hagency_agent_v1.orchestrator_runs WHERE room_id=$1 AND thread_root=$2"))
                 .bind::<Text,_>(&init.room_id).bind::<Text,_>(&init.thread_root).get_result::<OrchestratorRunRow>(db).await?;
             let run = row.into_run()?;
@@ -933,14 +965,25 @@ impl TransportStore {
     /// Saves the next state only if nobody saved since `revision` was read.
     // Called by the GitFab orchestrator worker, which lands next.
     #[allow(dead_code)]
-    pub(crate) async fn save_orchestrator_run(&self, id: &str, revision: i64, state: &crate::orchestrator_flow::State, dispatch_id: Option<&str>, now: i64) -> Result<i64> {
-        let state = state.to_json().to_string();
+    pub(crate) async fn save_orchestrator_run(&self, id: &str, revision: i64, update: &OrchestratorRunUpdate<'_>, now: i64) -> Result<i64> {
+        let state = update.state.to_json().to_string();
+        if !update.pending_events.is_array() { return Err(Error::Invalid("invalid_orchestrator_events")); }
         self.db.with_connection(async |db| {
-            let saved = sql_query("UPDATE hagency_agent_v1.orchestrator_runs SET state=$3::jsonb,dispatch_id=$4,revision=revision+1,updated_at_ms=$5 WHERE id=$1 AND revision=$2")
-                .bind::<Text,_>(id).bind::<BigInt,_>(revision).bind::<Text,_>(&state).bind::<Nullable<Text>,_>(dispatch_id).bind::<BigInt,_>(now)
+            let saved = sql_query("UPDATE hagency_agent_v1.orchestrator_runs SET state=$3::jsonb,dispatch_id=$4,handoff=$5,pending_events=$6::jsonb,revision=revision+1,updated_at_ms=$7 WHERE id=$1 AND revision=$2")
+                .bind::<Text,_>(id).bind::<BigInt,_>(revision).bind::<Text,_>(&state).bind::<Nullable<Text>,_>(update.dispatch_id)
+                .bind::<Nullable<Text>,_>(update.handoff).bind::<Text,_>(update.pending_events.to_string()).bind::<BigInt,_>(now)
                 .execute(db).await?;
             if saved == 0 { return Err(Error::Conflict("orchestrator_run_revision_changed")); }
             Ok(revision + 1)
+        }).await
+    }
+    /// Marks the pending journal entries of `revision` as written. Leaves the revision unchanged; does
+    /// nothing if the run has moved on.
+    pub(crate) async fn clear_orchestrator_events(&self, id: &str, revision: i64) -> Result<()> {
+        self.db.with_connection(async |db| {
+            sql_query("UPDATE hagency_agent_v1.orchestrator_runs SET pending_events='[]'::jsonb WHERE id=$1 AND revision=$2")
+                .bind::<Text,_>(id).bind::<BigInt,_>(revision).execute(db).await?;
+            Ok(())
         }).await
     }
     /// The recorded state of one dispatch and its reply, for the orchestrator to map to an outcome.

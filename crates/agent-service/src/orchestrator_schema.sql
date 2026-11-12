@@ -19,9 +19,12 @@ CREATE TABLE IF NOT EXISTS hagency_agent_v1.orchestrator_runs(
     thread_root text NOT NULL CHECK (thread_root LIKE '$%'),
     requester_mxid text NOT NULL CHECK (requester_mxid LIKE '@%'),
     bindings jsonb NOT NULL,
+    context jsonb NOT NULL,
     state jsonb NOT NULL,
     revision bigint NOT NULL DEFAULT 1 CHECK (revision >= 1),
     dispatch_id text,
+    handoff text,
+    pending_events jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(pending_events) = 'array'),
     created_at_ms bigint NOT NULL,
     updated_at_ms bigint NOT NULL,
     UNIQUE (room_id, thread_root)

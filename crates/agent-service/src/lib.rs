@@ -43,6 +43,7 @@ pub mod management_shared_work_types;
 mod management_tests;
 pub mod management_types;
 pub mod matrix_client;
+mod orchestrator;
 pub mod orchestrator_flow;
 pub mod recurring_quota;
 mod reply_format;

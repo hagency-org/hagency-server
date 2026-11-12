@@ -3884,6 +3884,7 @@ dependencies = [
  "diesel",
  "diesel-async",
  "hagency-db-runtime",
+ "hagency-gitfab-events",
  "hex",
  "palpo-core",
  "percent-encoding",

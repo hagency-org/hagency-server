@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 hagency-db-runtime = { path = "../db-runtime" }
+hagency-gitfab-events = { path = "../gitfab-events" }
 chrono.workspace = true
 chrono-tz = { version = "=0.10.4", default-features = false, features = ["std"] }
 diesel.workspace = true

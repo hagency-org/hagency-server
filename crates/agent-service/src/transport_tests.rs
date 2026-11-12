@@ -3191,6 +3191,9 @@ mod ciphertext_tests;
 #[path = "transport_scaling_tests.rs"]
 mod scaling_tests;
 
+#[path = "orchestrator_tests.rs"]
+mod orchestrator_tests;
+
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn encrypted_personal_group_waits_for_local_addressing_before_dispatch() {
@@ -3405,6 +3408,8 @@ async fn postgres_orchestrator_run_is_one_per_thread_and_saves_with_a_revision()
         thread_root: "$gitfab-run-root".into(),
         requester_mxid: "@owner:example.test".into(),
         bindings: serde_json::json!({"coordinator": f.binding, "implementer": f.binding, "reviewer": f.binding}),
+        context: serde_json::json!({"goal": "Add a health check", "gitBackend": "github",
+            "repoRef": "https://github.com/example/demo-02", "baselineSha": "a".repeat(40), "specRef": "spec/DEMO-02.md@v1"}),
     };
     let run = f.transport.create_orchestrator_run(&init, now).await.unwrap();
     assert!(run.id.starts_with("orun_"));
@@ -3418,31 +3423,44 @@ async fn postgres_orchestrator_run_is_one_per_thread_and_saves_with_a_revision()
         Error::Conflict("orchestrator_thread_in_use")
     ));
     let mut bad = init.clone();
-    bad.bindings = serde_json::json!(["not", "a", "map"]);
     bad.thread_root = "$gitfab-run-root-2".into();
-    assert!(f.transport.create_orchestrator_run(&bad, now).await.is_err());
+    bad.bindings = serde_json::json!({"coordinator": f.binding, "implementer": f.binding});
+    assert!(f.transport.create_orchestrator_run(&bad, now).await.is_err(), "every role is bound");
+    let mut bad = init.clone();
+    bad.thread_root = "$gitfab-run-root-2".into();
+    bad.context["baselineSha"] = serde_json::json!("main");
+    assert!(f.transport.create_orchestrator_run(&bad, now).await.is_err(), "the baseline is a commit");
 
     let (started, _) = next(&run.state, Input::Start);
+    let pending = serde_json::json!([{"event": {"event_id": "e1"}, "actorType": "human"}]);
+    let update = |state, dispatch_id| OrchestratorRunUpdate { state, dispatch_id, handoff: Some("spec text"), pending_events: &pending };
     let revision = f
         .transport
-        .save_orchestrator_run(&run.id, run.revision, &started, Some("evt_spec"), now + 1)
+        .save_orchestrator_run(&run.id, run.revision, &update(&started, Some("evt_spec")), now + 1)
         .await
         .unwrap();
     assert_eq!(revision, 2);
     // A second worker holding the old revision cannot overwrite it.
     assert!(matches!(
         f.transport
-            .save_orchestrator_run(&run.id, run.revision, &State::Completed, None, now + 2)
+            .save_orchestrator_run(&run.id, run.revision, &update(&State::Completed, None), now + 2)
             .await
             .unwrap_err(),
         Error::Conflict("orchestrator_run_revision_changed")
     ));
     let read = f.transport.orchestrator_run(&run.id).await.unwrap().unwrap();
-    assert_eq!((read.state, read.revision, read.dispatch_id.as_deref()), (started, 2, Some("evt_spec")));
+    assert_eq!((read.state.clone(), read.revision, read.dispatch_id.as_deref()), (started.clone(), 2, Some("evt_spec")));
+    assert_eq!((read.handoff.as_deref(), &read.pending_events, read.updated_at_ms), (Some("spec text"), &pending, now + 1));
+    // Clearing written events keeps the revision; a stale revision clears nothing.
+    f.transport.clear_orchestrator_events(&run.id, 1).await.unwrap();
+    assert_eq!(f.transport.orchestrator_run(&run.id).await.unwrap().unwrap().pending_events, pending);
+    f.transport.clear_orchestrator_events(&run.id, 2).await.unwrap();
+    let cleared = f.transport.orchestrator_run(&run.id).await.unwrap().unwrap();
+    assert_eq!((cleared.pending_events, cleared.revision), (serde_json::json!([]), 2));
     assert!(f.transport.active_orchestrator_runs(10).await.unwrap().iter().any(|r| r.id == run.id));
 
     f.transport
-        .save_orchestrator_run(&run.id, 2, &State::Failed { reason: "aborted" }, None, now + 3)
+        .save_orchestrator_run(&run.id, 2, &update(&State::Failed { reason: "aborted" }, None), now + 3)
         .await
         .unwrap();
     assert!(!f.transport.active_orchestrator_runs(10).await.unwrap().iter().any(|r| r.id == run.id));
