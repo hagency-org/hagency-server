@@ -34,6 +34,9 @@ impl Engine for Fake {
     fn has_image(&self, image: &str) -> bool {
         self.images.lock().unwrap().contains_key(image)
     }
+    fn base_images(&self, _context: &Path) -> Result<Vec<Value>, String> {
+        Ok(vec![json!({"name": "busybox:1.36", "digest": format!("sha256:{}", "b".repeat(64))})])
+    }
 }
 
 /// Answers /healthz and /version as the image the fake engine is running.
@@ -165,4 +168,24 @@ fn a_version_endpoint_naming_another_release_fails_the_check() {
     let r = check(&probe, "v1"); assert!(r.is_ok(), "{r:?}");
     let failed = check(&probe, "v9").unwrap_err();
     assert_eq!(failed["result"], "failed");
+}
+
+#[test]
+fn from_lines_name_the_base_images_but_not_earlier_stages() {
+    let file = "FROM --platform=$BUILDPLATFORM rust:1.90 AS build\nRUN cargo build\nFROM build AS test\nFROM scratch\nfrom gcr.io/distroless/cc:nonroot\nCOPY --from=build /a /a\n";
+    assert_eq!(from_lines(file), vec!["rust:1.90", "gcr.io/distroless/cc:nonroot"]);
+}
+
+#[test]
+fn the_sbom_comes_with_its_digest_and_a_signed_attestation() {
+    let (dir, fake, probe, out, ring) = setup();
+    let sbom = dir.path().join("sbom");
+    deploy(&fake, &release("v1"), &dir.path().join("app"), &sbom, &probe, &out).unwrap();
+    let body = std::fs::read(sbom.join("DEMO-01-v1.spdx.json")).unwrap();
+    let line = std::fs::read_to_string(sbom.join("DEMO-01-v1.spdx.json.sha256")).unwrap();
+    assert_eq!(line, format!("{}  DEMO-01-v1.spdx.json\n", sha256(&body).trim_start_matches("sha256:")));
+    let sig: Value = serde_json::from_str(&std::fs::read_to_string(sbom.join("DEMO-01-v1.spdx.json.sig")).unwrap()).unwrap();
+    ring.verify(&sig).unwrap();
+    assert_eq!(sig["sbom_digest"], sha256(&body));
+    assert_eq!(sig["base_images"][0]["name"], "busybox:1.36");
 }

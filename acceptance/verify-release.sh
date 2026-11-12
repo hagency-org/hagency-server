@@ -120,10 +120,19 @@ else
     check deploy.commit ok "$(field commit_sha)"
 fi
 sbom=${GITFAB_SBOM_DIR:-}/$(basename "$(field sbom_ref)")
-if [ -n "${GITFAB_SBOM_DIR:-}" ] && [ -f "$sbom" ] && [ "sha256:$(sha256_file "$sbom")" = "$(field sbom_digest)" ]; then
-    check deploy.sbom ok "$(field sbom_ref) matches the receipt"
+if [ -z "${GITFAB_SBOM_DIR:-}" ] || [ ! -f "$sbom" ]; then
+    check deploy.sbom fail "$(field sbom_ref) not found in GITFAB_SBOM_DIR"
+elif [ "sha256:$(sha256_file "$sbom")" != "$(field sbom_digest)" ]; then
+    check deploy.sbom fail "$(field sbom_ref) does not match the receipt"
+elif "$gitfab" verify-sbom --keys "$keys" "$sbom" >"$RUN_DIR/sbom-verify.json"; then
+    check deploy.sbom ok "$(field sbom_ref) matches the receipt; its .sha256 and signed attestation verify"
+    bases=$(tr -d '\n ' <"$RUN_DIR/sbom-verify.json" | sed -n 's/.*"base_images":\[\(.*\)\],"failures".*/\1/p')
+    case "$bases" in
+        '' | *'"digest":null'*) check deploy.base_images fail "base image digests not all recorded: ${bases:-none}" ;;
+        *) check deploy.base_images ok "$bases" ;;
+    esac
 else
-    check deploy.sbom fail "$(field sbom_ref) missing from GITFAB_SBOM_DIR or not matching the receipt"
+    check deploy.sbom fail "see sbom-verify.json"
 fi
 name="gitfab-$(printf '%s' "$PROJECT_ID" | tr 'A-Z' 'a-z')"
 running=$(docker inspect -f '{{.State.Running}} {{.Image}}' "$name" 2>/dev/null || true)

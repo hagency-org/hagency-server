@@ -32,6 +32,32 @@ pub trait Engine {
     fn running(&self, name: &str) -> bool;
     /// Whether the image is still present locally.
     fn has_image(&self, image: &str) -> bool;
+    /// Base images of the build, `{"name", "digest"}` each (Annex 3 §9: recorded, never drifting).
+    fn base_images(&self, context: &Path) -> Result<Vec<Value>, String>;
+}
+
+/// Image references in the `FROM` lines of a Dockerfile, skipping earlier stages and `scratch`.
+pub fn from_lines(dockerfile: &str) -> Vec<String> {
+    let mut stages = Vec::new();
+    let mut bases = Vec::new();
+    for line in dockerfile.lines().map(str::trim) {
+        let mut words = line.split_whitespace();
+        if !words.next().is_some_and(|w| w.eq_ignore_ascii_case("FROM")) {
+            continue;
+        }
+        let words: Vec<&str> = words.filter(|w| !w.starts_with("--")).collect();
+        let Some(image) = words.first() else { continue };
+        if let [_, kw, alias] = words[..]
+            && kw.eq_ignore_ascii_case("AS")
+        {
+            stages.push(alias.to_ascii_lowercase());
+        }
+        let lower = image.to_ascii_lowercase();
+        if lower != "scratch" && !stages[..stages.len().saturating_sub(1)].contains(&lower) && !bases.contains(&image.to_string()) {
+            bases.push(image.to_string());
+        }
+    }
+    bases
 }
 
 /// Docker through its command line.
@@ -79,6 +105,17 @@ impl Engine for Docker {
     }
     fn has_image(&self, image: &str) -> bool {
         docker(&["image", "inspect", image]).is_ok()
+    }
+    fn base_images(&self, context: &Path) -> Result<Vec<Value>, String> {
+        let file = std::fs::read_to_string(context.join("Dockerfile")).map_err(|e| format!("Dockerfile: {e}"))?;
+        from_lines(&file)
+            .into_iter()
+            .map(|name| {
+                let repo = docker(&["image", "inspect", "-f", "{{index .RepoDigests 0}}", &name]).ok();
+                let digest = repo.as_deref().and_then(|r| r.split_once('@')).map(|(_, d)| d.to_owned());
+                Ok(json!({"name": name, "digest": digest}))
+            })
+            .collect()
     }
 }
 
@@ -197,6 +234,41 @@ fn sha256(bytes: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
 }
 
+/// Schema of the signed SBOM attestation (`<sbom>.sig`).
+pub const SBOM_ATTESTATION: &str = "gitfab.sbom-attestation.v1";
+
+/// Writes the SBOM with its companions (Annex 3 §9): `<name>.sha256` in `sha256sum` format and
+/// `<name>.sig`, a document naming the SBOM digest, the image and its base images, signed with the
+/// Runner key. `gitfab verify-sbom` checks both offline.
+fn write_sbom(
+    dir: &Path,
+    name: &str,
+    sbom: &[u8],
+    image: &str,
+    bases: &[Value],
+    release: &Release,
+    out: &Receipts,
+) -> Result<(), String> {
+    let digest = sha256(sbom);
+    std::fs::write(dir.join(name), sbom).map_err(|e| e.to_string())?;
+    let hex = digest.trim_start_matches("sha256:");
+    std::fs::write(dir.join(format!("{name}.sha256")), format!("{hex}  {name}\n")).map_err(|e| e.to_string())?;
+    let attestation = json!({
+        "schema_version": SBOM_ATTESTATION,
+        "project_id": release.project,
+        "tag": release.tag,
+        "commit_sha": release.commit,
+        "sbom_ref": format!("sbom/{name}"),
+        "sbom_digest": digest,
+        "image_digest": image,
+        "base_images": bases,
+        "runner_id": out.runner_id,
+        "signature": null,
+    });
+    let signed = out.key.sign(&attestation, &out.public_key_ref).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(format!("{name}.sig")), format!("{signed}\n")).map_err(|e| e.to_string())
+}
+
 /// Outcome of a deployment, for the command's report.
 #[derive(Debug)]
 pub struct Deployed {
@@ -225,9 +297,10 @@ pub fn deploy(
         ("org.hagency.gitfab.tag", &release.tag),
     ])?;
     let sbom = engine.sbom(&image)?;
+    let bases = engine.base_images(context)?;
     std::fs::create_dir_all(sbom_dir).map_err(|e| e.to_string())?;
     let sbom_name = format!("{}-{}.spdx.json", release.project, release.tag);
-    std::fs::write(sbom_dir.join(&sbom_name), &sbom).map_err(|e| e.to_string())?;
+    write_sbom(sbom_dir, &sbom_name, &sbom, &image, &bases, release, out)?;
     let name = container(&release.project);
     engine.replace(&name, &image, probe.port, probe.container_port)?;
     let result = check(probe, &release.tag);

@@ -10,6 +10,7 @@ use hagency_gitfab_events::ledger::Ledger;
 use hagency_gitfab_events::sign::{Key, Keyring};
 use hagency_gitfab_events::{Error, canonical, evidence, identity, schema};
 use serde_json::{Value, json};
+use sha2::Digest;
 
 #[derive(Parser)]
 #[command(
@@ -81,6 +82,13 @@ enum Command {
         tag: Option<String>,
         #[arg(required = true)]
         files: Vec<PathBuf>,
+    },
+    /// Check an SBOM against its signed attestation (`<sbom>.sig`, from the Runner) and its `.sha256` file
+    /// when present. Offline; exit 1 when anything does not match.
+    VerifySbom {
+        #[arg(long)]
+        keys: PathBuf,
+        sbom: PathBuf,
     },
     /// Recompute token totals from JSONL files; fails on any invalid line, conflict or bad correction.
     Ledger {
@@ -265,6 +273,33 @@ fn run(command: Command) -> Result<bool, String> {
             flat["key_id"] = event["signature"]["key_id"].clone();
             print(&flat);
             Ok(true)
+        }
+        Command::VerifySbom { keys, sbom } => {
+            let ring = Keyring::load_dir(&keys).map_err(|e| e.to_string())?;
+            let body = std::fs::read(&sbom).map_err(|e| format!("{}: {e}", sbom.display()))?;
+            let digest = format!("sha256:{}", hex::encode(sha2::Sha256::digest(&body)));
+            let with = |ext: &str| PathBuf::from(format!("{}.{ext}", sbom.display()));
+            let mut failures = Vec::new();
+            let attestation: Value = serde_json::from_str(&read(&with("sig"))?)
+                .map_err(|e| format!("invalid attestation: {e}"))?;
+            if attestation["schema_version"] != "gitfab.sbom-attestation.v1" {
+                failures.push("not a gitfab.sbom-attestation.v1 document".to_owned());
+            }
+            if let Err(e) = ring.verify(&attestation) {
+                failures.push(format!("attestation signature: {e}"));
+            }
+            if attestation["sbom_digest"] != digest.as_str() {
+                failures.push(format!("SBOM is {digest}, attested {}", attestation["sbom_digest"]));
+            }
+            if let Ok(line) = std::fs::read_to_string(with("sha256"))
+                && line.split_whitespace().next() != digest.strip_prefix("sha256:")
+            {
+                failures.push("the .sha256 file does not match the SBOM".to_owned());
+            }
+            print(&json!({"ok": failures.is_empty(), "sbom_digest": digest,
+                "image_digest": attestation["image_digest"], "base_images": attestation["base_images"],
+                "key_id": attestation["signature"]["key_id"], "failures": failures}));
+            Ok(failures.is_empty())
         }
         Command::Ledger { files } => {
             let mut ledger = Ledger::default();
