@@ -42,7 +42,12 @@ python3 scripts/test-agent-service-postgres.py --lib orchestrator
 
 # 验收包自测（需先构建 gitfab）
 GITFAB_BIN=$PWD/target/release/gitfab bash acceptance/tests/selftest.sh
+
+# 日志不含凭据（对运行中的服务端；只输出计数，不输出日志内容）
+scripts/gitfab-log-canary.sh http://127.0.0.1:8099 <服务端日志文件>
 ```
+
+`gitfab-log-canary.sh` 发送带随机假凭据的请求（查询串 `access_token`、`Authorization: Bearer`、`Cookie`、登录密码），再在日志里查找这个假值，并统计已有日志中的凭据模式（Bearer 值、URL 中的 access_token、带密码的数据库 URL、GitHub Token、私钥）。都没有返回 0，有则返回 1。服务端的 HTTP 请求日志（Palpo 使用的 salvo `Logger`）只记录路径，不记录查询串与请求头；Agent 服务的错误只输出固定错误码。
 
 ## 在 Linux 上安装
 
