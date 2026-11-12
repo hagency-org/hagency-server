@@ -47,7 +47,9 @@ fn the_board_shows_runs_tokens_deployments_and_flags_tampering() {
     let journal = dir.path().join("events.jsonl");
     let mut j = Journal::open(&journal).unwrap();
     j.append(&task("intake", "succeeded", 1, json!([])), Some(&signer), "human").unwrap();
-    j.append(&task("execute", "succeeded", 2, json!(["https://github.com/o/demo-02/pull/7"])), Some(&signer), "agent").unwrap();
+    let mut executed = task("execute", "succeeded", 2, json!(["https://github.com/o/demo-02/pull/7"]));
+    executed["commit_sha"] = json!("c".repeat(40));
+    j.append(&executed, Some(&signer), "agent").unwrap();
     j.append(&json!({"schema_version": schema::MEMORY, "event_id": "m1", "timestamp": "2026-11-13T01:03:00Z",
         "project": "DEMO-02", "module": "api", "spec": "spec/DEMO-02.md@v1", "contributor": "@agent:example.org",
         "action": "execute", "input_digest": format!("sha256:{}", "1".repeat(64)), "output_digest": format!("sha256:{}", "2".repeat(64)),
@@ -82,6 +84,8 @@ fn the_board_shows_runs_tokens_deployments_and_flags_tampering() {
     assert_eq!(run["run"], "run-1");
     assert_eq!(run["current"], json!({"phase": "review", "status": "failed"}));
     assert_eq!(run["steps"][1]["links"][0], "https://github.com/o/demo-02/pull/7");
+    assert_eq!(run["steps"][1]["commit"], "c".repeat(40));
+    assert_eq!(run["steps"][0]["commit"], Value::Null);
     assert_eq!(run["steps"][1]["check"], "verified");
     assert_eq!(run["steps"][2]["check"], "bad_signature", "the forged review is flagged");
     assert_eq!(board["counts"]["bad_signature"], 1);

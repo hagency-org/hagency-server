@@ -141,6 +141,7 @@ pub fn snapshot(sources: &Sources) -> Value {
                     "phase": event["phase"], "status": event["status"], "round": event["round"],
                     "time": event["timestamp"], "actor": event["actor_id"], "check": check,
                     "links": event["artifact_refs"],
+                    "commit": event["commit_sha"], "platform_error": event["platform_error"],
                 }));
                 run["current"] = json!({"phase": event["phase"], "status": event["status"]});
             }

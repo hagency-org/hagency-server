@@ -104,10 +104,14 @@ function render(d) {
   document.getElementById('runs').innerHTML = d.runs.length ? `<div class="tw"><table><tr><th>项目 / 任务</th><th>当前</th><th>阶段</th><th>链接</th></tr>${
     d.runs.map((r) => {
       const links = [...new Set(r.steps.flatMap((s) => s.links || []))];
+      // Only verified records name the commit or a platform refusal.
+      const ok = r.steps.filter((s) => s.check === 'verified');
+      const commit = ok.map((s) => s.commit).filter(Boolean).pop();
+      const refused = ok.filter((s) => s.platform_error).map((s) => `<span class="pill bad">平台未完成</span> ${esc(s.phase)}：${esc(s.platform_error)}`);
       return `<tr><td><b>${esc(r.project)}</b><br><span class="muted">${esc(r.task)} · ${esc(r.backend)}</span><br><span class="mono muted">${esc(r.run)}</span></td>
         <td>${esc(r.current?.phase)} ${status(r.current?.status)}</td>
         <td><div class="steps">${r.steps.map((s) => `<span title="${esc(s.time)} ${esc(s.actor)}">${esc(s.phase)}·${esc(s.status)} ${check(s.check)}</span>`).join('')}</div></td>
-        <td>${links.map(link).join('<br>') || '<span class="muted">—</span>'}</td></tr>`;
+        <td>${[...links.map(link), ...(commit ? [`提交 <span class="mono">${esc(commit.slice(0, 12))}</span>`] : []), ...refused].join('<br>') || '<span class="muted">—</span>'}</td></tr>`;
     }).join('')}</table></div>` : '<p class="muted">还没有任务事件。</p>';
 
   document.getElementById('deploys').innerHTML = d.deployments.length ? d.deployments.map((p) => {
@@ -147,7 +151,7 @@ function renderReplay() {
   range.max = steps.length; range.value = pos;
   document.getElementById('rp-count').textContent = `${pos} / ${steps.length}`;
   document.getElementById('rp-play').textContent = replay.timer ? '暂停' : '回放';
-  document.getElementById('rp-list').innerHTML = steps.slice(0, pos).map((s) => `<li><span class="mono">${esc(s.time)}</span> ${esc(s.phase)}·${status(s.status)} ${check(s.check)} <span class="muted">${esc(s.actor)}</span>${(s.links || []).length ? '<br>' + s.links.map(link).join(' ') : ''}</li>`).join('') || '<li class="muted">没有可回放的事件。</li>';
+  document.getElementById('rp-list').innerHTML = steps.slice(0, pos).map((s) => `<li><span class="mono">${esc(s.time)}</span> ${esc(s.phase)}·${status(s.status)} ${check(s.check)} <span class="muted">${esc(s.actor)}</span>${(s.links || []).length ? '<br>' + s.links.map(link).join(' ') : ''}${s.check === 'verified' && s.commit ? ` <span class="muted">提交</span> <span class="mono">${esc(s.commit.slice(0, 12))}</span>` : ''}${s.check === 'verified' && s.platform_error ? `<br><span class="pill bad">平台未完成</span> ${esc(s.platform_error)}` : ''}</li>`).join('') || '<li class="muted">没有可回放的事件。</li>';
 }
 function stopReplay() { clearInterval(replay.timer); replay.timer = null; }
 document.getElementById('rp-run').onchange = (e) => { stopReplay(); replay.run = e.target.value; replay.pos = 0; renderReplay(); };
