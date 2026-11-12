@@ -253,3 +253,30 @@ fn the_report_uses_verified_records_and_names_the_rest() {
     assert!(text.contains("https://gitcode.com/org/demo-01/releases/v1"));
     assert!(!text.contains("review"), "the forged review is not reported");
 }
+
+#[test]
+fn trace_follows_a_release_through_task_events_and_ignores_forged_lines() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    assert_eq!(gitfab(&["keygen", "--key-id", "k1", "--dir", "keys"], dir).0, 0);
+    let event = |phase: &str, n: u32, refs: Value| json!({
+        "schema_version": "gitfab.task.v1", "event_id": format!("run-9.{n}.0"), "timestamp": "2026-11-12T03:00:00Z",
+        "project_id": "DEMO-04", "task_id": "task-9", "run_id": "run-9", "matrix_room_id": "!room:example.org",
+        "matrix_thread_event_id": "$root", "git_backend": "github", "repo_ref": "https://github.com/org/demo-04",
+        "baseline_sha": "a".repeat(40), "spec_ref": "spec/DEMO-04.md@v1", "phase": phase, "status": "succeeded",
+        "actor_id": "@agent:example.org", "input_digest": format!("sha256:{}", "a".repeat(64)),
+        "output_digest": null, "artifact_refs": refs, "request_id": "req-9", "signature": null, "round": 1
+    });
+    let release = sign(dir, &event("release", 2, json!(["https://github.com/org/demo-04/releases/tag/v4"])));
+    let mut forged = sign(dir, &event("release", 3, json!([])));
+    forged["artifact_refs"] = json!(["https://github.com/org/demo-04/releases/tag/v4"]);
+    let lines = [sign(dir, &event("intake", 1, json!([]))), release, forged].iter().map(|e| e.to_string() + "\n").collect::<String>();
+    std::fs::write(dir.join("events.jsonl"), lines).unwrap();
+    let (code, out) = gitfab(&["trace", "--keys", "keys", "--id", "v4", "events.jsonl"], dir);
+    assert_eq!(code, 0);
+    assert_eq!(out["matches"].as_array().unwrap().len(), 1, "only the signed Release, not the forged copy: {out}");
+    assert_eq!(out["matches"][0]["line"], 2);
+    let (code, out) = gitfab(&["trace", "--keys", "keys", "--id", "task-9", "events.jsonl"], dir);
+    assert_eq!((code, out["matches"].as_array().unwrap().len()), (0, 2));
+    assert_eq!(gitfab(&["trace", "--keys", "keys", "--id", "nothing", "events.jsonl"], dir).0, 1);
+}

@@ -101,6 +101,17 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+    /// Every verified signed record that names an identifier: a project, task, run, commit SHA, Release
+    /// id or tag, image digest or a link. Exit 1 when nothing matches.
+    Trace {
+        #[arg(long)]
+        keys: PathBuf,
+        /// The identifier to follow.
+        #[arg(long)]
+        id: String,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
     /// Recompute token totals from JSONL files; fails on any invalid line, conflict or bad correction.
     Ledger {
         #[arg(required = true)]
@@ -321,6 +332,13 @@ fn run(command: Command) -> Result<bool, String> {
             println!("{}", report(&ring, &project, &files)?);
             Ok(true)
         }
+        Command::Trace { keys, id, files } => {
+            let ring = Keyring::load_dir(&keys).map_err(|e| e.to_string())?;
+            let found = trace(&ring, &id, &files)?;
+            let any = !found.is_empty();
+            print(&json!({"id": id, "matches": found}));
+            Ok(any)
+        }
         Command::Ledger { files } => {
             let mut ledger = Ledger::default();
             let mut errors = Vec::new();
@@ -382,6 +400,38 @@ fn run(command: Command) -> Result<bool, String> {
 fn display(path: &Path) -> String {
     path.file_name()
         .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// Fields an identifier is looked up in, and the fields shown for each match.
+const TRACE_FIELDS: &[&str] = &[
+    "project_id", "project", "task_id", "run_id", "event_id", "release_id", "tag", "commit_sha",
+    "baseline_sha", "image_digest", "artifact_digest",
+];
+
+/// Records naming `id` (Annex 2 §5: project, task, commit and Release ids lead to one another).
+fn trace(ring: &Keyring, id: &str, files: &[PathBuf]) -> Result<Vec<Value>, String> {
+    let mut found = Vec::new();
+    for file in files {
+        for (n, raw) in read(file)?.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+            let Ok((event, Some(_))) = verify_line(ring, raw) else { continue };
+            let refs: Vec<&str> = event["artifact_refs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let named = TRACE_FIELDS.iter().any(|f| event[*f] == id) || refs.iter().any(|r| *r == id || r.ends_with(&format!("/{id}")));
+            if !named {
+                continue;
+            }
+            let mut hit = json!({"file": display(file), "line": n + 1, "schema": event["schema_version"]});
+            for f in TRACE_FIELDS.iter().chain(&["phase", "status", "timestamp", "deployed_at"]) {
+                if !event[*f].is_null() {
+                    hit[*f] = event[*f].clone();
+                }
+            }
+            if !refs.is_empty() {
+                hit["artifact_refs"] = json!(refs);
+            }
+            found.push(hit);
+        }
+    }
+    Ok(found)
 }
 
 /// The "what I did" report (Annex 1 §1.2.1(6)): built only from verified signed records.
