@@ -63,11 +63,13 @@ backend_token_file() {
 }
 
 # load_project <PROJECT_ID>: reads acceptance/projects/<id>.env as data (KEY=VALUE, known keys only, never
-# executed) into BACKEND, REPO, BRANCH, BASELINE_SHA, PRD and PRD_SHA256. Returns 1 when it is missing or
-# has an unknown line.
+# executed) into BACKEND, REPO, BRANCH, BASELINE_SHA, PRD, PRD_SHA256 and the run settings HAGENCY_PROJECT,
+# ROOM_ID, COORDINATOR, IMPLEMENTER, REVIEWER, SPEC_REF and GOAL. Returns 1 when it is missing or has an
+# unknown line.
 load_project() {
     local env="${GITFAB_PROJECTS_DIR:-$ACCEPTANCE_DIR/projects}/$1.env" line key
     BACKEND="" REPO="" BRANCH="" BASELINE_SHA="" PRD="" PRD_SHA256=""
+    HAGENCY_PROJECT="" ROOM_ID="" COORDINATOR="" IMPLEMENTER="" REVIEWER="" SPEC_REF="" GOAL=""
     case "$1" in '' | */* | .*) return 1 ;; esac
     [ -f "$env" ] || return 1
     while IFS= read -r line || [ -n "$line" ]; do
@@ -75,7 +77,8 @@ load_project() {
         key=${line%%=*}
         case "$key" in
             PROJECT_ID) ;;
-            BACKEND | REPO | BRANCH | BASELINE_SHA | PRD | PRD_SHA256)
+            BACKEND | REPO | BRANCH | BASELINE_SHA | PRD | PRD_SHA256 | HAGENCY_PROJECT | ROOM_ID | COORDINATOR \
+                | IMPLEMENTER | REVIEWER | SPEC_REF | GOAL)
                 [ "$key" != "$line" ] || return 1
                 printf -v "$key" '%s' "${line#*=}" ;;
             *) return 1 ;;
@@ -196,6 +199,28 @@ http_get() {
     ) || HTTP_STATUS=000
     HTTP_BODY=$(cat "$out")
     rm -f "$out"
+}
+
+# http_send <METHOD> <url> <token-file> [json-body] sets HTTP_STATUS and HTTP_BODY like http_get. The token
+# goes to curl on standard input; the body travels in a private temporary file.
+http_send() {
+    local method=$1 url=$2 token_file=$3 body=${4:-} out data token
+    HTTP_STATUS=000
+    HTTP_BODY=""
+    token=$(read_secret "$token_file") || return 0
+    out=$(mktemp)
+    data=$(mktemp)
+    printf '%s' "$body" >"$data"
+    HTTP_STATUS=$(
+        {
+            printf 'header = "Authorization: Bearer %s"\n' "$token"
+            printf 'header = "Content-Type: application/json"\n'
+            printf 'header = "User-Agent: gitfab-acceptance"\n'
+        } | curl -sS -K - -X "$method" --data-binary "@$data" -o "$out" -w '%{http_code}' --max-time 20 "$url" \
+            2>/dev/null
+    ) || HTTP_STATUS=000
+    HTTP_BODY=$(cat "$out")
+    rm -f "$out" "$data"
 }
 
 # Minimal JSON field read for flat API responses: json_field <key> reads stdin.

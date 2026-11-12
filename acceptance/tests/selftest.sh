@@ -67,6 +67,11 @@ GITFAB_PROJECTS_DIR="$tmp/projects" ACCEPTANCE_RUN_ID=ar-selftest-release expect
     "verify-release fails without a signed Release event" "$here/verify-release.sh" DEMO-05 "$tmp/events.jsonl"
 GITFAB_PROJECTS_DIR="$tmp/projects" ACCEPTANCE_RUN_ID=ar-selftest-release-unknown expect 2 \
     "verify-release refuses an unknown project" "$here/verify-release.sh" DEMO-09 "$tmp/events.jsonl"
+printf 'PROJECT_ID=DEMO-02\nBACKEND=github\nREPO=example/demo-02\n' >"$tmp/projects/DEMO-02.env"
+GITFAB_PROJECTS_DIR="$tmp/projects" ACCEPTANCE_RUN_ID=ar-selftest-run-backend expect 2 \
+    "run-project refuses a backend the project is not recorded for" "$here/run-project.sh" DEMO-02 --backend gitcode
+GITFAB_PROJECTS_DIR="$tmp/projects" ACCEPTANCE_RUN_ID=ar-selftest-run-config expect 2 \
+    "run-project refuses an incomplete project" "$here/run-project.sh" DEMO-02 --backend github
 ACCEPTANCE_RUN_ID=ar-selftest-pending expect 3 "an unavailable command exits 3" \
     "$here/rollback.sh" DEMO-01
 ACCEPTANCE_RUN_ID=bad-id expect 2 "a malformed run id is refused" "$here/verify-events.sh" "$tmp/events.jsonl"
