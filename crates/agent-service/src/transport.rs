@@ -334,6 +334,52 @@ pub struct TransportStore {
     limits: Limits,
     encrypted_delivery: EncryptedDelivery,
 }
+/// Where and for whom a GitFab run works. `bindings` maps a workflow role to that Agent's binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OrchestratorRunInit {
+    pub project_id: String,
+    pub task_id: String,
+    pub room_id: String,
+    pub thread_root: String,
+    pub requester_mxid: String,
+    pub bindings: serde_json::Value,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OrchestratorRun {
+    pub id: String,
+    pub init: OrchestratorRunInit,
+    pub state: crate::orchestrator_flow::State,
+    pub revision: i64,
+    pub dispatch_id: Option<String>,
+}
+#[derive(diesel::QueryableByName)]
+struct OrchestratorRunRow {
+    #[diesel(sql_type = Text)] id: String,
+    #[diesel(sql_type = Text)] project_id: String,
+    #[diesel(sql_type = Text)] task_id: String,
+    #[diesel(sql_type = Text)] room_id: String,
+    #[diesel(sql_type = Text)] thread_root: String,
+    #[diesel(sql_type = Text)] requester_mxid: String,
+    #[diesel(sql_type = Text)] bindings: String,
+    #[diesel(sql_type = Text)] state: String,
+    #[diesel(sql_type = BigInt)] revision: i64,
+    #[diesel(sql_type = Nullable<Text>)] dispatch_id: Option<String>,
+}
+impl OrchestratorRunRow {
+    fn into_run(self) -> Result<OrchestratorRun> {
+        let parse = |text: &str| serde_json::from_str::<serde_json::Value>(text).map_err(|_| Error::Conflict("orchestrator_run_corrupt"));
+        let state = crate::orchestrator_flow::State::from_json(&parse(&self.state)?).ok_or(Error::Conflict("orchestrator_run_corrupt"))?;
+        Ok(OrchestratorRun {
+            id: self.id,
+            init: OrchestratorRunInit {
+                project_id: self.project_id, task_id: self.task_id, room_id: self.room_id,
+                thread_root: self.thread_root, requester_mxid: self.requester_mxid, bindings: parse(&self.bindings)?,
+            },
+            state, revision: self.revision, dispatch_id: self.dispatch_id,
+        })
+    }
+}
+const ORCHESTRATOR_RUN_COLUMNS: &str = "id,project_id,task_id,room_id,thread_root,requester_mxid,bindings::text AS bindings,state::text AS state,revision,dispatch_id";
 /// Which dispatch of an orchestrator run a stage message belongs to.
 #[derive(Clone, Debug)]
 pub(crate) struct OrchestratedStage {
@@ -398,8 +444,8 @@ impl TransportStore {
             if !notices_initialized.matched {
                 db.batch_execute(include_str!("request_notices_schema.sql")).await?;
             }
-            let orchestrator_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.orchestrator_stage_events') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
-            if !orchestrator_initialized.matched {db.batch_execute(include_str!("orchestrator_schema.sql")).await?;}
+            // Idempotent; run on every open so tables added later reach existing installations.
+            db.batch_execute(include_str!("orchestrator_schema.sql")).await?;
             let files_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.event_attachments') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !files_initialized.matched {db.batch_execute(include_str!("attachment_schema.sql")).await?;}
             let delivery_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
@@ -842,6 +888,60 @@ impl TransportStore {
         }
         self.ingest_routed_inner(binding, event, None, f, now, now, Admission::Orchestrated)
             .await
+    }
+    /// Creates the run for a task thread, or returns the one it already has.
+    // Called by the GitFab orchestrator worker, which lands next.
+    #[allow(dead_code)]
+    pub(crate) async fn create_orchestrator_run(&self, init: &OrchestratorRunInit, now: i64) -> Result<OrchestratorRun> {
+        matrix_id(&init.room_id, '!')?;
+        matrix_id(&init.thread_root, '$')?;
+        matrix_id(&init.requester_mxid, '@')?;
+        if !init.bindings.is_object() { return Err(Error::Invalid("invalid_orchestrator_bindings")); }
+        let id = format!("orun_{}", entity_id()?);
+        let state = crate::orchestrator_flow::State::NotStarted.to_json().to_string();
+        self.db.with_connection(async |db| {
+            sql_query("INSERT INTO hagency_agent_v1.orchestrator_runs(id,project_id,task_id,room_id,thread_root,requester_mxid,bindings,state,created_at_ms,updated_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$9) ON CONFLICT (room_id,thread_root) DO NOTHING")
+                .bind::<Text,_>(&id).bind::<Text,_>(&init.project_id).bind::<Text,_>(&init.task_id).bind::<Text,_>(&init.room_id)
+                .bind::<Text,_>(&init.thread_root).bind::<Text,_>(&init.requester_mxid).bind::<Text,_>(init.bindings.to_string())
+                .bind::<Text,_>(&state).bind::<BigInt,_>(now).execute(db).await?;
+            let row = sql_query(format!("SELECT {ORCHESTRATOR_RUN_COLUMNS} FROM hagency_agent_v1.orchestrator_runs WHERE room_id=$1 AND thread_root=$2"))
+                .bind::<Text,_>(&init.room_id).bind::<Text,_>(&init.thread_root).get_result::<OrchestratorRunRow>(db).await?;
+            let run = row.into_run()?;
+            if run.init != *init { return Err(Error::Conflict("orchestrator_thread_in_use")); }
+            Ok(run)
+        }).await
+    }
+    // Called by the GitFab orchestrator worker, which lands next.
+    #[allow(dead_code)]
+    pub(crate) async fn orchestrator_run(&self, id: &str) -> Result<Option<OrchestratorRun>> {
+        self.db.with_connection(async |db| {
+            let row = sql_query(format!("SELECT {ORCHESTRATOR_RUN_COLUMNS} FROM hagency_agent_v1.orchestrator_runs WHERE id=$1"))
+                .bind::<Text,_>(id).get_result::<OrchestratorRunRow>(db).await.optional()?;
+            row.map(OrchestratorRunRow::into_run).transpose()
+        }).await
+    }
+    /// Runs that have not finished, oldest first.
+    // Called by the GitFab orchestrator worker, which lands next.
+    #[allow(dead_code)]
+    pub(crate) async fn active_orchestrator_runs(&self, limit: i64) -> Result<Vec<OrchestratorRun>> {
+        self.db.with_connection(async |db| {
+            let rows = sql_query(format!("SELECT {ORCHESTRATOR_RUN_COLUMNS} FROM hagency_agent_v1.orchestrator_runs WHERE state->>'kind' NOT IN ('completed','failed') ORDER BY created_at_ms,id LIMIT $1"))
+                .bind::<BigInt,_>(limit).load::<OrchestratorRunRow>(db).await?;
+            rows.into_iter().map(OrchestratorRunRow::into_run).collect()
+        }).await
+    }
+    /// Saves the next state only if nobody saved since `revision` was read.
+    // Called by the GitFab orchestrator worker, which lands next.
+    #[allow(dead_code)]
+    pub(crate) async fn save_orchestrator_run(&self, id: &str, revision: i64, state: &crate::orchestrator_flow::State, dispatch_id: Option<&str>, now: i64) -> Result<i64> {
+        let state = state.to_json().to_string();
+        self.db.with_connection(async |db| {
+            let saved = sql_query("UPDATE hagency_agent_v1.orchestrator_runs SET state=$3::jsonb,dispatch_id=$4,revision=revision+1,updated_at_ms=$5 WHERE id=$1 AND revision=$2")
+                .bind::<Text,_>(id).bind::<BigInt,_>(revision).bind::<Text,_>(&state).bind::<Nullable<Text>,_>(dispatch_id).bind::<BigInt,_>(now)
+                .execute(db).await?;
+            if saved == 0 { return Err(Error::Conflict("orchestrator_run_revision_changed")); }
+            Ok(revision + 1)
+        }).await
     }
     /// The recorded state of one dispatch and its reply, for the orchestrator to map to an outcome.
     // Called by the GitFab orchestrator worker, which lands next.

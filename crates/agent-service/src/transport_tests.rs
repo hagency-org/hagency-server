@@ -3391,3 +3391,60 @@ async fn postgres_orchestrated_dispatch_reads_state_and_reply() {
     delivered.reply_state = Some("sent".into());
     assert_eq!(observed(&delivered, Stage::Review), Some(Outcome::Replied(Some(Verdict::Reject))));
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_orchestrator_run_is_one_per_thread_and_saves_with_a_revision() {
+    use crate::orchestrator_flow::{Input, State, next};
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    let init = OrchestratorRunInit {
+        project_id: "proj_gitfab".into(),
+        task_id: "task_1".into(),
+        room_id: "!gitfab-run:example.test".into(),
+        thread_root: "$gitfab-run-root".into(),
+        requester_mxid: "@owner:example.test".into(),
+        bindings: serde_json::json!({"coordinator": f.binding, "implementer": f.binding, "reviewer": f.binding}),
+    };
+    let run = f.transport.create_orchestrator_run(&init, now).await.unwrap();
+    assert!(run.id.starts_with("orun_"));
+    assert_eq!((run.state.clone(), run.revision, run.dispatch_id.clone()), (State::NotStarted, 1, None));
+    // The same thread returns the same run; a different task in that thread is refused.
+    assert_eq!(f.transport.create_orchestrator_run(&init, now).await.unwrap().id, run.id);
+    let mut other = init.clone();
+    other.task_id = "task_2".into();
+    assert!(matches!(
+        f.transport.create_orchestrator_run(&other, now).await.unwrap_err(),
+        Error::Conflict("orchestrator_thread_in_use")
+    ));
+    let mut bad = init.clone();
+    bad.bindings = serde_json::json!(["not", "a", "map"]);
+    bad.thread_root = "$gitfab-run-root-2".into();
+    assert!(f.transport.create_orchestrator_run(&bad, now).await.is_err());
+
+    let (started, _) = next(&run.state, Input::Start);
+    let revision = f
+        .transport
+        .save_orchestrator_run(&run.id, run.revision, &started, Some("evt_spec"), now + 1)
+        .await
+        .unwrap();
+    assert_eq!(revision, 2);
+    // A second worker holding the old revision cannot overwrite it.
+    assert!(matches!(
+        f.transport
+            .save_orchestrator_run(&run.id, run.revision, &State::Completed, None, now + 2)
+            .await
+            .unwrap_err(),
+        Error::Conflict("orchestrator_run_revision_changed")
+    ));
+    let read = f.transport.orchestrator_run(&run.id).await.unwrap().unwrap();
+    assert_eq!((read.state, read.revision, read.dispatch_id.as_deref()), (started, 2, Some("evt_spec")));
+    assert!(f.transport.active_orchestrator_runs(10).await.unwrap().iter().any(|r| r.id == run.id));
+
+    f.transport
+        .save_orchestrator_run(&run.id, 2, &State::Failed { reason: "aborted" }, None, now + 3)
+        .await
+        .unwrap();
+    assert!(!f.transport.active_orchestrator_runs(10).await.unwrap().iter().any(|r| r.id == run.id));
+    assert_eq!(f.transport.orchestrator_run("orun_missing").await.unwrap(), None);
+}
