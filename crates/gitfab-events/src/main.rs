@@ -90,6 +90,17 @@ enum Command {
         keys: PathBuf,
         sbom: PathBuf,
     },
+    /// Write a Markdown "what I did" report of one project from the journals and receipts: each run's
+    /// stages in time order with actors and links, deployments, token totals and how many lines
+    /// verified. Only signed lines that verify are reported; the rest are counted and named.
+    Report {
+        #[arg(long)]
+        keys: PathBuf,
+        #[arg(long)]
+        project: String,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
     /// Recompute token totals from JSONL files; fails on any invalid line, conflict or bad correction.
     Ledger {
         #[arg(required = true)]
@@ -301,6 +312,15 @@ fn run(command: Command) -> Result<bool, String> {
                 "key_id": attestation["signature"]["key_id"], "failures": failures}));
             Ok(failures.is_empty())
         }
+        Command::Report {
+            keys,
+            project,
+            files,
+        } => {
+            let ring = Keyring::load_dir(&keys).map_err(|e| e.to_string())?;
+            println!("{}", report(&ring, &project, &files)?);
+            Ok(true)
+        }
         Command::Ledger { files } => {
             let mut ledger = Ledger::default();
             let mut errors = Vec::new();
@@ -362,6 +382,93 @@ fn run(command: Command) -> Result<bool, String> {
 fn display(path: &Path) -> String {
     path.file_name()
         .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// The "what I did" report (Annex 1 §1.2.1(6)): built only from verified signed records.
+fn report(ring: &Keyring, project: &str, files: &[PathBuf]) -> Result<String, String> {
+    use std::collections::BTreeMap;
+    let (mut verified, mut refused) = (0usize, Vec::new());
+    let mut runs: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    let mut receipts = Vec::new();
+    let mut ledger = Ledger::default();
+    let mut tokens = String::new();
+    for file in files {
+        for (n, raw) in read(file)?.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+            let Ok((event, digest)) = verify_line(ring, raw) else {
+                refused.push(format!("{}:{}", display(file), n + 1));
+                continue;
+            };
+            let mine = event["project_id"] == project || event["project"] == project;
+            if !mine || digest.is_none() {
+                continue;
+            }
+            verified += 1;
+            match event["schema_version"].as_str() {
+                Some(schema::TASK) => runs.entry(event["run_id"].as_str().unwrap_or("").to_owned()).or_default().push(event),
+                Some(schema::RELEASE) => receipts.push(event),
+                Some(schema::MEMORY | schema::TOKEN) => {
+                    tokens.push_str(&event.to_string());
+                    tokens.push('\n');
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = format!("# {project} 工作报告\n\n只采用验签通过的签名记录：{verified} 条");
+    if !refused.is_empty() {
+        out += &format!("；另有 {} 行未通过校验，未采用（{}）", refused.len(), refused.join("、"));
+    }
+    out += "。\n";
+    for (run, mut events) in runs {
+        events.sort_by(|a, b| a["timestamp"].as_str().cmp(&b["timestamp"].as_str()));
+        let first = &events[0];
+        let last = &events[events.len() - 1];
+        out += &format!(
+            "\n## 运行 {run}\n\n任务 {}，仓库 {}（{}，基线 {}），Spec {}。当前：{} {}。\n\n| 时间 | 阶段 | 状态 | 轮次 | 执行者 | 链接 |\n|---|---|---|---|---|---|\n",
+            first["task_id"].as_str().unwrap_or(""), first["repo_ref"].as_str().unwrap_or(""),
+            first["git_backend"].as_str().unwrap_or(""), first["baseline_sha"].as_str().unwrap_or(""),
+            first["spec_ref"].as_str().unwrap_or(""), last["phase"].as_str().unwrap_or(""), last["status"].as_str().unwrap_or(""),
+        );
+        for e in &events {
+            let links: Vec<&str> = e["artifact_refs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            out += &format!(
+                "| {} | {} | {} | {} | {} | {} |\n",
+                e["timestamp"].as_str().unwrap_or(""), e["phase"].as_str().unwrap_or(""), e["status"].as_str().unwrap_or(""),
+                e["round"].as_i64().map_or(String::new(), |r| r.to_string()), e["actor_id"].as_str().unwrap_or(""),
+                links.join(" "),
+            );
+            if let Some(findings) = e["findings"].as_array().and_then(|f| f.first()).and_then(Value::as_str) {
+                let line = findings.lines().find(|l| l.trim().starts_with("VERDICT:")).unwrap_or("").trim();
+                if !line.is_empty() {
+                    out += &format!("|  | 评审结论 | {line} |  |  |  |\n");
+                }
+            }
+        }
+    }
+    if !receipts.is_empty() {
+        out += "\n## 部署\n\n| 时间 | 回执 | 提交 | 镜像 | 健康检查 | 回退 | Runner |\n|---|---|---|---|---|---|---|\n";
+        for r in &receipts {
+            out += &format!(
+                "| {} | {} | {} | {} | {} | {} | {} |\n",
+                r["deployed_at"].as_str().unwrap_or(""), r["release_id"].as_str().unwrap_or(""),
+                r["commit_sha"].as_str().unwrap_or("").chars().take(12).collect::<String>(),
+                r["image_digest"].as_str().unwrap_or("").chars().take(19).collect::<String>(),
+                r["healthcheck"]["result"].as_str().unwrap_or(""), r["rollback"]["result"].as_str().unwrap_or(""),
+                r["runner_id"].as_str().unwrap_or(""),
+            );
+        }
+    }
+    if !tokens.is_empty() {
+        let errors = ledger.read(&tokens, 1);
+        out += "\n## Token\n\n";
+        out += &match (errors.is_empty(), ledger.summary()) {
+            (true, Ok(summary)) => format!("合计 {}，去重后 {} 条，忽略重复 {} 条，更正 {} 条（账本摘要 {}）。\n",
+                summary["token_total"], summary["unique_events"], summary["duplicates_ignored"], summary["corrections"],
+                summary["ledger_digest"].as_str().unwrap_or("")),
+            _ => "账本复算未通过，请运行 gitfab ledger 查看原因。\n".to_owned(),
+        };
+    }
+    Ok(out)
 }
 
 /// Returns the event and, when it is signed and verified, its payload digest.

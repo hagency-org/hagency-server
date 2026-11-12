@@ -225,3 +225,31 @@ fn a_signed_key_event_needs_its_identity_event() {
     let (code, report) = verify(dir, &[signed, identity]);
     assert_eq!(code, 0, "{report}");
 }
+
+#[test]
+fn the_report_uses_verified_records_and_names_the_rest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    assert_eq!(gitfab(&["keygen", "--key-id", "k1", "--dir", "keys"], dir).0, 0);
+    let task = |phase: &str, status: &str, n: u32, refs: Value| json!({
+        "schema_version": "gitfab.task.v1", "event_id": format!("run-1.{n}.0"), "timestamp": format!("2026-11-12T03:0{n}:00Z"),
+        "project_id": "DEMO-01", "task_id": "task-1", "run_id": "run-1", "matrix_room_id": "!room:example.org",
+        "matrix_thread_event_id": "$root", "git_backend": "gitcode", "repo_ref": "https://gitcode.com/org/demo-01",
+        "baseline_sha": "a".repeat(40), "spec_ref": "spec/DEMO-01.md@v1", "phase": phase, "status": status,
+        "actor_id": "@agent:example.org", "input_digest": format!("sha256:{}", "a".repeat(64)),
+        "output_digest": null, "artifact_refs": refs, "request_id": "req-1", "signature": null, "round": 1
+    });
+    let intake = sign(dir, &task("intake", "succeeded", 1, json!([])));
+    let release = sign(dir, &task("release", "succeeded", 2, json!(["https://gitcode.com/org/demo-01/releases/v1"])));
+    let mut forged = sign(dir, &task("review", "succeeded", 3, json!([])));
+    forged["status"] = json!("failed");
+    let lines = [intake, release, forged].iter().map(|e| e.to_string() + "\n").collect::<String>();
+    std::fs::write(dir.join("events.jsonl"), lines).unwrap();
+    let (code, out) = gitfab(&["report", "--keys", "keys", "--project", "DEMO-01", "events.jsonl"], dir);
+    let text = out.as_str().unwrap();
+    assert_eq!(code, 0);
+    assert!(text.contains("验签通过的签名记录：2 条"), "{text}");
+    assert!(text.contains("1 行未通过校验") && text.contains("events.jsonl:3"), "{text}");
+    assert!(text.contains("https://gitcode.com/org/demo-01/releases/v1"));
+    assert!(!text.contains("review"), "the forged review is not reported");
+}
