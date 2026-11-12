@@ -296,15 +296,22 @@ pub fn deploy(
         ("org.hagency.gitfab.commit", &release.commit),
         ("org.hagency.gitfab.tag", &release.tag),
     ])?;
+    // A Release deployed again (after a restart, say) gets its own receipt and SBOM files; nothing
+    // recorded earlier is overwritten.
+    let first = format!("{}-{}", release.project, release.tag);
+    let release_id = if history.iter().any(|r| r["release_id"] == first.as_str()) {
+        format!("{first}-d{}", history.len() + 1)
+    } else {
+        first
+    };
     let sbom = engine.sbom(&image)?;
     let bases = engine.base_images(context)?;
     std::fs::create_dir_all(sbom_dir).map_err(|e| e.to_string())?;
-    let sbom_name = format!("{}-{}.spdx.json", release.project, release.tag);
+    let sbom_name = format!("{release_id}.spdx.json");
     write_sbom(sbom_dir, &sbom_name, &sbom, &image, &bases, release, out)?;
     let name = container(&release.project);
     engine.replace(&name, &image, probe.port, probe.container_port)?;
     let result = check(probe, &release.tag);
-    let release_id = format!("{}-{}", release.project, release.tag);
     let restored = match &result {
         Ok(_) => None,
         Err(_) => previous.as_ref().and_then(|p| {

@@ -129,7 +129,22 @@ elif "$gitfab" verify-sbom --keys "$keys" "$sbom" >"$RUN_DIR/sbom-verify.json"; 
     bases=$(tr -d '\n ' <"$RUN_DIR/sbom-verify.json" | sed -n 's/.*"base_images":\[\(.*\)\],"failures".*/\1/p')
     case "$bases" in
         '' | *'"digest":null'*) check deploy.base_images fail "base image digests not all recorded: ${bases:-none}" ;;
-        *) check deploy.base_images ok "$bases" ;;
+        *)
+            # One acceptance run must not see a base image change (Annex 3 §9): every project verified
+            # under this acceptance_run_id adds its bases here, and a different digest for a name fails.
+            seen="$RUN_DIR/base-images.txt"
+            drift=""
+            for pair in $(printf '%s' "$bases" | sed 's/},{/}\n{/g' | sed -n 's/.*"digest":"\([^"]*\)","name":"\([^"]*\)".*/\2=\1/p'); do
+                name_=${pair%%=*} digest_=${pair#*=}
+                earlier=$(awk -F= -v n="$name_" -v d="$digest_" '$1 == n && $2 != d { print; exit }' "$seen" 2>/dev/null || true)
+                if [ -n "$earlier" ]; then drift="$drift $name_ (${earlier#*=} then $digest_)"; fi
+                grep -qxF "$pair" "$seen" 2>/dev/null || printf '%s\n' "$pair" >>"$seen"
+            done
+            if [ -n "$drift" ]; then
+                check deploy.base_images fail "base image changed within $ACCEPTANCE_RUN_ID:$drift"
+            else
+                check deploy.base_images ok "$bases"
+            fi ;;
     esac
 else
     check deploy.sbom fail "see sbom-verify.json"

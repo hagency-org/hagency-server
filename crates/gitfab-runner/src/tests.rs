@@ -189,3 +189,19 @@ fn the_sbom_comes_with_its_digest_and_a_signed_attestation() {
     assert_eq!(sig["sbom_digest"], sha256(&body));
     assert_eq!(sig["base_images"][0]["name"], "busybox:1.36");
 }
+
+#[test]
+fn a_release_deployed_again_gets_its_own_receipt_and_sbom() {
+    let (dir, fake, probe, out, ring) = setup();
+    let sbom = dir.path().join("sbom");
+    deploy(&fake, &release("v1"), &dir.path().join("app"), &sbom, &probe, &out).unwrap();
+    let first = std::fs::read(sbom.join("DEMO-01-v1.spdx.json")).unwrap();
+    let again = deploy(&fake, &release("v1"), &dir.path().join("app"), &sbom, &probe, &out).unwrap();
+    assert!(again.passed);
+    assert_eq!(again.release_id, "DEMO-01-v1-d2");
+    assert_eq!(std::fs::read(sbom.join("DEMO-01-v1.spdx.json")).unwrap(), first, "the first SBOM is kept");
+    assert!(sbom.join("DEMO-01-v1-d2.spdx.json.sig").exists());
+    let all = signed_receipts(&out, &ring);
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[1]["sbom_ref"], "sbom/DEMO-01-v1-d2.spdx.json");
+}
