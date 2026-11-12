@@ -325,3 +325,12 @@ async fn without_checks_access_actions_runs_decide() {
         .on("GET", "/repos/octo/demo/actions/runs?head_sha=abc&per_page=100", 200, json!({"workflow_runs": [{"status": "completed", "conclusion": "failure"}]}));
     assert_eq!(Forge::new(Backend::GitHub, &fake).checks(&repo(), &pull).await.unwrap(), Checks::Failure);
 }
+
+#[tokio::test]
+async fn a_gitcode_pull_request_created_with_only_web_url_is_read() {
+    let fake = Fake::default()
+        .on("GET", "/repos/octo/demo/pulls?state=open&base=main&per_page=100", 200, json!([]))
+        .on("POST", "/repos/octo/demo/pulls", 200, json!({"number": 1, "web_url": "https://gitcode.com/octo/demo/merge_requests/1", "head": {"sha": "c"}}));
+    let pull = Forge::new(Backend::GitCode, &fake).upsert_pull(&repo(), "b", "main", "t", "").await.unwrap();
+    assert_eq!(pull.url, "https://gitcode.com/octo/demo/merge_requests/1");
+}

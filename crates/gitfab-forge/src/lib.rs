@@ -379,7 +379,11 @@ impl<T: Transport> Forge<T> {
                     path: strip_query(path),
                     field: "number",
                 })?,
-            url: self.field(value, path, "html_url")?.into(),
+            // GitCode answers a created Pull Request with web_url only; listings carry html_url.
+            url: self
+                .field(value, path, "html_url")
+                .or_else(|_| self.field(value, path, "web_url"))?
+                .into(),
             head_sha: self
                 .field(value, path, "head.sha")
                 .unwrap_or_default()
@@ -567,7 +571,9 @@ impl<T: Transport> Forge<T> {
         self.get_body(
             "POST",
             path,
-            json!({"tag_name": tag, "target_commitish": target, "name": name, "body": notes}),
+            // GitCode refuses an empty body; GitHub accepts any.
+            json!({"tag_name": tag, "target_commitish": target, "name": name,
+                "body": if notes.trim().is_empty() { format!("Release {tag}") } else { notes.to_owned() }}),
         )
         .await
         .map(|created| self.release_from(repo, tag, &created))
