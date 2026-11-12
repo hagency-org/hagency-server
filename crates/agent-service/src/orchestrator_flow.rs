@@ -372,6 +372,112 @@ fn replied(slot: Slot, rev: u32, verdict: Option<Verdict>) -> (State, Vec<Action
     }
 }
 
+/// Every reason a run stops, so a stored state reads back to the same static text.
+const REASONS: &[&str] = &[
+    "unknown_outcome",
+    "stage_timeout",
+    "stage_failed",
+    "spec_rejected",
+    "aborted",
+    "rework_limit",
+    "review_blocked",
+    "review_without_verdict",
+];
+
+impl Stage {
+    pub fn from_phase(phase: &str) -> Option<Self> {
+        [
+            Self::Spec,
+            Self::Plan,
+            Self::Execute,
+            Self::Test,
+            Self::Review,
+            Self::Release,
+        ]
+        .into_iter()
+        .find(|s| s.phase() == phase)
+    }
+}
+
+impl Slot {
+    fn to_json(self) -> serde_json::Value {
+        serde_json::json!({"stage": self.stage.phase(), "round": self.round, "attempt": self.attempt})
+    }
+
+    fn from_json(v: &serde_json::Value) -> Option<Self> {
+        Some(Self {
+            stage: Stage::from_phase(v["stage"].as_str()?)?,
+            round: u32::try_from(v["round"].as_u64()?).ok()?,
+            attempt: u32::try_from(v["attempt"].as_u64()?)
+                .ok()
+                .filter(|a| *a >= 1)?,
+        })
+    }
+}
+
+impl State {
+    /// The stored form of a run's state (`orchestrator_runs.state`).
+    pub fn to_json(&self) -> serde_json::Value {
+        use serde_json::json;
+        match self {
+            Self::NotStarted => json!({"kind": "not_started"}),
+            Self::Running {
+                slot,
+                spec_revision,
+            } => json!({"kind": "running", "slot": slot.to_json(), "specRevision": spec_revision}),
+            Self::AwaitingSpecApproval { spec_revision } => {
+                json!({"kind": "awaiting_spec_approval", "specRevision": spec_revision})
+            }
+            Self::ManualIntervention {
+                slot,
+                spec_revision,
+                reason,
+            } => {
+                json!({"kind": "manual_intervention", "slot": slot.to_json(), "specRevision": spec_revision, "reason": reason})
+            }
+            Self::Completed => json!({"kind": "completed"}),
+            Self::Failed { reason } => json!({"kind": "failed", "reason": reason}),
+        }
+    }
+
+    /// Reads a stored state back. Anything malformed or unknown is refused rather than guessed.
+    pub fn from_json(v: &serde_json::Value) -> Option<Self> {
+        let revision = || {
+            v["specRevision"]
+                .as_u64()
+                .and_then(|r| u32::try_from(r).ok())
+                .filter(|r| *r >= 1)
+        };
+        let reason = || {
+            v["reason"]
+                .as_str()
+                .and_then(|r| REASONS.iter().copied().find(|known| *known == r))
+        };
+        Some(match v["kind"].as_str()? {
+            "not_started" => Self::NotStarted,
+            "running" => Self::Running {
+                slot: Slot::from_json(&v["slot"])?,
+                spec_revision: revision()?,
+            },
+            "awaiting_spec_approval" => Self::AwaitingSpecApproval {
+                spec_revision: revision()?,
+            },
+            "manual_intervention" => Self::ManualIntervention {
+                slot: Slot::from_json(&v["slot"])?,
+                spec_revision: revision()?,
+                reason: reason()?,
+            },
+            "completed" => Self::Completed,
+            "failed" => Self::Failed { reason: reason()? },
+            _ => return None,
+        })
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Failed { .. })
+    }
+}
+
 /// One dispatch as recorded by the transport tables (`owner_events` joined with its `reply_outbox`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DispatchRow {
@@ -799,5 +905,61 @@ mod tests {
         );
         assert_eq!(verdict("I would approve this"), None);
         assert_eq!(verdict("VERDICT: maybe"), None);
+    }
+
+    #[test]
+    fn stored_states_read_back_exactly() {
+        let slot = Slot {
+            stage: Stage::Review,
+            round: 2,
+            attempt: 1,
+        };
+        let states = [
+            State::NotStarted,
+            State::Running {
+                slot,
+                spec_revision: 3,
+            },
+            State::AwaitingSpecApproval { spec_revision: 1 },
+            State::ManualIntervention {
+                slot,
+                spec_revision: 1,
+                reason: "rework_limit",
+            },
+            State::Completed,
+            State::Failed {
+                reason: "spec_rejected",
+            },
+        ];
+        for state in states {
+            assert_eq!(
+                State::from_json(&state.to_json()),
+                Some(state.clone()),
+                "{state:?}"
+            );
+        }
+        // Every reason the flow can produce is storable.
+        for reason in REASONS {
+            assert!(
+                State::from_json(&State::Failed { reason }.to_json()).is_some(),
+                "{reason}"
+            );
+        }
+        assert_eq!(
+            State::from_json(&serde_json::json!({"kind": "failed", "reason": "made_up"})),
+            None
+        );
+        assert_eq!(
+            State::from_json(
+                &serde_json::json!({"kind": "running", "slot": {"stage": "deploy", "round": 0, "attempt": 1}, "specRevision": 1})
+            ),
+            None
+        );
+        assert_eq!(
+            State::from_json(
+                &serde_json::json!({"kind": "running", "slot": {"stage": "plan", "round": 0, "attempt": 0}, "specRevision": 1})
+            ),
+            None
+        );
     }
 }
