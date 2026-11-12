@@ -29,3 +29,16 @@ CREATE TABLE IF NOT EXISTS hagency_agent_v1.orchestrator_runs(
     updated_at_ms bigint NOT NULL,
     UNIQUE (room_id, thread_root)
 );
+-- `/gitfab` messages Humans post in project Rooms; routed here instead of to Agents.
+CREATE TABLE IF NOT EXISTS hagency_agent_v1.orchestrator_commands(
+    event_id text PRIMARY KEY CHECK (event_id LIKE '$%'),
+    room_id text NOT NULL CHECK (room_id LIKE '!%'),
+    thread_root text CHECK (thread_root IS NULL OR thread_root LIKE '$%'),
+    sender_mxid text NOT NULL CHECK (sender_mxid LIKE '@%'),
+    body text NOT NULL,
+    received_at_ms bigint NOT NULL,
+    outcome text,
+    handled_at_ms bigint
+);
+CREATE INDEX IF NOT EXISTS orchestrator_commands_pending
+    ON hagency_agent_v1.orchestrator_commands(received_at_ms) WHERE outcome IS NULL;

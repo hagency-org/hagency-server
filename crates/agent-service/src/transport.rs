@@ -333,6 +333,17 @@ pub struct TransportStore {
     db: Arc<crate::database::Database>,
     limits: Limits,
     encrypted_delivery: EncryptedDelivery,
+    /// Whether `/gitfab` Room messages are GitFab commands (the orchestrator runs here).
+    gitfab_commands: bool,
+}
+/// A `/gitfab` message a Human posted, waiting for the orchestrator.
+#[derive(Clone, Debug, PartialEq, Eq, diesel::QueryableByName)]
+pub(crate) struct OrchestratorCommand {
+    #[diesel(sql_type = Text)] pub event_id: String,
+    #[diesel(sql_type = Text)] pub room_id: String,
+    #[diesel(sql_type = Nullable<Text>)] pub thread_root: Option<String>,
+    #[diesel(sql_type = Text)] pub sender_mxid: String,
+    #[diesel(sql_type = Text)] pub body: String,
 }
 /// Where and for whom a GitFab run works. `bindings` maps a workflow role to that Agent's binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -503,6 +514,7 @@ impl TransportStore {
             db: Arc::new(crate::database::Database::business(url)?),
             limits,
             encrypted_delivery: EncryptedDelivery::default(),
+            gitfab_commands: false,
         })
     }
     pub fn with_encrypted_delivery(mut self, design: EncryptedDelivery) -> Self {
@@ -511,6 +523,14 @@ impl TransportStore {
     }
     pub fn encrypted_delivery(&self) -> EncryptedDelivery {
         self.encrypted_delivery
+    }
+    /// Routes `/gitfab` messages to the orchestrator instead of to Agents.
+    pub fn with_gitfab_commands(mut self, enabled: bool) -> Self {
+        self.gitfab_commands = enabled;
+        self
+    }
+    pub(crate) fn gitfab_commands(&self) -> bool {
+        self.gitfab_commands
     }
     async fn clock(db: &mut AsyncPgConnection, now: i64) -> Result<i64> {
         Ok(sql_query(
@@ -974,6 +994,52 @@ impl TransportStore {
             sql_query("UPDATE hagency_agent_v1.orchestrator_runs SET pending_events='[]'::jsonb WHERE id=$1 AND revision=$2")
                 .bind::<Text,_>(id).bind::<BigInt,_>(revision).execute(db).await?;
             Ok(())
+        }).await
+    }
+    /// Keeps a `/gitfab` message for the orchestrator. Idempotent by event ID.
+    pub(crate) async fn record_orchestrator_command(&self, event: &RoutedEvent, received_at_ms: i64) -> Result<()> {
+        matrix_id(&event.event_id, '$')?;
+        matrix_id(&event.room_id, '!')?;
+        matrix_id(&event.sender_mxid, '@')?;
+        self.db.with_connection(async |db| {
+            sql_query("INSERT INTO hagency_agent_v1.orchestrator_commands(event_id,room_id,thread_root,sender_mxid,body,received_at_ms) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (event_id) DO NOTHING")
+                .bind::<Text,_>(&event.event_id).bind::<Text,_>(&event.room_id).bind::<Nullable<Text>,_>(event.thread_root.as_deref())
+                .bind::<Text,_>(&event.sender_mxid).bind::<Text,_>(&event.body).bind::<BigInt,_>(received_at_ms)
+                .execute(db).await?;
+            Ok(())
+        }).await
+    }
+    /// Commands not yet handled, oldest first.
+    pub(crate) async fn pending_orchestrator_commands(&self, limit: i64) -> Result<Vec<OrchestratorCommand>> {
+        self.db.with_connection(async |db| {
+            Ok(sql_query("SELECT event_id,room_id,thread_root,sender_mxid,body FROM hagency_agent_v1.orchestrator_commands WHERE outcome IS NULL ORDER BY received_at_ms,event_id LIMIT $1")
+                .bind::<BigInt,_>(limit).load::<OrchestratorCommand>(db).await?)
+        }).await
+    }
+    /// Records how a command ended; a handled command is never taken again.
+    pub(crate) async fn finish_orchestrator_command(&self, event_id: &str, outcome: &str, now: i64) -> Result<()> {
+        self.db.with_connection(async |db| {
+            sql_query("UPDATE hagency_agent_v1.orchestrator_commands SET outcome=$2,handled_at_ms=$3 WHERE event_id=$1 AND outcome IS NULL")
+                .bind::<Text,_>(event_id).bind::<Text,_>(outcome).bind::<BigInt,_>(now).execute(db).await?;
+            Ok(())
+        }).await
+    }
+    /// The run of a task thread, if any.
+    pub(crate) async fn orchestrator_run_in_thread(&self, room_id: &str, thread_root: &str) -> Result<Option<OrchestratorRun>> {
+        self.db.with_connection(async |db| {
+            let row = sql_query(format!("SELECT {ORCHESTRATOR_RUN_COLUMNS} FROM hagency_agent_v1.orchestrator_runs WHERE room_id=$1 AND thread_root=$2"))
+                .bind::<Text,_>(room_id).bind::<Text,_>(thread_root).get_result::<OrchestratorRunRow>(db).await.optional()?;
+            row.map(OrchestratorRunRow::into_run).transpose()
+        }).await
+    }
+    /// The active Project a registered Room belongs to.
+    pub(crate) async fn room_project(&self, room_id: &str) -> Result<Option<String>> {
+        #[derive(diesel::QueryableByName)]
+        struct Row { #[diesel(sql_type = Text)] project_id: String }
+        self.db.with_connection(async |db| {
+            let row = sql_query("SELECT r.project_id FROM hagency_agent_v1.rooms r JOIN hagency_agent_v1.projects p ON p.id=r.project_id WHERE r.room_id=$1 AND r.active AND p.active")
+                .bind::<Text,_>(room_id).get_result::<Row>(db).await.optional()?;
+            Ok(row.map(|r| r.project_id))
         }).await
     }
     /// The recorded state of one dispatch and its reply, for the orchestrator to map to an outcome.

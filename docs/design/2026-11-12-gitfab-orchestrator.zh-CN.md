@@ -38,6 +38,7 @@
   - `GET .../gitfab/runs/{run}`：查看。
   - `POST .../gitfab/runs/{run}/spec`，`{"decision":"approve|reject|revise"}`：Spec 确认，只有发起人可以。
   - `POST .../gitfab/runs/{run}/decision`，`{"decision":"continue|reassign|abort"}`：人工介入后的决定，只有发起人可以。
+- 房间命令（附件 3：Human 请求和确认以 Matrix 事件为锚点）：在项目房间发 `/gitfab start <任务ID>`，后面每行 `repo`、`baseline`、`spec`、可选 `backend`、`project`、`coordinator`/`implementer`/`reviewer`，最后 `goal:`。这条消息成为任务 Thread 的根。在该 Thread 里发 `/gitfab approve|revise|reject` 处理 Spec，`/gitfab continue|reassign|abort` 处理人工介入，只认发起人。路由 worker 把这些消息记入 `orchestrator_commands`，不派给 Agent；编排器处理后在 Thread 里回复结果或原因。只在启用编排器时拦截。
 - 配置：backend `[gitfab]` 段设置 `journal_file` 即启用；`stage_timeout_minutes` 默认 120。需要 `pasion.delegate_matrix_auth`（Agent 服务）。
 - 测试：`orchestrator_tests.rs` 用模拟房间和模拟 Agent 走真实 transport，覆盖完整流程加一次返工、超时转人工、被拒后重试一次、崩溃后日志补写。运行：`python3 scripts/test-agent-service-postgres.py --lib orchestrator`。
 

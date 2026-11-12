@@ -106,6 +106,8 @@ impl App {
     ) -> Self {
         let timeout = stage_timeout_ms.unwrap_or(crate::orchestrator::DEFAULT_STAGE_TIMEOUT_MS);
         self.gitfab = Some((Arc::new(recorder), timeout));
+        // `/gitfab` Room messages go to the orchestrator only where it runs.
+        self.transport = self.transport.take().map(|t| t.with_gitfab_commands(true));
         self
     }
     pub fn start_orchestrator(&self) -> Option<tokio::task::JoinHandle<()>> {

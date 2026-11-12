@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use super::*;
 use crate::orchestrator::{DEFAULT_STAGE_TIMEOUT_MS, Orchestrator, Recorder, StageRoom};
 use crate::orchestrator_flow::{HumanDecision, Input, SpecDecision, Stage, State};
+use crate::transport::ORCHESTRATOR_ROLES;
 
 struct Room {
     facts: DeliveryFacts,
@@ -511,4 +512,156 @@ async fn postgres_journal_entries_saved_before_a_crash_are_written_once_on_the_n
     assert_eq!(journal(&h).len(), before, "nothing written twice");
     let after = run(&h, &id).await;
     assert_eq!((after.revision, after.pending_events), (saved, json!([])));
+}
+
+fn command(h: &Harness, id: &str, thread: Option<&str>, body: &str) -> RoutedEvent {
+    RoutedEvent {
+        event_id: format!("${id}"),
+        room_id: h.f.facts.room_id.clone(),
+        sender_mxid: h.f.facts.requester_mxid.clone(),
+        body: body.into(),
+        mentioned_mxids: Default::default(),
+        thread_root: thread.map(str::to_owned),
+        encrypted: false,
+        is_edit: false,
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_humans_start_and_confirm_a_run_with_room_commands() {
+    let h = harness(true).await;
+    let o = orchestrator(&h, DEFAULT_STAGE_TIMEOUT_MS);
+    let now = crate::api::now_ms;
+    let start = command(
+        &h,
+        "gitfab-cmd-start",
+        None,
+        &format!(
+            "/gitfab start task-cmd\nproject: DEMO-02\nrepo: https://github.com/example/gitfab-demo-02\nbaseline: {}\nspec: spec/DEMO-02.md@v1\ngoal: Add GET /healthz",
+            "c".repeat(40)
+        ),
+    );
+    h.f.transport
+        .record_orchestrator_command(&start, now())
+        .await
+        .unwrap();
+    // Recording again is harmless.
+    h.f.transport
+        .record_orchestrator_command(&start, now())
+        .await
+        .unwrap();
+    o.pass(now()).await.unwrap();
+
+    // The command message became the task thread; the single Agent of the Room serves every role.
+    let run =
+        h.f.transport
+            .orchestrator_run_in_thread(&h.f.facts.room_id, "$gitfab-cmd-start")
+            .await
+            .unwrap()
+            .expect("a run for the thread");
+    assert_eq!(run.init.requester_mxid, h.f.facts.requester_mxid);
+    assert_eq!(run.init.context["projectId"], "DEMO-02");
+    assert!(
+        ORCHESTRATOR_ROLES
+            .iter()
+            .all(|r| run.init.bindings[*r] == h.f.binding.as_str())
+    );
+    assert_eq!(running_stage(&run.state), Some((Stage::Spec, 0, 1)));
+    let posts = h.room.posts.lock().unwrap().clone();
+    assert!(
+        posts
+            .iter()
+            .any(|(t, b)| t.starts_with("gitfab.cmd.") && b.contains("已发起流程"))
+    );
+    assert!(
+        h.f.transport
+            .pending_orchestrator_commands(10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    answer(&h, &run.id, "Spec v1: GET /healthz returns 200.").await;
+    o.pass(now()).await.unwrap();
+    assert_eq!(
+        run_state(&h, &run.id).await,
+        State::AwaitingSpecApproval { spec_revision: 1 }
+    );
+
+    // Someone else cannot confirm; a confirmation outside the thread finds no run.
+    let mut stranger = command(
+        &h,
+        "gitfab-cmd-stranger",
+        Some("$gitfab-cmd-start"),
+        "/gitfab approve",
+    );
+    stranger.sender_mxid = "@someone-else:example.test".into();
+    h.f.transport
+        .record_orchestrator_command(&stranger, now())
+        .await
+        .unwrap();
+    let elsewhere = command(&h, "gitfab-cmd-elsewhere", None, "/gitfab approve");
+    h.f.transport
+        .record_orchestrator_command(&elsewhere, now())
+        .await
+        .unwrap();
+    o.pass(now()).await.unwrap();
+    assert_eq!(
+        run_state(&h, &run.id).await,
+        State::AwaitingSpecApproval { spec_revision: 1 }
+    );
+    let replies: Vec<String> = h
+        .room
+        .posts
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, b)| b.clone())
+        .collect();
+    assert!(replies.iter().any(|b| b.contains("只有发起人")));
+    assert!(replies.iter().any(|b| b.contains("没有进行中的流程")));
+
+    let approve = command(
+        &h,
+        "gitfab-cmd-approve",
+        Some("$gitfab-cmd-start"),
+        "/gitfab approve",
+    );
+    h.f.transport
+        .record_orchestrator_command(&approve, now())
+        .await
+        .unwrap();
+    o.pass(now()).await.unwrap();
+    assert_eq!(
+        running_stage(&run_state(&h, &run.id).await),
+        Some((Stage::Plan, 0, 1))
+    );
+
+    // A malformed command is answered with the usage and never retried.
+    let bad = command(&h, "gitfab-cmd-bad", None, "/gitfab start only-a-task-id");
+    h.f.transport
+        .record_orchestrator_command(&bad, now())
+        .await
+        .unwrap();
+    o.pass(now()).await.unwrap();
+    assert!(
+        h.room
+            .posts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, b)| b.contains("缺少 goal") && b.contains("用法"))
+    );
+    assert!(
+        h.f.transport
+            .pending_orchestrator_commands(10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+async fn run_state(h: &Harness, id: &str) -> State {
+    run(h, id).await.state
 }

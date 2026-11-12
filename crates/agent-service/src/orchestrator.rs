@@ -15,10 +15,13 @@ use hagency_gitfab_events::sign::Key;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::orchestrator_flow::{self as flow, Action, Input, Outcome, Role, Slot, Stage, State};
+use crate::orchestrator_flow::{
+    self as flow, Action, HumanDecision, Input, Outcome, Role, Slot, SpecDecision, Stage, State,
+};
 use crate::transport::{
-    DeliveryFacts, OrchestratedStage, OrchestratorRun, OrchestratorRunUpdate, RouteResult,
-    RoutedEvent, RoutingScope, TransportStore,
+    DeliveryFacts, ORCHESTRATOR_ROLES, OrchestratedStage, OrchestratorCommand, OrchestratorRun,
+    OrchestratorRunInit, OrchestratorRunUpdate, RouteResult, RoutedEvent, RoutingScope,
+    TransportStore,
 };
 use crate::{Error, Result};
 
@@ -209,6 +212,12 @@ impl<R: StageRoom> Orchestrator<'_, R> {
     /// returned after all were tried.
     pub(crate) async fn pass(&self, now: i64) -> Result<()> {
         let mut first = None;
+        for command in self.transport.pending_orchestrator_commands(20).await? {
+            if let Err(e) = self.command(&command, now).await {
+                tracing::warn!(error = %e, "gitfab command left for the next pass");
+                first.get_or_insert(e);
+            }
+        }
         for run in self.transport.active_orchestrator_runs(50).await? {
             match self.step(run, now).await {
                 Ok(()) | Err(Error::Conflict("orchestrator_run_revision_changed")) => {}
@@ -240,6 +249,188 @@ impl<R: StageRoom> Orchestrator<'_, R> {
         let state = run.state.clone();
         self.step(run, now).await?;
         Ok(state)
+    }
+
+    /// Handles one `/gitfab` message and answers it in its thread. Storage or Matrix trouble leaves the
+    /// command for the next pass; anything else is answered and finished.
+    async fn command(&self, command: &OrchestratorCommand, now: i64) -> Result<()> {
+        let root = command
+            .thread_root
+            .clone()
+            .unwrap_or_else(|| command.event_id.clone());
+        let (outcome, reply) = match self.handle(command, &root, now).await {
+            Ok(done) => done,
+            Err(e @ (Error::Unavailable(_) | Error::Database(_))) => return Err(e),
+            Err(e) => (format!("refused:{e}"), format!("GitFab：未能执行（{e}）。")),
+        };
+        let digest = hex::encode(Sha256::digest(command.event_id.as_bytes()));
+        let meta =
+            json!({"version": 1, "kind": "command_reply", "commandEventId": command.event_id});
+        self.room
+            .post(
+                &command.room_id,
+                &root,
+                &format!("gitfab.cmd.{}", &digest[..32]),
+                &reply,
+                &meta,
+            )
+            .await?;
+        self.transport
+            .finish_orchestrator_command(&command.event_id, &outcome, now)
+            .await
+    }
+
+    async fn handle(
+        &self,
+        command: &OrchestratorCommand,
+        root: &str,
+        now: i64,
+    ) -> Result<(String, String)> {
+        if command.sender_mxid.starts_with("@_hagency_") {
+            return Ok((
+                "ignored:service".into(),
+                "GitFab：只接受 Human 的命令。".into(),
+            ));
+        }
+        let parsed = match parse_command(&command.body) {
+            Ok(parsed) => parsed,
+            Err(reason) => {
+                return Ok((
+                    format!("refused:{reason}"),
+                    format!("GitFab：{reason}\n\n{USAGE}"),
+                ));
+            }
+        };
+        match parsed {
+            Command::Help => Ok(("help".into(), USAGE.into())),
+            Command::Start(start) => self.start(command, root, *start, now).await,
+            Command::Decide(input) => {
+                let Some(run) = self
+                    .transport
+                    .orchestrator_run_in_thread(&command.room_id, root)
+                    .await?
+                else {
+                    return Ok((
+                        "refused:no_run".into(),
+                        "GitFab：本 Thread 没有进行中的流程。请在发起流程的那个 Thread 里回复命令。".into(),
+                    ));
+                };
+                if run.init.requester_mxid != command.sender_mxid {
+                    return Ok((
+                        "refused:not_requester".into(),
+                        format!(
+                            "GitFab：只有发起人 {} 可以确认 Spec 或决定人工介入。",
+                            run.init.requester_mxid
+                        ),
+                    ));
+                }
+                match self.decide(&run.id, input, now).await {
+                    Ok(state) => Ok((
+                        "applied".into(),
+                        format!(
+                            "GitFab：已收到。流程 {} 当前状态：{}。",
+                            run.id,
+                            state_text(&state)
+                        ),
+                    )),
+                    Err(Error::Conflict("orchestrator_decision_not_applicable")) => Ok((
+                        "refused:not_applicable".into(),
+                        format!(
+                            "GitFab：流程当前状态为「{}」，不能执行这个命令。",
+                            state_text(&run.state)
+                        ),
+                    )),
+                    Err(e) => Err(e),
+                }
+            }
+        }
+    }
+
+    async fn start(
+        &self,
+        command: &OrchestratorCommand,
+        root: &str,
+        start: StartCommand,
+        now: i64,
+    ) -> Result<(String, String)> {
+        let refuse = |reason: &str| {
+            Ok((
+                format!("refused:{reason}"),
+                format!("GitFab：未能发起，{reason}"),
+            ))
+        };
+        let Some(project) = self.transport.room_project(&command.room_id).await? else {
+            return refuse("此房间不是已登记的项目房间。");
+        };
+        let scopes: Vec<RoutingScope> = self
+            .transport
+            .routing_scopes(&command.room_id)
+            .await?
+            .into_iter()
+            .filter(|s| s.active)
+            .collect();
+        let mut bindings = serde_json::Map::new();
+        for (role, wanted) in ORCHESTRATOR_ROLES.iter().zip(&start.roles) {
+            let found = match wanted.as_deref() {
+                Some(who) => scopes
+                    .iter()
+                    .find(|s| s.puppet_mxid == who || s.binding_id == who || s.agent_id == who),
+                None if scopes.len() == 1 => scopes.first(),
+                None => None,
+            };
+            let Some(scope) = found else {
+                return refuse(&match wanted {
+                    Some(who) => format!("{role} 指定的 {who} 不是本房间里正在服务的 Agent。"),
+                    None => format!(
+                        "本房间有 {} 个 Agent，请用 `{role}: @Agent账号` 指定。",
+                        scopes.len()
+                    ),
+                });
+            };
+            bindings.insert((*role).to_owned(), json!(scope.binding_id));
+        }
+        // The Human must still be in the Room the Agents serve.
+        let first = scopes
+            .iter()
+            .find(|s| Some(s.binding_id.as_str()) == bindings["coordinator"].as_str())
+            .expect("resolved above");
+        let facts = self.room.facts(first, &command.sender_mxid).await?;
+        if !facts.requester_in_room {
+            return refuse("发起人不在本房间。");
+        }
+        let mut context = json!({
+            "goal": start.goal, "gitBackend": start.backend, "repoRef": start.repo,
+            "baselineSha": start.baseline, "specRef": start.spec,
+        });
+        if let Some(code) = &start.project {
+            context["projectId"] = json!(code);
+        }
+        let init = OrchestratorRunInit {
+            project_id: project,
+            task_id: start.task_id.clone(),
+            room_id: command.room_id.clone(),
+            thread_root: root.to_owned(),
+            requester_mxid: command.sender_mxid.clone(),
+            bindings: serde_json::Value::Object(bindings),
+            context,
+        };
+        let run = match self.transport.create_orchestrator_run(&init, now).await {
+            Ok(run) => run,
+            Err(Error::Invalid(_)) => {
+                return refuse("参数不完整或格式不对（基线须为 40 位提交 SHA）。");
+            }
+            Err(Error::Conflict("orchestrator_thread_in_use")) => {
+                return refuse("本 Thread 已经有另一个任务的流程。");
+            }
+            Err(e) => return Err(e),
+        };
+        Ok((
+            format!("started:{}", run.id),
+            format!(
+                "GitFab：已发起流程 {}（任务 {}）。先由 Coordinator 起草 Spec；Spec 回复后，请在本 Thread 发送 `/gitfab approve`、`/gitfab revise` 或 `/gitfab reject`。",
+                run.id, start.task_id
+            ),
+        ))
     }
 
     /// Advances one run as far as it can go without waiting.
@@ -580,6 +771,153 @@ impl<R: StageRoom> Orchestrator<'_, R> {
     }
 }
 
+/// How to use the Room commands, shown on `/gitfab help` and with every malformed command.
+pub(crate) const USAGE: &str = "用法：\n\
+`/gitfab start <任务ID>` 后面每行一项：\n\
+  repo: 仓库 URL\n\
+  baseline: 40 位基线提交 SHA\n\
+  spec: Spec 引用（如 spec/DEMO-02.md@v1）\n\
+  backend: github 或 gitcode（可从仓库 URL 推断）\n\
+  project: 验收项目编号（可选，如 DEMO-02）\n\
+  coordinator / implementer / reviewer: Agent 账号（房间里只有一个 Agent 时可省略）\n\
+  goal: 目标（这一行之后的内容都算目标）\n\
+在流程的 Thread 里：`/gitfab approve`、`/gitfab revise`、`/gitfab reject` 处理 Spec；`/gitfab continue`、`/gitfab reassign`、`/gitfab abort` 处理人工介入。";
+
+/// A message is a command when its first word is `/gitfab`.
+pub(crate) fn is_command(body: &str) -> bool {
+    let body = body.trim_start();
+    body.strip_prefix("/gitfab")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct StartCommand {
+    pub task_id: String,
+    pub project: Option<String>,
+    pub repo: String,
+    pub backend: String,
+    pub baseline: String,
+    pub spec: String,
+    /// Coordinator, implementer, reviewer, as written.
+    pub roles: [Option<String>; 3],
+    pub goal: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Command {
+    Start(Box<StartCommand>),
+    Decide(Input),
+    Help,
+}
+
+/// Reads a `/gitfab` message. Errors are shown to the Human as they are.
+pub(crate) fn parse_command(body: &str) -> std::result::Result<Command, &'static str> {
+    let mut lines = body.trim().lines();
+    let head = lines.next().unwrap_or_default();
+    let mut words = head.split_whitespace().skip(1);
+    let verb = words.next().unwrap_or("help").to_ascii_lowercase();
+    let mut decision = |input| {
+        if words.next().is_some() {
+            Err("命令后面不需要参数。")
+        } else {
+            Ok(Command::Decide(input))
+        }
+    };
+    match verb.as_str() {
+        "help" => return Ok(Command::Help),
+        "approve" => return decision(Input::SpecDecision(SpecDecision::Approve)),
+        "reject" => return decision(Input::SpecDecision(SpecDecision::Reject)),
+        "revise" => return decision(Input::SpecDecision(SpecDecision::Revise)),
+        "continue" => return decision(Input::Human(HumanDecision::Continue)),
+        "reassign" => return decision(Input::Human(HumanDecision::Reassign)),
+        "abort" => return decision(Input::Human(HumanDecision::Abort)),
+        "start" => {}
+        _ => return Err("不认识这个命令。"),
+    }
+    let task_id = words.next().ok_or("缺少任务ID。")?.to_owned();
+    if words.next().is_some() || task_id.len() > 128 {
+        return Err("任务ID 只能是一个词。");
+    }
+    let (mut fields, mut goal) = (std::collections::BTreeMap::new(), None::<String>);
+    for line in lines.by_ref() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (key, value) = line
+            .split_once(':')
+            .or_else(|| line.split_once('：'))
+            .ok_or("每行应为「名称: 值」。")?;
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim().to_owned();
+        if key == "goal" {
+            goal = Some(value);
+            break;
+        }
+        if ![
+            "project",
+            "repo",
+            "backend",
+            "baseline",
+            "spec",
+            "coordinator",
+            "implementer",
+            "reviewer",
+        ]
+        .contains(&key.as_str())
+        {
+            return Err("有不认识的项目名称。");
+        }
+        if fields.insert(key, value).is_some() {
+            return Err("同一项写了两次。");
+        }
+    }
+    let rest: Vec<&str> = lines.collect();
+    let goal = match (goal, rest.is_empty()) {
+        (Some(first), true) => first,
+        (Some(first), false) => format!("{first}\n{}", rest.join("\n")).trim().to_owned(),
+        (None, _) => return Err("缺少 goal。"),
+    };
+    let mut take = |k: &str| fields.remove(k).filter(|v| !v.is_empty());
+    let repo = take("repo").ok_or("缺少 repo。")?;
+    let backend = match take("backend") {
+        Some(b) => b.to_ascii_lowercase(),
+        None if repo.contains("github.com") => "github".into(),
+        None if repo.contains("gitcode") => "gitcode".into(),
+        None => return Err("无法从仓库 URL 判断 backend，请写 backend: github 或 gitcode。"),
+    };
+    Ok(Command::Start(Box::new(StartCommand {
+        task_id,
+        project: take("project"),
+        backend,
+        baseline: take("baseline")
+            .ok_or("缺少 baseline。")?
+            .to_ascii_lowercase(),
+        spec: take("spec").ok_or("缺少 spec。")?,
+        roles: [take("coordinator"), take("implementer"), take("reviewer")],
+        repo,
+        goal: if goal.is_empty() {
+            return Err("goal 不能为空。");
+        } else {
+            goal
+        },
+    })))
+}
+
+fn state_text(state: &State) -> String {
+    match state {
+        State::NotStarted => "未开始".into(),
+        State::Running { slot, .. } => {
+            format!("{} 阶段进行中（第 {} 轮）", slot.stage.phase(), slot.round)
+        }
+        State::AwaitingSpecApproval { spec_revision } => {
+            format!("等待确认 Spec 第 {spec_revision} 版")
+        }
+        State::ManualIntervention { reason, .. } => format!("人工介入（{reason}）"),
+        State::Completed => "已完成".into(),
+        State::Failed { reason } => format!("已结束（{reason}）"),
+    }
+}
+
 /// A thread notice with the stage described for clients, and no mention.
 pub(crate) fn stage_content(room_id: &str, thread_root: &str, body: &str, meta: &Value) -> Value {
     let mut content = crate::workers::reply_content(false, room_id, thread_root, body);
@@ -679,6 +1017,68 @@ mod tests {
             crate::workers::parse_event(&raw).is_none(),
             "ordinary and pooled routing ignore it"
         );
+    }
+
+    #[test]
+    fn commands_are_recognised_only_by_their_first_word() {
+        assert!(is_command("/gitfab"));
+        assert!(is_command("  /gitfab approve"));
+        assert!(!is_command("/gitfabulous"));
+        assert!(!is_command("please /gitfab approve"));
+    }
+
+    #[test]
+    fn a_start_command_reads_its_fields_and_the_rest_is_the_goal() {
+        let body = "/gitfab start DEMO-02-task-1\nproject: DEMO-02\nrepo: https://github.com/example/gitfab-demo-02\nbaseline: ABCDEF0123456789abcdef0123456789abcdef01\nspec：spec/DEMO-02.md@v1\nreviewer: @_hagency_agt_r:example.test\ngoal: 实现任务清单 API\n见 PRD-DEMO-02-v1。";
+        let Command::Start(start) = parse_command(body).unwrap() else {
+            panic!("expected start")
+        };
+        assert_eq!(start.task_id, "DEMO-02-task-1");
+        assert_eq!(start.project.as_deref(), Some("DEMO-02"));
+        assert_eq!(start.backend, "github", "inferred from the repository");
+        assert_eq!(start.baseline, "abcdef0123456789abcdef0123456789abcdef01");
+        assert_eq!(
+            start.spec, "spec/DEMO-02.md@v1",
+            "a full-width colon works too"
+        );
+        assert_eq!(
+            start.roles,
+            [None, None, Some("@_hagency_agt_r:example.test".into())]
+        );
+        assert_eq!(start.goal, "实现任务清单 API\n见 PRD-DEMO-02-v1。");
+    }
+
+    #[test]
+    fn decisions_and_mistakes_are_read_strictly() {
+        assert_eq!(
+            parse_command("/gitfab approve").unwrap(),
+            Command::Decide(Input::SpecDecision(SpecDecision::Approve))
+        );
+        assert_eq!(
+            parse_command("/gitfab ABORT").unwrap(),
+            Command::Decide(Input::Human(HumanDecision::Abort))
+        );
+        assert_eq!(parse_command("/gitfab").unwrap(), Command::Help);
+        assert!(parse_command("/gitfab approve now").is_err());
+        assert!(parse_command("/gitfab merge").is_err());
+        assert!(
+            parse_command(
+                "/gitfab start t1\nrepo: https://example.org/x\nbaseline: a\nspec: s\ngoal: g"
+            )
+            .is_err(),
+            "backend cannot be inferred"
+        );
+        assert!(
+            parse_command("/gitfab start t1\nrepo: https://github.com/x/y\nspec: s\ngoal: g")
+                .is_err(),
+            "baseline is required"
+        );
+        assert!(
+            parse_command("/gitfab start t1\nrepo: https://github.com/x/y\nbaseline: a\nspec: s")
+                .is_err(),
+            "goal is required"
+        );
+        assert!(parse_command("/gitfab start t1\ncolour: red\ngoal: g").is_err());
     }
 
     #[test]
