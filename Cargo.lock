@@ -3940,6 +3940,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hagency-gitfab-board"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "hagency-gitfab-events",
+ "hagency-gitfab-runner",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "hagency-gitfab-events"
 version = "0.1.0"
 dependencies = [
