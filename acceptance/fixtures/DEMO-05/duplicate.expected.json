@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "events": 5,
+  "duplicates": 1,
+  "total": 13,
+  "by_project": {
+    "DEMO-05": 13
+  },
+  "by_module": {
+    "ledger": 9,
+    "report": 4
+  },
+  "by_spec": {
+    "spec/DEMO-05.md@v1": 13
+  },
+  "by_contributor": {
+    "@impl:example.org": 12,
+    "@review:example.org": 1
+  }
+}

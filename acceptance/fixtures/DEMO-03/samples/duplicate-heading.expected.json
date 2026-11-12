@@ -1,0 +1,24 @@
+{
+  "findings": [
+    {
+      "rule_id": "MD003",
+      "severity": "warning",
+      "line": 7
+    },
+    {
+      "rule_id": "MD003",
+      "severity": "warning",
+      "line": 9
+    },
+    {
+      "rule_id": "MD003",
+      "severity": "warning",
+      "line": 11
+    }
+  ],
+  "summary": {
+    "error": 0,
+    "warning": 3
+  },
+  "exit_code": 0
+}

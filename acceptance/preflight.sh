@@ -168,6 +168,18 @@ while IFS='|' read -r pid backend repo branch baseline prd prd_sha; do
         github | gitcode) ;;
         *) check "$pid.backend" fail "BACKEND must be github or gitcode"; continue ;;
     esac
+    if [ -n "$prd" ] && [ -f "$ACCEPTANCE_DIR/$prd" ]; then
+        actual=$(sha256_file "$ACCEPTANCE_DIR/$prd")
+        if [ -z "$prd_sha" ]; then
+            check "$pid.prd" warn "$prd sha256 $actual, not pinned"
+        elif [ "$actual" = "$prd_sha" ]; then
+            check "$pid.prd" ok "$prd sha256 $actual"
+        else
+            check "$pid.prd" fail "$prd sha256 $actual, pinned $prd_sha"
+        fi
+    else
+        check "$pid.prd" warn "PRD file not found in acceptance/${prd:-<unset>}"
+    fi
     case "$repo$baseline" in
         *【*) check "$pid.config" warn "placeholders remain in acceptance/projects/$pid.env"; continue ;;
     esac
@@ -193,18 +205,6 @@ while IFS='|' read -r pid backend repo branch baseline prd prd_sha; do
         http_get "$api/repos/$repo/commits/$baseline" "$token_file"
         [ "$HTTP_STATUS" = 200 ] && check "$pid.baseline" ok "$baseline" \
             || check "$pid.baseline" fail "HTTP $HTTP_STATUS reading commit $baseline"
-    fi
-    if [ -n "$prd" ] && [ -f "$ACCEPTANCE_DIR/$prd" ]; then
-        actual=$(sha256_file "$ACCEPTANCE_DIR/$prd")
-        if [ -z "$prd_sha" ]; then
-            check "$pid.prd" warn "$prd sha256 $actual, not pinned"
-        elif [ "$actual" = "$prd_sha" ]; then
-            check "$pid.prd" ok "$prd sha256 $actual"
-        else
-            check "$pid.prd" fail "$prd sha256 $actual, pinned $prd_sha"
-        fi
-    else
-        check "$pid.prd" warn "PRD file not found in acceptance/${prd:-<unset>}"
     fi
 done <<EOF_PROJECTS
 $project_lines

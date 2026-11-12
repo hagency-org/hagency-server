@@ -1,0 +1,27 @@
+{
+  "project": "DEMO-02",
+  "comment": "Black-box request sequence for PRD-DEMO-02-v1, run in order against a freshly started service. save captures a response field; ${name} uses it later. json is a subset match; json_array_length checks an array response.",
+  "service": {"env": {"PORT": "8080"}, "ready": "/health"},
+  "http": [
+    {"name": "empty list", "method": "GET", "path": "/tasks", "status": 200, "json_array_length": 0},
+    {"name": "create", "method": "POST", "path": "/tasks", "body": {"title": "  Write the spec  "}, "status": 201, "json": {"id": 1, "title": "Write the spec", "completed": false}, "json_has": ["created_at"], "save": {"first": "id"}},
+    {"name": "create second", "method": "POST", "path": "/tasks", "body": {"title": "审查实现"}, "status": 201, "json": {"id": 2, "title": "审查实现", "completed": false}},
+    {"name": "get", "method": "GET", "path": "/tasks/${first}", "status": 200, "json": {"id": 1, "completed": false}},
+    {"name": "complete", "method": "POST", "path": "/tasks/${first}/complete", "status": 200, "json": {"id": 1, "completed": true}},
+    {"name": "complete again", "method": "POST", "path": "/tasks/${first}/complete", "status": 200, "json": {"id": 1, "completed": true}},
+    {"name": "list in id order", "method": "GET", "path": "/tasks", "status": 200, "json_array_length": 2, "json_array_ids": [1, 2]},
+    {"name": "empty title", "method": "POST", "path": "/tasks", "body": {"title": "   "}, "status": 400, "json": {"error": "title_empty"}},
+    {"name": "title of 200 characters", "method": "POST", "path": "/tasks", "body": {"title": "${repeat:字:200}"}, "status": 201, "json": {"id": 3}},
+    {"name": "title of 201 characters", "method": "POST", "path": "/tasks", "body": {"title": "${repeat:a:201}"}, "status": 400, "json": {"error": "title_too_long"}},
+    {"name": "missing title", "method": "POST", "path": "/tasks", "body": {"name": "x"}, "status": 400, "json": {"error": "invalid_json"}},
+    {"name": "not JSON", "method": "POST", "path": "/tasks", "raw_body": "{not json", "status": 400, "json": {"error": "invalid_json"}},
+    {"name": "title not a string", "method": "POST", "path": "/tasks", "body": {"title": 42}, "status": 400, "json": {"error": "invalid_json"}},
+    {"name": "unknown id", "method": "GET", "path": "/tasks/999", "status": 404, "json": {"error": "not_found"}},
+    {"name": "non-numeric id", "method": "GET", "path": "/tasks/abc", "status": 404, "json": {"error": "not_found"}},
+    {"name": "delete", "method": "DELETE", "path": "/tasks/${first}", "status": 204},
+    {"name": "deleted is gone", "method": "GET", "path": "/tasks/${first}", "status": 404, "json": {"error": "not_found"}},
+    {"name": "delete again", "method": "DELETE", "path": "/tasks/${first}", "status": 404},
+    {"name": "ids are not reused", "method": "POST", "path": "/tasks", "body": {"title": "next"}, "status": 201, "json": {"id": 4}},
+    {"name": "still alive after bad input", "method": "GET", "path": "/health", "status": 200, "json": {"status": "ok"}}
+  ]
+}

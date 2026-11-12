@@ -1,0 +1,32 @@
+{
+  "conflict.jsonl": {
+    "exit_code": 1,
+    "conflicts": [
+      {
+        "event_id": "m2",
+        "lines": [
+          2,
+          5
+        ]
+      }
+    ]
+  },
+  "tampered.jsonl": {
+    "exit_code": 1,
+    "errors": [
+      {
+        "line": 1,
+        "code": "bad_signature"
+      }
+    ]
+  },
+  "float.jsonl": {
+    "exit_code": 1,
+    "errors": [
+      {
+        "line": 2,
+        "code": "non_integer"
+      }
+    ]
+  }
+}
