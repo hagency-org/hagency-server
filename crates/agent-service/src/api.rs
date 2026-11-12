@@ -28,6 +28,7 @@ pub struct App {
     board_enabled: bool,
     /// GitFab orchestrator: the signed journal and the stage timeout.
     gitfab: Option<(Arc<crate::orchestrator::Recorder>, i64)>,
+    gitfab_git: Option<Arc<crate::orchestrator_git::GitHosts>>,
 }
 impl App {
     pub fn new(
@@ -51,6 +52,7 @@ impl App {
             management: None,
             board_enabled: true,
             gitfab: None,
+            gitfab_git: None,
         }
     }
     pub fn with_management(mut self, policy: crate::management_types::ManagementPolicy) -> Self {
@@ -110,6 +112,11 @@ impl App {
         self.transport = self.transport.take().map(|t| t.with_gitfab_commands(true));
         self
     }
+    /// Lets the orchestrator open Pull Requests and publish Releases on these hosts.
+    pub fn with_gitfab_git(mut self, hosts: crate::orchestrator_git::GitHosts) -> Self {
+        self.gitfab_git = Some(Arc::new(hosts));
+        self
+    }
     pub fn start_orchestrator(&self) -> Option<tokio::task::JoinHandle<()>> {
         let (recorder, timeout) = self.gitfab.clone()?;
         Some(crate::orchestrator::start_controlled(
@@ -122,6 +129,7 @@ impl App {
                 .map(|p| (self.domain.as_ref().unwrap().0.clone(), p)),
             recorder,
             timeout,
+            self.gitfab_git.clone(),
             self.workers.clone(),
         ))
     }

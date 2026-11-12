@@ -112,6 +112,9 @@ impl Gitfab<'_> {
             gateway: self.gateway,
             matrix: self.matrix,
             shared: self.shared,
+            // Human decisions only start or resume stages; a stage's success reaches the worker,
+            // which holds the Git hosts.
+            git: None,
         };
         let orchestrator = Orchestrator {
             transport: self.transport,

@@ -302,3 +302,16 @@ async fn baseline_commit_and_pull_lookups() {
     assert!(!forge.commit_exists(&repo(), "gone").await.unwrap());
     assert_eq!(forge.pull(&repo(), 5).await.unwrap().head_sha, "abc");
 }
+
+#[test]
+fn repository_references_accept_web_and_clone_addresses() {
+    for reference in [
+        "octo/demo",
+        "https://github.com/octo/demo",
+        "https://gitcode.com/octo/demo.git",
+        "https://github.com/octo/demo/",
+    ] {
+        assert_eq!(Repo::from_ref(reference).unwrap(), repo(), "{reference}");
+    }
+    assert!(Repo::from_ref("https://github.com/octo").is_err());
+}

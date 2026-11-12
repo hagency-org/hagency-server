@@ -51,6 +51,17 @@ pub struct GitfabConfig {
     /// A stage without a result after this long stops for a Human. Default 120.
     #[serde(default)]
     pub stage_timeout_minutes: Option<u32>,
+    /// Token files (mode 0600) that let the orchestrator open Pull Requests and publish Releases.
+    /// A backend without one is left alone.
+    #[serde(default)]
+    pub github_token_file: Option<PathBuf>,
+    #[serde(default)]
+    pub gitcode_token_file: Option<PathBuf>,
+    /// API roots for self-hosted instances; the public ones by default.
+    #[serde(default)]
+    pub github_api: Option<String>,
+    #[serde(default)]
+    pub gitcode_api: Option<String>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -172,6 +183,9 @@ impl Config {
         if let Some(gitfab) = &mut host.gitfab {
             gitfab.signing_key_file = resolve(base, &gitfab.signing_key_file);
             gitfab.journal_file = gitfab.journal_file.as_ref().map(|p| resolve(base, p));
+            gitfab.github_token_file = gitfab.github_token_file.as_ref().map(|p| resolve(base, p));
+            gitfab.gitcode_token_file =
+                gitfab.gitcode_token_file.as_ref().map(|p| resolve(base, p));
         }
         host.palpo_config = resolve(base, &host.palpo_config)
             .canonicalize()

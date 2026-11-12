@@ -80,6 +80,10 @@ mod tests {
             signing_key_id: "gitfab-1".into(),
             journal_file: None,
             stage_timeout_minutes: None,
+            github_token_file: None,
+            gitcode_token_file: None,
+            github_api: None,
+            gitcode_api: None,
         }
     }
 
@@ -150,6 +154,10 @@ palpo_config = "palpo.toml"
             signing_key_id: "gitfab-1".into(),
             journal_file: None,
             stage_timeout_minutes: None,
+            github_token_file: None,
+            gitcode_token_file: None,
+            github_api: None,
+            gitcode_api: None,
         };
         assert!(Signer::load(&missing).is_err());
     }

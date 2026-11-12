@@ -40,6 +40,7 @@
   - `POST .../gitfab/runs/{run}/decision`，`{"decision":"continue|reassign|abort"}`：人工介入后的决定，只有发起人可以。
 - 房间命令（附件 3：Human 请求和确认以 Matrix 事件为锚点）：在项目房间发 `/gitfab start <任务ID>`，后面每行 `repo`、`baseline`、`spec`、可选 `backend`、`project`、`coordinator`/`implementer`/`reviewer`，最后 `goal:`。这条消息成为任务 Thread 的根。在该 Thread 里发 `/gitfab approve|revise|reject` 处理 Spec，`/gitfab continue|reassign|abort` 处理人工介入，只认发起人。路由 worker 把这些消息记入 `orchestrator_commands`，不派给 Agent；编排器处理后在 Thread 里回复结果或原因。只在启用编排器时拦截。
 - 配置：backend `[gitfab]` 段设置 `journal_file` 即启用；`stage_timeout_minutes` 默认 120。需要 `pasion.delegate_matrix_auth`（Agent 服务）。
+  另可设 `github_token_file`、`gitcode_token_file`（0600，单个 Token）启用 PR 与 Release；自建实例用 `github_api`、`gitcode_api` 指定 API 根。
 - 测试：`orchestrator_tests.rs` 用模拟房间和模拟 Agent 走真实 transport，覆盖完整流程加一次返工、超时转人工、被拒后重试一次、崩溃后日志补写。运行：`python3 scripts/test-agent-service-postgres.py --lib orchestrator`。
 
 ## 限制与风险
@@ -63,7 +64,7 @@
 
 附件 1 要求在 GitHub 和 GitCode 上创建任务分支、创建或更新 PR、读取测试状态、生成 Release，并把链接回写任务记录。平台调用由新 crate `gitfab-forge` 完成（两个后端一套接口，模拟传输测试），另有 `gitfab-forge` 命令供验收脚本使用。
 
-分工（推荐方案，待接入）：
+分工（已接入，提交见下）：
 - Agent 只做 git：在 `agent/<project_id>/<task_id>` 分支上提交并推送，回复提交 SHA。推送用的是执行端自己的仓库凭据。
 - 编排器做平台动作，用服务器保管的 Token（`[gitfab]` 新增各后端的 Token 文件路径，文件须为 0600）：
   - Execute 完成后：确认任务分支存在且头提交等于 Agent 回复的 SHA，创建或更新 PR，把 PR 链接写入阶段事件。
@@ -71,3 +72,5 @@
   - Review 通过后：以 PR 头提交为目标创建 Release（已存在同名 Release 则复用），把 Release 链接写入 Release 事件。
 - 理由：链接由服务器从平台读回并签名记录，Agent 无法伪造；Token 不交给 Agent，也不进入阶段消息。
 - 未配置 Token 时，以上平台动作跳过，并在 Thread 里说明，流程照常推进（与现状一致）。
+
+实现：`orchestrator_git.rs`。`StageRoom::git()` 默认返回 `None`（不调用平台），`MatrixStageRoom` 持有启动时按配置加载的主机。阶段成功的判断与事件记录在同一处（`apply`），平台链接写入该阶段事件的 `artifact_refs`，说明以 `m.notice` 发在任务 Thread 里（事务 ID 固定，重试不重复）。平台调用失败只写说明，不阻断流程。阶段消息新增一行“任务分支：agent/<project_id>/<task_id>”。Release 标签默认 `gitfab-<task_id>-r<轮次>`，可用 context 的 `releaseTag` 指定。

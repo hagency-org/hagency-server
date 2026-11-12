@@ -264,6 +264,25 @@ async fn run() -> anyhow::Result<()> {
                     .stage_timeout_minutes
                     .map(|m| i64::from(m) * 60_000),
             );
+            if gitfab.github_token_file.is_some() || gitfab.gitcode_token_file.is_some() {
+                let hosts = hagency_agent_service::orchestrator_git::GitHosts::load(
+                    gitfab
+                        .github_token_file
+                        .as_deref()
+                        .map(|f| (f, gitfab.github_api.as_deref())),
+                    gitfab
+                        .gitcode_token_file
+                        .as_deref()
+                        .map(|f| (f, gitfab.gitcode_api.as_deref())),
+                )
+                .map_err(|e| anyhow::anyhow!("gitfab token file {e}"))?;
+                tracing::info!(
+                    github = hosts.github.is_some(),
+                    gitcode = hosts.gitcode.is_some(),
+                    "GitFab Pull Requests and Releases enabled"
+                );
+                app = app.with_gitfab_git(hosts);
+            }
         }
         agent_service = Some(app);
     }

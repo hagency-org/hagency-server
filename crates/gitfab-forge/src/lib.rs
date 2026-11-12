@@ -91,6 +91,19 @@ impl Repo {
             name: name.into(),
         })
     }
+    /// `owner/name`, or a web or clone address ending in it.
+    pub fn from_ref(reference: &str) -> Result<Self> {
+        let trimmed = reference.trim().trim_end_matches('/');
+        let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+        match trimmed.split_once("://") {
+            // scheme://host/owner/name: exactly two segments after the host.
+            Some((_, rest)) => match rest.split_once('/') {
+                Some((_, path)) => Self::parse(path),
+                None => Err(Error::InvalidRepo),
+            },
+            None => Self::parse(trimmed),
+        }
+    }
     fn path(&self) -> String {
         format!("/repos/{}/{}", self.owner, self.name)
     }
@@ -374,7 +387,13 @@ impl<T: Transport> Forge<T> {
         })
     }
 
-    async fn open_pull(&self, repo: &Repo, head: &str, base: &str) -> Result<Option<PullRequest>> {
+    /// The open Pull Request from `head` into `base`, if any.
+    pub async fn open_pull(
+        &self,
+        repo: &Repo,
+        head: &str,
+        base: &str,
+    ) -> Result<Option<PullRequest>> {
         // GitHub filters by head; GitCode does not document that filter, so
         // its open Pull Requests into `base` are matched here by source branch.
         let path = match self.backend {

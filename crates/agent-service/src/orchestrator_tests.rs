@@ -19,6 +19,7 @@ struct Room {
     requester_in_room: bool,
     /// (transaction ID, body) of each distinct stage message.
     posts: StdMutex<Vec<(String, String)>>,
+    git: Option<crate::orchestrator_git::GitHosts>,
 }
 
 impl StageRoom for Room {
@@ -40,6 +41,10 @@ impl StageRoom for Room {
 
     async fn admit_shared(&self, _event: &RoutedEvent, _received_at_ms: i64) -> Result<()> {
         Err(Error::Unauthorized("shared_execution_unavailable"))
+    }
+
+    fn git(&self) -> Option<&crate::orchestrator_git::GitHosts> {
+        self.git.as_ref()
     }
 
     async fn facts(&self, _scope: &RoutingScope, requester: &str) -> Result<DeliveryFacts> {
@@ -90,6 +95,7 @@ async fn harness(requester_in_room: bool) -> Harness {
             facts: f.facts.clone(),
             requester_in_room,
             posts: StdMutex::new(Vec::new()),
+            git: None,
         },
         f,
         recorder,
@@ -668,4 +674,130 @@ async fn postgres_humans_start_and_confirm_a_run_with_room_commands() {
 
 async fn run_state(h: &Harness, id: &str) -> State {
     run(h, id).await.state
+}
+
+/// A GitHub that holds one repository and records the Pull Request and Release GitFab creates.
+fn fake_github() -> crate::orchestrator_git::GitHosts {
+    use hagency_gitfab_forge::{Backend, Forge, Request, Response};
+    let created = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let head = "c".repeat(40);
+    let answer = move |r: &Request| -> Response {
+        let repo = "/repos/example/gitfab-demo-02";
+        let pull = json!({"number": 7, "html_url": "https://github.com/example/gitfab-demo-02/pull/7",
+            "head": {"ref": "agent/DEMO-02/task-healthz", "sha": head}});
+        let (status, body) = match (r.method, r.path.strip_prefix(repo).unwrap_or(&r.path)) {
+            ("GET", "") => (
+                200,
+                json!({"full_name": "example/gitfab-demo-02", "default_branch": "main",
+                "html_url": "https://github.com/example/gitfab-demo-02"}),
+            ),
+            ("GET", p)
+                if p.starts_with(
+                    "/pulls?state=open&head=example%3Aagent%2FDEMO-02%2Ftask-healthz&base=main",
+                ) =>
+            {
+                (
+                    200,
+                    if std::sync::atomic::AtomicBool::load(&created, Ordering::SeqCst) {
+                        json!([pull])
+                    } else {
+                        json!([])
+                    },
+                )
+            }
+            ("POST", "/pulls") => {
+                assert_eq!(
+                    r.body.as_ref().unwrap()["head"],
+                    "agent/DEMO-02/task-healthz"
+                );
+                std::sync::atomic::AtomicBool::store(&created, true, Ordering::SeqCst);
+                (201, pull)
+            }
+            ("PATCH", "/pulls/7") => (200, json!({})),
+            ("GET", p) if p == format!("/commits/{head}/status") => {
+                (200, json!({"total_count": 1, "state": "success"}))
+            }
+            ("GET", p) if p.starts_with(&format!("/commits/{head}/check-runs")) => {
+                (200, json!({"check_runs": []}))
+            }
+            ("GET", "/releases/tags/gitfab-task-healthz-r1") => (404, json!({})),
+            ("POST", "/releases") => {
+                assert_eq!(r.body.as_ref().unwrap()["target_commitish"], head.as_str());
+                (
+                    201,
+                    json!({"html_url": "https://github.com/example/gitfab-demo-02/releases/tag/gitfab-task-healthz-r1"}),
+                )
+            }
+            other => panic!("unexpected GitHub call {other:?}"),
+        };
+        Response { status, body }
+    };
+    crate::orchestrator_git::GitHosts {
+        github: Some(Forge::new(
+            Backend::GitHub,
+            crate::orchestrator_git::GitTransport::Fake(std::sync::Arc::new(answer)),
+        )),
+        gitcode: None,
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_a_run_opens_its_pull_request_and_publishes_the_release_on_the_platform() {
+    let mut h = harness(true).await;
+    h.room.git = Some(fake_github());
+    let o = orchestrator(&h, DEFAULT_STAGE_TIMEOUT_MS);
+    let now = crate::api::now_ms;
+    let id = start(&h, "$gitfab-e2e-git").await;
+    o.pass(now()).await.unwrap();
+    answer(&h, &id, "Spec v1").await;
+    o.pass(now()).await.unwrap();
+    o.decide(&id, Input::SpecDecision(SpecDecision::Approve), now())
+        .await
+        .unwrap();
+    for reply in [
+        "plan",
+        "pushed ccc to agent/DEMO-02/task-healthz",
+        "tests pass",
+        "VERDICT: approve",
+        "released",
+    ] {
+        o.pass(now()).await.unwrap();
+        answer(&h, &id, reply).await;
+        o.pass(now()).await.unwrap();
+    }
+    assert_eq!(run(&h, &id).await.state, State::Completed);
+    let pr = "https://github.com/example/gitfab-demo-02/pull/7";
+    let release = "https://github.com/example/gitfab-demo-02/releases/tag/gitfab-task-healthz-r1";
+    let refs = |phase: &str| {
+        journal(&h)
+            .into_iter()
+            .find(|e| e["phase"] == phase && e["status"] == "succeeded")
+            .map(|e| e["artifact_refs"].clone())
+    };
+    assert_eq!(refs("plan"), Some(json!([])));
+    assert_eq!(refs("execute"), Some(json!([pr])));
+    assert_eq!(refs("test"), Some(json!([pr])));
+    assert_eq!(refs("release"), Some(json!([release, pr])));
+    let posts = h.room.posts.lock().unwrap();
+    assert!(
+        posts
+            .iter()
+            .any(|(_, b)| b.contains("任务分支：agent/DEMO-02/task-healthz"))
+    );
+    assert!(
+        posts
+            .iter()
+            .any(|(_, b)| b == &format!("已创建或更新 PR：{pr}"))
+    );
+    assert!(
+        posts
+            .iter()
+            .any(|(_, b)| b == &format!("平台测试状态：通过（{pr}）"))
+    );
+    assert!(
+        posts
+            .iter()
+            .any(|(_, b)| b == &format!("已发布 Release gitfab-task-healthz-r1：{release}"))
+    );
 }

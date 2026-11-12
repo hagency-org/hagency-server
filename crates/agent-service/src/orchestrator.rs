@@ -67,6 +67,10 @@ pub(crate) trait StageRoom: Sync {
         event: &RoutedEvent,
         received_at_ms: i64,
     ) -> impl Future<Output = Result<()>> + Send;
+    /// Hosts for Pull Requests and Releases; `None` leaves the platform alone.
+    fn git(&self) -> Option<&crate::orchestrator_git::GitHosts> {
+        None
+    }
 }
 
 /// The signed event journal (`hagency-gitfab-events`).
@@ -184,7 +188,7 @@ pub(crate) fn stage_message(
     let c = &run.init.context;
     let text = |k: &str| c[k].as_str().unwrap_or("");
     let mut body = format!(
-        "[GitFab {phase}] 任务 {task} · 第 {round} 轮 · 第 {attempt} 次\n目标：{goal}\n仓库：{repo}（{backend}，基线 {sha}）\nSpec：{spec}（第 {rev} 版）\n\n本阶段要求：{ask}",
+        "[GitFab {phase}] 任务 {task} · 第 {round} 轮 · 第 {attempt} 次\n目标：{goal}\n仓库：{repo}（{backend}，基线 {sha}）\n任务分支：{branch}\nSpec：{spec}（第 {rev} 版）\n\n本阶段要求：{ask}",
         phase = slot.stage.phase(),
         task = run.init.task_id,
         round = slot.round,
@@ -193,6 +197,7 @@ pub(crate) fn stage_message(
         repo = text("repoRef"),
         backend = text("gitBackend"),
         sha = text("baselineSha"),
+        branch = crate::orchestrator_git::task_branch(run),
         spec = text("specRef"),
         rev = spec_revision,
         ask = instruction(slot.stage),
@@ -569,6 +574,26 @@ impl<R: StageRoom> Orchestrator<'_, R> {
             (State::ManualIntervention { slot, .. }, _) => Some(*slot),
             _ => None,
         };
+        // A stage that just succeeded may drive the Git platform; its links go into that event.
+        let git = match completed {
+            Some(slot)
+                if crate::orchestrator_git::drives(slot.stage)
+                    && actions.iter().any(|a| {
+                        matches!(a, Action::Record { phase, status: "succeeded", round }
+                            if *phase == slot.stage.phase() && *round == slot.round)
+                    }) =>
+            {
+                match crate::orchestrator_git::target(self.room.git(), &run) {
+                    Some((host, repo)) => Some((
+                        slot,
+                        crate::orchestrator_git::step(host, &repo, &run, slot.stage, slot.round)
+                            .await,
+                    )),
+                    None => None,
+                }
+            }
+            _ => None,
+        };
         let mut events = Vec::new();
         for (index, action) in actions.iter().enumerate() {
             let Action::Record {
@@ -656,7 +681,11 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                     Some(reply) if finishes_completed => json!(sha256(reply)),
                     _ => Value::Null,
                 },
-                "artifact_refs": [],
+                "artifact_refs": match &git {
+                    Some((slot, step)) if finishes_completed && status == "succeeded"
+                        && slot.stage.phase() == phase => json!(step.refs),
+                    _ => json!([]),
+                },
                 "request_id": run.dispatch_id.clone().unwrap_or_else(|| run.id.clone()),
                 "signature": null,
                 "round": round,
@@ -693,6 +722,35 @@ impl<R: StageRoom> Orchestrator<'_, R> {
             ..run
         };
         self.flush(&advanced).await?;
+        if let Some((
+            slot,
+            crate::orchestrator_git::GitStep {
+                note: Some(note), ..
+            },
+        )) = &git
+        {
+            let meta = json!({"version": 1, "runId": advanced.id, "taskId": advanced.init.task_id,
+                "stage": slot.stage.phase(), "round": slot.round, "git": true});
+            let txn = format!(
+                "{}.git.{}.{}.{revision}",
+                advanced.id,
+                slot.stage.phase(),
+                slot.round
+            );
+            if let Err(e) = self
+                .room
+                .post(
+                    &advanced.init.room_id,
+                    &advanced.init.thread_root,
+                    &txn,
+                    note,
+                    &meta,
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "gitfab Git note was not posted");
+            }
+        }
         Ok(Some(OrchestratorRun {
             pending_events: Value::Array(Vec::new()),
             ..advanced
@@ -1077,9 +1135,15 @@ pub(crate) struct MatrixStageRoom<'a> {
         &'a crate::domain::DomainStore,
         &'a crate::management_types::ManagementPolicy,
     )>,
+    /// Backends with a configured token.
+    pub git: Option<&'a crate::orchestrator_git::GitHosts>,
 }
 
 impl StageRoom for MatrixStageRoom<'_> {
+    fn git(&self) -> Option<&crate::orchestrator_git::GitHosts> {
+        self.git
+    }
+
     async fn post(
         &self,
         room_id: &str,
@@ -1123,6 +1187,7 @@ impl StageRoom for MatrixStageRoom<'_> {
 }
 
 /// The orchestrator worker: one pass every five seconds until shutdown.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn start_controlled(
     transport: TransportStore,
     gateway: crate::gateway::Gateway,
@@ -1133,6 +1198,7 @@ pub(crate) fn start_controlled(
     )>,
     recorder: Arc<Recorder>,
     stage_timeout_ms: i64,
+    git: Option<Arc<crate::orchestrator_git::GitHosts>>,
     control: crate::worker_runtime::WorkerRuntime,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -1141,6 +1207,7 @@ pub(crate) fn start_controlled(
             gateway: &gateway,
             matrix: &matrix,
             shared: shared.as_ref().map(|(d, p)| (d, p)),
+            git: git.as_deref(),
         };
         let orchestrator = Orchestrator {
             transport: &transport,
