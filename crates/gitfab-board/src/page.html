@@ -44,6 +44,11 @@
   .replay-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
   .replay-controls input[type=range] { flex: 1; min-width: 160px; }
   select, button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; }
+  /* Tables keep a readable width and scroll sideways on narrow screens; the page itself never does. */
+  .tw { overflow-x: auto; max-width: 100%; }
+  .tw table { min-width: 560px; }
+  td, th { overflow-wrap: normal; }
+  td .mono, td a { overflow-wrap: anywhere; }
   .timeline { margin: 0; padding-left: 20px; }
   .timeline li { padding: 4px 0; border-bottom: 1px solid var(--line); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
@@ -91,37 +96,37 @@ function render(d) {
   const AG = { running: ['ok', 'Running 执行中'], pending: ['warn', 'Pending 等待'], active: ['ok', 'Active 空闲'] };
   const ag = d.agents || {};
   document.getElementById('agents').innerHTML = !ag.ok ? `<p class="muted">未接入服务端：${esc(ag.error)}</p>` :
-    (ag.status.agents.length ? `<table><tr><th>Agent（绑定）</th><th>状态</th><th>角色</th><th>所在流程</th></tr>${ag.status.agents.map((a) => {
+    (ag.status.agents.length ? `<div class="tw"><table><tr><th>Agent（绑定）</th><th>状态</th><th>角色</th><th>所在流程</th></tr>${ag.status.agents.map((a) => {
       const [k, t] = AG[a.status] || ['warn', a.status];
       return `<tr><td class="mono">${esc(a.binding)}${a.pool ? ' <span class="muted">资源池</span>' : ''}</td><td><span class="pill ${k}">${t}</span></td><td>${esc(a.roles.join('、'))}</td>
         <td>${a.runs.map((r) => `${esc(r.project)} ${esc(r.task)}：${esc(r.status)}${r.stage ? ' · ' + esc(r.stage) : ''}`).join('<br>')}</td></tr>`;
-    }).join('')}</table>` : '<p class="muted">当前没有进行中的流程。</p>');
-  document.getElementById('runs').innerHTML = d.runs.length ? `<table><tr><th>项目 / 任务</th><th>当前</th><th>阶段</th><th>链接</th></tr>${
+    }).join('')}</table></div>` : '<p class="muted">当前没有进行中的流程。</p>');
+  document.getElementById('runs').innerHTML = d.runs.length ? `<div class="tw"><table><tr><th>项目 / 任务</th><th>当前</th><th>阶段</th><th>链接</th></tr>${
     d.runs.map((r) => {
       const links = [...new Set(r.steps.flatMap((s) => s.links || []))];
       return `<tr><td><b>${esc(r.project)}</b><br><span class="muted">${esc(r.task)} · ${esc(r.backend)}</span><br><span class="mono muted">${esc(r.run)}</span></td>
         <td>${esc(r.current?.phase)} ${status(r.current?.status)}</td>
         <td><div class="steps">${r.steps.map((s) => `<span title="${esc(s.time)} ${esc(s.actor)}">${esc(s.phase)}·${esc(s.status)} ${check(s.check)}</span>`).join('')}</div></td>
         <td>${links.map(link).join('<br>') || '<span class="muted">—</span>'}</td></tr>`;
-    }).join('')}</table>` : '<p class="muted">还没有任务事件。</p>';
+    }).join('')}</table></div>` : '<p class="muted">还没有任务事件。</p>';
 
   document.getElementById('deploys').innerHTML = d.deployments.length ? d.deployments.map((p) => {
     const last = p.receipts[p.receipts.length - 1];
     const live = p.live ? `实时：健康 ${p.live.health === 200 ? '<span class="pill ok">200</span>' : `<span class="pill bad">${esc(p.live.health)}</span>`}，版本 <span class="mono">${esc(p.live.version)}</span>` : '<span class="muted">未配置实时探测</span>';
-    return `<p><b>${esc(p.project)}</b> · ${live}</p>` + (last ? `<table><tr><th>回执</th><th>健康</th><th>回退</th><th>签名</th></tr>${
-      p.receipts.slice(-5).reverse().map((r) => `<tr><td>${esc(r.release)}<br><span class="mono muted">${esc(String(r.image).slice(0, 19))} · ${esc(r.time)}</span></td><td>${status(r.health)}</td><td>${esc(r.rollback)}</td><td>${check(r.check)}</td></tr>`).join('')}</table>` : '<p class="muted">没有回执。</p>');
+    return `<p><b>${esc(p.project)}</b> · ${live}</p>` + (last ? `<div class="tw"><table><tr><th>回执</th><th>健康</th><th>回退</th><th>签名</th></tr>${
+      p.receipts.slice(-5).reverse().map((r) => `<tr><td>${esc(r.release)}<br><span class="mono muted">${esc(String(r.image).slice(0, 19))} · ${esc(r.time)}</span></td><td>${status(r.health)}</td><td>${esc(r.rollback)}</td><td>${check(r.check)}</td></tr>`).join('')}</table></div>` : '<p class="muted">没有回执。</p>');
   }).join('') : '<p class="muted">还没有部署回执。</p>';
 
   const t = d.tokens;
   const totals = (s) => { const row = (k, v) => `<tr><td>${k}</td><td class="mono">${esc(v)}</td></tr>`;
     const groups = Object.entries(s.by_project || {}).map(([p, v]) => row('项目 ' + esc(p), typeof v === 'object' ? JSON.stringify(v) : v)).join('');
-    return `<table>${row('Token 合计', s.token_total)}${row('去重后事件', s.unique_events)}${row('忽略的重复', s.duplicates_ignored)}${row('更正', s.corrections)}${groups}${row('账本摘要', String(s.ledger_digest || '').slice(0, 23) + '…')}</table>`; };
+    return `<div class="tw"><table>${row('Token 合计', s.token_total)}${row('去重后事件', s.unique_events)}${row('忽略的重复', s.duplicates_ignored)}${row('更正', s.corrections)}${groups}${row('账本摘要', String(s.ledger_digest || '').slice(0, 23) + '…')}</table></div>`; };
   document.getElementById('tokens').innerHTML = t.ok
     ? totals(t.summary)
     : `<p><span class="pill bad">账本不一致</span></p><pre class="mono">${esc(JSON.stringify(t.errors, null, 2))}</pre>`;
 
-  document.getElementById('events').innerHTML = d.events.length ? `<table><tr><th>时间</th><th>项目</th><th>事件</th><th>执行者</th><th>密钥 / 摘要</th><th>验签</th></tr>${
-    d.events.slice(0, 60).map((e) => `<tr><td class="mono">${esc(e.time)}</td><td>${esc(e.project)}</td><td>${esc(e.kind || e.schema)}<br><span class="mono muted">${esc(e.id)}</span></td><td>${esc(e.actor)}</td><td class="mono">${esc(e.key_id)}<br>${esc(e.digest)}</td><td>${check(e.check)}</td></tr>`).join('')}</table>` : '<p class="muted">还没有事件。</p>';
+  document.getElementById('events').innerHTML = d.events.length ? `<div class="tw"><table><tr><th>时间</th><th>项目</th><th>事件</th><th>执行者</th><th>密钥 / 摘要</th><th>验签</th></tr>${
+    d.events.slice(0, 60).map((e) => `<tr><td class="mono">${esc(e.time)}</td><td>${esc(e.project)}</td><td>${esc(e.kind || e.schema)}<br><span class="mono muted">${esc(e.id)}</span></td><td>${esc(e.actor)}</td><td class="mono">${esc(e.key_id)}<br>${esc(e.digest)}</td><td>${check(e.check)}</td></tr>`).join('')}</table></div>` : '<p class="muted">还没有事件。</p>';
 }
 
 // Replay keeps its own choice across refreshes; only the timeline is redrawn while it plays.
