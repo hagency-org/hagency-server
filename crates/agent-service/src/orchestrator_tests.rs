@@ -190,6 +190,12 @@ fn journal(h: &Harness) -> Vec<Value> {
         .collect()
 }
 
+/// The task events of one run. Tests share the database and every pass serves all open runs, so a
+/// journal can also hold events of runs other tests left open.
+fn own(events: &[Value], run_id: &str) -> Vec<Value> {
+    events.iter().filter(|e| e["schema_version"] != "gitfab.task.v1" || e["run_id"] == run_id).cloned().collect()
+}
+
 fn task_steps(events: &[Value]) -> Vec<(String, String, i64)> {
     events
         .iter()
@@ -438,7 +444,7 @@ async fn postgres_a_timed_out_stage_waits_for_a_human_and_is_never_redispatched_
     );
     assert!(identity::check(&journal(&h)).is_empty());
     assert_eq!(
-        task_steps(&journal(&h)),
+        task_steps(&own(&journal(&h), &id)),
         steps(&[
             ("intake", "succeeded", 0),
             ("spec", "running", 0),
@@ -470,7 +476,7 @@ async fn postgres_a_stage_the_transport_refuses_is_retried_once_then_fails_the_r
         "first attempt and one retry"
     );
     assert_eq!(
-        task_steps(&journal(&h)),
+        task_steps(&own(&journal(&h), &id)),
         steps(&[
             ("intake", "succeeded", 0),
             ("spec", "running", 0),
@@ -800,4 +806,57 @@ async fn postgres_a_run_opens_its_pull_request_and_publishes_the_release_on_the_
             .iter()
             .any(|(_, b)| b == &format!("已发布 Release gitfab-task-healthz-r1：{release}"))
     );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_a_held_stage_is_reassigned_to_the_named_agent_of_the_room() {
+    let h = harness(true).await;
+    let impatient = orchestrator(&h, 0);
+    let patient = orchestrator(&h, DEFAULT_STAGE_TIMEOUT_MS);
+    let now = crate::api::now_ms;
+    let root = "$gitfab-e2e-reassign";
+    let id = start(&h, root).await;
+    impatient.pass(now()).await.unwrap();
+    let held = run(&h, &id).await;
+    assert!(matches!(held.state, State::ManualIntervention { .. }), "{:?}", held.state);
+
+    // Storage: a held run's role can be rebound once per revision.
+    h.f.transport
+        .rebind_orchestrator_role(&id, held.revision, "coordinator", "bnd_other", now())
+        .await
+        .unwrap();
+    assert_eq!(run(&h, &id).await.init.bindings["coordinator"], "bnd_other");
+    assert!(matches!(
+        h.f.transport
+            .rebind_orchestrator_role(&id, held.revision, "coordinator", "bnd_x", now())
+            .await,
+        Err(Error::Conflict("orchestrator_run_revision_changed"))
+    ));
+
+    // An Agent outside the Room is refused and the stage stays held.
+    h.f.transport
+        .record_orchestrator_command(&command(&h, "cmd-unknown", Some(root), "/gitfab reassign @nobody:example.test"), now())
+        .await
+        .unwrap();
+    patient.pass(now()).await.unwrap();
+    assert!(matches!(run(&h, &id).await.state, State::ManualIntervention { .. }));
+
+    // The Room's Agent, named by its account, takes the held stage.
+    let puppet = h.f.facts.puppet_mxid.clone();
+    h.f.transport
+        .record_orchestrator_command(&command(&h, "cmd-reassign", Some(root), &format!("/gitfab reassign {puppet}")), now())
+        .await
+        .unwrap();
+    patient.pass(now()).await.unwrap();
+    let after = run(&h, &id).await;
+    assert_eq!(running_stage(&after.state), Some((Stage::Spec, 0, 2)));
+    assert_eq!(after.init.bindings["coordinator"], h.f.binding.as_str());
+    let posts = h.room.posts.lock().unwrap().clone();
+    assert!(posts.iter().any(|(_, b)| b.contains("不是本房间里正在服务的 Agent")));
+    assert!(posts.iter().any(|(_, b)| b.contains("已改派，coordinator 由")));
+    // Leave no open run behind for the other tests' passes.
+    impatient.pass(now()).await.unwrap();
+    patient.decide(&id, Input::Human(HumanDecision::Abort), now()).await.unwrap();
+    assert_eq!(run(&h, &id).await.state, State::Failed { reason: "aborted" });
 }

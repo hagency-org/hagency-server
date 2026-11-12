@@ -325,7 +325,12 @@ impl<R: StageRoom> Orchestrator<'_, R> {
         match parsed {
             Command::Help => Ok(("help".into(), USAGE.into())),
             Command::Start(start) => self.start(command, root, *start, now).await,
-            Command::Decide(input) => {
+            Command::Decide(_) | Command::Reassign(..) => {
+                let (input, to) = match parsed {
+                    Command::Reassign(who, input) => (input, Some(who)),
+                    Command::Decide(input) => (input, None),
+                    _ => unreachable!("matched above"),
+                };
                 let Some(run) = self
                     .transport
                     .orchestrator_run_in_thread(&command.room_id, root)
@@ -344,6 +349,9 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                             run.init.requester_mxid
                         ),
                     ));
+                }
+                if let Some(who) = to {
+                    return self.reassign_to(command, run, &who, now).await;
                 }
                 match self.decide(&run.id, input, now).await {
                     Ok(state) => Ok((
@@ -367,6 +375,50 @@ impl<R: StageRoom> Orchestrator<'_, R> {
         }
     }
 
+    /// Personal bindings and pool assignments serving a Room: (role value, puppet, Agent id).
+    async fn room_agents(&self, room_id: &str) -> Result<Vec<(String, String, String)>> {
+        let mut agents: Vec<(String, String, String)> = self
+            .transport
+            .routing_scopes(room_id)
+            .await?
+            .into_iter()
+            .filter(|s| s.active)
+            .map(|s| (s.binding_id, s.puppet_mxid, s.agent_id))
+            .collect();
+        for (assignment, agent, puppet) in self.transport.shared_room_agents(room_id).await? {
+            agents.push((assignment, puppet, agent));
+        }
+        Ok(agents)
+    }
+
+    /// `/gitfab reassign <Agent>`: the stage a Human holds goes to another Agent of the Room.
+    async fn reassign_to(&self, command: &OrchestratorCommand, run: OrchestratorRun, who: &str, now: i64) -> Result<(String, String)> {
+        let State::ManualIntervention { slot, .. } = run.state else {
+            return Ok((
+                "refused:not_applicable".into(),
+                format!("GitFab：流程当前状态为「{}」，只有人工介入时才能改派。", state_text(&run.state)),
+            ));
+        };
+        let agents = self.room_agents(&command.room_id).await?;
+        let Some((binding, ..)) = agents.iter().find(|(id, puppet, agent)| puppet == who || id == who || agent == who) else {
+            return Ok((
+                "refused:unknown_agent".into(),
+                format!("GitFab：{who} 不是本房间里正在服务的 Agent。"),
+            ));
+        };
+        let role = role_key(slot.stage.role());
+        if run.init.bindings[role] != binding.as_str() {
+            self.transport
+                .rebind_orchestrator_role(&run.id, run.revision, role, binding, now)
+                .await?;
+        }
+        let state = self.decide(&run.id, Input::Human(HumanDecision::Reassign), now).await?;
+        Ok((
+            "applied".into(),
+            format!("GitFab：已改派，{role} 由 {who} 接手。流程 {} 当前状态：{}。", run.id, state_text(&state)),
+        ))
+    }
+
     async fn start(
         &self,
         command: &OrchestratorCommand,
@@ -383,29 +435,7 @@ impl<R: StageRoom> Orchestrator<'_, R> {
         let Some(project) = self.transport.room_project(&command.room_id).await? else {
             return refuse("此房间不是已登记的项目房间。");
         };
-        let scopes: Vec<RoutingScope> = self
-            .transport
-            .routing_scopes(&command.room_id)
-            .await?
-            .into_iter()
-            .filter(|s| s.active)
-            .collect();
-        // Personal bindings and pool assignments serving this Room: (role value, puppet, Agent id).
-        let mut agents: Vec<(String, String, String)> = scopes
-            .iter()
-            .map(|s| {
-                (
-                    s.binding_id.clone(),
-                    s.puppet_mxid.clone(),
-                    s.agent_id.clone(),
-                )
-            })
-            .collect();
-        for (assignment, agent, puppet) in
-            self.transport.shared_room_agents(&command.room_id).await?
-        {
-            agents.push((assignment, puppet, agent));
-        }
+        let agents = self.room_agents(&command.room_id).await?;
         let mut bindings = serde_json::Map::new();
         for (role, wanted) in ORCHESTRATOR_ROLES.iter().zip(&start.roles) {
             let found = match wanted.as_deref() {
@@ -427,7 +457,13 @@ impl<R: StageRoom> Orchestrator<'_, R> {
             bindings.insert((*role).to_owned(), json!(id));
         }
         // The Human must still be in the Room. Pool admissions check the requester themselves.
-        if let Some(first) = scopes.first() {
+        let first = self
+            .transport
+            .routing_scopes(&command.room_id)
+            .await?
+            .into_iter()
+            .find(|s| s.active);
+        if let Some(first) = &first {
             let facts = self.room.facts(first, &command.sender_mxid).await?;
             if !facts.requester_in_room {
                 return refuse("发起人不在本房间。");
@@ -979,7 +1015,7 @@ pub(crate) const USAGE: &str = "用法：\n\
   project: 验收项目编号（可选，如 DEMO-02）\n\
   coordinator / implementer / reviewer: Agent 账号（房间里只有一个 Agent 时可省略）\n\
   goal: 目标（这一行之后的内容都算目标）\n\
-在流程的 Thread 里：`/gitfab approve`、`/gitfab revise`、`/gitfab reject` 处理 Spec；`/gitfab continue`、`/gitfab reassign`、`/gitfab abort` 处理人工介入。";
+在流程的 Thread 里：`/gitfab approve`、`/gitfab revise`、`/gitfab reject` 处理 Spec；`/gitfab continue`、`/gitfab reassign [@Agent账号]`、`/gitfab abort` 处理人工介入（reassign 指定账号时由该 Agent 接手）。";
 
 /// A message is a command when its first word is `/gitfab`.
 pub(crate) fn is_command(body: &str) -> bool {
@@ -1005,8 +1041,11 @@ pub(crate) struct StartCommand {
 pub(crate) enum Command {
     Start(Box<StartCommand>),
     Decide(Input),
+    /// `/gitfab reassign <Agent>`: the held stage goes to that Agent.
+    Reassign(String, Input),
     Help,
 }
+
 
 /// Reads a `/gitfab` message. Errors are shown to the Human as they are.
 pub(crate) fn parse_command(body: &str) -> std::result::Result<Command, &'static str> {
@@ -1027,7 +1066,14 @@ pub(crate) fn parse_command(body: &str) -> std::result::Result<Command, &'static
         "reject" => return decision(Input::SpecDecision(SpecDecision::Reject)),
         "revise" => return decision(Input::SpecDecision(SpecDecision::Revise)),
         "continue" => return decision(Input::Human(HumanDecision::Continue)),
-        "reassign" => return decision(Input::Human(HumanDecision::Reassign)),
+        "reassign" => {
+            let input = Input::Human(HumanDecision::Reassign);
+            return match (words.next(), words.next()) {
+                (None, _) => Ok(Command::Decide(input)),
+                (Some(who), None) => Ok(Command::Reassign(who.to_owned(), input)),
+                _ => Err("改派只能指定一个 Agent。"),
+            };
+        }
         "abort" => return decision(Input::Human(HumanDecision::Abort)),
         "start" => {}
         _ => return Err("不认识这个命令。"),
@@ -1255,6 +1301,18 @@ mod tests {
         assert!(is_command("  /gitfab approve"));
         assert!(!is_command("/gitfabulous"));
         assert!(!is_command("please /gitfab approve"));
+    }
+
+    #[test]
+    fn reassign_takes_at_most_one_agent() {
+        let input = Input::Human(HumanDecision::Reassign);
+        assert_eq!(parse_command("/gitfab reassign").unwrap(), Command::Decide(input));
+        assert_eq!(
+            parse_command("/gitfab reassign @_hagency_agt_b:example.test").unwrap(),
+            Command::Reassign("@_hagency_agt_b:example.test".into(), input)
+        );
+        assert!(parse_command("/gitfab reassign @a:s @b:s").is_err());
+        assert!(parse_command("/gitfab continue @a:s").is_err(), "only reassign names an Agent");
     }
 
     #[test]

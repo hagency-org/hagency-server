@@ -105,4 +105,3 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
 - 平台审查状态（PR review）尚未读取；测试状态 GitHub 取提交状态与 check-runs（细粒度 Token 时改读 Actions），GitCode 取 PR 的 pipeline_status。
 - GitCode 经典 Token 不能限定单个仓库。
 - 事件日志尚未写入 Git。
-- 人工介入后的 `reassign` 尚不能换 Agent：流程规则会标记改派，但编排器仍派给该角色原来的绑定。

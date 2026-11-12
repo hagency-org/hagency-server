@@ -64,7 +64,8 @@ goal: 实现轻量任务清单 API，见 PRD-DEMO-02-v1。
 | | `/gitfab revise` | 重新出 Spec，版本加一（修改意见直接写在 Thread 里） |
 | | `/gitfab reject` | 流程结束（失败） |
 | 转人工介入后（超时、评审驳回超过 2 次、评审 blocked） | `/gitfab continue` | 同一 Agent 重新执行该阶段（新的一次派发，不重放旧的） |
-| | `/gitfab reassign` | 目前与 `continue` 相同：仍派给该角色原来的 Agent，只在记录里标明是改派。换成另一个 Agent 尚未支持 |
+| | `/gitfab reassign @Agent账号` | 卡住的阶段改由本房间里指定的 Agent 接手（也可写绑定 ID 或资源池分配 ID）；该角色此后都由它担任 |
+| | `/gitfab reassign` | 不指定时仍派给该角色原来的 Agent，记录里标明是改派 |
 | | `/gitfab abort` | 流程结束（失败） |
 
 Thread 里能看到：每个阶段的派发消息（含任务分支 `agent/<project>/<task>`）、Agent 的回复、编排器的平台说明（“已创建或更新 PR”“平台测试状态”“已发布 Release”）。

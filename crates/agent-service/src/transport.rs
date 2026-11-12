@@ -987,6 +987,17 @@ impl TransportStore {
             Ok(revision + 1)
         }).await
     }
+    /// Rebinds one role of a run a Human holds, so the next dispatch of that role goes to `binding`.
+    pub(crate) async fn rebind_orchestrator_role(&self, id: &str, revision: i64, role: &str, binding: &str, now: i64) -> Result<i64> {
+        if !ORCHESTRATOR_ROLES.contains(&role) { return Err(Error::Invalid("orchestrator_role")); }
+        self.db.with_connection(async |db| {
+            let saved = sql_query("UPDATE hagency_agent_v1.orchestrator_runs SET bindings=jsonb_set(bindings, ARRAY[$3], to_jsonb($4::text)),revision=revision+1,updated_at_ms=$5 WHERE id=$1 AND revision=$2 AND state->>'kind'='manual_intervention'")
+                .bind::<Text,_>(id).bind::<BigInt,_>(revision).bind::<Text,_>(role).bind::<Text,_>(binding).bind::<BigInt,_>(now)
+                .execute(db).await?;
+            if saved == 0 { return Err(Error::Conflict("orchestrator_run_revision_changed")); }
+            Ok(revision + 1)
+        }).await
+    }
     /// Marks the pending journal entries of `revision` as written. Leaves the revision unchanged; does
     /// nothing if the run has moved on.
     pub(crate) async fn clear_orchestrator_events(&self, id: &str, revision: i64) -> Result<()> {
