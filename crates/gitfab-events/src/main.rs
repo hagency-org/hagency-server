@@ -70,6 +70,18 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+    /// Print the last signed, verified deployment receipt (`gitfab.release.v1`) of a project, for one tag or
+    /// any, flattened (`healthcheck_result`, `rollback_result`, …). Exit 1 when there is none.
+    Receipt {
+        #[arg(long)]
+        keys: PathBuf,
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        tag: Option<String>,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
     /// Recompute token totals from JSONL files; fails on any invalid line, conflict or bad correction.
     Ledger {
         #[arg(required = true)]
@@ -214,6 +226,43 @@ fn run(command: Command) -> Result<bool, String> {
             for (i, link) in event["artifact_refs"].as_array().into_iter().flatten().enumerate() {
                 flat[format!("artifact_ref_{i}")] = link.clone();
             }
+            print(&flat);
+            Ok(true)
+        }
+        Command::Receipt {
+            keys,
+            project,
+            tag,
+            files,
+        } => {
+            let ring = Keyring::load_dir(&keys).map_err(|e| e.to_string())?;
+            let mut found = None;
+            for file in &files {
+                for raw in read(file)?.lines().filter(|l| !l.trim().is_empty()) {
+                    if let Ok((event, Some(_))) = verify_line(&ring, raw)
+                        && event["schema_version"] == schema::RELEASE
+                        && event["project_id"] == project.as_str()
+                        && tag.as_deref().is_none_or(|t| event["tag"] == t)
+                    {
+                        found = Some(event);
+                    }
+                }
+            }
+            let Some(event) = found else {
+                print(&json!({"found": false, "project": project, "tag": tag}));
+                return Ok(false);
+            };
+            let mut flat = json!({"found": true});
+            for key in [
+                "release_id", "tag", "commit_sha", "image_ref", "image_digest", "sbom_ref", "sbom_digest",
+                "deployed_at", "runner_id",
+            ] {
+                flat[key] = event[key].clone();
+            }
+            flat["healthcheck_result"] = event["healthcheck"]["result"].clone();
+            flat["rollback_result"] = event["rollback"]["result"].clone();
+            flat["rollback_target"] = event["rollback"]["target_release_id"].clone();
+            flat["key_id"] = event["signature"]["key_id"].clone();
             print(&flat);
             Ok(true)
         }

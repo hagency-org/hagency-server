@@ -48,6 +48,20 @@ gitfab_forge_bin() {
     fi
 }
 
+gitfab_runner_bin() {
+    if [ -n "${GITFAB_RUNNER_BIN:-}" ]; then
+        printf '%s' "$GITFAB_RUNNER_BIN"
+    elif command -v gitfab-runner >/dev/null 2>&1; then
+        command -v gitfab-runner
+    elif [ -x "$REPO_ROOT/target/release/gitfab-runner" ]; then
+        printf '%s' "$REPO_ROOT/target/release/gitfab-runner"
+    elif [ -x "$REPO_ROOT/target/debug/gitfab-runner" ]; then
+        printf '%s' "$REPO_ROOT/target/debug/gitfab-runner"
+    else
+        return 1
+    fi
+}
+
 # The API root and token file of a backend, from the configuration.
 backend_api() {
     case "$1" in
@@ -64,12 +78,13 @@ backend_token_file() {
 
 # load_project <PROJECT_ID>: reads acceptance/projects/<id>.env as data (KEY=VALUE, known keys only, never
 # executed) into BACKEND, REPO, BRANCH, BASELINE_SHA, PRD, PRD_SHA256 and the run settings HAGENCY_PROJECT,
-# ROOM_ID, COORDINATOR, IMPLEMENTER, REVIEWER, SPEC_REF and GOAL. Returns 1 when it is missing or has an
-# unknown line.
+# ROOM_ID, COORDINATOR, IMPLEMENTER, REVIEWER, SPEC_REF and GOAL, and the deployment's DEPLOY_PORT,
+# HEALTH_PATH and VERSION_PATH. Returns 1 when it is missing or has an unknown line.
 load_project() {
     local env="${GITFAB_PROJECTS_DIR:-$ACCEPTANCE_DIR/projects}/$1.env" line key
     BACKEND="" REPO="" BRANCH="" BASELINE_SHA="" PRD="" PRD_SHA256=""
     HAGENCY_PROJECT="" ROOM_ID="" COORDINATOR="" IMPLEMENTER="" REVIEWER="" SPEC_REF="" GOAL=""
+    DEPLOY_PORT="" CONTAINER_PORT=8080 HEALTH_PATH=/healthz VERSION_PATH=/version
     case "$1" in '' | */* | .*) return 1 ;; esac
     [ -f "$env" ] || return 1
     while IFS= read -r line || [ -n "$line" ]; do
@@ -78,7 +93,7 @@ load_project() {
         case "$key" in
             PROJECT_ID) ;;
             BACKEND | REPO | BRANCH | BASELINE_SHA | PRD | PRD_SHA256 | HAGENCY_PROJECT | ROOM_ID | COORDINATOR \
-                | IMPLEMENTER | REVIEWER | SPEC_REF | GOAL)
+                | IMPLEMENTER | REVIEWER | SPEC_REF | GOAL | DEPLOY_PORT | CONTAINER_PORT | HEALTH_PATH | VERSION_PATH)
                 [ "$key" != "$line" ] || return 1
                 printf -v "$key" '%s' "${line#*=}" ;;
             *) return 1 ;;

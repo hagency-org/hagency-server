@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Checks the acceptance commands themselves with throwaway keys and events: clean signed events pass,
-# a changed event fails, an unavailable command exits 3, and every bundle gets a manifest without local
+# a changed event fails, incomplete configuration is refused, and every bundle gets a manifest without local
 # paths. Touches nothing outside a temporary directory.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -72,8 +72,8 @@ GITFAB_PROJECTS_DIR="$tmp/projects" ACCEPTANCE_RUN_ID=ar-selftest-run-backend ex
     "run-project refuses a backend the project is not recorded for" "$here/run-project.sh" DEMO-02 --backend gitcode
 GITFAB_PROJECTS_DIR="$tmp/projects" ACCEPTANCE_RUN_ID=ar-selftest-run-config expect 2 \
     "run-project refuses an incomplete project" "$here/run-project.sh" DEMO-02 --backend github
-ACCEPTANCE_RUN_ID=ar-selftest-pending expect 3 "an unavailable command exits 3" \
-    "$here/rollback.sh" DEMO-01
+GITFAB_PROJECTS_DIR="$tmp/projects" ACCEPTANCE_RUN_ID=ar-selftest-rollback expect 2 \
+    "rollback refuses to run without the Runner configuration" "$here/rollback.sh" DEMO-02
 ACCEPTANCE_RUN_ID=bad-id expect 2 "a malformed run id is refused" "$here/verify-events.sh" "$tmp/events.jsonl"
 
 for bundle in "$tmp"/evidence/ar-*; do

@@ -3,9 +3,10 @@
 # last signed Release event of the project names a Release and a Pull Request, the Release exists on the
 # platform and the Pull Request's checks passed. Platform reads only; nothing is created or changed.
 #
-# Deployment receipts (container restart, health check, version endpoint, receipt signature) are not
-# verified by this package yet: when everything else passes it exits 3, so a run can never take this
-# for a full pass.
+# Then the Runner's deployment receipt (Annex 3 §9): it verifies, its health check passed, it names the
+# Pull Request's head commit, its SBOM file matches, the project's container runs its image, and the
+# service answers health and version for this Release now. Needs GITFAB_RECEIPTS, GITFAB_SBOM_DIR, the
+# Runner's public key among the pinned keys, Docker, and DEPLOY_PORT in the project file.
 #
 #   ./acceptance/verify-release.sh DEMO-02            the journal named by GITFAB_JOURNAL
 #   ./acceptance/verify-release.sh DEMO-02 FILE.jsonl a given journal
@@ -90,9 +91,56 @@ fi
 rm -f "$RUN_DIR/.forge-err"
 FINAL_SHA=$(json_field headSha <"$RUN_DIR/release-checks.json")
 
-# 4. Not yet verifiable here; never reported as a pass.
-if [ -z "$FAILED_STAGE" ]; then
-    check release.deployment fail "deployment receipts (Annex 3 §9) are not verified by this package yet"
-    finish 3
+# 4. The Runner's signed deployment receipt for this Release, and the deployment as it runs now.
+receipts=${GITFAB_RECEIPTS:-}
+if [ -z "$receipts" ] || [ ! -f "$receipts" ]; then
+    check deploy.receipts fail "no receipt journal: set GITFAB_RECEIPTS"
+    finish
+fi
+if "$gitfab" verify --keys "$keys" "$receipts" >"$RUN_DIR/receipts-verify.json"; then
+    check deploy.receipts ok "receipt journal verifies"
+else
+    check deploy.receipts fail "see receipts-verify.json"
+fi
+if ! "$gitfab" receipt --keys "$keys" --project "$PROJECT_ID" --tag "$tag" "$receipts" >"$RUN_DIR/deploy-receipt.json"; then
+    check deploy.receipt fail "no signed receipt for $PROJECT_ID $tag"
+    finish
+fi
+receipt=$(tr -d '\n' <"$RUN_DIR/deploy-receipt.json")
+field() { printf '%s' "$receipt" | json_field "$1"; }
+image=$(field image_digest)
+if [ "$(field healthcheck_result)" = passed ]; then
+    check deploy.receipt ok "$(field release_id) by $(field runner_id), image $image"
+else
+    check deploy.receipt fail "$(field release_id): health check $(field healthcheck_result)"
+fi
+if [ -n "$FINAL_SHA" ] && [ "$(field commit_sha)" != "$FINAL_SHA" ]; then
+    check deploy.commit fail "receipt commit $(field commit_sha), Pull Request head $FINAL_SHA"
+else
+    check deploy.commit ok "$(field commit_sha)"
+fi
+sbom=${GITFAB_SBOM_DIR:-}/$(basename "$(field sbom_ref)")
+if [ -n "${GITFAB_SBOM_DIR:-}" ] && [ -f "$sbom" ] && [ "sha256:$(sha256_file "$sbom")" = "$(field sbom_digest)" ]; then
+    check deploy.sbom ok "$(field sbom_ref) matches the receipt"
+else
+    check deploy.sbom fail "$(field sbom_ref) missing from GITFAB_SBOM_DIR or not matching the receipt"
+fi
+name="gitfab-$(printf '%s' "$PROJECT_ID" | tr 'A-Z' 'a-z')"
+running=$(docker inspect -f '{{.State.Running}} {{.Image}}' "$name" 2>/dev/null || true)
+if [ "$running" = "true $image" ]; then
+    check deploy.container ok "$name runs $image"
+else
+    check deploy.container fail "$name: ${running:-not found}, expected running $image"
+fi
+if [ -z "$DEPLOY_PORT" ]; then
+    check deploy.live fail "DEPLOY_PORT not set for $PROJECT_ID"
+else
+    http_get "http://127.0.0.1:$DEPLOY_PORT$HEALTH_PATH"
+    health=$HTTP_STATUS
+    http_get "http://127.0.0.1:$DEPLOY_PORT$VERSION_PATH"
+    case "$health:$HTTP_STATUS:$HTTP_BODY" in
+        200:200:*"$tag"*) check deploy.live ok "health 200, version $tag" ;;
+        *) check deploy.live fail "health $health, version HTTP $HTTP_STATUS: $(printf '%s' "$HTTP_BODY" | head -c 120)" ;;
+    esac
 fi
 finish

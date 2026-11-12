@@ -2,7 +2,7 @@
 # Runs one demo project through GitFab (Annex 3 §10): posts the request in the project Room as the
 # acceptance Human, which becomes the task Thread's root (Annex 3: Human requests are anchored in Matrix
 # events), starts the run, follows it to its end and then verifies its events and its Release with the
-# same acceptance_run_id.
+# same acceptance_run_id, including the Runner's deployment receipt.
 #
 #   ./acceptance/run-project.sh DEMO-02 --backend github [--timeout-minutes 240]
 #
