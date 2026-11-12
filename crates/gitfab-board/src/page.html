@@ -41,6 +41,11 @@
   a { color: var(--accent); }
   .muted { color: var(--muted); }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .replay-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .replay-controls input[type=range] { flex: 1; min-width: 160px; }
+  select, button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; }
+  .timeline { margin: 0; padding-left: 20px; }
+  .timeline li { padding: 4px 0; border-bottom: 1px solid var(--line); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   @media (max-width: 600px) { main { grid-template-columns: 1fr; padding: 12px 16px; } header { padding: 16px; } }
 </style>
@@ -55,6 +60,11 @@
   <section class="wide"><h2>概览 <small id="counts"></small></h2><div class="stats" id="stats"></div></section>
   <section class="wide"><h2>Agent 状态 <small>来自服务端编排器</small></h2><div id="agents"></div></section>
   <section class="wide"><h2>任务进度 <small>按运行</small></h2><div id="runs"></div></section>
+  <section class="wide"><h2>任务回放 <small>按时间逐条查看一个运行的签名事件</small></h2>
+    <div class="replay-controls"><select id="rp-run" aria-label="选择运行"></select>
+      <button id="rp-play" type="button">回放</button>
+      <input id="rp-pos" type="range" min="0" max="0" value="0" aria-label="回放位置"><span id="rp-count" class="mono muted"></span></div>
+    <ol id="rp-list" class="timeline"></ol></section>
   <section><h2>部署结果 <small>回执 + 实时探测</small></h2><div id="deploys"></div></section>
   <section><h2>Token 记录 <small>由账本复算</small></h2><div id="tokens"></div></section>
   <section class="wide"><h2>签名与审计事件流 <small>最新在前</small></h2><div id="events"></div></section>
@@ -67,6 +77,8 @@ const status = (s) => `<span class="pill ${/succeeded|passed|completed/.test(s) 
 const link = (u) => /^https:\/\//.test(u) ? `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https:\/\/[^/]+\//, ''))}</a>` : esc(u);
 
 function render(d) {
+  replay.runs = d.runs || [];
+  renderReplay();
   document.getElementById('updated').textContent = '更新于 ' + new Date().toLocaleTimeString();
   const c = d.counts || {};
   document.getElementById('counts').textContent = `共 ${Object.values(c).reduce((a, b) => a + b, 0)} 条记录`;
@@ -111,6 +123,41 @@ function render(d) {
   document.getElementById('events').innerHTML = d.events.length ? `<table><tr><th>时间</th><th>项目</th><th>事件</th><th>执行者</th><th>密钥 / 摘要</th><th>验签</th></tr>${
     d.events.slice(0, 60).map((e) => `<tr><td class="mono">${esc(e.time)}</td><td>${esc(e.project)}</td><td>${esc(e.kind || e.schema)}<br><span class="mono muted">${esc(e.id)}</span></td><td>${esc(e.actor)}</td><td class="mono">${esc(e.key_id)}<br>${esc(e.digest)}</td><td>${check(e.check)}</td></tr>`).join('')}</table>` : '<p class="muted">还没有事件。</p>';
 }
+
+// Replay keeps its own choice across refreshes; only the timeline is redrawn while it plays.
+const replay = { run: null, pos: null, timer: null, runs: [] };
+function renderReplay() {
+  const sel = document.getElementById('rp-run');
+  const ids = replay.runs.map((r) => r.run);
+  if (sel.dataset.ids !== ids.join(',')) {
+    sel.innerHTML = replay.runs.map((r) => `<option value="${esc(r.run)}">${esc(r.project)} ${esc(r.task)} · ${esc(r.run)}</option>`).join('');
+    sel.dataset.ids = ids.join(',');
+  }
+  if (!ids.includes(replay.run)) { replay.run = ids[0] || null; replay.pos = null; }
+  sel.value = replay.run || '';
+  const run = replay.runs.find((r) => r.run === replay.run);
+  const steps = run ? [...run.steps].sort((a, b) => String(a.time).localeCompare(String(b.time))) : [];
+  const pos = replay.pos === null ? steps.length : Math.min(replay.pos, steps.length);
+  const range = document.getElementById('rp-pos');
+  range.max = steps.length; range.value = pos;
+  document.getElementById('rp-count').textContent = `${pos} / ${steps.length}`;
+  document.getElementById('rp-play').textContent = replay.timer ? '暂停' : '回放';
+  document.getElementById('rp-list').innerHTML = steps.slice(0, pos).map((s) => `<li><span class="mono">${esc(s.time)}</span> ${esc(s.phase)}·${status(s.status)} ${check(s.check)} <span class="muted">${esc(s.actor)}</span>${(s.links || []).length ? '<br>' + s.links.map(link).join(' ') : ''}</li>`).join('') || '<li class="muted">没有可回放的事件。</li>';
+}
+function stopReplay() { clearInterval(replay.timer); replay.timer = null; }
+document.getElementById('rp-run').onchange = (e) => { stopReplay(); replay.run = e.target.value; replay.pos = 0; renderReplay(); };
+document.getElementById('rp-pos').oninput = (e) => { stopReplay(); replay.pos = +e.target.value; renderReplay(); };
+document.getElementById('rp-play').onclick = () => {
+  if (replay.timer) { stopReplay(); renderReplay(); return; }
+  const total = +document.getElementById('rp-pos').max;
+  if (replay.pos === null || replay.pos >= total) replay.pos = 0;
+  replay.timer = setInterval(() => {
+    const max = +document.getElementById('rp-pos').max;
+    if (replay.pos >= max) { stopReplay(); } else { replay.pos++; }
+    renderReplay();
+  }, 900);
+  renderReplay();
+};
 
 async function tick() {
   try {
