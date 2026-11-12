@@ -58,3 +58,16 @@
 - 派发：照常在 Thread 里发阶段消息，然后把它作为“发起流程的 Human 发出、提及该 Agent 的消息”交给原有的 `route_shared_event`。直接派发、持久化接收、需求和预算几种模式下，原有的运行时、成员、额度和队列检查全部照常生效。阶段消息本身是 `m.notice`，普通路由会忽略它，不会重复处理。
 - 结果：按（分配 ID，阶段消息事件 ID）读取工作项状态和已发送的回复；还没有工作项时，读取持久化接收记录的状态（`shared_dispatch` → `shared_row`），映射成与个人 Agent 相同的结果判断。
 - 限制：与个人 Agent 相同，只支持未加密的项目房间。资源池路由要求事件的加密状态与房间一致。
+
+## Git 后端（PR 与 Release）
+
+附件 1 要求在 GitHub 和 GitCode 上创建任务分支、创建或更新 PR、读取测试状态、生成 Release，并把链接回写任务记录。平台调用由新 crate `gitfab-forge` 完成（两个后端一套接口，模拟传输测试），另有 `gitfab-forge` 命令供验收脚本使用。
+
+分工（推荐方案，待接入）：
+- Agent 只做 git：在 `agent/<project_id>/<task_id>` 分支上提交并推送，回复提交 SHA。推送用的是执行端自己的仓库凭据。
+- 编排器做平台动作，用服务器保管的 Token（`[gitfab]` 新增各后端的 Token 文件路径，文件须为 0600）：
+  - Execute 完成后：确认任务分支存在且头提交等于 Agent 回复的 SHA，创建或更新 PR，把 PR 链接写入阶段事件。
+  - Test 阶段：除 Agent 的测试回复外，读取 PR 的平台测试状态（GitHub 为提交状态与 check-runs，GitCode 为 PR 的 pipeline_status），记入事件。
+  - Review 通过后：以 PR 头提交为目标创建 Release（已存在同名 Release 则复用），把 Release 链接写入 Release 事件。
+- 理由：链接由服务器从平台读回并签名记录，Agent 无法伪造；Token 不交给 Agent，也不进入阶段消息。
+- 未配置 Token 时，以上平台动作跳过，并在 Thread 里说明，流程照常推进（与现状一致）。
