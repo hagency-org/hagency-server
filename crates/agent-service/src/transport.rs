@@ -906,8 +906,6 @@ impl TransportStore {
     /// pause and queue check applies to them. Only an event registered with
     /// [`Self::register_orchestrated_stage`] for this binding is admitted, and no mention is required
     /// because service messages never carry one. Plaintext Rooms only.
-    // Called by the GitFab orchestrator worker, which lands next.
-    #[allow(dead_code)]
     pub(crate) async fn ingest_orchestrated(
         &self,
         binding: &str,
@@ -922,8 +920,6 @@ impl TransportStore {
             .await
     }
     /// Creates the run for a task thread, or returns the one it already has.
-    // Called by the GitFab orchestrator worker, which lands next.
-    #[allow(dead_code)]
     pub(crate) async fn create_orchestrator_run(&self, init: &OrchestratorRunInit, now: i64) -> Result<OrchestratorRun> {
         matrix_id(&init.room_id, '!')?;
         matrix_id(&init.thread_root, '$')?;
@@ -943,8 +939,6 @@ impl TransportStore {
             Ok(run)
         }).await
     }
-    // Called by the GitFab orchestrator worker, which lands next.
-    #[allow(dead_code)]
     pub(crate) async fn orchestrator_run(&self, id: &str) -> Result<Option<OrchestratorRun>> {
         self.db.with_connection(async |db| {
             let row = sql_query(format!("SELECT {ORCHESTRATOR_RUN_COLUMNS} FROM hagency_agent_v1.orchestrator_runs WHERE id=$1"))
@@ -953,8 +947,6 @@ impl TransportStore {
         }).await
     }
     /// Runs that have not finished, oldest first.
-    // Called by the GitFab orchestrator worker, which lands next.
-    #[allow(dead_code)]
     pub(crate) async fn active_orchestrator_runs(&self, limit: i64) -> Result<Vec<OrchestratorRun>> {
         self.db.with_connection(async |db| {
             let rows = sql_query(format!("SELECT {ORCHESTRATOR_RUN_COLUMNS} FROM hagency_agent_v1.orchestrator_runs WHERE state->>'kind' NOT IN ('completed','failed') ORDER BY created_at_ms,id LIMIT $1"))
@@ -963,8 +955,6 @@ impl TransportStore {
         }).await
     }
     /// Saves the next state only if nobody saved since `revision` was read.
-    // Called by the GitFab orchestrator worker, which lands next.
-    #[allow(dead_code)]
     pub(crate) async fn save_orchestrator_run(&self, id: &str, revision: i64, update: &OrchestratorRunUpdate<'_>, now: i64) -> Result<i64> {
         let state = update.state.to_json().to_string();
         if !update.pending_events.is_array() { return Err(Error::Invalid("invalid_orchestrator_events")); }
@@ -987,8 +977,6 @@ impl TransportStore {
         }).await
     }
     /// The recorded state of one dispatch and its reply, for the orchestrator to map to an outcome.
-    // Called by the GitFab orchestrator worker, which lands next.
-    #[allow(dead_code)]
     pub(crate) async fn orchestrated_dispatch(&self, dispatch_id: &str) -> Result<Option<crate::orchestrator_flow::DispatchRow>> {
         #[derive(diesel::QueryableByName)]
         struct Row {
@@ -1012,8 +1000,6 @@ impl TransportStore {
         }).await
     }
     /// Records that `event_id` is the orchestrator's stage message for `binding`. Idempotent.
-    // Called by the GitFab orchestrator worker, which lands next.
-    #[allow(dead_code)]
     pub(crate) async fn register_orchestrated_stage(
         &self,
         binding: &str,

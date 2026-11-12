@@ -21,7 +21,15 @@ struct Room {
 }
 
 impl StageRoom for Room {
-    async fn post(&self, _room: &str, _root: &str, txn: &str, body: &str) -> Result<String> {
+    async fn post(
+        &self,
+        _room: &str,
+        _root: &str,
+        txn: &str,
+        body: &str,
+        meta: &Value,
+    ) -> Result<String> {
+        assert_eq!(meta["version"], 1);
         let mut posts = self.posts.lock().unwrap();
         if !posts.iter().any(|(t, _)| t == txn) {
             posts.push((txn.to_owned(), body.to_owned()));
@@ -59,7 +67,7 @@ async fn harness(requester_in_room: bool) -> Harness {
     keyring.insert("gitfab-1", &key.public_base64()).unwrap();
     let recorder = Recorder::new(
         Journal::open(&journal).unwrap(),
-        key,
+        std::sync::Arc::new(key),
         "/hagency/gitfab/v1/public-keys#gitfab-1".into(),
     );
     let now = crate::api::now_ms();

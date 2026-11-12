@@ -1,6 +1,6 @@
 # GitFab 流程编排器设计（S2）
 
-状态：设计稿，未实现。依据 2026-11-12 对 `crates/agent-service` 派发链路的只读梳理。
+状态：已实现（worker、存储、HTTP 接口）；尚未在真实 Agent 上验收。
 
 ## 目标
 
@@ -29,10 +29,17 @@
 
 ## 代码位置
 
-- `crates/agent-service/src/orchestrator.rs`、`orchestrator_schema.sql`、`orchestrator_tests.rs`。
-- worker 在 `workers.rs` 里注册，配置开关在 backend 的 `[gitfab]` 段。
-- 数据库访问沿用 Horme + diesel-async，以及启动时的 `batch_execute(include_str!(...))` 建表方式。
-- 测试沿用 `scripts/test-agent-service-postgres.py`。
+- 流程规则：`crates/agent-service/src/orchestrator_flow.rs`（纯函数，无 I/O）。
+- worker：`orchestrator.rs`。阶段消息以 `@_hagency_service` 发成 Thread 里的 `m.notice`，带 `org.hagency.gitfab_stage`，不带 mention；普通路由和资源池路由都不会接收它。
+- 存储：`transport.rs` 的 `orchestrator_runs`、`orchestrator_stage_events`（`orchestrator_schema.sql`）。
+- 防重：一次状态转换和它产生的日志事件一起保存（`pending_events`），之后再写日志；日志按事件键幂等，所以重启后每个事件只写一次、内容不变。阶段消息的事务 ID 由 run、阶段、轮次、次数、Spec 版本决定，重发得到同一个事件。
+- HTTP：`api_gitfab.rs`。
+  - `POST /hagency/api/v1/projects/{project}/gitfab/runs`：发起（Space 成员即可）。body：`taskId`、`roomId`、`threadRoot`、`bindings{coordinator,implementer,reviewer}`、`context{goal,gitBackend,repoRef,baselineSha,specRef[,projectId]}`。
+  - `GET .../gitfab/runs/{run}`：查看。
+  - `POST .../gitfab/runs/{run}/spec`，`{"decision":"approve|reject|revise"}`：Spec 确认，只有发起人可以。
+  - `POST .../gitfab/runs/{run}/decision`，`{"decision":"continue|reassign|abort"}`：人工介入后的决定，只有发起人可以。
+- 配置：backend `[gitfab]` 段设置 `journal_file` 即启用；`stage_timeout_minutes` 默认 120。需要 `pasion.delegate_matrix_auth`（Agent 服务）。
+- 测试：`orchestrator_tests.rs` 用模拟房间和模拟 Agent 走真实 transport，覆盖完整流程加一次返工、超时转人工、被拒后重试一次、崩溃后日志补写。运行：`python3 scripts/test-agent-service-postgres.py --lib orchestrator`。
 
 ## 限制与风险
 

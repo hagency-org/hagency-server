@@ -28,6 +28,10 @@ impl Signer {
         &self.key
     }
 
+    pub fn shared_key(&self) -> Arc<Key> {
+        self.key.clone()
+    }
+
     /// The reference recorded in each signature's `public_key_ref`.
     pub fn public_key_ref(&self) -> String {
         format!("/{PUBLIC_KEYS_PATH}#{}", self.key.id)
@@ -74,6 +78,8 @@ mod tests {
         GitfabConfig {
             signing_key_file: path,
             signing_key_id: "gitfab-1".into(),
+            journal_file: None,
+            stage_timeout_minutes: None,
         }
     }
 
@@ -119,7 +125,12 @@ palpo_config = "palpo.toml"
             "{base}[gitfab]\nsigning_key_file = \"keys/gitfab-1.key\"\nsigning_key_id = \"gitfab-1\"\n"
         );
         let host: crate::config::HostConfig = toml::from_str(&with).unwrap();
-        assert_eq!(host.gitfab.unwrap().signing_key_id, "gitfab-1");
+        let gitfab = host.gitfab.unwrap();
+        assert_eq!(gitfab.signing_key_id, "gitfab-1");
+        assert_eq!((gitfab.journal_file, gitfab.stage_timeout_minutes), (None, None));
+        let orchestrated = format!("{with}journal_file = \"data/gitfab/events.jsonl\"\nstage_timeout_minutes = 30\n");
+        let host: crate::config::HostConfig = toml::from_str(&orchestrated).unwrap();
+        assert_eq!(host.gitfab.unwrap().stage_timeout_minutes, Some(30));
         assert!(
             toml::from_str::<crate::config::HostConfig>(&format!("{with}extra = 1\n")).is_err()
         );
@@ -137,6 +148,8 @@ palpo_config = "palpo.toml"
         let missing = GitfabConfig {
             signing_key_file: dir.path().join("none.key"),
             signing_key_id: "gitfab-1".into(),
+            journal_file: None,
+            stage_timeout_minutes: None,
         };
         assert!(Signer::load(&missing).is_err());
     }

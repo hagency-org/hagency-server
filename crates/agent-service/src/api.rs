@@ -26,6 +26,8 @@ pub struct App {
     transport: Option<crate::transport::TransportStore>,
     management: Option<crate::management_types::ManagementPolicy>,
     board_enabled: bool,
+    /// GitFab orchestrator: the signed journal and the stage timeout.
+    gitfab: Option<(Arc<crate::orchestrator::Recorder>, i64)>,
 }
 impl App {
     pub fn new(
@@ -48,6 +50,7 @@ impl App {
             transport: None,
             management: None,
             board_enabled: true,
+            gitfab: None,
         }
     }
     pub fn with_management(mut self, policy: crate::management_types::ManagementPolicy) -> Self {
@@ -92,6 +95,27 @@ impl App {
                 .clone()
                 .filter(|p| p.shared_execution())
                 .map(|p| (self.domain.as_ref().unwrap().0.clone(), p)),
+            self.workers.clone(),
+        ))
+    }
+    /// Runs GitFab workflows when a journal is configured.
+    pub fn with_gitfab_orchestrator(
+        mut self,
+        recorder: crate::orchestrator::Recorder,
+        stage_timeout_ms: Option<i64>,
+    ) -> Self {
+        let timeout = stage_timeout_ms.unwrap_or(crate::orchestrator::DEFAULT_STAGE_TIMEOUT_MS);
+        self.gitfab = Some((Arc::new(recorder), timeout));
+        self
+    }
+    pub fn start_orchestrator(&self) -> Option<tokio::task::JoinHandle<()>> {
+        let (recorder, timeout) = self.gitfab.clone()?;
+        Some(crate::orchestrator::start_controlled(
+            self.transport.clone()?,
+            self.domain.as_ref()?.1.clone(),
+            self.matrix_client.clone()?,
+            recorder,
+            timeout,
             self.workers.clone(),
         ))
     }
@@ -580,6 +604,28 @@ impl App {
                 crate::api_configuration::call(req, &self.store, domain, &credential).await?
         {
             return Ok(value);
+        }
+        if crate::api_gitfab::matches(&path) {
+            let (Some((domain, gateway)), Some(transport), Some(matrix), Some((recorder, timeout))) = (
+                &self.domain,
+                &self.transport,
+                &self.matrix_client,
+                &self.gitfab,
+            ) else {
+                return Err(Error::NotFound("gitfab_unsupported"));
+            };
+            let gitfab = crate::api_gitfab::Gitfab {
+                store: &self.store,
+                domain,
+                gateway,
+                transport,
+                matrix,
+                recorder,
+                stage_timeout_ms: *timeout,
+            };
+            if let Some(value) = Box::pin(gitfab.call(req, &credential)).await? {
+                return Ok(value);
+            }
         }
         if !self.board_enabled && crate::api_project_board::matches(&path) {
             return Err(Error::NotFound("board_unsupported"));

@@ -7,11 +7,8 @@
 //! each event exactly once with the content first decided. Posting a stage message uses a transaction ID
 //! fixed by the run, stage, round, attempt and Spec revision, so a repeated post returns the same event.
 
-// Wired into the worker set and the [gitfab] configuration in the next change; tests drive it now.
-#![allow(dead_code)]
-
 use std::future::Future;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use hagency_gitfab_events::journal::{Journal, Signer};
 use hagency_gitfab_events::sign::Key;
@@ -35,13 +32,15 @@ const SYSTEM_ACTOR: &str = "system:gitfab-orchestrator";
 
 /// The Matrix side of the worker: posting stage messages and observing who may receive them.
 pub(crate) trait StageRoom: Sync {
-    /// Posts `body` as a thread message of `thread_root`. The same `txn` returns the same event ID.
+    /// Posts `body` as a thread message of `thread_root`, with `meta` describing the stage for clients.
+    /// The same `txn` returns the same event ID.
     fn post(
         &self,
         room_id: &str,
         thread_root: &str,
         txn: &str,
         body: &str,
+        meta: &Value,
     ) -> impl Future<Output = Result<String>> + Send;
     /// Fresh delivery facts for `scope` with `requester` as the requester.
     fn facts(
@@ -52,19 +51,29 @@ pub(crate) trait StageRoom: Sync {
 }
 
 /// The signed event journal (`hagency-gitfab-events`).
-pub(crate) struct Recorder {
+pub struct Recorder {
     journal: Mutex<Journal>,
-    key: Key,
+    key: Arc<Key>,
     public_key_ref: String,
 }
 
 impl Recorder {
-    pub(crate) fn new(journal: Journal, key: Key, public_key_ref: String) -> Self {
+    pub fn new(journal: Journal, key: Arc<Key>, public_key_ref: String) -> Self {
         Self {
             journal: Mutex::new(journal),
             key,
             public_key_ref,
         }
+    }
+
+    /// Opens the journal file, refusing one that does not read back as valid events.
+    pub fn open(
+        path: &std::path::Path,
+        key: Arc<Key>,
+        public_key_ref: String,
+    ) -> std::result::Result<Self, String> {
+        let journal = Journal::open(path).map_err(|e| format!("{}: {e}", e.code()))?;
+        Ok(Self::new(journal, key, public_key_ref))
     }
 
     fn append(&self, event: &Value, actor_type: &str) -> Result<()> {
@@ -403,7 +412,8 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                 "schema_version": hagency_gitfab_events::schema::TASK,
                 "event_id": format!("{}.{revision}.{index}", run.id),
                 "timestamp": timestamp(now),
-                "project_id": run.init.project_id,
+                // The acceptance project code (DEMO-01…) when given, else the Hagency project.
+                "project_id": c["projectId"].as_str().unwrap_or(&run.init.project_id),
                 "task_id": run.init.task_id,
                 "run_id": run.id,
                 "matrix_room_id": run.init.room_id,
@@ -495,6 +505,9 @@ impl<R: StageRoom> Orchestrator<'_, R> {
             Err(e) => return Err(e),
         };
         let body = stage_message(&run, slot, spec_revision, run.handoff.as_deref());
+        let meta = json!({"version": 1, "runId": run.id, "taskId": run.init.task_id,
+            "stage": slot.stage.phase(), "round": slot.round, "attempt": slot.attempt,
+            "specRevision": spec_revision});
         let event_id = self
             .room
             .post(
@@ -502,6 +515,7 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                 &run.init.thread_root,
                 &txn_id(&run, slot, spec_revision),
                 &body,
+                &meta,
             )
             .await?;
         let stage = OrchestratedStage {
@@ -563,5 +577,113 @@ impl<R: StageRoom> Orchestrator<'_, R> {
             updated_at_ms: now,
             ..run
         }))
+    }
+}
+
+/// A thread notice with the stage described for clients, and no mention.
+pub(crate) fn stage_content(room_id: &str, thread_root: &str, body: &str, meta: &Value) -> Value {
+    let mut content = crate::workers::reply_content(false, room_id, thread_root, body);
+    content["msgtype"] = json!("m.notice");
+    content["org.hagency.gitfab_stage"] = meta.clone();
+    content
+}
+
+/// The Room as the service sees it: stage messages are notices from `@_hagency_service`, so neither
+/// ordinary nor pooled routing takes them, and they carry no mention.
+pub(crate) struct MatrixStageRoom<'a> {
+    pub gateway: &'a crate::gateway::Gateway,
+    pub matrix: &'a crate::matrix_client::MatrixClient,
+}
+
+impl StageRoom for MatrixStageRoom<'_> {
+    async fn post(
+        &self,
+        room_id: &str,
+        thread_root: &str,
+        txn: &str,
+        body: &str,
+        meta: &Value,
+    ) -> Result<String> {
+        let content = stage_content(room_id, thread_root, body, meta);
+        self.matrix
+            .send(self.matrix.service_mxid(), room_id, txn, content)
+            .await
+    }
+
+    async fn facts(&self, scope: &RoutingScope, requester: &str) -> Result<DeliveryFacts> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            self.gateway.delivery(
+                &scope.room_id,
+                &scope.space_id,
+                &scope.owner_mxid,
+                requester,
+                &scope.puppet_mxid,
+            ),
+        )
+        .await
+        .map_err(|_| Error::Unavailable("matrix_state_unavailable"))?
+    }
+}
+
+/// The orchestrator worker: one pass every five seconds until shutdown.
+pub(crate) fn start_controlled(
+    transport: TransportStore,
+    gateway: crate::gateway::Gateway,
+    matrix: crate::matrix_client::MatrixClient,
+    recorder: Arc<Recorder>,
+    stage_timeout_ms: i64,
+    control: crate::worker_runtime::WorkerRuntime,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let ctx = control.queue("gitfab_orchestrator");
+        let room = MatrixStageRoom {
+            gateway: &gateway,
+            matrix: &matrix,
+        };
+        let orchestrator = Orchestrator {
+            transport: &transport,
+            room: &room,
+            recorder: &recorder,
+            stage_timeout_ms,
+        };
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! { biased; _ = control.stopped() => break, _ = interval.tick() => {} }
+            if ctx.stopping() {
+                break;
+            }
+            let result = orchestrator.pass(crate::api::now_ms()).await;
+            ctx.finish(&result);
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stage_messages_are_thread_notices_that_no_router_takes_and_that_mention_nobody() {
+        let meta = json!({"version": 1, "stage": "review"});
+        let content = stage_content("!room:example.test", "$root", "[GitFab review] body", &meta);
+        assert_eq!(content["msgtype"], "m.notice");
+        assert_eq!(content["m.relates_to"]["rel_type"], "m.thread");
+        assert_eq!(content["m.relates_to"]["event_id"], "$root");
+        assert!(content.get("m.mentions").is_none());
+        assert_eq!(content["org.hagency.gitfab_stage"], meta);
+        let raw = json!({"type": "m.room.message", "event_id": "$stage", "room_id": "!room:example.test",
+            "sender": "@_hagency_service:example.test", "content": content});
+        assert!(
+            crate::workers::parse_event(&raw).is_none(),
+            "ordinary and pooled routing ignore it"
+        );
+    }
+
+    #[test]
+    fn truncation_keeps_whole_characters() {
+        assert_eq!(truncate("评审结论", 7), "评审");
+        assert_eq!(truncate("ok", 7), "ok");
     }
 }

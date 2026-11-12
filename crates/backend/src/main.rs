@@ -244,6 +244,27 @@ async fn run() -> anyhow::Result<()> {
                 .with_pool_grant_succession(management.enable_pool_grant_succession),
             );
         }
+        if let Some(gitfab) = &conf.gitfab
+            && let Some(journal) = &gitfab.journal_file
+        {
+            let signer = hagency_server::gitfab::Signer::load(gitfab)?;
+            if let Some(dir) = journal.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let recorder = hagency_agent_service::orchestrator::Recorder::open(
+                journal,
+                signer.shared_key(),
+                signer.public_key_ref(),
+            )
+            .map_err(|e| anyhow::anyhow!("gitfab.journal_file: {e}"))?;
+            tracing::info!(journal = %journal.display(), "GitFab orchestrator enabled");
+            app = app.with_gitfab_orchestrator(
+                recorder,
+                gitfab
+                    .stage_timeout_minutes
+                    .map(|m| i64::from(m) * 60_000),
+            );
+        }
         agent_service = Some(app);
     }
     let browser_auth = BrowserAuth::new(&conf).await?;
@@ -306,6 +327,9 @@ async fn run() -> anyhow::Result<()> {
         .zip(agent_inbox.as_ref())
         .and_then(|(app, inbox)| app.start_delivery(inbox.clone()));
     let cleanup_worker = agent_service.as_ref().and_then(|app| app.start_cleanup());
+    let orchestrator_worker = agent_service
+        .as_ref()
+        .and_then(|app| app.start_orchestrator());
     let acceptor = TcpListener::new(conf.listen).try_bind().await?;
     let server = Server::new(acceptor);
     let handle = server.handle();
@@ -313,6 +337,7 @@ async fn run() -> anyhow::Result<()> {
     let mut workers = delivery_worker
         .into_iter()
         .chain(cleanup_worker)
+        .chain(orchestrator_worker)
         .collect::<Vec<_>>();
     tracing::info!(listen=%conf.listen,public_origin=%conf.public_origin,"hagency-server started");
     let serving = server.serve(service);
