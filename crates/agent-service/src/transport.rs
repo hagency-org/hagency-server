@@ -843,6 +843,31 @@ impl TransportStore {
         self.ingest_routed_inner(binding, event, None, f, now, now, Admission::Orchestrated)
             .await
     }
+    /// The recorded state of one dispatch and its reply, for the orchestrator to map to an outcome.
+    // Called by the GitFab orchestrator worker, which lands next.
+    #[allow(dead_code)]
+    pub(crate) async fn orchestrated_dispatch(&self, dispatch_id: &str) -> Result<Option<crate::orchestrator_flow::DispatchRow>> {
+        #[derive(diesel::QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = Text)]
+            state: String,
+            #[diesel(sql_type = Nullable<Text>)]
+            outcome: Option<String>,
+            #[diesel(sql_type = Nullable<Text>)]
+            reply_state: Option<String>,
+            #[diesel(sql_type = Bool)]
+            reply_blocked: bool,
+            #[diesel(sql_type = Nullable<Text>)]
+            reply_body: Option<String>,
+        }
+        self.db.with_connection(async |db| {
+            let row = sql_query("SELECT e.state,e.outcome,r.state AS reply_state,COALESCE(r.delivery_blocked,false) AS reply_blocked,r.body AS reply_body FROM hagency_agent_v1.owner_events e LEFT JOIN hagency_agent_v1.reply_outbox r ON r.owner_event_id=e.id WHERE e.id=$1")
+                .bind::<Text,_>(dispatch_id).get_result::<Row>(db).await.optional()?;
+            Ok(row.map(|r| crate::orchestrator_flow::DispatchRow {
+                state: r.state, outcome: r.outcome, reply_state: r.reply_state, reply_blocked: r.reply_blocked, reply_body: r.reply_body,
+            }))
+        }).await
+    }
     /// Records that `event_id` is the orchestrator's stage message for `binding`. Idempotent.
     // Called by the GitFab orchestrator worker, which lands next.
     #[allow(dead_code)]

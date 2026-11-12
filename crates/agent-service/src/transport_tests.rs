@@ -3360,3 +3360,34 @@ async fn postgres_orchestrated_stage_admits_only_registered_service_messages() {
         Error::Conflict("orchestrated_requires_plaintext")
     ));
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_orchestrated_dispatch_reads_state_and_reply() {
+    use crate::orchestrator_flow::{Outcome, Stage, Verdict, observed};
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    assert_eq!(f.transport.orchestrated_dispatch("evt_missing").await.unwrap(), None);
+    let id = enqueue(&f, "orchestrated-read").await;
+    let queued = f.transport.orchestrated_dispatch(&id).await.unwrap().unwrap();
+    assert_eq!((queued.state.as_str(), observed(&queued, Stage::Review)), ("pending", None));
+
+    let lease = f.transport.acquire_for_test(&f.p, &f.agent, 30_000, false, now).await.unwrap();
+    let reference = LeaseRef { agent_id: f.agent.clone(), epoch: lease.epoch };
+    running(&f, &reference, &id, "exec-orchestrated").await;
+    let reply = SubmitReply {
+        dispatch_id: id.clone(),
+        execution_id: "exec-orchestrated".into(),
+        body: "Two findings.\nVERDICT: reject".into(),
+    };
+    f.transport.submit_reply(&f.p, &reference, reply, &f.facts, now).await.unwrap();
+    let replied = f.transport.orchestrated_dispatch(&id).await.unwrap().unwrap();
+    assert_eq!(replied.state, "completed");
+    assert_eq!(replied.outcome.as_deref(), Some("replied"));
+    assert_eq!(replied.reply_state.as_deref(), Some("pending"));
+    // Not yet delivered to the Room, so not yet a result.
+    assert_eq!(observed(&replied, Stage::Review), None);
+    let mut delivered = replied.clone();
+    delivered.reply_state = Some("sent".into());
+    assert_eq!(observed(&delivered, Stage::Review), Some(Outcome::Replied(Some(Verdict::Reject))));
+}

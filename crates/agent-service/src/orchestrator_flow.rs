@@ -372,6 +372,59 @@ fn replied(slot: Slot, rev: u32, verdict: Option<Verdict>) -> (State, Vec<Action
     }
 }
 
+/// One dispatch as recorded by the transport tables (`owner_events` joined with its `reply_outbox`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DispatchRow {
+    pub state: String,
+    pub outcome: Option<String>,
+    pub reply_state: Option<String>,
+    pub reply_blocked: bool,
+    pub reply_body: Option<String>,
+}
+
+/// What became of a dispatch, or `None` while it is still in progress. Anything not plainly a success or
+/// a known failure is `Unknown`, so the run stops for a Human rather than guessing.
+pub fn observed(row: &DispatchRow, stage: Stage) -> Option<Outcome> {
+    match row.state.as_str() {
+        "pending" | "offered" | "acknowledged" | "running" => None,
+        "cancelled" => Some(Outcome::Expired),
+        "completed" => match row.outcome.as_deref() {
+            Some("replied") => match (row.reply_state.as_deref(), row.reply_blocked) {
+                (_, true) => Some(Outcome::Unknown),
+                (Some("sent"), false) => {
+                    let verdict = (stage == Stage::Review)
+                        .then(|| row.reply_body.as_deref().and_then(verdict))
+                        .flatten();
+                    Some(Outcome::Replied(verdict))
+                }
+                (Some("pending" | "sending"), false) => None,
+                _ => Some(Outcome::Unknown),
+            },
+            Some("failed" | "rejected") => Some(Outcome::Failed),
+            _ => Some(Outcome::Unknown),
+        },
+        _ => Some(Outcome::Unknown),
+    }
+}
+
+/// The Reviewer's verdict: the last line of the form `VERDICT: approve|reject|blocked` (or
+/// `结论：通过|驳回|阻塞`). The Reviewer prompt asks for exactly one such line.
+pub fn verdict(body: &str) -> Option<Verdict> {
+    body.lines().rev().find_map(|line| {
+        let line = line.trim().trim_matches(|c| c == '*' || c == '`').trim();
+        let (key, value) = line.split_once(':').or_else(|| line.split_once('：'))?;
+        if !matches!(key.trim().to_ascii_lowercase().as_str(), "verdict" | "结论") {
+            return None;
+        }
+        match value.trim().to_ascii_lowercase().as_str() {
+            "approve" | "approved" | "通过" => Some(Verdict::Approve),
+            "reject" | "rejected" | "驳回" => Some(Verdict::Reject),
+            "blocked" | "阻塞" => Some(Verdict::Blocked),
+            _ => None,
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -642,5 +695,109 @@ mod tests {
         assert_eq!(Stage::Execute.role(), Role::Implementer);
         assert_eq!(Stage::Test.role(), Role::Implementer);
         assert_eq!(Stage::Review.role(), Role::Reviewer);
+    }
+
+    fn row(state: &str, outcome: Option<&str>, reply: Option<&str>, body: &str) -> DispatchRow {
+        DispatchRow {
+            state: state.into(),
+            outcome: outcome.map(Into::into),
+            reply_state: reply.map(Into::into),
+            reply_blocked: false,
+            reply_body: Some(body.into()),
+        }
+    }
+
+    #[test]
+    fn dispatch_rows_map_to_outcomes() {
+        for state in ["pending", "offered", "acknowledged", "running"] {
+            assert_eq!(
+                observed(&row(state, None, None, ""), Stage::Plan),
+                None,
+                "{state}"
+            );
+        }
+        assert_eq!(
+            observed(&row("unknown", None, None, ""), Stage::Plan),
+            Some(Outcome::Unknown)
+        );
+        assert_eq!(
+            observed(&row("cancelled", None, None, ""), Stage::Plan),
+            Some(Outcome::Expired)
+        );
+        assert_eq!(
+            observed(&row("completed", Some("failed"), None, ""), Stage::Plan),
+            Some(Outcome::Failed)
+        );
+        assert_eq!(
+            observed(&row("completed", Some("rejected"), None, ""), Stage::Plan),
+            Some(Outcome::Failed)
+        );
+        assert_eq!(
+            observed(
+                &row("completed", Some("replied"), Some("pending"), ""),
+                Stage::Plan
+            ),
+            None
+        );
+        assert_eq!(
+            observed(
+                &row("completed", Some("replied"), Some("unknown"), ""),
+                Stage::Plan
+            ),
+            Some(Outcome::Unknown)
+        );
+        assert_eq!(
+            observed(
+                &row("completed", Some("replied"), Some("cancelled"), ""),
+                Stage::Plan
+            ),
+            Some(Outcome::Unknown)
+        );
+        let mut blocked = row("completed", Some("replied"), Some("sent"), "");
+        blocked.reply_blocked = true;
+        assert_eq!(observed(&blocked, Stage::Plan), Some(Outcome::Unknown));
+        assert_eq!(
+            observed(
+                &row("completed", Some("replied"), Some("sent"), "done"),
+                Stage::Plan
+            ),
+            Some(Outcome::Replied(None))
+        );
+        assert_eq!(
+            observed(
+                &row("completed", Some("something_new"), None, ""),
+                Stage::Plan
+            ),
+            Some(Outcome::Unknown)
+        );
+    }
+
+    #[test]
+    fn only_review_replies_carry_a_verdict() {
+        let r = row(
+            "completed",
+            Some("replied"),
+            Some("sent"),
+            "Findings...\nVERDICT: reject",
+        );
+        assert_eq!(
+            observed(&r, Stage::Review),
+            Some(Outcome::Replied(Some(Verdict::Reject)))
+        );
+        assert_eq!(observed(&r, Stage::Execute), Some(Outcome::Replied(None)));
+    }
+
+    #[test]
+    fn verdict_lines_are_read_strictly() {
+        assert_eq!(verdict("ok\nVERDICT: approve"), Some(Verdict::Approve));
+        assert_eq!(verdict("**Verdict: Rejected**"), Some(Verdict::Reject));
+        assert_eq!(verdict("结论：阻塞"), Some(Verdict::Blocked));
+        // The last verdict line wins; prose that merely mentions approval does not count.
+        assert_eq!(
+            verdict("VERDICT: reject\nfixed\nVERDICT: approve"),
+            Some(Verdict::Approve)
+        );
+        assert_eq!(verdict("I would approve this"), None);
+        assert_eq!(verdict("VERDICT: maybe"), None);
     }
 }
