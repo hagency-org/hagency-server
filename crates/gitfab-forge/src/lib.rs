@@ -470,12 +470,29 @@ impl<T: Transport> Forge<T> {
                 let status = self
                     .get(format!("{}/commits/{sha}/status", repo.path()))
                     .await?;
-                let runs = self
-                    .get(format!(
-                        "{}/commits/{sha}/check-runs?per_page=100",
-                        repo.path()
-                    ))
-                    .await?;
+                // Fine-grained personal tokens cannot be granted Checks, so check-runs answers 403
+                // to them; Actions results are then read from the workflow runs of the commit.
+                let runs = match self
+                    .call(
+                        "GET",
+                        format!("{}/commits/{sha}/check-runs?per_page=100", repo.path()),
+                        None,
+                        false,
+                    )
+                    .await
+                {
+                    Ok(found) => found.unwrap_or(Value::Null),
+                    Err(Error::Status { status: 403, .. }) => {
+                        let workflows = self
+                            .get(format!(
+                                "{}/actions/runs?head_sha={sha}&per_page=100",
+                                repo.path()
+                            ))
+                            .await?;
+                        json!({"check_runs": workflows.get("workflow_runs").cloned().unwrap_or(json!([]))})
+                    }
+                    Err(e) => return Err(e),
+                };
                 let mut states: Vec<Checks> = Vec::new();
                 if status
                     .get("total_count")

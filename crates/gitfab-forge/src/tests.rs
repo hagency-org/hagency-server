@@ -315,3 +315,13 @@ fn repository_references_accept_web_and_clone_addresses() {
     }
     assert!(Repo::from_ref("https://github.com/octo").is_err());
 }
+
+#[tokio::test]
+async fn without_checks_access_actions_runs_decide() {
+    let pull = PullRequest { number: 1, url: String::new(), head_sha: "abc".into() };
+    let fake = Fake::default()
+        .on("GET", "/repos/octo/demo/commits/abc/status", 200, json!({"total_count": 0}))
+        .on("GET", "/repos/octo/demo/commits/abc/check-runs?per_page=100", 403, json!({"message": "Resource not accessible by personal access token"}))
+        .on("GET", "/repos/octo/demo/actions/runs?head_sha=abc&per_page=100", 200, json!({"workflow_runs": [{"status": "completed", "conclusion": "failure"}]}));
+    assert_eq!(Forge::new(Backend::GitHub, &fake).checks(&repo(), &pull).await.unwrap(), Checks::Failure);
+}
