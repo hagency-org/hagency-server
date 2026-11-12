@@ -22,3 +22,6 @@
 # paths, hosts and conversations.
 /docs/progress.md
 /docs/agent-knowledge.md
+
+/evidence/
+/acceptance/gitfab.env

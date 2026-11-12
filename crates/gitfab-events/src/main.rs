@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use hagency_gitfab_events::ledger::Ledger;
 use hagency_gitfab_events::sign::{Key, Keyring};
-use hagency_gitfab_events::{Error, canonical, identity, schema};
+use hagency_gitfab_events::{Error, canonical, evidence, identity, schema};
 use serde_json::{Value, json};
 
 #[derive(Parser)]
@@ -61,6 +61,18 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+    /// Write one project's events into an evidence bundle, split by kind (task, identity, memory, token).
+    Export {
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
+    /// Write `<dir>/manifest.json` (path, size, SHA-256 of every file); refuses a bundle holding a
+    /// credential, a private key or a local absolute path.
+    Manifest { dir: PathBuf },
 }
 
 fn main() -> ExitCode {
@@ -129,7 +141,7 @@ fn run(command: Command) -> Result<bool, String> {
                     .filter(|(_, l)| !l.trim().is_empty())
                 {
                     checked += 1;
-                    let at = json!({"file": file, "line": line + 1});
+                    let at = json!({"file": display(file), "line": line + 1});
                     match verify_line(&ring, raw) {
                         Ok((event, digest)) => {
                             signed.extend(digest);
@@ -159,7 +171,7 @@ fn run(command: Command) -> Result<bool, String> {
             let mut errors = Vec::new();
             for file in &files {
                 for e in ledger.read(&read(file)?, 1) {
-                    errors.push(merge(json!({"file": file}), e.to_json()));
+                    errors.push(merge(json!({"file": display(file)}), e.to_json()));
                 }
             }
             if errors.is_empty() {
@@ -174,7 +186,47 @@ fn run(command: Command) -> Result<bool, String> {
             print(&json!({"ok": false, "errors": errors}));
             Ok(false)
         }
+        Command::Export {
+            project,
+            out,
+            files,
+        } => {
+            let mut inputs = Vec::new();
+            for file in &files {
+                inputs.push((display(file), read(file)?));
+            }
+            match evidence::export(&project, &inputs, &out) {
+                Ok(counts) => {
+                    print(&json!({"ok": true, "project": project, "files": counts}));
+                    Ok(true)
+                }
+                Err(failures) => {
+                    print(&json!({"ok": false, "project": project, "failures": failures}));
+                    Ok(false)
+                }
+            }
+        }
+        Command::Manifest { dir } => {
+            let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            match evidence::manifest(&dir, &now) {
+                Ok(manifest) => {
+                    let files = manifest["files"].as_array().map_or(0, Vec::len);
+                    print(&json!({"ok": true, "acceptance_run_id": manifest["acceptance_run_id"], "files": files}));
+                    Ok(true)
+                }
+                Err(failures) => {
+                    print(&json!({"ok": false, "failures": failures}));
+                    Ok(false)
+                }
+            }
+        }
     }
+}
+
+/// A file name for reports: never the local absolute path.
+fn display(path: &Path) -> String {
+    path.file_name()
+        .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
 /// Returns the event and, when it is signed and verified, its payload digest.
