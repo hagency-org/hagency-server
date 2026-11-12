@@ -116,6 +116,10 @@ impl App {
             self.transport.clone()?,
             self.domain.as_ref()?.1.clone(),
             self.matrix_client.clone()?,
+            self.management
+                .clone()
+                .filter(|p| p.shared_execution())
+                .map(|p| (self.domain.as_ref().unwrap().0.clone(), p)),
             recorder,
             timeout,
             self.workers.clone(),
@@ -624,6 +628,11 @@ impl App {
                 matrix,
                 recorder,
                 stage_timeout_ms: *timeout,
+                shared: self
+                    .management
+                    .as_ref()
+                    .filter(|p| p.shared_execution())
+                    .map(|p| (domain, p)),
             };
             if let Some(value) = Box::pin(gitfab.call(req, &credential)).await? {
                 return Ok(value);

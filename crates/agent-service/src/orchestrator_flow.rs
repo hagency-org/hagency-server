@@ -513,6 +513,41 @@ pub fn observed(row: &DispatchRow, stage: Stage) -> Option<Outcome> {
     }
 }
 
+/// A pool Agent's stage as recorded by the shared-work tables, in the form [`observed`] reads.
+/// `work_state` and the reply are those of the work item made for the stage message, if any;
+/// `intake_state` is that of its durable intake row while no work item exists yet.
+pub fn shared_row(
+    work_state: Option<&str>,
+    reply_state: Option<&str>,
+    reply_body: Option<String>,
+    intake_state: Option<&str>,
+) -> Option<DispatchRow> {
+    let row = |state: &str, outcome: Option<&str>, reply: Option<&str>, blocked: bool| DispatchRow {
+        state: state.into(),
+        outcome: outcome.map(Into::into),
+        reply_state: reply.map(Into::into),
+        reply_blocked: blocked,
+        reply_body: reply_body.clone(),
+    };
+    Some(match work_state {
+        Some("queued" | "acknowledged" | "started") => row("running", None, None, false),
+        Some("completed") => match reply_state {
+            // The reply is written with the completion; until it is sent the stage is not done.
+            None | Some("pending" | "issued") => row("completed", Some("replied"), Some("sending"), false),
+            Some("sent") => row("completed", Some("replied"), Some("sent"), false),
+            Some("blocked") => row("completed", Some("replied"), Some("blocked"), true),
+            Some(_) => row("completed", Some("replied"), Some("unknown"), false),
+        },
+        Some("failed") => row("completed", Some("failed"), None, false),
+        Some("cancelled") => row("cancelled", None, None, false),
+        Some(_) => row("completed", Some("unknown"), None, false),
+        None => match intake_state? {
+            "pending" | "paused" | "bound" | "legacy_delivered" => row("running", None, None, false),
+            _ => row("cancelled", None, None, false),
+        },
+    })
+}
+
 /// The Reviewer's verdict: the last line of the form `VERDICT: approve|reject|blocked` (or
 /// `结论：通过|驳回|阻塞`). The Reviewer prompt asks for exactly one such line.
 pub fn verdict(body: &str) -> Option<Verdict> {
@@ -891,6 +926,23 @@ mod tests {
             Some(Outcome::Replied(Some(Verdict::Reject)))
         );
         assert_eq!(observed(&r, Stage::Execute), Some(Outcome::Replied(None)));
+    }
+
+    #[test]
+    fn pool_work_maps_to_the_same_outcomes() {
+        let seen = |w, r, i| shared_row(w, r, Some("Looks good.\nVERDICT: approve".into()), i)
+            .and_then(|row| observed(&row, Stage::Review));
+        assert_eq!(seen(None, None, None), None.or(None), "nothing recorded yet");
+        assert!(shared_row(None, None, None, None).is_none());
+        assert_eq!(seen(None, None, Some("pending")), None, "waiting in durable intake");
+        assert_eq!(seen(None, None, Some("expired")), Some(Outcome::Expired));
+        assert_eq!(seen(Some("started"), None, None), None);
+        assert_eq!(seen(Some("completed"), Some("issued"), None), None, "reply still being sent");
+        assert_eq!(seen(Some("completed"), Some("sent"), None), Some(Outcome::Replied(Some(Verdict::Approve))));
+        assert_eq!(seen(Some("completed"), Some("blocked"), None), Some(Outcome::Unknown));
+        assert_eq!(seen(Some("failed"), None, None), Some(Outcome::Failed));
+        assert_eq!(seen(Some("cancelled"), None, None), Some(Outcome::Expired));
+        assert_eq!(seen(Some("unknown"), None, None), Some(Outcome::Unknown), "never re-run");
     }
 
     #[test]

@@ -38,6 +38,10 @@ impl StageRoom for Room {
         Ok(format!("${txn}"))
     }
 
+    async fn admit_shared(&self, _event: &RoutedEvent, _received_at_ms: i64) -> Result<()> {
+        Err(Error::Unauthorized("shared_execution_unavailable"))
+    }
+
     async fn facts(&self, _scope: &RoutingScope, requester: &str) -> Result<DeliveryFacts> {
         Ok(DeliveryFacts {
             requester_mxid: requester.to_owned(),

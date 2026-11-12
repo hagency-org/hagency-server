@@ -1633,3 +1633,61 @@ async fn shared_work_exact_mention_is_filtered_before_candidate_page_limit() {
         work.id
     );
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_work_reads_back_for_the_gitfab_orchestrator() {
+    use crate::orchestrator_flow::{DispatchRow, Outcome, Stage, observed};
+    let (f, r, _admin, _a, m) = Box::pin(prepared()).await;
+    let (d, a) = qualify(&f).await;
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let t = crate::transport::TransportStore::open(&url, crate::transport::Limits::default())
+        .await
+        .unwrap();
+    let mx = read_matrix(&f, &r).await;
+    // The pool Agent is listed for its Room, so `/gitfab start` can name it.
+    let agents = t.shared_room_agents(&mx.room_id).await.unwrap();
+    assert!(
+        agents.iter().any(|(assignment, agent, puppet)| *assignment == mx.assignment_id
+            && *agent == mx.agent_id
+            && *puppet == mx.puppet_mxid),
+        "{agents:?}"
+    );
+    let stage = "$gitfab_pool_stage";
+    assert_eq!(t.shared_dispatch(&mx.assignment_id, stage).await.unwrap(), None);
+    let seen = |row: Option<DispatchRow>| row.and_then(|r| observed(&r, Stage::Review));
+
+    // The orchestrator admits its stage message through ordinary shared routing.
+    let w = queued(&f, &r, &m, &a, "gitfab_pool_stage").await;
+    let queued_row = t.shared_dispatch(&mx.assignment_id, stage).await.unwrap();
+    assert!(queued_row.is_some());
+    assert_eq!(seen(queued_row), None, "queued is still in progress");
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .await
+        .unwrap();
+    f.domain
+        .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .await
+        .unwrap();
+    assert_eq!(seen(t.shared_dispatch(&mx.assignment_id, stage).await.unwrap()), None);
+
+    let tk = ticket(&f, &d, &w).await;
+    f.domain
+        .record_shared_work_result(&f.owner.p, &f.policy, &w.id, outcome(&d, &w, &tk, 201, "completed"))
+        .await
+        .unwrap();
+    assert_eq!(
+        seen(t.shared_dispatch(&mx.assignment_id, stage).await.unwrap()),
+        None,
+        "completed, but the reply is not in the Room yet"
+    );
+    let s = sender().await;
+    f.domain
+        .send_shared_replies(&f.policy, &m.gateway, &s.matrix, &mut String::new())
+        .await
+        .unwrap();
+    let done = t.shared_dispatch(&mx.assignment_id, stage).await.unwrap().unwrap();
+    assert_eq!(done.reply_body.as_deref(), Some("Hello."));
+    assert_eq!(seen(Some(done)), Some(Outcome::Replied(None)), "a Reviewer reply without a verdict");
+}

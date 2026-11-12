@@ -27,6 +27,10 @@ pub(crate) struct Gitfab<'a> {
     pub matrix: &'a MatrixClient,
     pub recorder: &'a Recorder,
     pub stage_timeout_ms: i64,
+    pub shared: Option<(
+        &'a DomainStore,
+        &'a crate::management_types::ManagementPolicy,
+    )>,
 }
 
 #[derive(Deserialize)]
@@ -107,6 +111,7 @@ impl Gitfab<'_> {
         let room = MatrixStageRoom {
             gateway: self.gateway,
             matrix: self.matrix,
+            shared: self.shared,
         };
         let orchestrator = Orchestrator {
             transport: self.transport,
@@ -123,6 +128,13 @@ impl Gitfab<'_> {
                         .as_str()
                         .ok_or(Error::Invalid("invalid_orchestrator_run"))?;
                     crate::key(binding)?;
+                    if binding.starts_with("mas_") {
+                        let pool = self.transport.shared_room_agents(&start.room_id).await?;
+                        if !pool.iter().any(|(a, ..)| a == binding) {
+                            return Err(Error::Unauthorized("binding_outside_run_room"));
+                        }
+                        continue;
+                    }
                     let scope = self.transport.binding_scope(binding).await?;
                     if scope.room_id != start.room_id || scope.space_id != project.space_id {
                         return Err(Error::Unauthorized("binding_outside_run_room"));

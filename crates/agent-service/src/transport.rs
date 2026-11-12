@@ -1032,6 +1032,38 @@ impl TransportStore {
             row.map(OrchestratorRunRow::into_run).transpose()
         }).await
     }
+    /// Pool Agents serving a Room: (assignment id, Agent id, puppet MXID). Only verified memberships of
+    /// assignments that are still pending native execution.
+    pub(crate) async fn shared_room_agents(&self, room_id: &str) -> Result<Vec<(String, String, String)>> {
+        #[derive(diesel::QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = Text)] assignment_id: String,
+            #[diesel(sql_type = Text)] agent_id: String,
+            #[diesel(sql_type = Text)] puppet_mxid: String,
+        }
+        matrix_id(room_id, '!')?;
+        self.db.with_connection(async |db| {
+            let rows = sql_query("SELECT DISTINCT m.assignment_id,m.agent_id,m.puppet_mxid FROM hagency_agent_v1.shared_room_memberships m JOIN hagency_agent_v1.management_shared_assignments a ON a.id=m.assignment_id WHERE m.room_id=$1 AND m.state='matrix_verified' AND a.state='pending_native' ORDER BY m.assignment_id")
+                .bind::<Text,_>(room_id).load::<Row>(db).await?;
+            Ok(rows.into_iter().map(|r| (r.assignment_id, r.agent_id, r.puppet_mxid)).collect())
+        }).await
+    }
+    /// What became of a stage message admitted for a pool Agent, read from its work item (and reply) or,
+    /// before a work item exists, from its durable intake row. `None` when nothing was recorded.
+    pub(crate) async fn shared_dispatch(&self, assignment_id: &str, event_id: &str) -> Result<Option<crate::orchestrator_flow::DispatchRow>> {
+        #[derive(diesel::QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = Nullable<Text>)] work_state: Option<String>,
+            #[diesel(sql_type = Nullable<Text>)] reply_state: Option<String>,
+            #[diesel(sql_type = Nullable<Text>)] reply_body: Option<String>,
+            #[diesel(sql_type = Nullable<Text>)] intake_state: Option<String>,
+        }
+        self.db.with_connection(async |db| {
+            let r = sql_query("SELECT w.state AS work_state,rp.state AS reply_state,rp.content::jsonb->>'body' AS reply_body,(SELECT q.state FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=$1 AND q.event_id=$2) AS intake_state FROM (SELECT 1) one LEFT JOIN LATERAL (SELECT w.id,w.state FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1 AND w.event_id=$2 ORDER BY w.created_at_ms DESC,w.id DESC LIMIT 1) w ON true LEFT JOIN hagency_agent_v1.management_shared_replies rp ON rp.work_id=w.id")
+                .bind::<Text,_>(assignment_id).bind::<Text,_>(event_id).get_result::<Row>(db).await?;
+            Ok(crate::orchestrator_flow::shared_row(r.work_state.as_deref(), r.reply_state.as_deref(), r.reply_body, r.intake_state.as_deref()))
+        }).await
+    }
     /// The active Project a registered Room belongs to.
     pub(crate) async fn room_project(&self, room_id: &str) -> Result<Option<String>> {
         #[derive(diesel::QueryableByName)]

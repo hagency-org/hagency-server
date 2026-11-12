@@ -32,6 +32,14 @@ const HANDOFF_LIMIT: usize = 32 * 1024;
 /// A Reviewer's findings kept in the task event.
 const FINDINGS_LIMIT: usize = 4 * 1024;
 const SYSTEM_ACTOR: &str = "system:gitfab-orchestrator";
+/// A role bound to a pool Agent names its assignment (`mas_…`) instead of a personal binding.
+const SHARED_PREFIX: &str = "mas_";
+/// Dispatch ids of pool stages: `shared:<assignment>:<stage event id>`.
+const SHARED_DISPATCH: &str = "shared:";
+
+fn shared_dispatch_id(dispatch: &str) -> Option<(&str, &str)> {
+    dispatch.strip_prefix(SHARED_DISPATCH)?.split_once(':')
+}
 
 /// The Matrix side of the worker: posting stage messages and observing who may receive them.
 pub(crate) trait StageRoom: Sync {
@@ -51,6 +59,14 @@ pub(crate) trait StageRoom: Sync {
         scope: &RoutingScope,
         requester: &str,
     ) -> impl Future<Output = Result<DeliveryFacts>> + Send;
+    /// Admits a stage message for a pool Agent through the ordinary shared routing, as if the
+    /// requester had sent it mentioning that Agent, so every shared check, budget and intake mode
+    /// applies unchanged.
+    fn admit_shared(
+        &self,
+        event: &RoutedEvent,
+        received_at_ms: i64,
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// The signed event journal (`hagency-gitfab-events`).
@@ -369,34 +385,48 @@ impl<R: StageRoom> Orchestrator<'_, R> {
             .into_iter()
             .filter(|s| s.active)
             .collect();
+        // Personal bindings and pool assignments serving this Room: (role value, puppet, Agent id).
+        let mut agents: Vec<(String, String, String)> = scopes
+            .iter()
+            .map(|s| {
+                (
+                    s.binding_id.clone(),
+                    s.puppet_mxid.clone(),
+                    s.agent_id.clone(),
+                )
+            })
+            .collect();
+        for (assignment, agent, puppet) in
+            self.transport.shared_room_agents(&command.room_id).await?
+        {
+            agents.push((assignment, puppet, agent));
+        }
         let mut bindings = serde_json::Map::new();
         for (role, wanted) in ORCHESTRATOR_ROLES.iter().zip(&start.roles) {
             let found = match wanted.as_deref() {
-                Some(who) => scopes
+                Some(who) => agents
                     .iter()
-                    .find(|s| s.puppet_mxid == who || s.binding_id == who || s.agent_id == who),
-                None if scopes.len() == 1 => scopes.first(),
+                    .find(|(id, puppet, agent)| puppet == who || id == who || agent == who),
+                None if agents.len() == 1 => agents.first(),
                 None => None,
             };
-            let Some(scope) = found else {
+            let Some((id, ..)) = found else {
                 return refuse(&match wanted {
                     Some(who) => format!("{role} 指定的 {who} 不是本房间里正在服务的 Agent。"),
                     None => format!(
                         "本房间有 {} 个 Agent，请用 `{role}: @Agent账号` 指定。",
-                        scopes.len()
+                        agents.len()
                     ),
                 });
             };
-            bindings.insert((*role).to_owned(), json!(scope.binding_id));
+            bindings.insert((*role).to_owned(), json!(id));
         }
-        // The Human must still be in the Room the Agents serve.
-        let first = scopes
-            .iter()
-            .find(|s| Some(s.binding_id.as_str()) == bindings["coordinator"].as_str())
-            .expect("resolved above");
-        let facts = self.room.facts(first, &command.sender_mxid).await?;
-        if !facts.requester_in_room {
-            return refuse("发起人不在本房间。");
+        // The Human must still be in the Room. Pool admissions check the requester themselves.
+        if let Some(first) = scopes.first() {
+            let facts = self.room.facts(first, &command.sender_mxid).await?;
+            if !facts.requester_in_room {
+                return refuse("发起人不在本房间。");
+            }
         }
         let mut context = json!({
             "goal": start.goal, "gitBackend": start.backend, "repoRef": start.repo,
@@ -452,7 +482,12 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                 }
                 (State::Running { slot, .. }, Some(dispatch)) => {
                     let slot = *slot;
-                    let row = self.transport.orchestrated_dispatch(dispatch).await?;
+                    let row = match shared_dispatch_id(dispatch) {
+                        Some((assignment, event)) => {
+                            self.transport.shared_dispatch(assignment, event).await?
+                        }
+                        None => self.transport.orchestrated_dispatch(dispatch).await?,
+                    };
                     // A dispatch the transport no longer has cannot be shown to have run.
                     let outcome = match &row {
                         Some(row) => flow::observed(row, slot.stage),
@@ -664,10 +699,110 @@ impl<R: StageRoom> Orchestrator<'_, R> {
         }))
     }
 
+    /// Posts the stage message and admits it for a pool Agent (`binding` is its assignment). A message
+    /// the shared routing does not take counts as a stage that expired before it ran.
+    async fn dispatch_shared(
+        &self,
+        run: OrchestratorRun,
+        slot: Slot,
+        spec_revision: u32,
+        assignment: &str,
+        now: i64,
+    ) -> Result<Option<OrchestratorRun>> {
+        let refused = Input::Result {
+            slot,
+            outcome: Outcome::Expired,
+        };
+        let agents = self.transport.shared_room_agents(&run.init.room_id).await?;
+        let Some((.., puppet)) = agents.into_iter().find(|(a, ..)| a == assignment) else {
+            return self.apply(run, refused, Cause::System, now).await;
+        };
+        let body = stage_message(&run, slot, spec_revision, run.handoff.as_deref());
+        let meta = json!({"version": 1, "runId": run.id, "taskId": run.init.task_id,
+            "stage": slot.stage.phase(), "round": slot.round, "attempt": slot.attempt,
+            "specRevision": spec_revision});
+        let event_id = self
+            .room
+            .post(
+                &run.init.room_id,
+                &run.init.thread_root,
+                &txn_id(&run, slot, spec_revision),
+                &body,
+                &meta,
+            )
+            .await?;
+        let stage = OrchestratedStage {
+            run_id: run.id.clone(),
+            stage: slot.stage.phase(),
+            round: i32::try_from(slot.round).map_err(|_| Error::Invalid("orchestrator_round"))?,
+            attempt: i32::try_from(slot.attempt)
+                .map_err(|_| Error::Invalid("orchestrator_attempt"))?,
+        };
+        self.transport
+            .register_orchestrated_stage(assignment, &event_id, &stage, now)
+            .await?;
+        let event = RoutedEvent {
+            event_id: event_id.clone(),
+            room_id: run.init.room_id.clone(),
+            sender_mxid: run.init.requester_mxid.clone(),
+            body,
+            mentioned_mxids: [puppet].into(),
+            thread_root: Some(run.init.thread_root.clone()),
+            encrypted: false,
+            is_edit: false,
+        };
+        match self.room.admit_shared(&event, now).await {
+            Ok(()) => {}
+            Err(Error::Unauthorized(_) | Error::Invalid(_) | Error::Conflict(_)) => {
+                return self.apply(run, refused, Cause::System, now).await;
+            }
+            Err(e) => return Err(e),
+        }
+        // Shared routing skips an event that no runtime, membership or budget allows without an error.
+        if self
+            .transport
+            .shared_dispatch(assignment, &event_id)
+            .await?
+            .is_none()
+        {
+            return self.apply(run, refused, Cause::System, now).await;
+        }
+        let dispatch_id = format!("{SHARED_DISPATCH}{assignment}:{event_id}");
+        let saved = self
+            .transport
+            .save_orchestrator_run(
+                &run.id,
+                run.revision,
+                &OrchestratorRunUpdate {
+                    state: &run.state,
+                    dispatch_id: Some(&dispatch_id),
+                    handoff: run.handoff.as_deref(),
+                    pending_events: &run.pending_events,
+                },
+                now,
+            )
+            .await?;
+        Ok(Some(OrchestratorRun {
+            revision: saved,
+            dispatch_id: Some(dispatch_id),
+            updated_at_ms: now,
+            ..run
+        }))
+    }
+
     async fn agent_actor(&self, run: &OrchestratorRun, stage: Stage) -> String {
         let Ok(binding) = binding_for(run, stage) else {
             return SYSTEM_ACTOR.to_owned();
         };
+        if binding.starts_with(SHARED_PREFIX) {
+            return match self.transport.shared_room_agents(&run.init.room_id).await {
+                Ok(agents) => agents
+                    .into_iter()
+                    .find(|(a, ..)| a == binding)
+                    .map_or_else(|| binding.to_owned(), |(.., puppet)| puppet),
+                Err(_) => binding.to_owned(),
+            };
+        }
         match self.transport.binding_scope(binding).await {
             Ok(scope) => scope.puppet_mxid,
             Err(_) => binding.to_owned(),
@@ -684,6 +819,11 @@ impl<R: StageRoom> Orchestrator<'_, R> {
         now: i64,
     ) -> Result<Option<OrchestratorRun>> {
         let binding = binding_for(&run, slot.stage)?.to_owned();
+        if binding.starts_with(SHARED_PREFIX) {
+            return self
+                .dispatch_shared(run, slot, spec_revision, &binding, now)
+                .await;
+        }
         let scope = match self.transport.binding_scope(&binding).await {
             Ok(scope) => scope,
             Err(Error::Unauthorized(_)) => {
@@ -931,6 +1071,12 @@ pub(crate) fn stage_content(room_id: &str, thread_root: &str, body: &str, meta: 
 pub(crate) struct MatrixStageRoom<'a> {
     pub gateway: &'a crate::gateway::Gateway,
     pub matrix: &'a crate::matrix_client::MatrixClient,
+    /// Where pool Agents execute: the domain and management policy. `None` when shared execution is
+    /// not configured, and pool roles are then refused.
+    pub shared: Option<(
+        &'a crate::domain::DomainStore,
+        &'a crate::management_types::ManagementPolicy,
+    )>,
 }
 
 impl StageRoom for MatrixStageRoom<'_> {
@@ -946,6 +1092,18 @@ impl StageRoom for MatrixStageRoom<'_> {
         self.matrix
             .send(self.matrix.service_mxid(), room_id, txn, content)
             .await
+    }
+
+    async fn admit_shared(&self, event: &RoutedEvent, received_at_ms: i64) -> Result<()> {
+        let (domain, policy) = self
+            .shared
+            .ok_or(Error::Unauthorized("shared_execution_unavailable"))?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            domain.route_shared_event(policy, event, received_at_ms, self.gateway),
+        )
+        .await
+        .map_err(|_| Error::Unavailable("matrix_state_unavailable"))?
     }
 
     async fn facts(&self, scope: &RoutingScope, requester: &str) -> Result<DeliveryFacts> {
@@ -969,6 +1127,10 @@ pub(crate) fn start_controlled(
     transport: TransportStore,
     gateway: crate::gateway::Gateway,
     matrix: crate::matrix_client::MatrixClient,
+    shared: Option<(
+        crate::domain::DomainStore,
+        crate::management_types::ManagementPolicy,
+    )>,
     recorder: Arc<Recorder>,
     stage_timeout_ms: i64,
     control: crate::worker_runtime::WorkerRuntime,
@@ -978,6 +1140,7 @@ pub(crate) fn start_controlled(
         let room = MatrixStageRoom {
             gateway: &gateway,
             matrix: &matrix,
+            shared: shared.as_ref().map(|(d, p)| (d, p)),
         };
         let orchestrator = Orchestrator {
             transport: &transport,
