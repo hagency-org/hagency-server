@@ -53,6 +53,7 @@
 </header>
 <main>
   <section class="wide"><h2>概览 <small id="counts"></small></h2><div class="stats" id="stats"></div></section>
+  <section class="wide"><h2>Agent 状态 <small>来自服务端编排器</small></h2><div id="agents"></div></section>
   <section class="wide"><h2>任务进度 <small>按运行</small></h2><div id="runs"></div></section>
   <section><h2>部署结果 <small>回执 + 实时探测</small></h2><div id="deploys"></div></section>
   <section><h2>Token 记录 <small>由账本复算</small></h2><div id="tokens"></div></section>
@@ -75,6 +76,14 @@ function render(d) {
     stat('签名不符', c.bad_signature || 0, (c.bad_signature ? 'bad' : '')) + stat('格式无效', c.invalid || 0, (c.invalid ? 'bad' : '')) +
     stat('部署项目', d.deployments.length);
 
+  const AG = { running: ['ok', 'Running 执行中'], pending: ['warn', 'Pending 等待'], active: ['ok', 'Active 空闲'] };
+  const ag = d.agents || {};
+  document.getElementById('agents').innerHTML = !ag.ok ? `<p class="muted">未接入服务端：${esc(ag.error)}</p>` :
+    (ag.status.agents.length ? `<table><tr><th>Agent（绑定）</th><th>状态</th><th>角色</th><th>所在流程</th></tr>${ag.status.agents.map((a) => {
+      const [k, t] = AG[a.status] || ['warn', a.status];
+      return `<tr><td class="mono">${esc(a.binding)}${a.pool ? ' <span class="muted">资源池</span>' : ''}</td><td><span class="pill ${k}">${t}</span></td><td>${esc(a.roles.join('、'))}</td>
+        <td>${a.runs.map((r) => `${esc(r.project)} ${esc(r.task)}：${esc(r.status)}${r.stage ? ' · ' + esc(r.stage) : ''}`).join('<br>')}</td></tr>`;
+    }).join('')}</table>` : '<p class="muted">当前没有进行中的流程。</p>');
   document.getElementById('runs').innerHTML = d.runs.length ? `<table><tr><th>项目 / 任务</th><th>当前</th><th>阶段</th><th>链接</th></tr>${
     d.runs.map((r) => {
       const links = [...new Set(r.steps.flatMap((s) => s.links || []))];

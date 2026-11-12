@@ -75,6 +75,7 @@ fn the_board_shows_runs_tokens_deployments_and_flags_tampering() {
         receipts: vec![receipts],
         keys,
         probes: vec![Probe { project: "DEMO-02".into(), port, health_path: "/healthz".into(), version_path: "/version".into() }],
+        server: None,
     });
 
     let run = &board["runs"][0];

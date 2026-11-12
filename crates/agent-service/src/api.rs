@@ -29,6 +29,7 @@ pub struct App {
     /// GitFab orchestrator: the signed journal and the stage timeout.
     gitfab: Option<(Arc<crate::orchestrator::Recorder>, i64)>,
     gitfab_git: Option<Arc<crate::orchestrator_git::GitHosts>>,
+    gitfab_board: Option<Arc<String>>,
 }
 impl App {
     pub fn new(
@@ -53,6 +54,7 @@ impl App {
             board_enabled: true,
             gitfab: None,
             gitfab_git: None,
+            gitfab_board: None,
         }
     }
     pub fn with_management(mut self, policy: crate::management_types::ManagementPolicy) -> Self {
@@ -116,6 +118,18 @@ impl App {
     pub fn with_gitfab_git(mut self, hosts: crate::orchestrator_git::GitHosts) -> Self {
         self.gitfab_git = Some(Arc::new(hosts));
         self
+    }
+    /// Serves Agent status to the GitFab board with this read-only token.
+    pub fn with_gitfab_board_token(mut self, token: String) -> Self {
+        self.gitfab_board = Some(Arc::new(token));
+        self
+    }
+    /// `GET /hagency/gitfab/v1/agents`, when the orchestrator and a board token are configured.
+    pub fn gitfab_board_router(&self) -> Option<Router> {
+        Some(Router::with_path("hagency/gitfab/v1/agents").get(crate::orchestrator_status::BoardStatus {
+            transport: self.transport.clone()?,
+            token: self.gitfab_board.clone()?,
+        }))
     }
     pub fn start_orchestrator(&self) -> Option<tokio::task::JoinHandle<()>> {
         let (recorder, timeout) = self.gitfab.clone()?;

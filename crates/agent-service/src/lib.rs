@@ -47,6 +47,7 @@ pub mod matrix_client;
 pub mod orchestrator;
 pub mod orchestrator_flow;
 pub mod orchestrator_git;
+pub mod orchestrator_status;
 pub mod recurring_quota;
 mod reply_format;
 pub mod store;

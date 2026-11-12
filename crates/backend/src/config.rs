@@ -62,6 +62,9 @@ pub struct GitfabConfig {
     pub github_api: Option<String>,
     #[serde(default)]
     pub gitcode_api: Option<String>,
+    /// Read-only token (mode 0600) the GitFab board presents to read Agent status.
+    #[serde(default)]
+    pub board_token_file: Option<PathBuf>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -186,6 +189,7 @@ impl Config {
             gitfab.github_token_file = gitfab.github_token_file.as_ref().map(|p| resolve(base, p));
             gitfab.gitcode_token_file =
                 gitfab.gitcode_token_file.as_ref().map(|p| resolve(base, p));
+            gitfab.board_token_file = gitfab.board_token_file.as_ref().map(|p| resolve(base, p));
         }
         host.palpo_config = resolve(base, &host.palpo_config)
             .canonicalize()

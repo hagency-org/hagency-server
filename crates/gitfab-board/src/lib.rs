@@ -29,6 +29,39 @@ pub struct Sources {
     pub receipts: Vec<PathBuf>,
     pub keys: Keyring,
     pub probes: Vec<Probe>,
+    /// The server's Agent status (`/hagency/gitfab/v1/agents`) and the board token file (mode 0600).
+    pub server: Option<(String, PathBuf)>,
+}
+
+/// Agent status from the server. The token reaches curl on standard input, never on its command line.
+pub fn server_agents(server: &str, token_file: &std::path::Path) -> Value {
+    use std::io::Write as _;
+    let token = match std::fs::read_to_string(token_file) {
+        Ok(t) if !t.trim().is_empty() => t.trim().to_owned(),
+        _ => return json!({"ok": false, "error": "board token file unreadable"}),
+    };
+    let url = format!("{}/hagency/gitfab/v1/agents", server.trim_end_matches('/'));
+    let child = std::process::Command::new("curl")
+        .args(["-sS", "--max-time", "8", "-K", "-", "-w", "\\n%{http_code}", &url])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return json!({"ok": false, "error": "curl unavailable"});
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = writeln!(stdin, "header = \"Authorization: Bearer {token}\"");
+    }
+    let Ok(out) = child.wait_with_output() else {
+        return json!({"ok": false, "error": "server unreachable"});
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (body, status) = text.rsplit_once('\n').unwrap_or(("", "000"));
+    match (status.trim(), serde_json::from_str::<Value>(body)) {
+        ("200", Ok(v)) => json!({"ok": true, "status": v}),
+        (code, _) => json!({"ok": false, "error": format!("server answered HTTP {code}")}),
+    }
 }
 
 /// How a line checked out: verified signature, unsigned (allowed by its schema), or refused.
@@ -156,7 +189,12 @@ pub fn snapshot(sources: &Sources) -> Value {
     }
     stream.reverse();
     stream.truncate(200);
+    let agents = match &sources.server {
+        Some((server, token)) => server_agents(server, token),
+        None => json!({"ok": false, "error": "not configured"}),
+    };
     json!({
+        "agents": agents,
         "generated_at": now(),
         "counts": counts,
         "runs": runs.into_values().collect::<Vec<_>>(),

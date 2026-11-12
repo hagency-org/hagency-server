@@ -67,7 +67,8 @@ impl GitHosts {
     }
 }
 
-fn read_token(file: &Path) -> Result<String, String> {
+/// One token from a file readable by its owner only.
+pub fn read_token(file: &Path) -> Result<String, String> {
     let name = file.display();
     #[cfg(unix)]
     {

@@ -283,6 +283,12 @@ async fn run() -> anyhow::Result<()> {
                 );
                 app = app.with_gitfab_git(hosts);
             }
+            if let Some(file) = &gitfab.board_token_file {
+                let token = hagency_agent_service::orchestrator_git::read_token(file)
+                    .map_err(|e| anyhow::anyhow!("gitfab.board_token_file {e}"))?;
+                app = app.with_gitfab_board_token(token);
+                tracing::info!("GitFab board Agent status enabled");
+            }
         }
         agent_service = Some(app);
     }
@@ -296,6 +302,9 @@ async fn run() -> anyhow::Result<()> {
     let mut router = Router::new();
     if let Some(service) = &agent_service {
         router = router.push(service.router());
+        if let Some(board) = service.gitfab_board_router() {
+            router = router.push(board);
+        }
     }
     if let Some(inbox) = &agent_inbox {
         router = router.push(inbox.router());

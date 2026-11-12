@@ -29,6 +29,12 @@ struct Cli {
     probes: Vec<String>,
     #[arg(long, default_value = "127.0.0.1:8090")]
     listen: String,
+    /// Hagency server whose Agent status the board shows.
+    #[arg(long)]
+    server: Option<String>,
+    /// The server's board token (`[gitfab] board_token_file`), mode 0600.
+    #[arg(long)]
+    server_token_file: Option<PathBuf>,
 }
 
 /// The response for a request line: status, content type and body.
@@ -81,7 +87,8 @@ fn main() -> std::process::ExitCode {
         };
         probes.push(Probe { project: project.into(), port, health_path: "/healthz".into(), version_path: "/version".into() });
     }
-    let sources = Sources { journals: cli.journals, receipts: cli.receipts, keys, probes };
+    let server = cli.server.zip(cli.server_token_file);
+    let sources = Sources { journals: cli.journals, receipts: cli.receipts, keys, probes, server };
     let listener = match TcpListener::bind(&cli.listen) {
         Ok(l) => l,
         Err(e) => {
@@ -102,7 +109,7 @@ mod tests {
 
     #[test]
     fn only_reads_are_served() {
-        let sources = Sources { journals: vec![], receipts: vec![], keys: Keyring::default(), probes: vec![] };
+        let sources = Sources { journals: vec![], receipts: vec![], keys: Keyring::default(), probes: vec![], server: None };
         assert_eq!(respond("GET", "/", &sources).0, 200);
         assert_eq!(respond("GET", "/api/snapshot", &sources).0, 200);
         for method in ["POST", "PUT", "PATCH", "DELETE"] {

@@ -84,6 +84,7 @@ mod tests {
             gitcode_token_file: None,
             github_api: None,
             gitcode_api: None,
+            board_token_file: None,
         }
     }
 
@@ -158,6 +159,7 @@ palpo_config = "palpo.toml"
             gitcode_token_file: None,
             github_api: None,
             gitcode_api: None,
+            board_token_file: None,
         };
         assert!(Signer::load(&missing).is_err());
     }
