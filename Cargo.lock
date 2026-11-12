@@ -3958,6 +3958,7 @@ dependencies = [
 name = "hagency-gitfab-forge"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "percent-encoding",
  "reqwest 0.13.5",
  "serde_json",

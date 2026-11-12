@@ -288,3 +288,17 @@ async fn failures_name_the_call_but_never_the_query() {
         .unwrap_err();
     assert_eq!(error.to_string(), "GitHub answered 401 to GET /user/repos");
 }
+
+#[tokio::test]
+async fn baseline_commit_and_pull_lookups() {
+    let fake = Fake::default()
+        .on("GET", "/repos/octo/demo/commits/abc", 200, json!({"sha": "abc"}))
+        .on("GET", "/repos/octo/demo/commits/nope", 422, json!({}))
+        .on("GET", "/repos/octo/demo/commits/gone", 404, json!({}))
+        .on("GET", "/repos/octo/demo/pulls/5", 200, json!({"number": 5, "html_url": "https://github.com/octo/demo/pull/5", "head": {"sha": "abc"}}));
+    let forge = Forge::new(Backend::GitHub, &fake);
+    assert!(forge.commit_exists(&repo(), "abc").await.unwrap());
+    assert!(!forge.commit_exists(&repo(), "nope").await.unwrap());
+    assert!(!forge.commit_exists(&repo(), "gone").await.unwrap());
+    assert_eq!(forge.pull(&repo(), 5).await.unwrap().head_sha, "abc");
+}

@@ -290,6 +290,24 @@ impl<T: Transport> Forge<T> {
             .collect()
     }
 
+    /// Whether `sha` names a commit in the repository (a baseline check).
+    pub async fn commit_exists(&self, repo: &Repo, sha: &str) -> Result<bool> {
+        let path = format!("{}/commits/{}", repo.path(), enc(sha));
+        // GitHub answers 422 for a malformed SHA; both mean "no such commit".
+        match self.call("GET", path, None, true).await {
+            Ok(found) => Ok(found.is_some()),
+            Err(Error::Status { status: 422, .. }) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// One Pull Request by number.
+    pub async fn pull(&self, repo: &Repo, number: u64) -> Result<PullRequest> {
+        let path = format!("{}/pulls/{number}", repo.path());
+        let value = self.get(path.clone()).await?;
+        self.pull_from(&value, &path)
+    }
+
     pub async fn repo(&self, repo: &Repo) -> Result<RepoInfo> {
         let path = repo.path();
         let value = self.get(path.clone()).await?;
@@ -338,7 +356,7 @@ impl<T: Transport> Forge<T> {
         })
     }
 
-    fn pull(&self, value: &Value, path: &str) -> Result<PullRequest> {
+    fn pull_from(&self, value: &Value, path: &str) -> Result<PullRequest> {
         Ok(PullRequest {
             number: value
                 .get("number")
@@ -383,7 +401,7 @@ impl<T: Transport> Forge<T> {
         items
             .iter()
             .find(|item| item.pointer("/head/ref").and_then(Value::as_str) == Some(head))
-            .map(|item| self.pull(item, &path))
+            .map(|item| self.pull_from(item, &path))
             .transpose()
     }
 
@@ -415,7 +433,7 @@ impl<T: Transport> Forge<T> {
                 json!({"title": title, "head": head, "base": base, "body": body}),
             )
             .await?;
-        self.pull(&created, &path)
+        self.pull_from(&created, &path)
     }
 
     async fn get_body(&self, method: &'static str, path: String, body: Value) -> Result<Value> {
