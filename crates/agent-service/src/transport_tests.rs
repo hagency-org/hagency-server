@@ -3289,3 +3289,74 @@ async fn encrypted_personal_group_waits_for_local_addressing_before_dispatch() {
         RouteResult::Duplicate { .. }
     ));
 }
+
+fn orchestrated(stage: &'static str) -> OrchestratedStage {
+    OrchestratedStage { run_id: "run_1".into(), stage, round: 0, attempt: 1 }
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_orchestrated_stage_admits_only_registered_service_messages() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    // The stage message is posted by the service; its requester is the Human who started the run.
+    let stage = event(&f, "gitfab-stage-1", false, Some("$gitfab-root"));
+    let refused = f
+        .transport
+        .ingest_orchestrated(&f.binding, stage.clone(), &f.facts, now)
+        .await
+        .unwrap_err();
+    assert!(matches!(refused, Error::Unauthorized("orchestrator_stage_unregistered")), "{refused:?}");
+
+    f.transport
+        .register_orchestrated_stage(&f.binding, &stage.event_id, &orchestrated("spec"), now)
+        .await
+        .unwrap();
+    // Registering twice is harmless.
+    f.transport
+        .register_orchestrated_stage(&f.binding, &stage.event_id, &orchestrated("spec"), now)
+        .await
+        .unwrap();
+    let queued = f
+        .transport
+        .ingest_orchestrated(&f.binding, stage.clone(), &f.facts, now)
+        .await
+        .unwrap();
+    assert!(matches!(queued, RouteResult::Queued { .. }), "no mention is needed: {queued:?}");
+    assert!(matches!(
+        f.transport.ingest_orchestrated(&f.binding, stage.clone(), &f.facts, now).await.unwrap(),
+        RouteResult::Duplicate { .. }
+    ));
+
+    // Ordinary routing still ignores service senders, registered or not.
+    let mut from_service = event(&f, "gitfab-stage-1", true, Some("$gitfab-root"));
+    from_service.sender_mxid = "@_hagency_service:example.test".into();
+    let mut other = from_service.clone();
+    other.event_id = "$gitfab-stage-2".into();
+    let mut service_facts = f.facts.clone();
+    service_facts.requester_mxid = other.sender_mxid.clone();
+    assert!(matches!(
+        f.transport.ingest_routed(&f.binding, other, &service_facts, now).await.unwrap(),
+        RouteResult::Ignored
+    ));
+
+    // Membership still applies to the requester, and encrypted Rooms are refused.
+    f.transport
+        .register_orchestrated_stage(&f.binding, "$gitfab-stage-3", &orchestrated("plan"), now)
+        .await
+        .unwrap();
+    let mut absent = f.facts.clone();
+    absent.requester_in_room = false;
+    assert!(
+        f.transport
+            .ingest_orchestrated(&f.binding, event(&f, "gitfab-stage-3", false, Some("$gitfab-root")), &absent, now)
+            .await
+            .is_err()
+    );
+    let mut sealed = event(&f, "gitfab-stage-3", false, Some("$gitfab-root"));
+    sealed.encrypted = true;
+    sealed.body.clear();
+    assert!(matches!(
+        f.transport.ingest_orchestrated(&f.binding, sealed, &f.facts, now).await.unwrap_err(),
+        Error::Conflict("orchestrated_requires_plaintext")
+    ));
+}

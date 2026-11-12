@@ -5,7 +5,7 @@ use crate::{Error, Result, entity_id, hash, key, secret_token, store::Principal}
 use diesel::{BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl};
 use diesel::{
     OptionalExtension, sql_query,
-    sql_types::{BigInt, Bool, Nullable, Text},
+    sql_types::{BigInt, Bool, Integer, Nullable, Text},
 };
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
 use serde::{Deserialize, Serialize};
@@ -334,6 +334,24 @@ pub struct TransportStore {
     limits: Limits,
     encrypted_delivery: EncryptedDelivery,
 }
+/// Which dispatch of an orchestrator run a stage message belongs to.
+#[derive(Clone, Debug)]
+pub(crate) struct OrchestratedStage {
+    pub run_id: String,
+    /// One of spec, plan, execute, test, review, release.
+    pub stage: &'static str,
+    pub round: i32,
+    pub attempt: i32,
+}
+/// How an event reaches `ingest_routed_inner`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    Routed,
+    /// The executor decrypted an encrypted event and confirmed who it addresses.
+    Confirmed,
+    /// A registered GitFab orchestrator stage message.
+    Orchestrated,
+}
 impl TransportStore {
     /// Initialize only new transport tables in the fixed new-domain database.
     pub async fn open(url: &str, limits: Limits) -> Result<Self> {
@@ -380,6 +398,8 @@ impl TransportStore {
             if !notices_initialized.matched {
                 db.batch_execute(include_str!("request_notices_schema.sql")).await?;
             }
+            let orchestrator_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.orchestrator_stage_events') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
+            if !orchestrator_initialized.matched {db.batch_execute(include_str!("orchestrator_schema.sql")).await?;}
             let files_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.event_attachments') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !files_initialized.matched {db.batch_execute(include_str!("attachment_schema.sql")).await?;}
             let delivery_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
@@ -800,8 +820,49 @@ impl TransportStore {
         received_at_ms: i64,
         now: i64,
     ) -> Result<RouteResult> {
-        self.ingest_routed_inner(binding, event, attachment, f, received_at_ms, now, false)
+        self.ingest_routed_inner(binding, event, attachment, f, received_at_ms, now, Admission::Routed)
             .await
+    }
+    /// GitFab orchestrator stage: the stage message the service posted into the task thread, admitted for
+    /// the next stage's Agent. `event.sender_mxid` is the Human who started the run, so every membership,
+    /// pause and queue check applies to them. Only an event registered with
+    /// [`Self::register_orchestrated_stage`] for this binding is admitted, and no mention is required
+    /// because service messages never carry one. Plaintext Rooms only.
+    // Called by the GitFab orchestrator worker, which lands next.
+    #[allow(dead_code)]
+    pub(crate) async fn ingest_orchestrated(
+        &self,
+        binding: &str,
+        event: RoutedEvent,
+        f: &DeliveryFacts,
+        now: i64,
+    ) -> Result<RouteResult> {
+        if event.encrypted || f.encrypted {
+            return Err(Error::Conflict("orchestrated_requires_plaintext"));
+        }
+        self.ingest_routed_inner(binding, event, None, f, now, now, Admission::Orchestrated)
+            .await
+    }
+    /// Records that `event_id` is the orchestrator's stage message for `binding`. Idempotent.
+    // Called by the GitFab orchestrator worker, which lands next.
+    #[allow(dead_code)]
+    pub(crate) async fn register_orchestrated_stage(
+        &self,
+        binding: &str,
+        event_id: &str,
+        stage: &OrchestratedStage,
+        now: i64,
+    ) -> Result<()> {
+        key(binding)?;
+        matrix_id(event_id, '$')?;
+        let OrchestratedStage { run_id, stage, round, attempt } = stage;
+        self.db.with_connection(async |db| {
+            sql_query("INSERT INTO hagency_agent_v1.orchestrator_stage_events(binding_id,event_id,run_id,stage,round,attempt,created_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING")
+                .bind::<Text,_>(binding).bind::<Text,_>(event_id).bind::<Text,_>(run_id).bind::<Text,_>(*stage)
+                .bind::<Integer,_>(*round).bind::<Integer,_>(*attempt).bind::<BigInt,_>(now)
+                .execute(db).await?;
+            Ok(())
+        }).await
     }
     /// `confirmed`: the executor holding the Agent's Matrix device has decrypted
     /// this encrypted event and reported who it addresses.
@@ -814,7 +875,8 @@ impl TransportStore {
         now: i64,
         confirmed: bool,
     ) -> Result<RouteResult> {
-        self.ingest_routed_inner(binding, event, None, f, received_at_ms, now, confirmed)
+        let admission = if confirmed { Admission::Confirmed } else { Admission::Routed };
+        self.ingest_routed_inner(binding, event, None, f, received_at_ms, now, admission)
             .await
     }
     #[allow(clippy::too_many_arguments)]
@@ -826,8 +888,10 @@ impl TransportStore {
         f: &DeliveryFacts,
         received_at_ms: i64,
         now: i64,
-        confirmed: bool,
+        admission: Admission,
     ) -> Result<RouteResult> {
+        let confirmed = admission == Admission::Confirmed;
+        let orchestrated = admission == Admission::Orchestrated;
         if let Some(a) = &attachment {
             a.validate()?;
         }
@@ -887,7 +951,11 @@ impl TransportStore {
                 sql_query("INSERT INTO hagency_agent_v1.personal_e2ee_candidates(binding_id,event_id,payload,received_at_ms) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind::<Text,_>(binding).bind::<Text,_>(&event.event_id).bind::<Text,_>(payload).bind::<BigInt,_>(received_at_ms).execute(db).await?;
                 return Ok(RouteResult::Ignored);
             }
-            if (f.requires_mention || event.sender_mxid != scope.owner_mxid)
+            if orchestrated {
+                let registered=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.orchestrator_stage_events WHERE binding_id=$1 AND event_id=$2) AS matched")
+                    .bind::<Text,_>(binding).bind::<Text,_>(&event.event_id).get_result::<Flag>(db).await?;
+                if !registered.matched {return Err(Error::Unauthorized("orchestrator_stage_unregistered"));}
+            } else if (f.requires_mention || event.sender_mxid != scope.owner_mxid)
                 && !event.mentioned_mxids.contains(&scope.puppet_mxid) {
                 return Ok(RouteResult::Ignored);
             }
