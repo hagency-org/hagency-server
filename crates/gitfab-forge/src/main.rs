@@ -62,6 +62,12 @@ enum Command {
     },
     /// Test state of a Pull Request (exit 1 unless it passed).
     Checks { repo: String, number: u64 },
+    /// The published Release for a tag (exit 1 when there is none). Reads only.
+    ReleaseInfo {
+        repo: String,
+        #[arg(long)]
+        tag: String,
+    },
     /// Publish a Release, reusing one with the same tag.
     Release {
         repo: String,
@@ -167,7 +173,7 @@ async fn run(cli: Cli) -> Result<Value, Failure> {
     if let Some(web) = &cli.web {
         forge = forge.with_web(web);
     }
-    let repo = |name: &str| Repo::parse(name).map_err(Failure::from);
+    let repo = |name: &str| Repo::from_ref(name).map_err(Failure::from);
     let info = |r: hagency_gitfab_forge::RepoInfo| json!({"fullName": r.full_name, "defaultBranch": r.default_branch, "webUrl": r.web_url});
     Ok(match cli.command {
         Command::Repos => Value::Array(forge.list_repos().await?.into_iter().map(info).collect()),
@@ -213,6 +219,12 @@ async fn run(cli: Cli) -> Result<Value, Failure> {
                 return Err(Failure::Check(report));
             }
             report
+        }
+        Command::ReleaseInfo { repo: name, tag } => {
+            match forge.find_release(&repo(&name)?, &tag).await? {
+                Some(release) => json!({"tag": release.tag, "url": release.url}),
+                None => return Err(Failure::Check(json!({"tag": tag, "exists": false}))),
+            }
         }
         Command::Release {
             repo: name,

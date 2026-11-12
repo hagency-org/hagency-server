@@ -543,23 +543,28 @@ impl<T: Transport> Forge<T> {
         name: &str,
         notes: &str,
     ) -> Result<Release> {
+        if let Some(found) = self.find_release(repo, tag).await? {
+            return Ok(found);
+        }
+        let path = format!("{}/releases", repo.path());
+        self.get_body(
+            "POST",
+            path,
+            json!({"tag_name": tag, "target_commitish": target, "name": name, "body": notes}),
+        )
+        .await
+        .map(|created| self.release_from(repo, tag, &created))
+    }
+    /// The Release for `tag`, if published. Reads only.
+    pub async fn find_release(&self, repo: &Repo, tag: &str) -> Result<Option<Release>> {
         let lookup = match self.backend {
             Backend::GitHub => format!("{}/releases/tags/{}", repo.path(), enc(tag)),
             Backend::GitCode => format!("{}/releases/{}", repo.path(), enc(tag)),
         };
-        let found = self.call("GET", lookup, None, true).await?;
-        if found.is_none() {
-            let path = format!("{}/releases", repo.path());
-            self.get_body(
-                "POST",
-                path,
-                json!({"tag_name": tag, "target_commitish": target, "name": name, "body": notes}),
-            )
-            .await
-            .map(|created| self.release_from(repo, tag, &created))
-        } else {
-            Ok(self.release_from(repo, tag, found.as_ref().unwrap_or(&Value::Null)))
-        }
+        Ok(self
+            .call("GET", lookup, None, true)
+            .await?
+            .map(|found| self.release_from(repo, tag, &found)))
     }
     fn release_from(&self, repo: &Repo, tag: &str, value: &Value) -> Release {
         // GitCode documents no URL on the release object; its page is stable.

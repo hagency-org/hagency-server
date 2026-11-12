@@ -56,6 +56,20 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+    /// Print the last signed, verified task event of a project in a given phase and status, with its
+    /// artifact links flattened (`artifact_ref_0`, …). Exit 1 when there is none.
+    Find {
+        #[arg(long)]
+        keys: PathBuf,
+        #[arg(long)]
+        project: String,
+        #[arg(long)]
+        phase: String,
+        #[arg(long)]
+        status: String,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
     /// Recompute token totals from JSONL files; fails on any invalid line, conflict or bad correction.
     Ledger {
         #[arg(required = true)]
@@ -165,6 +179,43 @@ fn run(command: Command) -> Result<bool, String> {
                 &json!({"ok": failures.is_empty(), "events": checked, "signed": signed.len(), "failures": failures}),
             );
             Ok(failures.is_empty())
+        }
+        Command::Find {
+            keys,
+            project,
+            phase,
+            status,
+            files,
+        } => {
+            let ring = Keyring::load_dir(&keys).map_err(|e| e.to_string())?;
+            let mut found = None;
+            for file in &files {
+                for raw in read(file)?.lines().filter(|l| !l.trim().is_empty()) {
+                    // Only a signed event that verifies can answer; anything else is skipped here and
+                    // reported by `verify`.
+                    if let Ok((event, Some(_))) = verify_line(&ring, raw)
+                        && event["schema_version"] == schema::TASK
+                        && event["project_id"] == project.as_str()
+                        && event["phase"] == phase.as_str()
+                        && event["status"] == status.as_str()
+                    {
+                        found = Some(event);
+                    }
+                }
+            }
+            let Some(event) = found else {
+                print(&json!({"found": false, "project": project, "phase": phase, "status": status}));
+                return Ok(false);
+            };
+            let mut flat = json!({"found": true});
+            for key in ["event_id", "run_id", "task_id", "timestamp", "round", "git_backend", "repo_ref"] {
+                flat[key] = event[key].clone();
+            }
+            for (i, link) in event["artifact_refs"].as_array().into_iter().flatten().enumerate() {
+                flat[format!("artifact_ref_{i}")] = link.clone();
+            }
+            print(&flat);
+            Ok(true)
         }
         Command::Ledger { files } => {
             let mut ledger = Ledger::default();

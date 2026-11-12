@@ -61,6 +61,12 @@ ACCEPTANCE_RUN_ID=ar-selftest-changed expect 1 "verify-events fails a changed ev
     "$here/verify-events.sh" "$tmp/changed.jsonl"
 ACCEPTANCE_RUN_ID=ar-selftest-changed-ledger expect 1 "verify-ledger fails a changed event" \
     "$here/verify-ledger.sh" DEMO-05 "$tmp/changed.jsonl"
+mkdir -p "$tmp/projects"
+printf 'PROJECT_ID=DEMO-05\nBACKEND=github\nREPO=example/demo-05\n' >"$tmp/projects/DEMO-05.env"
+GITFAB_PROJECTS_DIR="$tmp/projects" ACCEPTANCE_RUN_ID=ar-selftest-release expect 1 \
+    "verify-release fails without a signed Release event" "$here/verify-release.sh" DEMO-05 "$tmp/events.jsonl"
+GITFAB_PROJECTS_DIR="$tmp/projects" ACCEPTANCE_RUN_ID=ar-selftest-release-unknown expect 2 \
+    "verify-release refuses an unknown project" "$here/verify-release.sh" DEMO-09 "$tmp/events.jsonl"
 ACCEPTANCE_RUN_ID=ar-selftest-pending expect 3 "an unavailable command exits 3" \
     "$here/rollback.sh" DEMO-01
 ACCEPTANCE_RUN_ID=bad-id expect 2 "a malformed run id is refused" "$here/verify-events.sh" "$tmp/events.jsonl"

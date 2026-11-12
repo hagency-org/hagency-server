@@ -34,6 +34,55 @@ gitfab_bin() {
     fi
 }
 
+gitfab_forge_bin() {
+    if [ -n "${GITFAB_FORGE_BIN:-}" ]; then
+        printf '%s' "$GITFAB_FORGE_BIN"
+    elif command -v gitfab-forge >/dev/null 2>&1; then
+        command -v gitfab-forge
+    elif [ -x "$REPO_ROOT/target/release/gitfab-forge" ]; then
+        printf '%s' "$REPO_ROOT/target/release/gitfab-forge"
+    elif [ -x "$REPO_ROOT/target/debug/gitfab-forge" ]; then
+        printf '%s' "$REPO_ROOT/target/debug/gitfab-forge"
+    else
+        return 1
+    fi
+}
+
+# The API root and token file of a backend, from the configuration.
+backend_api() {
+    case "$1" in
+        github) printf '%s' "${GITFAB_GITHUB_API:-https://api.github.com}" ;;
+        gitcode) printf '%s' "${GITFAB_GITCODE_API:-https://api.gitcode.com/api/v5}" ;;
+    esac
+}
+backend_token_file() {
+    case "$1" in
+        github) printf '%s' "${GITFAB_GITHUB_TOKEN_FILE:-}" ;;
+        gitcode) printf '%s' "${GITFAB_GITCODE_TOKEN_FILE:-}" ;;
+    esac
+}
+
+# load_project <PROJECT_ID>: reads acceptance/projects/<id>.env as data (KEY=VALUE, known keys only, never
+# executed) into BACKEND, REPO, BRANCH, BASELINE_SHA, PRD and PRD_SHA256. Returns 1 when it is missing or
+# has an unknown line.
+load_project() {
+    local env="${GITFAB_PROJECTS_DIR:-$ACCEPTANCE_DIR/projects}/$1.env" line key
+    BACKEND="" REPO="" BRANCH="" BASELINE_SHA="" PRD="" PRD_SHA256=""
+    case "$1" in '' | */* | .*) return 1 ;; esac
+    [ -f "$env" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in '' | '#'*) continue ;; esac
+        key=${line%%=*}
+        case "$key" in
+            PROJECT_ID) ;;
+            BACKEND | REPO | BRANCH | BASELINE_SHA | PRD | PRD_SHA256)
+                [ "$key" != "$line" ] || return 1
+                printf -v "$key" '%s' "${line#*=}" ;;
+            *) return 1 ;;
+        esac
+    done <"$env"
+}
+
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 new_run_id() {

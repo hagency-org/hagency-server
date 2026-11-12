@@ -23,7 +23,7 @@ cp acceptance/gitfab.env.example acceptance/gitfab.env   # 填写地址和凭据
 | `verify-events.sh [FILE...]` | 可用 | 校验全部事件：schema、Ed25519 签名、关键事件的身份事件；默认读 `GITFAB_JOURNAL` |
 | `verify-ledger.sh DEMO-05 [FILE...]` | 可用 | 导出该项目的 memory/token 事件到证据包，验签并复算账本 |
 | `run-project.sh DEMO-0N --backend ...` | 待实现 | 退出码 3 |
-| `verify-release.sh DEMO-0N` | 待实现 | 退出码 3 |
+| `verify-release.sh DEMO-0N` | 部分可用：验签、找到项目最近的 Release 事件、只读核对平台上的 Release 和 PR 测试状态（需 `gitfab-forge` 和后端 Token 文件）；部署回执尚未核对 | 其余全部通过时退出码 3，不会被当成通过 |
 | `rollback.sh DEMO-0N` | 待实现 | 退出码 3 |
 
 ## 自检
