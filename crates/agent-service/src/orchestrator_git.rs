@@ -94,6 +94,16 @@ pub fn read_token(file: &Path) -> Result<String, String> {
 pub(crate) struct GitStep {
     pub refs: Vec<String>,
     pub note: Option<String>,
+    /// The Pull Request head the platform acted on.
+    pub commit: Option<String>,
+    /// Why the platform did not do it (refused, unreachable, unexpected answer).
+    pub error: Option<String>,
+}
+
+/// A head SHA the platform reported, when it is one.
+fn commit(sha: &str) -> Option<String> {
+    (matches!(sha.len(), 40 | 64) && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| sha.to_ascii_lowercase())
 }
 
 fn context<'r>(run: &'r OrchestratorRun, key: &str) -> &'r str {
@@ -167,7 +177,9 @@ pub(crate) async fn step(
                     .await?;
                 GitStep {
                     note: Some(format!("已创建或更新 PR：{}", pull.url)),
+                    commit: commit(&pull.head_sha),
                     refs: vec![pull.url],
+                    error: None,
                 }
             }
             Stage::Test => match host.open_pull(repo, &branch, &base).await? {
@@ -179,7 +191,9 @@ pub(crate) async fn step(
                             checks_text(state),
                             pull.url
                         )),
+                        commit: commit(&pull.head_sha),
                         refs: vec![pull.url],
+                        error: None,
                     }
                 }
                 None => no_pull(&branch),
@@ -191,7 +205,9 @@ pub(crate) async fn step(
                     let release = host.release(repo, &tag, &head_sha, &tag, &notes).await?;
                     GitStep {
                         note: Some(format!("已发布 Release {}：{}", release.tag, release.url)),
+                        commit: commit(&head_sha),
                         refs: vec![release.url, url],
+                        error: None,
                     }
                 }
                 _ => no_pull(&branch),
@@ -201,15 +217,17 @@ pub(crate) async fn step(
     }
     .await;
     result.unwrap_or_else(|e| GitStep {
-        refs: Vec::new(),
         note: Some(format!("Git 平台操作未完成：{e}")),
+        error: Some(e.to_string()),
+        ..GitStep::default()
     })
 }
 
 fn no_pull(branch: &str) -> GitStep {
     GitStep {
-        refs: Vec::new(),
         note: Some(format!("没有找到任务分支 {branch} 的 PR。")),
+        error: Some(format!("no open pull request for {branch}")),
+        ..GitStep::default()
     }
 }
 
@@ -225,4 +243,109 @@ fn checks_text(state: Checks) -> &'static str {
 /// Whether a stage's success calls the platform.
 pub(crate) fn drives(stage: Stage) -> bool {
     matches!(stage, Stage::Execute | Stage::Test | Stage::Release)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::orchestrator_flow::State;
+    use crate::transport::OrchestratorRunInit;
+
+    fn run() -> OrchestratorRun {
+        OrchestratorRun {
+            id: "orun_1".into(),
+            init: OrchestratorRunInit {
+                project_id: "prj".into(),
+                task_id: "task-1".into(),
+                room_id: "!r:example.test".into(),
+                thread_root: "$root".into(),
+                requester_mxid: "@h:example.test".into(),
+                bindings: json!({}),
+                context: json!({"gitBackend": "github", "repoRef": "https://github.com/o/r",
+                    "projectId": "DEMO-02", "goal": "g", "specRef": "spec/DEMO-02.md@v1"}),
+            },
+            state: State::Completed,
+            revision: 1,
+            dispatch_id: None,
+            handoff: None,
+            pending_events: json!([]),
+            updated_at_ms: 0,
+        }
+    }
+
+    fn host(answer: impl Fn(&Request) -> Response + Send + Sync + 'static) -> GitHost {
+        Forge::new(Backend::GitHub, GitTransport::Fake(Arc::new(answer)))
+    }
+
+    fn repo_answer(r: &Request) -> Option<Response> {
+        (r.method == "GET" && r.path == "/repos/o/r").then(|| Response {
+            status: 200,
+            body: json!({"full_name": "o/r", "default_branch": "main",
+                "html_url": "https://github.com/o/r"}),
+        })
+    }
+
+    #[tokio::test]
+    async fn a_pull_request_step_names_the_head_commit() {
+        let head = "A".repeat(40);
+        let pull = json!({"number": 3, "html_url": "https://github.com/o/r/pull/3",
+            "head": {"ref": "agent/DEMO-02/task-1", "sha": head}});
+        let host = host(move |r| {
+            repo_answer(r).unwrap_or_else(|| match r.method {
+                "GET" => Response {
+                    status: 200,
+                    body: json!([]),
+                },
+                "POST" => Response {
+                    status: 201,
+                    body: pull.clone(),
+                },
+                _ => Response {
+                    status: 200,
+                    body: json!({}),
+                },
+            })
+        });
+        let repo = Repo::from_ref("https://github.com/o/r").unwrap();
+        let step = step(&host, &repo, &run(), Stage::Execute, 1).await;
+        assert_eq!(step.refs, vec!["https://github.com/o/r/pull/3".to_owned()]);
+        assert_eq!(step.commit.as_deref(), Some("a".repeat(40).as_str()));
+        assert_eq!(step.error, None);
+    }
+
+    #[tokio::test]
+    async fn a_refused_platform_write_is_named_without_links() {
+        // A token without write access to the repository: the platform answers 403.
+        let host = host(|r| {
+            repo_answer(r).unwrap_or_else(|| match r.method {
+                "GET" => Response {
+                    status: 200,
+                    body: json!([]),
+                },
+                _ => Response {
+                    status: 403,
+                    body: json!({"message": "Resource not accessible"}),
+                },
+            })
+        });
+        let repo = Repo::from_ref("https://github.com/o/r").unwrap();
+        let step = step(&host, &repo, &run(), Stage::Execute, 1).await;
+        assert!(step.refs.is_empty());
+        assert_eq!(step.commit, None);
+        let error = step.error.unwrap();
+        assert!(error.contains("403") && error.contains("POST"), "{error}");
+        assert!(step.note.unwrap().starts_with("Git 平台操作未完成"));
+    }
+
+    #[test]
+    fn only_a_hex_sha_is_taken_as_the_commit() {
+        assert_eq!(commit(""), None);
+        assert_eq!(commit("main"), None);
+        assert_eq!(commit(&"g".repeat(40)), None);
+        assert_eq!(commit(&"F".repeat(64)), Some("f".repeat(64)));
+    }
 }

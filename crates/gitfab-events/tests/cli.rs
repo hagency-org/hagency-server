@@ -240,17 +240,26 @@ fn the_report_uses_verified_records_and_names_the_rest() {
         "output_digest": null, "artifact_refs": refs, "request_id": "req-1", "signature": null, "round": 1
     });
     let intake = sign(dir, &task("intake", "succeeded", 1, json!([])));
-    let release = sign(dir, &task("release", "succeeded", 2, json!(["https://gitcode.com/org/demo-01/releases/v1"])));
+    let mut released = task("release", "succeeded", 2, json!(["https://gitcode.com/org/demo-01/releases/v1"]));
+    released["commit_sha"] = json!("b".repeat(40));
+    let release = sign(dir, &released);
+    let mut refused = task("execute", "succeeded", 4, json!([]));
+    refused["platform_error"] = json!("GitCode answered 403 to POST /repos/org/demo-01/pulls");
+    let refused = sign(dir, &refused);
     let mut forged = sign(dir, &task("review", "succeeded", 3, json!([])));
     forged["status"] = json!("failed");
-    let lines = [intake, release, forged].iter().map(|e| e.to_string() + "\n").collect::<String>();
+    let lines = [intake, release, forged, refused].iter().map(|e| e.to_string() + "\n").collect::<String>();
     std::fs::write(dir.join("events.jsonl"), lines).unwrap();
     let (code, out) = gitfab(&["report", "--keys", "keys", "--project", "DEMO-01", "events.jsonl"], dir);
     let text = out.as_str().unwrap();
     assert_eq!(code, 0);
-    assert!(text.contains("验签通过的签名记录：2 条"), "{text}");
+    assert!(text.contains("验签通过的签名记录：3 条"), "{text}");
     assert!(text.contains("1 行未通过校验") && text.contains("events.jsonl:3"), "{text}");
     assert!(text.contains("https://gitcode.com/org/demo-01/releases/v1"));
+    assert!(text.contains("提交 bbbbbbbbbbbb"), "{text}");
+    assert!(text.contains("| 平台未完成 | GitCode answered 403 to POST"), "{text}");
+    let (code, out) = gitfab(&["trace", "--keys", "keys", "--id", &"b".repeat(40), "events.jsonl"], dir);
+    assert_eq!((code, out["matches"][0]["phase"].as_str()), (0, Some("release")), "{out}");
     assert!(!text.contains("review"), "the forged review is not reported");
 }
 

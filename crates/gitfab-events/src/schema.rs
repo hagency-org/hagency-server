@@ -72,7 +72,13 @@ const TASK_FIELDS: Fields = &[
     ("signature", SignatureOrNull),
 ];
 // Annex 3 §7.1: a Reviewer rejection that returns to execution carries a round and keeps the findings.
-const TASK_OPTIONAL: Fields = &[("round", Int), ("findings", Array)];
+// A stage that drove the Git platform names the commit it acted on, or why the platform refused.
+const TASK_OPTIONAL: Fields = &[
+    ("round", Int),
+    ("findings", Array),
+    ("commit_sha", Sha),
+    ("platform_error", Text),
+];
 
 const IDENTITY_FIELDS: Fields = &[
     ("schema_version", Text),
@@ -356,6 +362,12 @@ pub(crate) mod tests {
     fn well_formed_events_pass() {
         assert_eq!(validate(&memory("m1", -3)).unwrap(), MEMORY);
         assert_eq!(validate(&task("plan", "running")).unwrap(), TASK);
+        let mut e = task("test", "running");
+        e["commit_sha"] = json!("c".repeat(40));
+        e["platform_error"] = json!("GitHub answered 403 to POST /repos/o/r/pulls");
+        assert_eq!(validate(&e).unwrap(), TASK);
+        e["commit_sha"] = json!("main");
+        assert_eq!(validate(&e).unwrap_err().code(), "invalid_field");
     }
 
     #[test]

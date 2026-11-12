@@ -250,7 +250,7 @@ fn run(command: Command) -> Result<bool, String> {
                 return Ok(false);
             };
             let mut flat = json!({"found": true});
-            for key in ["event_id", "run_id", "task_id", "timestamp", "round", "git_backend", "repo_ref"] {
+            for key in ["event_id", "run_id", "task_id", "timestamp", "round", "git_backend", "repo_ref", "commit_sha", "platform_error"] {
                 flat[key] = event[key].clone();
             }
             for (i, link) in event["artifact_refs"].as_array().into_iter().flatten().enumerate() {
@@ -480,13 +480,19 @@ fn report(ring: &Keyring, project: &str, files: &[PathBuf]) -> Result<String, St
             first["spec_ref"].as_str().unwrap_or(""), last["phase"].as_str().unwrap_or(""), last["status"].as_str().unwrap_or(""),
         );
         for e in &events {
-            let links: Vec<&str> = e["artifact_refs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let mut links: Vec<String> = e["artifact_refs"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+            if let Some(sha) = e["commit_sha"].as_str() {
+                links.push(format!("提交 {}", &sha[..sha.len().min(12)]));
+            }
             out += &format!(
                 "| {} | {} | {} | {} | {} | {} |\n",
                 e["timestamp"].as_str().unwrap_or(""), e["phase"].as_str().unwrap_or(""), e["status"].as_str().unwrap_or(""),
                 e["round"].as_i64().map_or(String::new(), |r| r.to_string()), e["actor_id"].as_str().unwrap_or(""),
                 links.join(" "),
             );
+            if let Some(error) = e["platform_error"].as_str() {
+                out += &format!("|  | 平台未完成 | {} |  |  |  |\n", error.replace('|', "/").replace('\n', " "));
+            }
             if let Some(findings) = e["findings"].as_array().and_then(|f| f.first()).and_then(Value::as_str) {
                 let line = findings.lines().find(|l| l.trim().starts_with("VERDICT:")).unwrap_or("").trim();
                 if !line.is_empty() {
