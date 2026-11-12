@@ -74,3 +74,14 @@
 - 未配置 Token 时，以上平台动作跳过，并在 Thread 里说明，流程照常推进（与现状一致）。
 
 实现：`orchestrator_git.rs`。`StageRoom::git()` 默认返回 `None`（不调用平台），`MatrixStageRoom` 持有启动时按配置加载的主机。阶段成功的判断与事件记录在同一处（`apply`），平台链接写入该阶段事件的 `artifact_refs`，说明以 `m.notice` 发在任务 Thread 里（事务 ID 固定，重试不重复）。平台调用失败只写说明，不阻断流程。阶段消息新增一行“任务分支：agent/<project_id>/<task_id>”。Release 标签默认 `gitfab-<task_id>-r<轮次>`，可用 context 的 `releaseTag` 指定。
+
+## 部署与回退（Runner）
+
+附件 3 §9：每个 Release 生成 OCI 镜像（按不可变 digest 验收）、SBOM（SPDX JSON）和签名部署回执；回退目标为同项目上一个可运行的 Release，回退成功条件为容器重新启动、健康检查通过、版本接口返回目标 Release、回执签名有效。部署回执由 Runner 自己的密钥签名（与 Agent 事件密钥分开）。
+
+方案（新增 `gitfab-runner`，编排器不改）：
+- 输入：日志里该项目最近一次已签名的 Release 事件（Release 链接、PR 头提交）和仓库检出目录。
+- `gitfab-runner deploy`：在检出目录 `docker build`，标签为不可变的镜像 ID（`sha256:…`）；推送到 Registry 时改用 Registry 的 manifest digest。用 `anchore/syft` 生成 `sbom.spdx.json` 并计算摘要。停掉该项目的上一个容器，启动新容器，轮询健康接口，再读版本接口，确认返回本次 Release 标签。成功后写 `gitfab.release.v1` 回执（含 healthcheck、rollback 指向上一个回执），用 Runner 密钥签名，追加到回执日志，并附身份事件。
+- 健康检查或版本不符：立即恢复上一个镜像并检查；两条回执都写，失败的那条标明失败原因。
+- `gitfab-runner rollback`：取回执日志里上一个可运行的 Release，按同样条件部署并写回执。
+- 验收：`verify-release.sh` 增加部署回执核对（回执验签、镜像 digest 与本地镜像一致、容器在运行、健康和版本接口当前可用）；`rollback.sh` 调用 rollback 并核对。
