@@ -117,6 +117,7 @@ gitfab-board --keys <公钥目录> --journal <事件日志> --receipts /var/lib/
 ./acceptance/verify-events.sh
 ./acceptance/verify-ledger.sh DEMO-05
 ./acceptance/verify-release.sh DEMO-01
+./acceptance/verify-blackbox.sh DEMO-01     # 冻结黑盒用例，在全新容器中执行
 ./acceptance/rollback.sh DEMO-01
 ```
 

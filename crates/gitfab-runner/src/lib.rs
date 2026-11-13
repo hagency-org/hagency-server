@@ -22,8 +22,9 @@ mod tests;
 
 /// What the Runner needs from a container engine.
 pub trait Engine {
-    /// Builds `context` as `tag`; returns the immutable image ID (`sha256:…`).
-    fn build(&self, context: &Path, tag: &str, labels: &[(&str, &str)]) -> Result<String, String>;
+    /// Builds `context` as `tag`, passing `args` as build arguments; returns the immutable image ID
+    /// (`sha256:…`).
+    fn build(&self, context: &Path, tag: &str, labels: &[(&str, &str)], args: &[(&str, &str)]) -> Result<String, String>;
     /// SPDX JSON of an image.
     fn sbom(&self, image: &str) -> Result<Vec<u8>, String>;
     /// Replaces the container `name` with one running `image`, publishing `host_port` to
@@ -94,12 +95,16 @@ fn docker(args: &[&str]) -> Result<String, String> {
 }
 
 impl Engine for Docker {
-    fn build(&self, context: &Path, tag: &str, labels: &[(&str, &str)]) -> Result<String, String> {
+    fn build(&self, context: &Path, tag: &str, labels: &[(&str, &str)], build_args: &[(&str, &str)]) -> Result<String, String> {
         let context = context.to_str().ok_or("context path is not UTF-8")?;
         let mut args = vec!["build", "-q", "-t", tag];
         let pairs: Vec<String> = labels.iter().map(|(k, v)| format!("{k}={v}")).collect();
         for pair in &pairs {
             args.extend(["--label", pair]);
+        }
+        let values: Vec<String> = build_args.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        for value in &values {
+            args.extend(["--build-arg", value]);
         }
         args.push(context);
         docker(&args)?;
@@ -350,11 +355,18 @@ pub fn deploy(
     let history = out.of(&release.project)?;
     let previous = last_good(&history).cloned();
     let image_tag = format!("gitfab/{}:{}", release.project.to_ascii_lowercase(), release.tag);
-    let image = engine.build(context, &image_tag, &[
-        ("org.hagency.gitfab.project", &release.project),
-        ("org.hagency.gitfab.commit", &release.commit),
-        ("org.hagency.gitfab.tag", &release.tag),
-    ])?;
+    // GITFAB_RELEASE and GITFAB_COMMIT let the Dockerfile put the Release into the image (an `ARG`
+    // for each); a Dockerfile that declares neither builds the same.
+    let image = engine.build(
+        context,
+        &image_tag,
+        &[
+            ("org.hagency.gitfab.project", &release.project),
+            ("org.hagency.gitfab.commit", &release.commit),
+            ("org.hagency.gitfab.tag", &release.tag),
+        ],
+        &[("GITFAB_RELEASE", &release.tag), ("GITFAB_COMMIT", &release.commit)],
+    )?;
     // A Release deployed again (after a restart, say) gets its own receipt and SBOM files; nothing
     // recorded earlier is overwritten.
     let first = format!("{}-{}", release.project, release.tag);

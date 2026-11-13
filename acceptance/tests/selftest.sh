@@ -85,6 +85,9 @@ for bundle in "$tmp"/evidence/ar-*; do
 done
 echo "manifests checked: $(ls -d "$tmp"/evidence/ar-* | wc -l | tr -d ' ') bundles"
 
+expect 2 "verify-blackbox needs the Runner receipts" "$here/verify-blackbox.sh" DEMO-01
+expect 2 "verify-blackbox needs a project's cases" "$here/verify-blackbox.sh" DEMO-05
+
 # Retention: an intact bundle archives and checks; a changed one is refused; a changed archive fails.
 bundle=$(basename "$(ls -d "$tmp"/evidence/ar-* | head -1)")
 expect 0 "archive an intact bundle" "$here/archive.sh" "$bundle" --retain-until 2028-12-31

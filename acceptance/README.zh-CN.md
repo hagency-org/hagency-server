@@ -24,6 +24,7 @@ cp acceptance/gitfab.env.example acceptance/gitfab.env   # 填写地址和凭据
 | `verify-ledger.sh DEMO-05 [FILE...]` | 可用 | 导出该项目的 memory/token 事件到证据包，验签并复算账本 |
 | `run-project.sh DEMO-0N --backend ...` | 可用：以验收人身份在项目房间发出请求（作为任务 Thread 的根），发起流程并跟踪到结束；Spec 由人在 Thread 里确认，或设 `GITFAB_AUTO_APPROVE_SPEC=1` 由脚本确认；随后在同一证据包里执行 verify-events 和 verify-release | 0 通过；1 流程失败、转人工或核对不通过；2 配置不全 |
 | `verify-release.sh DEMO-0N` | 可用：验签；找到项目最近的 Release 事件；只读核对平台上的 Release 和 PR 测试；核对 Runner 部署回执（验签、健康检查通过、提交与 PR 头一致、SBOM 摘要一致）；回执以 Registry manifest digest 记录镜像时（Runner 用了 `--registry`），核对 Registry 仍按该 digest 提供镜像，`acceptance/keys/cosign.pem` 存在时再用它离线核对 cosign 签名；核对容器正在运行回执中的镜像、健康和版本接口当前可用 | 0 全部通过；1 有核对不通过；2 配置不全 |
+| `verify-blackbox.sh DEMO-0N [--tag TAG]` | 可用：不依赖 Agent 的汇报，由验收方执行冻结的黑盒用例（`fixtures/<项目>/cases.json`）。从签名部署回执取镜像、Release 标签和提交，用同一镜像在临时端口另起一个全新容器，依次跑启动用例（只用用例列出的环境变量，其余置空）、HTTP 用例和镜像检查（非 root、HEALTHCHECK），结束即删除，不碰线上部署 | 0 全部通过；1 有用例失败；2 缺回执、缺用例文件或无 Docker |
 | `archive.sh <acceptance_run_id> --retain-until YYYY-MM-DD`、`archive.sh --check <归档>` | 可用：只在证据包与其 manifest 完全一致（无缺失、无改动、无多余文件）时打包到 `evidence/archive/`，同时写归档的 SHA-256 与保留记录（retain_until，按附件 3 第十二章保留至质保期满后 30 日）；已有归档不覆盖。`--check` 重算归档摘要、解包后再核对 manifest | 0 完好；1 有不一致；2 用法错误 |
 | `rollback.sh DEMO-0N` | 可用：调用 `gitfab-runner rollback` 回到上一个正常的 Release，核对新回执验签通过、结果为通过、容器运行目标镜像、健康和版本接口返回目标 Release | 0 通过；1 回退或核对失败；2 配置不全 |
 

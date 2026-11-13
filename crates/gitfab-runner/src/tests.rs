@@ -15,7 +15,9 @@ struct Fake {
 }
 
 impl Engine for Fake {
-    fn build(&self, context: &Path, tag: &str, _labels: &[(&str, &str)]) -> Result<String, String> {
+    fn build(&self, context: &Path, tag: &str, _labels: &[(&str, &str)], args: &[(&str, &str)]) -> Result<String, String> {
+        assert_eq!(args.iter().map(|(k, _)| *k).collect::<Vec<_>>(), ["GITFAB_RELEASE", "GITFAB_COMMIT"]);
+        assert_eq!(args[0].1, tag.rsplit(':').next().unwrap(), "the Release tag is passed to the build");
         let served = tag.rsplit(':').next().unwrap().to_owned();
         let id = sha256(tag.as_bytes());
         let healthy = !context.ends_with("broken");
@@ -177,7 +179,7 @@ fn rollback_returns_to_the_good_release_before_the_current_one() {
 #[test]
 fn a_version_endpoint_naming_another_release_fails_the_check() {
     let (_dir, fake, probe, _out, _ring) = setup();
-    let image = fake.build(Path::new("app"), "gitfab/demo-01:v1", &[]).unwrap();
+    let image = fake.build(Path::new("app"), "gitfab/demo-01:v1", &[], &[("GITFAB_RELEASE", "v1"), ("GITFAB_COMMIT", "c")]).unwrap();
     fake.replace("c", &image, probe.port, 8080).unwrap();
     let r = check(&probe, "v1"); assert!(r.is_ok(), "{r:?}");
     let failed = check(&probe, "v9").unwrap_err();

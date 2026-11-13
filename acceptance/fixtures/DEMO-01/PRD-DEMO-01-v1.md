@@ -31,7 +31,7 @@ JSON 响应可以包含额外字段，但上表字段的名称、类型和取值
 
 - 提供 `Dockerfile`；镜像以非 root 用户运行。
 - `HEALTHCHECK` 访问 `GET /health`，间隔不超过 10 秒。
-- 构建时把版本和提交 SHA 写入镜像环境，使 `GET /version` 返回实际 Release。
+- 构建时把版本和提交 SHA 写入镜像环境，使 `GET /version` 返回实际 Release。Runner 构建时传入构建参数 `GITFAB_RELEASE`（Release 标签）和 `GITFAB_COMMIT`（提交 SHA），Dockerfile 以 `ARG` 接收并写入 `ENV DEMO_RELEASE_VERSION`、`ENV DEMO_GIT_SHA`。
 
 ## 测试
 
