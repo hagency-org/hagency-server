@@ -11,7 +11,8 @@ Case fields (all optional except name): startup cases run the image with `env` a
 `exit_code`, `stderr_contains`, `stderr_excludes`; variables they omit are passed empty. HTTP cases send `method` `path` with `body` (JSON)
 or `raw_body`, and expect `status`, `content_type` (prefix), `json` (subset match), `json_has`
 (keys present), `json_array_length`, `json_array_ids` (the `id` of each element, in order);
-`save` keeps response fields for later `${name}`. `${release}` and `${sha}` are the Release values.
+`save` keeps response fields for later `${name}`. `${release}` and `${sha}` are the Release values;
+`${repeat:X:N}` is the character X written N times.
 Container cases: `non_root` (the image does not run as root) and `healthcheck` (the image declares
 one).
 
@@ -38,7 +39,9 @@ PREFIX = "gitfab-blackbox"
 
 
 def substitute(value, names):
+    """`${name}` from `names`; `${repeat:X:N}` is X written N times (length-boundary cases)."""
     if isinstance(value, str):
+        value = re.sub(r"\$\{repeat:(.):(\d+)\}", lambda m: m.group(1) * int(m.group(2)), value)
         return re.sub(r"\$\{(\w+)\}", lambda m: str(names.get(m.group(1), m.group(0))), value)
     if isinstance(value, list):
         return [substitute(v, names) for v in value]

@@ -91,6 +91,11 @@ for p in DEMO-01 DEMO-02 DEMO-03 DEMO-04 DEMO-05; do
     expect 0 "$p has valid black-box cases" python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); assert any(k in c for k in ("startup","http","cli","container"))' "$here/fixtures/$p/cases.json"
 done
 
+expect 0 "black-box placeholders expand, including repeat" python3 -c '
+import sys; sys.path.insert(0, sys.argv[1]); import blackbox as b
+v = b.substitute({"t": "${repeat:字:200}", "u": "${repeat:a:3}-${sha}"}, {"sha": "c0"})
+assert len(v["t"]) == 200 and set(v["t"]) == {"字"} and v["u"] == "aaa-c0", v' "$here/lib"
+
 # Retention: an intact bundle archives and checks; a changed one is refused; a changed archive fails.
 bundle=$(basename "$(ls -d "$tmp"/evidence/ar-* | head -1)")
 expect 0 "archive an intact bundle" "$here/archive.sh" "$bundle" --retain-until 2028-12-31
