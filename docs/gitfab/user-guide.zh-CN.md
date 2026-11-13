@@ -123,6 +123,13 @@ gitfab trace  --keys acceptance/keys --id <任务/运行/提交/Release/镜像 d
 gitfab trace  --keys acceptance/keys --text spec.md <事件日志>                  # 这段文本是否为某个签名阶段的原文
 ```
 
+验收结束后归档证据包（保留至质保期满后 30 日）：
+
+```
+./acceptance/archive.sh <acceptance_run_id> --retain-until <质保期满后 30 日，YYYY-MM-DD>
+./acceptance/archive.sh --check evidence/archive/<acceptance_run_id>.tar.gz   # 日后核对归档未被改动
+```
+
 报告里每个 Spec 版本和每次评审回复都标出输出摘要，可以集中查看 Spec 的历史版本。`trace --text` 用文件的 SHA-256 查找输入或输出正是这段文本的签名阶段：原样保存的 Spec 或评审回复能找到对应事件；改动过的文本对不上任何签名记录，返回 1。
 
 ## 9. 演示用例

@@ -190,6 +190,50 @@ pub fn manifest(dir: &Path, generated_at: &str) -> Result<Value, Vec<Value>> {
     Ok(manifest)
 }
 
+/// Checks a bundle against its `manifest.json`: every listed file present with its size and SHA-256,
+/// and no file the manifest does not list. Returns what differs (empty when the bundle is intact).
+pub fn check_manifest(dir: &Path) -> Vec<Value> {
+    let manifest: Value = match std::fs::read(dir.join("manifest.json")) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(m) => m,
+            Err(_) => return vec![json!({"file": "manifest.json", "code": "invalid_manifest"})],
+        },
+        Err(_) => return vec![json!({"file": "manifest.json", "code": "missing_manifest"})],
+    };
+    let mut failures = Vec::new();
+    let mut listed = std::collections::BTreeSet::new();
+    for entry in manifest["files"].as_array().into_iter().flatten() {
+        let Some(relative) = entry["path"].as_str() else {
+            failures.push(json!({"file": "manifest.json", "code": "invalid_manifest"}));
+            continue;
+        };
+        listed.insert(relative.to_owned());
+        if relative.split('/').any(|part| part == ".." || part.is_empty()) {
+            failures.push(json!({"file": relative, "code": "invalid_path"}));
+            continue;
+        }
+        match std::fs::read(dir.join(relative)) {
+            Ok(bytes) => {
+                let digest = hex::encode(Sha256::digest(&bytes));
+                if Some(bytes.len() as u64) != entry["size"].as_u64() || Some(digest.as_str()) != entry["sha256"].as_str() {
+                    failures.push(json!({"file": relative, "code": "changed"}));
+                }
+            }
+            Err(_) => failures.push(json!({"file": relative, "code": "missing"})),
+        }
+    }
+    let mut paths = Vec::new();
+    if walk(dir, dir, &mut paths).is_ok() {
+        for path in paths {
+            let relative = path.strip_prefix(dir).expect("walked under dir").to_string_lossy().replace('\\', "/");
+            if !listed.contains(&relative) {
+                failures.push(json!({"file": relative, "code": "unlisted"}));
+            }
+        }
+    }
+    failures
+}
+
 fn merge(mut a: Value, b: Value) -> Value {
     if let (Some(a), Value::Object(b)) = (a.as_object_mut(), b) {
         a.extend(b);
@@ -202,6 +246,29 @@ mod tests {
     use super::*;
     use crate::schema::tests::{memory, task};
     use crate::sign::Key;
+
+    #[test]
+    fn a_bundle_is_checked_against_its_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("ar-1");
+        std::fs::create_dir_all(bundle.join("sub")).unwrap();
+        std::fs::write(bundle.join("a-report.json"), "{}").unwrap();
+        std::fs::write(bundle.join("sub/b.jsonl"), "x\n").unwrap();
+        assert_eq!(check_manifest(&bundle), vec![json!({"file": "manifest.json", "code": "missing_manifest"})]);
+        manifest(&bundle, "2026-11-13T00:00:00Z").unwrap();
+        assert!(check_manifest(&bundle).is_empty());
+
+        std::fs::write(bundle.join("sub/b.jsonl"), "y\n").unwrap();
+        std::fs::write(bundle.join("late.json"), "{}").unwrap();
+        std::fs::remove_file(bundle.join("a-report.json")).unwrap();
+        let mut found = check_manifest(&bundle);
+        found.sort_by_key(|f| f["file"].as_str().unwrap().to_owned());
+        assert_eq!(found, vec![
+            json!({"file": "a-report.json", "code": "missing"}),
+            json!({"file": "late.json", "code": "unlisted"}),
+            json!({"file": "sub/b.jsonl", "code": "changed"}),
+        ]);
+    }
 
     fn signed_memory(key: &Key, id: &str, project: &str) -> String {
         let mut e = memory(id, 5);

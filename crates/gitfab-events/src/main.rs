@@ -135,6 +135,9 @@ enum Command {
     /// Write `<dir>/manifest.json` (path, size, SHA-256 of every file); refuses a bundle holding a
     /// credential, a private key or a local absolute path.
     Manifest { dir: PathBuf },
+    /// Check a bundle against its `manifest.json`: listed files present and unchanged, nothing
+    /// unlisted. Exit 1 when anything differs.
+    CheckManifest { dir: PathBuf },
 }
 
 fn main() -> ExitCode {
@@ -397,6 +400,11 @@ fn run(command: Command) -> Result<bool, String> {
                     Ok(false)
                 }
             }
+        }
+        Command::CheckManifest { dir } => {
+            let failures = evidence::check_manifest(&dir);
+            print(&json!({"ok": failures.is_empty(), "failures": failures}));
+            Ok(failures.is_empty())
         }
         Command::Manifest { dir } => {
             let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);

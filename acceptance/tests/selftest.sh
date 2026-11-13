@@ -85,4 +85,15 @@ for bundle in "$tmp"/evidence/ar-*; do
 done
 echo "manifests checked: $(ls -d "$tmp"/evidence/ar-* | wc -l | tr -d ' ') bundles"
 
+# Retention: an intact bundle archives and checks; a changed one is refused; a changed archive fails.
+bundle=$(basename "$(ls -d "$tmp"/evidence/ar-* | head -1)")
+expect 0 "archive an intact bundle" "$here/archive.sh" "$bundle" --retain-until 2028-12-31
+expect 0 "an archive checks intact" "$here/archive.sh" --check "$tmp/evidence/archive/$bundle.tar.gz"
+expect 1 "an archive is never overwritten" "$here/archive.sh" "$bundle" --retain-until 2028-12-31
+printf 'x' >>"$tmp/evidence/archive/$bundle.tar.gz"
+expect 1 "a changed archive fails its check" "$here/archive.sh" --check "$tmp/evidence/archive/$bundle.tar.gz"
+other=$(basename "$(ls -d "$tmp"/evidence/ar-* | sed -n 2p)")
+printf 'x' >>"$tmp/evidence/$other/$(ls "$tmp/evidence/$other" | grep -v manifest.json | head -1)"
+expect 1 "a bundle changed after its manifest is not archived" "$here/archive.sh" "$other" --retain-until 2028-12-31
+
 [ "$failures" -eq 0 ] && echo "selftest passed" || { echo "selftest: $failures failure(s)"; exit 1; }
