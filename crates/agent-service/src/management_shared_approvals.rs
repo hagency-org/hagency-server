@@ -93,7 +93,7 @@ fn encrypted_request(request: &Value) -> Result<EncryptedRequest> {
     let _ = (value.session_allowed, value.manager_can_decide);
     Ok(value)
 }
-// Claude permission callbacks have their own closed schema. They never use
+// Claude and Octos permission callbacks have their own closed schema. They never use
 // question cards, and only the funding owner can authorize the native tool.
 fn plain_request_runtime(request: &Value) -> Result<&'static str> {
     let invalid = || Error::Invalid("invalid_permission_request");
@@ -120,8 +120,12 @@ fn plain_request_runtime(request: &Value) -> Result<&'static str> {
     }
     let object = request.as_object().ok_or_else(invalid)?;
     let params = request["params"].as_object().ok_or_else(invalid)?;
-    if request["method"] != "claude/can_use_tool"
-        || request["sessionAllowed"] != false
+    let runtime = match request["method"].as_str() {
+        Some("claude/can_use_tool") => "claude",
+        Some("octos/can_use_tool") => "octos",
+        _ => return Err(invalid()),
+    };
+    if request["sessionAllowed"] != false
         || request["managerCanDecide"] != false
         || object.len() != 5
         || object.keys().any(|k| {
@@ -145,7 +149,7 @@ fn plain_request_runtime(request: &Value) -> Result<&'static str> {
     {
         return Err(invalid());
     }
-    Ok("claude")
+    Ok(runtime)
 }
 async fn row(db: &mut AsyncPgConnection, id: &str) -> Result<Row> {
     sql_query("SELECT * FROM hagency_agent_v1.management_shared_approvals WHERE id=$1 FOR UPDATE")
@@ -196,7 +200,7 @@ impl DomainStore {
    let now=clock(db).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;
    let c=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
    if request_runtime.is_some_and(|runtime| runtime!=c.runtime)
-    || c.runtime=="claude" && (request["sessionAllowed"]!=false || request["managerCanDecide"]!=false) {
+    || matches!(c.runtime, "claude" | "octos") && (request["sessionAllowed"]!=false || request["managerCanDecide"]!=false) {
     return Err(Error::Invalid("invalid_permission_request"));
    }
    let raw:Value=decode(&r.payload)?;
@@ -212,7 +216,7 @@ impl DomainStore {
    if let Some(old)=old {let payload:Value=decode(&old.payload)?;if old.work_id!=w.id || old.owner_user_id!=p.user_id || payload["request"]!=input.request{return Err(Error::Conflict("approval_request_changed"));}return Ok(json!({"approval":payload,"digest":old.digest}));}
    if sql_query("SELECT count(*)>=16 AS matched FROM hagency_agent_v1.management_shared_approvals WHERE runtime_id=$1 AND NOT consumed AND expires_at_ms>$2").bind::<Text,_>(&r.id).bind::<BigInt,_>(now).get_result::<Flag>(db).await?.matched {return Err(Error::Unavailable("approval_queue_full"));}
    let expires=(now+input.remaining_ms).min(reserve_lifetime(db,&c.reserve_command,now).await?);
-   let mut payload=json!({"id":input.id,"workId":w.id,"agentId":c.reserve_command.proposed_agent_id,"agentName":c.reserve_command.definition.name,"roomId":work.room_id,"eventId":work.event_id,"threadRoot":work.thread_root,"requesterMxid":work.requester_mxid,"ownerMxid":p.mxid,"request":input.request,"expiresAtMs":expires,"sessionScope":if c.runtime=="claude" {"current_claude_session"} else {"current_codex_session"}});
+   let mut payload=json!({"id":input.id,"workId":w.id,"agentId":c.reserve_command.proposed_agent_id,"agentName":c.reserve_command.definition.name,"roomId":work.room_id,"eventId":work.event_id,"threadRoot":work.thread_root,"requesterMxid":work.requester_mxid,"ownerMxid":p.mxid,"request":input.request,"expiresAtMs":expires,"sessionScope":match c.runtime {"claude"=>"current_claude_session","octos"=>"current_octos_session",_=>"current_codex_session"}});
    if encrypted.is_some(){let m=membership(db,&r).await?;payload["agentMxid"]=json!(m.puppet_mxid);payload["managerMxid"]=json!(c.reserve_command.manager_mxid);}
    let digest=allocation_digest(&payload)?;
    // Other Room members may send the work, but manager-delegable decisions stay with the manager.
@@ -325,6 +329,26 @@ mod claude_tests {
         assert!(plain_request_runtime(&wrong).is_err());
         let mut wrong = request;
         wrong["params"]["threadId"] = json!("codex-thread");
+        assert!(plain_request_runtime(&wrong).is_err());
+    }
+    #[test]
+    fn shared_octos_permission_is_owner_only_and_uses_a_closed_schema() {
+        let request = json!({"id":"approval-1","method":"octos/can_use_tool",
+            "params":{"sessionId":"session-1","toolName":"shell","input":{"body":"synthetic command"}},
+            "sessionAllowed":false,"managerCanDecide":false});
+        assert_eq!(plain_request_runtime(&request).unwrap(), "octos");
+        for (pointer, value) in [
+            ("/sessionAllowed", json!(true)),
+            ("/managerCanDecide", json!(true)),
+            ("/params/input", json!("command")),
+            ("/params/toolName", json!("")),
+        ] {
+            let mut wrong = request.clone();
+            *wrong.pointer_mut(pointer).unwrap() = value;
+            assert!(plain_request_runtime(&wrong).is_err(), "{pointer}");
+        }
+        let mut wrong = request;
+        wrong["params"]["extra"] = json!(true);
         assert!(plain_request_runtime(&wrong).is_err());
     }
 }

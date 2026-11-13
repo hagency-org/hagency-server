@@ -17,7 +17,7 @@ pub(crate) fn worker_route(parts: &[&str]) -> Option<bool> {
         [
             "shared-execution",
             "runtime" | "attempts" | "demands" | "budget-attempts" | "budget-demands",
-            "poll" | "poll-v4",
+            "poll" | "poll-v4" | "poll-v5",
         ]
         | ["shared-execution", "attempts" | "budget-attempts", "start"]
         | ["shared-execution", "demands" | "budget-demands", _, "start"]
@@ -125,9 +125,11 @@ mod tests {
         for route in [
             "runtime/poll",
             "runtime/poll-v4",
+            "runtime/poll-v5",
             "attempts/start",
             "demands/d/start",
             "budget-demands/poll-v4",
+            "budget-demands/poll-v5",
             "work/ack",
             "budget-work/ack",
             "work/w/context/start",

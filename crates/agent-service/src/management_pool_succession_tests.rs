@@ -1217,7 +1217,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
         .await
         .unwrap();
     let upgraded = schema_state(&mut db).await;
-    assert_eq!((upgraded.version, upgraded.columns), (35, true));
+    assert_eq!((upgraded.version, upgraded.columns), (36, true));
     let rows = chain(&f, &a.contribution.id).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(
@@ -1281,7 +1281,7 @@ async fn schema_29_upgrades_a_populated_schema_28_database_and_downgrades_back()
     crate::domain::DomainStore::open(&f.url, "example.test", "_hagency_test_")
         .await
         .unwrap();
-    assert_eq!(schema_state(&mut db).await.version, 35);
+    assert_eq!(schema_state(&mut db).await.version, 36);
 }
 
 #[tokio::test]

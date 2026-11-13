@@ -1005,6 +1005,7 @@ async fn postgres_public_discovery_identifies_hagency_without_granting_authority
             "managed-agent-budget-delta-v1",
             "shared-budget-execution-v1",
             "shared-claude-execution-v1",
+            "shared-octos-execution-v1",
             "agent-settlement-v1"
         ])
     );

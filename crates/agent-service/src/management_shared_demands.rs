@@ -267,7 +267,7 @@ async fn authorize(
 /// An event that has no demand yet therefore waits until the first command has
 /// started or has been replaced. An existing demand is left to its own course.
 async fn awaits_first_start(db: &mut AsyncPgConnection, q: &Queued, h: &Runtime) -> Result<bool> {
-    if !matches!(runtime_version(h)?, 1 | 4)
+    if !matches!(runtime_version(h)?, 1 | 4 | 5)
         || !matches!(h.state.as_str(), "pending" | "issued")
         || h.activity_epoch != 0
         || h.process_digest.is_some()
@@ -399,7 +399,8 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: SharedDemandPollInput,
     ) -> Result<SharedDemandPoll> {
-        self.poll_shared_demand_inner(p, policy, input, false).await
+        self.poll_shared_demand_inner(p, policy, input, false, false)
+            .await
     }
     pub async fn poll_shared_demand_v4(
         &self,
@@ -407,7 +408,17 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: SharedDemandPollInput,
     ) -> Result<SharedDemandPoll> {
-        self.poll_shared_demand_inner(p, policy, input, true).await
+        self.poll_shared_demand_inner(p, policy, input, true, false)
+            .await
+    }
+    pub async fn poll_shared_demand_v5(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        input: SharedDemandPollInput,
+    ) -> Result<SharedDemandPoll> {
+        self.poll_shared_demand_inner(p, policy, input, true, true)
+            .await
     }
     async fn poll_shared_demand_inner(
         &self,
@@ -415,6 +426,7 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: SharedDemandPollInput,
         allow_claude: bool,
+        allow_octos: bool,
     ) -> Result<SharedDemandPoll> {
         enabled_demand(policy)?;
         if let Some(a) = &input.after {
@@ -423,7 +435,7 @@ impl DomainStore {
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
  Self::authorize(db,p,0).await?;let (device,generation)=device(p)?;let now=clock(db).await?;
- let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id) AND c.mode='running' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes root WHERE root.assignment_id=a.id AND NOT root.issuance_void AND (root.payload::jsonb->>'version'='1' OR ($5 AND root.payload::jsonb->>'version'='4'))) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.control_revision=c.revision AND q.state='pending') ORDER BY (a.id<=$4),a.id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<Bool,_>(allow_claude).load::<Id>(db).await?;
+ let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id) AND c.mode='running' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes root WHERE root.assignment_id=a.id AND NOT root.issuance_void AND (root.payload::jsonb->>'version'='1' OR ($5 AND root.payload::jsonb->>'version'='4') OR ($6 AND root.payload::jsonb->>'version'='5'))) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.control_revision=c.revision AND q.state='pending') ORDER BY (a.id<=$4),a.id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<Bool,_>(allow_claude).bind::<Bool,_>(allow_octos).load::<Id>(db).await?;
  let mut after=None;for id in ids {after=Some(id.id.clone());intake::expire(db,&id.id,now).await?;let revision=intake::running_revision(db,&id.id).await?;let Some(q)=oldest(db,&id.id,revision).await? else{continue};let w=match authorize(db,p,&q,&self.server,now,true).await {Ok(w)=>w,Err(Error::Conflict(_)|Error::NotFound(_))=>continue,Err(e)=>return Err(e)};let Some(h)=head(db,&id.id).await? else{continue};if runtime_version(&h)?==3 || has_applied_budget(db,&w.request_id).await? || awaits_first_start(db,&q,&h).await? {continue;}let d=ensure(db,&q,&h).await?;refresh(db,&d,&q,&h).await?;if status(db,&d).await?.state!="offered" && started(db,&d.id).await?.is_none(){continue}let c:ManagedAgentReserveCommand=decode(&w.payload)?;if known(db,&id.id).await?>=c.requested_tokens && started(db,&d.id).await?.is_none(){block(db,&d,&q,"budget_blocked","\"known_consumption_exhausted\"").await?;}let value=visible(db,&d,input.retries).await?;if matches!(value.state.as_str(),"offered"|"start_committed"|"retry_offered"){return Ok(SharedDemandPoll{demand:Some(value),next_after:after})}}
  Ok(SharedDemandPoll{demand:None,next_after:after})
  }).await

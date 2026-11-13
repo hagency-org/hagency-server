@@ -892,7 +892,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
             .await
             .unwrap()
             .version,
-        35
+        36
     );
     let pin = apply_delta(&f, &r, &admin, 25, 230).await;
     let offered = f

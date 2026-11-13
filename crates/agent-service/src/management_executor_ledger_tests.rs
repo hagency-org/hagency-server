@@ -2035,7 +2035,7 @@ async fn schema_35_upgrades_a_populated_schema_34_database_into_epoch_zero() {
     let recorded = report(&f, &kept, 100).await.unwrap();
     let waiting = approved(&f, &a, "waiting", 1).await;
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
-    assert_eq!(ledger_schema(&mut db).await, (35, 9, true, true, 9, false));
+    assert_eq!(ledger_schema(&mut db).await, (36, 9, true, true, 9, false));
     // Back to schema 34 while nothing is declared: no epoch other than 0 is lost.
     db.batch_execute(include_str!("management_executor_ledgers_down.sql"))
         .await
@@ -2046,7 +2046,7 @@ async fn schema_35_upgrades_a_populated_schema_34_database_into_epoch_zero() {
         crate::domain::DomainStore::open(&f.url, "example.test", "_hagency_test_")
             .await
             .unwrap();
-        assert_eq!(ledger_schema(&mut db).await, (35, 9, true, true, 9, false));
+        assert_eq!(ledger_schema(&mut db).await, (36, 9, true, true, 9, false));
     }
     let f = Fixture {
         domain: crate::domain::DomainStore::open(&f.url, "example.test", "_hagency_test_")
@@ -2097,5 +2097,5 @@ async fn schema_35_upgrades_a_populated_schema_34_database_into_epoch_zero() {
         refused.contains("executor_ledger_downgrade_has_epoch"),
         "{refused}"
     );
-    assert_eq!(ledger_schema(&mut db).await, (35, 9, true, true, 9, false));
+    assert_eq!(ledger_schema(&mut db).await, (36, 9, true, true, 9, false));
 }
