@@ -86,6 +86,7 @@ Thread 里能看到：每个阶段的派发消息（含任务分支 `agent/<proj
      --commit <PR 头提交> --tag <Release 标签> --context <检出目录> --sbom-dir /var/lib/gitfab/sbom
    ```
    退出码 0 表示健康与版本检查通过；1 表示新版本没起来，回执会写明是否已恢复上一版。
+   加 `--registry <host[:port]/namespace>` 时，镜像先推送到该 Registry 再启动，回执的 `image_ref` 记为 `<registry>/<项目>@sha256:<manifest digest>`（Registry 返回的不可变摘要）；`image_digest` 仍是本机镜像 ID，供回退和容器核对使用。推送失败则不替换线上容器，部署失败。Registry 的登录凭据由 Runner 机器上的 `docker login` 管理，不经过 GitFab。
 3. 回退：`gitfab-runner rollback`（参数同上，去掉 Release 相关项，保留 `--project`）。
 4. 离线核对 SBOM：`gitfab verify-sbom --keys <公钥目录> /var/lib/gitfab/sbom/<文件>.spdx.json`。
 

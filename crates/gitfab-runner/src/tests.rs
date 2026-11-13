@@ -37,6 +37,10 @@ impl Engine for Fake {
     fn base_images(&self, _context: &Path) -> Result<Vec<Value>, String> {
         Ok(vec![json!({"name": "busybox:1.36", "digest": format!("sha256:{}", "b".repeat(64))})])
     }
+    fn push(&self, tag: &str, remote: &str) -> Result<String, String> {
+        let repository = remote.rsplit_once(':').unwrap().0;
+        Ok(format!("{repository}@{}", sha256(format!("manifest of {tag}").as_bytes())))
+    }
 }
 
 /// Answers /healthz and /version as the image the fake engine is running.
@@ -101,6 +105,7 @@ fn release(tag: &str) -> Release {
         repo: "https://gitcode.com/example/demo-01".into(),
         commit: "c".repeat(40),
         tag: tag.into(),
+        registry: None,
     }
 }
 
@@ -204,4 +209,24 @@ fn a_release_deployed_again_gets_its_own_receipt_and_sbom() {
     let all = signed_receipts(&out, &ring);
     assert_eq!(all.len(), 2);
     assert_eq!(all[1]["sbom_ref"], "sbom/DEMO-01-v1-d2.spdx.json");
+}
+
+#[test]
+fn a_release_pushed_to_a_registry_is_named_by_its_manifest_digest() {
+    let (dir, fake, probe, out, ring) = setup();
+    let sbom = dir.path().join("sbom");
+    let mut published = release("v1");
+    published.registry = Some("127.0.0.1:5000/gitfab/".into());
+    let done = deploy(&fake, &published, &dir.path().join("app"), &sbom, &probe, &out).unwrap();
+    assert!(done.passed);
+    let all = signed_receipts(&out, &ring);
+    let image_ref = all[0]["image_ref"].as_str().unwrap();
+    assert!(image_ref.starts_with("127.0.0.1:5000/gitfab/demo-01@sha256:"), "{image_ref}");
+    // The local image ID stays the digest that rollback and the container check use.
+    assert_eq!(all[0]["image_digest"], json!(done.image));
+
+    // Without a registry the local tag is pinned to the image ID, as before.
+    deploy(&fake, &release("v2"), &dir.path().join("app"), &sbom, &probe, &out).unwrap();
+    let all = signed_receipts(&out, &ring);
+    assert_eq!(all[1]["image_ref"], json!(format!("gitfab/demo-01:v2@{}", all[1]["image_digest"].as_str().unwrap())));
 }

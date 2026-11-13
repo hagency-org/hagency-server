@@ -34,6 +34,9 @@ pub trait Engine {
     fn has_image(&self, image: &str) -> bool;
     /// Base images of the build, `{"name", "digest"}` each (Annex 3 §9: recorded, never drifting).
     fn base_images(&self, context: &Path) -> Result<Vec<Value>, String>;
+    /// Pushes local image `tag` as `remote` (`registry/repository:tag`); returns the pushed
+    /// reference pinned to its manifest digest, `registry/repository@sha256:…`.
+    fn push(&self, tag: &str, remote: &str) -> Result<String, String>;
 }
 
 /// Image references in the `FROM` lines of a Dockerfile, skipping earlier stages and `scratch`.
@@ -105,6 +108,18 @@ impl Engine for Docker {
     }
     fn has_image(&self, image: &str) -> bool {
         docker(&["image", "inspect", image]).is_ok()
+    }
+    fn push(&self, tag: &str, remote: &str) -> Result<String, String> {
+        docker(&["tag", tag, remote])?;
+        docker(&["push", "-q", remote])?;
+        let repository = remote.rsplit_once(':').map_or(remote, |(r, _)| r);
+        let digests = docker(&["image", "inspect", "-f", "{{range .RepoDigests}}{{println .}}{{end}}", remote])?;
+        digests
+            .lines()
+            .map(str::trim)
+            .find(|d| d.split_once('@').is_some_and(|(r, _)| r == repository))
+            .map(str::to_owned)
+            .ok_or_else(|| format!("{remote}: the registry returned no manifest digest"))
     }
     fn base_images(&self, context: &Path) -> Result<Vec<Value>, String> {
         let file = std::fs::read_to_string(context.join("Dockerfile")).map_err(|e| format!("Dockerfile: {e}"))?;
@@ -220,6 +235,8 @@ pub struct Release {
     pub repo: String,
     pub commit: String,
     pub tag: String,
+    /// Where the image is published (`host[:port]/namespace`); its manifest digest then names it.
+    pub registry: Option<String>,
 }
 
 fn container(project: &str) -> String {
@@ -304,6 +321,14 @@ pub fn deploy(
     } else {
         first
     };
+    // Published before it runs: the receipt names the image by its registry manifest digest.
+    let image_ref = match &release.registry {
+        Some(registry) => engine.push(
+            &image_tag,
+            &format!("{}/{}", registry.trim_end_matches('/'), image_tag.trim_start_matches("gitfab/")),
+        )?,
+        None => format!("{image_tag}@{image}"),
+    };
     let sbom = engine.sbom(&image)?;
     let bases = engine.base_images(context)?;
     std::fs::create_dir_all(sbom_dir).map_err(|e| e.to_string())?;
@@ -340,7 +365,7 @@ pub fn deploy(
         "commit_sha": release.commit,
         "tag": release.tag,
         "artifact_digest": image,
-        "image_ref": format!("{image_tag}@{image}"),
+        "image_ref": image_ref,
         "image_digest": image,
         "sbom_ref": format!("sbom/{sbom_name}"),
         "sbom_digest": sha256(&sbom),

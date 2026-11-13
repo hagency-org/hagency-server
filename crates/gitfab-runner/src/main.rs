@@ -72,6 +72,10 @@ enum Command {
         /// Where `<project>-<tag>.spdx.json` is written.
         #[arg(long)]
         sbom_dir: PathBuf,
+        /// Push the image to this registry (`host[:port]/namespace`) before starting it; the receipt
+        /// then names it by its manifest digest.
+        #[arg(long)]
+        registry: Option<String>,
     },
     /// Return the project to its good Release before the current one.
     Rollback {
@@ -105,9 +109,9 @@ fn setup(common: &Common) -> Result<(Probe, Receipts), String> {
 
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
-        Command::Deploy { common, project, task, backend, repo, commit, tag, context, sbom_dir } => setup(&common)
+        Command::Deploy { common, project, task, backend, repo, commit, tag, context, sbom_dir, registry } => setup(&common)
             .and_then(|(probe, out)| {
-                let release = Release { project, task, backend, repo, commit, tag };
+                let release = Release { project, task, backend, repo, commit, tag, registry };
                 deploy(&Docker, &release, &context, &sbom_dir, &probe, &out)
             }),
         Command::Rollback { common, project } => {
