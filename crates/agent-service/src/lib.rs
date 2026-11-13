@@ -49,6 +49,7 @@ pub mod orchestrator_flow;
 pub mod orchestrator_git;
 pub mod orchestrator_modules;
 pub mod orchestrator_status;
+pub mod orchestrator_team;
 pub mod recurring_quota;
 mod reply_format;
 pub mod store;

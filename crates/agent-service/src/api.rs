@@ -29,6 +29,7 @@ pub struct App {
     /// GitFab orchestrator: the signed journal and the stage timeout.
     gitfab: Option<(Arc<crate::orchestrator::Recorder>, i64)>,
     gitfab_git: Option<Arc<crate::orchestrator_git::GitHosts>>,
+    gitfab_team: Option<Arc<crate::orchestrator_team::Team>>,
     gitfab_board: Option<Arc<String>>,
 }
 impl App {
@@ -54,6 +55,7 @@ impl App {
             board_enabled: true,
             gitfab: None,
             gitfab_git: None,
+            gitfab_team: None,
             gitfab_board: None,
         }
     }
@@ -119,6 +121,11 @@ impl App {
         self.gitfab_git = Some(Arc::new(hosts));
         self
     }
+    /// Holds Plans to this fixed Agent team: every Module needs only what the Implementer declares.
+    pub fn with_gitfab_team(mut self, team: crate::orchestrator_team::Team) -> Self {
+        self.gitfab_team = Some(Arc::new(team));
+        self
+    }
     /// Serves Agent status to the GitFab board with this read-only token.
     pub fn with_gitfab_board_token(mut self, token: String) -> Self {
         self.gitfab_board = Some(Arc::new(token));
@@ -144,6 +151,7 @@ impl App {
             recorder,
             timeout,
             self.gitfab_git.clone(),
+            self.gitfab_team.clone(),
             self.workers.clone(),
         ))
     }
@@ -650,6 +658,7 @@ impl App {
                 matrix,
                 recorder,
                 stage_timeout_ms: *timeout,
+                team: self.gitfab_team.as_deref(),
                 shared: self
                     .management
                     .as_ref()

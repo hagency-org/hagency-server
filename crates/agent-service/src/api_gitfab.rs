@@ -27,6 +27,7 @@ pub(crate) struct Gitfab<'a> {
     pub matrix: &'a MatrixClient,
     pub recorder: &'a Recorder,
     pub stage_timeout_ms: i64,
+    pub team: Option<&'a crate::orchestrator_team::Team>,
     pub shared: Option<(
         &'a DomainStore,
         &'a crate::management_types::ManagementPolicy,
@@ -121,6 +122,7 @@ impl Gitfab<'_> {
             room: &room,
             recorder: self.recorder,
             stage_timeout_ms: self.stage_timeout_ms,
+            team: self.team,
         };
         let method = req.method().clone();
         let value = match (method, &parts[8..]) {

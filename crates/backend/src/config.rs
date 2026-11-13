@@ -65,6 +65,16 @@ pub struct GitfabConfig {
     /// Read-only token (mode 0600) the GitFab board presents to read Agent status.
     #[serde(default)]
     pub board_token_file: Option<PathBuf>,
+    /// The fixed Agent team: `[gitfab.team.coordinator|implementer|reviewer]` each with
+    /// `capabilities`. Every role a stage routes to must be declared; Plans may then give Modules
+    /// only capabilities the implementer declares. Absent leaves Plans unchecked against a team.
+    #[serde(default)]
+    pub team: Option<std::collections::BTreeMap<String, GitfabTeamRole>>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitfabTeamRole {
+    pub capabilities: Vec<String>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

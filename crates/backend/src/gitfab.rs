@@ -85,6 +85,7 @@ mod tests {
             github_api: None,
             gitcode_api: None,
             board_token_file: None,
+            team: None,
         }
     }
 
@@ -139,6 +140,23 @@ palpo_config = "palpo.toml"
         assert!(
             toml::from_str::<crate::config::HostConfig>(&format!("{with}extra = 1\n")).is_err()
         );
+        let teamed = format!(
+            "{with}[gitfab.team.coordinator]\ncapabilities = [\"planning\"]\n[gitfab.team.implementer]\ncapabilities = [\"rust\", \"http\"]\n[gitfab.team.reviewer]\ncapabilities = [\"code-review\"]\n"
+        );
+        let team = toml::from_str::<crate::config::HostConfig>(&teamed)
+            .unwrap()
+            .gitfab
+            .unwrap()
+            .team
+            .unwrap();
+        assert_eq!(team["implementer"].capabilities, ["rust", "http"]);
+        let declared = hagency_agent_service::orchestrator_team::Team::new(
+            team.iter()
+                .map(|(r, t)| (r.as_str(), t.capabilities.clone())),
+        );
+        assert!(declared.is_ok());
+        let typo = format!("{with}[gitfab.team.implementer]\ncapabilites = [\"rust\"]\n");
+        assert!(toml::from_str::<crate::config::HostConfig>(&typo).is_err());
     }
 
     #[cfg(unix)]
@@ -160,6 +178,7 @@ palpo_config = "palpo.toml"
             github_api: None,
             gitcode_api: None,
             board_token_file: None,
+            team: None,
         };
         assert!(Signer::load(&missing).is_err());
     }

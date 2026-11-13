@@ -123,6 +123,8 @@ pub(crate) struct Orchestrator<'a, R: StageRoom> {
     pub room: &'a R,
     pub recorder: &'a Recorder,
     pub stage_timeout_ms: i64,
+    /// The declared Agent team; `None` leaves Plans unchecked against it.
+    pub team: Option<&'a crate::orchestrator_team::Team>,
 }
 
 fn role_key(role: Role) -> &'static str {
@@ -207,6 +209,7 @@ pub(crate) fn stage_message(
     slot: Slot,
     spec_revision: u32,
     handoff: Option<&str>,
+    team: Option<&crate::orchestrator_team::Team>,
 ) -> String {
     let c = &run.init.context;
     let text = |k: &str| c[k].as_str().unwrap_or("");
@@ -225,6 +228,12 @@ pub(crate) fn stage_message(
         rev = spec_revision,
         ask = instruction(slot.stage),
     );
+    if slot.stage == Stage::Plan
+        && let Some(team) = team
+    {
+        body.push('\n');
+        body.push_str(&team.plan_note());
+    }
     if let Some(prior) = handoff.filter(|h| !h.trim().is_empty()) {
         body.push_str("\n\n上一阶段产出：\n");
         body.push_str(prior);
@@ -563,6 +572,20 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                         Some(row) => flow::observed(row, slot.stage),
                         None => Some(Outcome::Unknown),
                     };
+                    // A Plan whose Modules need what the Implementer does not declare cannot be
+                    // executed by the fixed team; it is not a finished Plan.
+                    let outcome = match (outcome, self.team, row.as_ref()) {
+                        (Some(Outcome::Replied(_)), Some(team), Some(row))
+                            if slot.stage == Stage::Plan
+                                && crate::orchestrator_modules::modules(
+                                    row.reply_body.as_deref().unwrap_or(""),
+                                )
+                                .is_ok_and(|m| !team.uncovered(&m).is_empty()) =>
+                        {
+                            Some(Outcome::Failed)
+                        }
+                        (outcome, ..) => outcome,
+                    };
                     match outcome {
                         Some(outcome) => {
                             let reply = row.as_ref().and_then(|r| r.reply_body.clone());
@@ -718,7 +741,9 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                         _ => None,
                     };
                     match dispatched.or(current) {
-                        Some((slot, rev, prior)) => sha256(&stage_message(&run, slot, rev, prior)),
+                        Some((slot, rev, prior)) => {
+                            sha256(&stage_message(&run, slot, rev, prior, self.team))
+                        }
                         None => sha256(&run.init.context.to_string()),
                     }
                 }
@@ -861,7 +886,7 @@ impl<R: StageRoom> Orchestrator<'_, R> {
         let Some((.., puppet)) = agents.into_iter().find(|(a, ..)| a == assignment) else {
             return self.apply(run, refused, Cause::System, now).await;
         };
-        let body = stage_message(&run, slot, spec_revision, run.handoff.as_deref());
+        let body = stage_message(&run, slot, spec_revision, run.handoff.as_deref(), self.team);
         let meta = json!({"version": 1, "runId": run.id, "taskId": run.init.task_id,
             "stage": slot.stage.phase(), "round": slot.round, "attempt": slot.attempt,
             "specRevision": spec_revision});
@@ -979,7 +1004,7 @@ impl<R: StageRoom> Orchestrator<'_, R> {
             }
             Err(e) => return Err(e),
         };
-        let body = stage_message(&run, slot, spec_revision, run.handoff.as_deref());
+        let body = stage_message(&run, slot, spec_revision, run.handoff.as_deref(), self.team);
         let meta = json!({"version": 1, "runId": run.id, "taskId": run.init.task_id,
             "stage": slot.stage.phase(), "round": slot.round, "attempt": slot.attempt,
             "specRevision": spec_revision});
@@ -1295,6 +1320,7 @@ pub(crate) fn start_controlled(
     recorder: Arc<Recorder>,
     stage_timeout_ms: i64,
     git: Option<Arc<crate::orchestrator_git::GitHosts>>,
+    team: Option<Arc<crate::orchestrator_team::Team>>,
     control: crate::worker_runtime::WorkerRuntime,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -1310,6 +1336,7 @@ pub(crate) fn start_controlled(
             room: &room,
             recorder: &recorder,
             stage_timeout_ms,
+            team: team.as_deref(),
         };
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

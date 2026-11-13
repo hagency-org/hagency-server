@@ -95,7 +95,7 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
 
 ## 配置
 
-服务端 `[gitfab]`：`signing_key_file`、`signing_key_id`、`journal_file`（设置即启用编排器，需 Agent 服务）、`stage_timeout_minutes`（默认 120）、`github_token_file`、`gitcode_token_file`、`github_api`、`gitcode_api`、`board_token_file`。未配置平台 Token 时不调用平台，流程照常；未配置大屏 Token 时不开放 Agent 状态接口。
+服务端 `[gitfab]`：`signing_key_file`、`signing_key_id`、`journal_file`（设置即启用编排器，需 Agent 服务）、`stage_timeout_minutes`（默认 120）、`github_token_file`、`gitcode_token_file`、`github_api`、`gitcode_api`、`board_token_file`，以及固定 Agent 队伍 `[gitfab.team.<coordinator|implementer|reviewer>] capabilities`（启动时核对派工规则用到的角色都已声明；Plan 的 Module 只能要求实现角色声明的能力）。未配置平台 Token 时不调用平台，流程照常；未配置大屏 Token 时不开放 Agent 状态接口。
 
 验收包：`acceptance/gitfab.env`（示例见 `gitfab.env.example`）与 `acceptance/projects/DEMO-0N.env`，详见 `acceptance/README.zh-CN.md`。
 

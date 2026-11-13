@@ -113,6 +113,7 @@ fn orchestrator(h: &Harness, stage_timeout_ms: i64) -> Orchestrator<'_, Room> {
         room: &h.room,
         recorder: &h.recorder,
         stage_timeout_ms,
+        team: None,
     }
 }
 
@@ -485,6 +486,59 @@ async fn postgres_a_stage_the_transport_refuses_is_retried_once_then_fails_the_r
             ("spec", "running", 0),
             ("spec", "failed", 0),
         ])
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_a_plan_needing_what_the_team_cannot_do_is_retried_once_then_fails_the_run() {
+    let h = harness(true).await;
+    let team = crate::orchestrator_team::Team::new([
+        ("coordinator", vec!["planning".to_owned()]),
+        ("implementer", vec!["rust".to_owned()]),
+        ("reviewer", vec!["code-review".to_owned()]),
+    ])
+    .unwrap();
+    let o = Orchestrator {
+        team: Some(&team),
+        ..orchestrator(&h, DEFAULT_STAGE_TIMEOUT_MS)
+    };
+    let now = crate::api::now_ms;
+    let id = start(&h, "$gitfab-e2e-team").await;
+    o.pass(now()).await.unwrap();
+    answer(&h, &id, "Spec v1").await;
+    o.pass(now()).await.unwrap();
+    o.decide(&id, Input::SpecDecision(SpecDecision::Approve), now())
+        .await
+        .unwrap();
+    let python = PLAN_REPLY.replace("[\"rust\"]", "[\"python\"]");
+    for attempt in 1..=2 {
+        o.pass(now()).await.unwrap();
+        assert_eq!(
+            running_stage(&run(&h, &id).await.state),
+            Some((Stage::Plan, 0, attempt))
+        );
+        answer(&h, &id, &python).await;
+        o.pass(now()).await.unwrap();
+    }
+    assert_eq!(
+        run(&h, &id).await.state,
+        State::Failed {
+            reason: "stage_failed"
+        }
+    );
+    // The Plan message told the Coordinator what the team can do.
+    let posts = h.room.posts.lock().unwrap();
+    let plans: Vec<_> = posts
+        .iter()
+        .filter(|(_, b)| b.starts_with("[GitFab plan]"))
+        .collect();
+    assert_eq!(plans.len(), 2);
+    assert!(plans.iter().all(|(_, b)| b.contains("声明的能力为 rust")));
+    // A Plan within the team's capabilities would have counted; the stock reply needs only rust.
+    assert!(
+        team.uncovered(&crate::orchestrator_modules::modules(PLAN_REPLY).unwrap())
+            .is_empty()
     );
 }
 

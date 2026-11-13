@@ -18,8 +18,17 @@
    github_token_file = "/etc/hagency/keys/github-token"   # 可选：启用 PR 与 Release
    gitcode_token_file = "/etc/hagency/keys/gitcode-token" # 可选
    board_token_file = "/etc/hagency/keys/board-token"     # 可选：大屏读取 Agent 状态
+
+   # 可选：固定 Agent 队伍与能力声明（附件 1 第 1.2.1(4) 条）
+   [gitfab.team.coordinator]
+   capabilities = ["planning", "release"]
+   [gitfab.team.implementer]
+   capabilities = ["rust", "http", "docker"]
+   [gitfab.team.reviewer]
+   capabilities = ["code-review"]
    ```
    所有 Token 文件必须是 0600，否则服务拒绝启动并说明原因。
+   配置了 `[gitfab.team]` 时：派工规则用到的三个角色都必须声明，未知角色、重复声明或空能力都会拒绝启动；Plan 阶段的派发消息会写明实现角色的能力，Plan 拆出的每个 Module 只能要求这些能力，超出的 Plan 不算完成（重派一次，仍超出则运行失败）。不配置时不做此项检查。
    事件日志与 Runner 回执定时写入 Git（附件 3 第 7.1 节），例如 crontab 每分钟一次：
    ```
    * * * * * /opt/hagency/scripts/gitfab-journal-git.sh /var/lib/hagency/data/gitfab/events.jsonl /var/lib/gitfab/journal-git

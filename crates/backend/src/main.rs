@@ -289,6 +289,15 @@ async fn run() -> anyhow::Result<()> {
                 app = app.with_gitfab_board_token(token);
                 tracing::info!("GitFab board Agent status enabled");
             }
+            if let Some(team) = &gitfab.team {
+                let team = hagency_agent_service::orchestrator_team::Team::new(
+                    team.iter()
+                        .map(|(role, r)| (role.as_str(), r.capabilities.clone())),
+                )
+                .map_err(|e| anyhow::anyhow!("gitfab.team: {e}"))?;
+                tracing::info!("GitFab fixed Agent team declared");
+                app = app.with_gitfab_team(team);
+            }
         }
         agent_service = Some(app);
     }
