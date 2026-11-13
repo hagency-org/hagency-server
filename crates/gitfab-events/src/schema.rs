@@ -80,6 +80,8 @@ const TASK_OPTIONAL: Fields = &[
     ("platform_error", Text),
     // The Plan's Module breakdown: id, title, spec, tests and capabilities of each Module.
     ("modules", Array),
+    // The Spec version the stage worked from.
+    ("spec_revision", Int),
 ];
 
 const IDENTITY_FIELDS: Fields = &[

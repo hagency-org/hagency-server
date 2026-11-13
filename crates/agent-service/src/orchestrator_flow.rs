@@ -497,6 +497,13 @@ pub fn observed(row: &DispatchRow, stage: Stage) -> Option<Outcome> {
         "completed" => match row.outcome.as_deref() {
             Some("replied") => match (row.reply_state.as_deref(), row.reply_blocked) {
                 (_, true) => Some(Outcome::Unknown),
+                // A Spec must state its acceptance criteria (Annex 1: Spec with acceptance criteria).
+                (Some("sent"), false)
+                    if stage == Stage::Spec
+                        && !acceptance_criteria(row.reply_body.as_deref().unwrap_or("")) =>
+                {
+                    Some(Outcome::Failed)
+                }
                 // A Plan must carry its Module breakdown; one without it is not a finished Plan
                 // and is retried once like any failed stage.
                 (Some("sent"), false)
@@ -557,6 +564,35 @@ pub fn shared_row(
             _ => row("cancelled", None, None, false),
         },
     })
+}
+
+/// Whether a Spec states acceptance criteria: a line naming them (`验收标准` or `Acceptance
+/// criteria`) followed, before the next heading, by at least one list item.
+pub fn acceptance_criteria(body: &str) -> bool {
+    let mut lines = body.lines().map(str::trim);
+    while let Some(line) = lines.next() {
+        let lower = line.to_ascii_lowercase();
+        if !(line.contains("验收标准") || lower.contains("acceptance criteria")) {
+            continue;
+        }
+        for next in lines.by_ref() {
+            if next.starts_with('#') {
+                break;
+            }
+            let item = next.strip_prefix(['-', '*', '•']).or_else(|| {
+                let digits =
+                    next.len() - next.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+                (digits > 0)
+                    .then(|| next[digits..].strip_prefix(['.', '、', ')']))
+                    .flatten()
+            });
+            if item.is_some_and(|rest| !rest.trim().is_empty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+    false
 }
 
 /// The Reviewer's verdict: the last line of the form `VERDICT: approve|reject|blocked` (or
@@ -921,6 +957,32 @@ mod tests {
                 Stage::Plan
             ),
             Some(Outcome::Unknown)
+        );
+    }
+
+    #[test]
+    fn a_spec_counts_only_with_listed_acceptance_criteria() {
+        let sent = |body: &str| row("completed", Some("replied"), Some("sent"), body);
+        let spec = "## 范围\n任务清单 API\n\n## 验收标准\n1. GET /health 返回 200\n2. 删除后 ID 不复用\n\n## 不做\n持久化";
+        assert!(acceptance_criteria(spec));
+        assert_eq!(
+            observed(&sent(spec), Stage::Spec),
+            Some(Outcome::Replied(None))
+        );
+        assert!(acceptance_criteria("Acceptance criteria:\n- returns 200"));
+        assert!(acceptance_criteria("验收标准\n• 服务可启动"));
+        // Named but empty, or only prose: not a Spec yet.
+        assert!(!acceptance_criteria("## 验收标准\n\n## 风险\n- 并发"));
+        assert!(!acceptance_criteria("范围：实现 API，验收标准见 PRD。"));
+        assert!(!acceptance_criteria("Spec v1: GET /healthz returns 200."));
+        assert_eq!(
+            observed(&sent("Spec v1: GET /healthz returns 200."), Stage::Spec),
+            Some(Outcome::Failed)
+        );
+        // Other stages are not held to it.
+        assert_eq!(
+            observed(&sent("done"), Stage::Release),
+            Some(Outcome::Replied(None))
         );
     }
 

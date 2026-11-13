@@ -140,6 +140,9 @@ async fn run(h: &Harness, id: &str) -> OrchestratorRun {
     h.f.transport.orchestrator_run(id).await.unwrap().unwrap()
 }
 
+/// A Spec reply with the acceptance criteria every Spec must state.
+const SPEC_REPLY: &str = "Spec v1\n## 验收标准\n1. GET /healthz returns 200 with {\"ok\":true}.";
+
 /// A Plan reply with the Module block every Plan must carry.
 const PLAN_REPLY: &str = "Plan: add route, add test.\n```gitfab-modules\n[{\"id\":\"M1\",\"title\":\"healthz\",\"spec\":\"GET /healthz returns 200\",\"tests\":[\"cargo test --locked\"],\"capabilities\":[\"rust\"]}]\n```";
 
@@ -233,12 +236,7 @@ async fn postgres_a_run_goes_from_spec_to_release_with_one_rework_and_a_signed_j
         running_stage(&run(&h, &id).await.state),
         Some((Stage::Spec, 0, 1))
     );
-    answer(
-        &h,
-        &id,
-        "Spec v1: GET /healthz returns 200 with {\"ok\":true}.",
-    )
-    .await;
+    answer(&h, &id, SPEC_REPLY).await;
     o.pass(now()).await.unwrap();
     assert_eq!(
         run(&h, &id).await.state,
@@ -315,7 +313,7 @@ async fn postgres_a_run_goes_from_spec_to_release_with_one_rework_and_a_signed_j
             && posts[5].1.contains("No test for the error path")
     );
     assert!(
-        posts[1].1.contains("Spec v1: GET /healthz"),
+        posts[1].1.contains("1. GET /healthz returns 200"),
         "the plan stage sees the confirmed Spec"
     );
     assert!(
@@ -325,6 +323,30 @@ async fn postgres_a_run_goes_from_spec_to_release_with_one_rework_and_a_signed_j
     );
 
     let events = journal(&h);
+    // Every stage names the Spec version it worked from; the drafted Spec is kept by its digest.
+    for e in events
+        .iter()
+        .filter(|e| e["schema_version"] == "gitfab.task.v1")
+    {
+        let expected = if e["phase"] == "intake" {
+            Value::Null
+        } else {
+            json!(1)
+        };
+        assert_eq!(e["spec_revision"], expected, "{e}");
+    }
+    let drafted = events
+        .iter()
+        .find(|e| e["phase"] == "spec" && e["status"] == "blocked")
+        .unwrap();
+    let digest = {
+        use sha2::Digest;
+        format!(
+            "sha256:{}",
+            hex::encode(sha2::Sha256::digest(SPEC_REPLY.as_bytes()))
+        )
+    };
+    assert_eq!(drafted["output_digest"], json!(digest));
     assert_eq!(
         task_steps(&events),
         steps(&[
@@ -506,7 +528,7 @@ async fn postgres_a_plan_needing_what_the_team_cannot_do_is_retried_once_then_fa
     let now = crate::api::now_ms;
     let id = start(&h, "$gitfab-e2e-team").await;
     o.pass(now()).await.unwrap();
-    answer(&h, &id, "Spec v1").await;
+    answer(&h, &id, SPEC_REPLY).await;
     o.pass(now()).await.unwrap();
     o.decide(&id, Input::SpecDecision(SpecDecision::Approve), now())
         .await
@@ -655,7 +677,7 @@ async fn postgres_humans_start_and_confirm_a_run_with_room_commands() {
             .is_empty()
     );
 
-    answer(&h, &run.id, "Spec v1: GET /healthz returns 200.").await;
+    answer(&h, &run.id, SPEC_REPLY).await;
     o.pass(now()).await.unwrap();
     assert_eq!(
         run_state(&h, &run.id).await,
@@ -822,7 +844,7 @@ async fn postgres_a_run_opens_its_pull_request_and_publishes_the_release_on_the_
     let now = crate::api::now_ms;
     let id = start(&h, "$gitfab-e2e-git").await;
     o.pass(now()).await.unwrap();
-    answer(&h, &id, "Spec v1").await;
+    answer(&h, &id, SPEC_REPLY).await;
     o.pass(now()).await.unwrap();
     o.decide(&id, Input::SpecDecision(SpecDecision::Approve), now())
         .await

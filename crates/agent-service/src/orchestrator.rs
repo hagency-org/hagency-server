@@ -187,7 +187,7 @@ fn timestamp(ms: i64) -> String {
 fn instruction(stage: Stage) -> &'static str {
     match stage {
         Stage::Spec => {
-            "根据目标起草本任务的 Spec：范围、验收标准、不做的事、风险。只输出 Spec 正文，等待人工确认。"
+            "根据目标起草本任务的 Spec：范围、验收标准、不做的事、风险。验收标准单独成节，标题含“验收标准”，下面逐条列出（每条以 -、* 或序号开头）。只输出 Spec 正文，等待人工确认。没有验收标准的 Spec 不算完成。"
         }
         Stage::Plan => {
             "根据已确认的 Spec 给出实施计划：步骤、涉及文件、测试方法。并把任务拆成 Module，在回复中用一个 ```gitfab-modules 代码块给出 JSON 数组，每项含 id（字母数字、-、_）、title、spec（该 Module 的范围与验收要求）、tests（测试命令或用例，至少一项）、capabilities（所需能力，至少一项），最多 16 项。缺少或格式不对的计划不算完成。"
@@ -704,6 +704,8 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                 }
                 _ => (SYSTEM_ACTOR.to_owned(), "system"),
             };
+            // The Spec version the record's stage message worked from (Annex 1: Spec versioned).
+            let mut spec_revision = None;
             let input_digest = match (phase, &actions[..]) {
                 ("intake", _) => sha256(&run.init.context.to_string()),
                 _ => {
@@ -742,6 +744,7 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                     };
                     match dispatched.or(current) {
                         Some((slot, rev, prior)) => {
+                            spec_revision = Some(rev);
                             sha256(&stage_message(&run, slot, rev, prior, self.team))
                         }
                         None => sha256(&run.init.context.to_string()),
@@ -791,6 +794,9 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                 if let Some(error) = &step.error {
                     event["platform_error"] = json!(truncate(error, FINDINGS_LIMIT));
                 }
+            }
+            if let Some(rev) = spec_revision {
+                event["spec_revision"] = json!(rev);
             }
             if phase == "review"
                 && let Some(reply) = reply.filter(|_| finishes_completed)
