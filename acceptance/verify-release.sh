@@ -149,6 +149,20 @@ elif "$gitfab" verify-sbom --keys "$keys" "$sbom" >"$RUN_DIR/sbom-verify.json"; 
 else
     check deploy.sbom fail "see sbom-verify.json"
 fi
+# A Release published to a registry (gitfab-runner --registry) is named by its manifest digest; the
+# registry must still serve exactly that manifest. A local-only image (gitfab/...) has nothing to check.
+image_ref=$(field image_ref)
+case "$image_ref" in
+    gitfab/*) ;;
+    *@sha256:*)
+        if docker buildx imagetools inspect "$image_ref" >"$RUN_DIR/registry-manifest.txt" 2>&1 \
+            || docker manifest inspect "$image_ref" >"$RUN_DIR/registry-manifest.txt" 2>&1; then
+            check deploy.registry ok "$image_ref"
+        else
+            check deploy.registry fail "$image_ref not served by the registry: $(tail -1 "$RUN_DIR/registry-manifest.txt")"
+        fi ;;
+    *) check deploy.registry fail "image_ref is not pinned to a digest: ${image_ref:-none}" ;;
+esac
 name="gitfab-$(printf '%s' "$PROJECT_ID" | tr 'A-Z' 'a-z')"
 running=$(docker inspect -f '{{.State.Running}} {{.Image}}' "$name" 2>/dev/null || true)
 if [ "$running" = "true $image" ]; then
