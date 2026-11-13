@@ -646,6 +646,7 @@ impl<R: StageRoom> Orchestrator<'_, R> {
         if state == run.state && actions.is_empty() {
             return Ok(None);
         }
+        let run_state = run.state.clone();
         let reply = match cause {
             Cause::Agent { reply } => Some(reply),
             _ => None,
@@ -866,6 +867,28 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                 .await
             {
                 tracing::warn!(error = %e, "gitfab Git note was not posted");
+            }
+        }
+        // Waiting on a Human or finished: say so in the thread. Best effort, like the Git note; the
+        // signed journal is the record.
+        if advanced.state != run_state
+            && let Some(notice) = status_notice(&advanced.id, &advanced.state)
+        {
+            let meta = json!({"version": 1, "kind": "status", "runId": advanced.id,
+                "taskId": advanced.init.task_id, "state": advanced.state.to_json()});
+            let txn = format!("{}.status.{revision}", advanced.id);
+            if let Err(e) = self
+                .room
+                .post(
+                    &advanced.init.room_id,
+                    &advanced.init.thread_root,
+                    &txn,
+                    &notice,
+                    &meta,
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "gitfab status notice was not posted");
             }
         }
         Ok(Some(OrchestratorRun {
@@ -1228,6 +1251,24 @@ pub(crate) fn parse_command(body: &str) -> std::result::Result<Command, &'static
     })))
 }
 
+/// The thread notice for a run that now waits on a Human or has ended (Annex 1 §1.2.1(3):
+/// Supervisor status visible where people work). `None` for states that a stage message announces.
+fn status_notice(run_id: &str, state: &State) -> Option<String> {
+    Some(match state {
+        State::AwaitingSpecApproval { spec_revision } => format!(
+            "GitFab：Spec 第 {spec_revision} 版已出稿，等待发起人确认：/gitfab approve、/gitfab revise 或 /gitfab reject。"
+        ),
+        State::ManualIntervention { slot, reason, .. } => format!(
+            "GitFab：{} 阶段（第 {} 轮）转入人工介入（{reason}）。可用 /gitfab continue、/gitfab reassign [@Agent账号] 或 /gitfab abort。",
+            slot.stage.phase(),
+            slot.round
+        ),
+        State::Completed => format!("GitFab：流程 {run_id} 已完成。"),
+        State::Failed { reason } => format!("GitFab：流程 {run_id} 已结束（{reason}）。"),
+        State::NotStarted | State::Running { .. } => return None,
+    })
+}
+
 fn state_text(state: &State) -> String {
     match state {
         State::NotStarted => "未开始".into(),
@@ -1461,6 +1502,55 @@ mod tests {
             "goal is required"
         );
         assert!(parse_command("/gitfab start t1\ncolour: red\ngoal: g").is_err());
+    }
+
+    #[test]
+    fn a_run_that_waits_on_a_human_or_ends_says_so_in_its_thread() {
+        let slot = Slot {
+            stage: Stage::Review,
+            round: 2,
+            attempt: 1,
+        };
+        let manual = State::ManualIntervention {
+            slot,
+            spec_revision: 1,
+            reason: "rework_limit",
+        };
+        let text = status_notice("run1", &manual).unwrap();
+        assert!(
+            text.contains("review 阶段（第 2 轮）转入人工介入（rework_limit）")
+                && text.contains("/gitfab continue")
+        );
+        assert!(
+            status_notice("run1", &State::AwaitingSpecApproval { spec_revision: 3 })
+                .unwrap()
+                .contains("Spec 第 3 版")
+        );
+        assert_eq!(
+            status_notice("run1", &State::Completed).as_deref(),
+            Some("GitFab：流程 run1 已完成。")
+        );
+        assert!(
+            status_notice(
+                "run1",
+                &State::Failed {
+                    reason: "stage_failed"
+                }
+            )
+            .unwrap()
+            .contains("stage_failed")
+        );
+        assert_eq!(
+            status_notice(
+                "run1",
+                &State::Running {
+                    slot,
+                    spec_revision: 1
+                }
+            ),
+            None
+        );
+        assert_eq!(status_notice("run1", &State::NotStarted), None);
     }
 
     #[test]

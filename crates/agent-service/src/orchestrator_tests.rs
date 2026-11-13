@@ -140,6 +140,26 @@ async fn run(h: &Harness, id: &str) -> OrchestratorRun {
     h.f.transport.orchestrator_run(id).await.unwrap().unwrap()
 }
 
+/// The stage messages posted, without the status notices.
+fn stage_posts(h: &Harness) -> Vec<(String, String)> {
+    let posts = h.room.posts.lock().unwrap();
+    posts
+        .iter()
+        .filter(|(txn, _)| !txn.contains(".status."))
+        .cloned()
+        .collect()
+}
+
+/// The status notices posted, in order.
+fn status_posts(h: &Harness) -> Vec<String> {
+    let posts = h.room.posts.lock().unwrap();
+    posts
+        .iter()
+        .filter(|(txn, _)| txn.contains(".status."))
+        .map(|(_, b)| b.clone())
+        .collect()
+}
+
 /// A Spec reply with the acceptance criteria every Spec must state.
 const SPEC_REPLY: &str = "Spec v1\n## 验收标准\n1. GET /healthz returns 200 with {\"ok\":true}.";
 
@@ -244,7 +264,13 @@ async fn postgres_a_run_goes_from_spec_to_release_with_one_rework_and_a_signed_j
     );
     // Nothing runs until the Spec is confirmed.
     o.pass(now()).await.unwrap();
-    assert_eq!(h.room.posts.lock().unwrap().len(), 1);
+    assert_eq!(stage_posts(&h).len(), 1);
+    assert_eq!(
+        status_posts(&h),
+        [
+            "GitFab：Spec 第 1 版已出稿，等待发起人确认：/gitfab approve、/gitfab revise 或 /gitfab reject。"
+        ]
+    );
     assert!(matches!(
         o.decide(&id, Input::Human(HumanDecision::Continue), now())
             .await
@@ -306,8 +332,14 @@ async fn postgres_a_run_goes_from_spec_to_release_with_one_rework_and_a_signed_j
     // One message per stage; the rework message carries the Reviewer's findings; passes after the end
     // post nothing.
     o.pass(now()).await.unwrap();
-    let posts = h.room.posts.lock().unwrap().clone();
+    let posts = stage_posts(&h);
     assert_eq!(posts.len(), 9);
+    assert_eq!(
+        status_posts(&h).len(),
+        2,
+        "awaiting the Spec, then completed"
+    );
+    assert!(status_posts(&h)[1].ends_with("已完成。"));
     assert!(
         posts[5].1.starts_with("[GitFab execute]")
             && posts[5].1.contains("No test for the error path")
@@ -440,10 +472,11 @@ async fn postgres_a_timed_out_stage_waits_for_a_human_and_is_never_redispatched_
     for _ in 0..3 {
         impatient.pass(now()).await.unwrap();
     }
-    assert_eq!(
-        h.room.posts.lock().unwrap().len(),
-        1,
-        "no automatic re-dispatch"
+    assert_eq!(stage_posts(&h).len(), 1, "no automatic re-dispatch");
+    assert!(
+        status_posts(&h)
+            .iter()
+            .any(|s| s.contains("转入人工介入（stage_timeout）"))
     );
 
     // A Human continuing is a new dispatch with its own message, not a replay.
@@ -455,7 +488,7 @@ async fn postgres_a_timed_out_stage_waits_for_a_human_and_is_never_redispatched_
         running_stage(&run(&h, &id).await.state),
         Some((Stage::Spec, 0, 2))
     );
-    let posts = h.room.posts.lock().unwrap().clone();
+    let posts = stage_posts(&h);
     assert_eq!(posts.len(), 2);
     assert_ne!(posts[0].0, posts[1].0);
 
@@ -496,11 +529,9 @@ async fn postgres_a_stage_the_transport_refuses_is_retried_once_then_fails_the_r
             reason: "stage_failed"
         }
     );
-    assert_eq!(
-        h.room.posts.lock().unwrap().len(),
-        2,
-        "first attempt and one retry"
-    );
+    assert_eq!(stage_posts(&h).len(), 2, "first attempt and one retry");
+    assert_eq!(status_posts(&h).len(), 1);
+    assert!(status_posts(&h)[0].contains("已结束（stage_failed）"));
     assert_eq!(
         task_steps(&own(&journal(&h), &id)),
         steps(&[

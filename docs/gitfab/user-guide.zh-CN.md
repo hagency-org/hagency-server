@@ -83,7 +83,7 @@ goal: 实现轻量任务清单 API，见 PRD-DEMO-02-v1。
 | | `/gitfab reassign` | 不指定时仍派给该角色原来的 Agent，记录里标明是改派 |
 | | `/gitfab abort` | 流程结束（失败） |
 
-Thread 里能看到：每个阶段的派发消息（含任务分支 `agent/<project>/<task>`）、Agent 的回复、编排器的平台说明（“已创建或更新 PR”“平台测试状态”“已发布 Release”）。
+Thread 里能看到：每个阶段的派发消息（含任务分支 `agent/<project>/<task>`）、Agent 的回复、编排器的平台说明（“已创建或更新 PR”“平台测试状态”“已发布 Release”）。流程停下等人或结束时，编排器还会发一条状态提示：Spec 出稿待确认、某阶段转入人工介入（附原因和可用命令）、流程已完成或已结束（附原因）。这些消息带 `org.hagency.gitfab_stage` 元数据（`kind: "status"`、`state`），客户端可据此显示任务状态卡；签名事件日志仍是权威记录，状态提示发送失败不影响流程。
 
 ## 5. Agent 主人需要做的
 
