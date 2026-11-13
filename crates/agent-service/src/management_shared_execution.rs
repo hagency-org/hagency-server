@@ -118,7 +118,7 @@ async fn runtime_issuing(
         (runtime_version(r)? != 3 || policy.shared_budget_execution())
             && demands::allowed(db, policy, r).await?
             && issuing(policy)
-            && (policy.shared_successors() || matches!(runtime_version(r)?, 1 | 4)),
+            && (policy.shared_successors() || matches!(runtime_version(r)?, 1 | 4 | 5)),
     )
 }
 fn runtime_version(r: &Runtime) -> Result<u64> {
@@ -137,7 +137,7 @@ impl WorkProtocol {
         let version = runtime_version(r)?;
         if !matches!(
             (self, version),
-            (Self::Assignment, 1 | 2 | 4) | (Self::Budget, 3)
+            (Self::Assignment, 1 | 2 | 4 | 5) | (Self::Budget, 3)
         ) {
             return Err(Error::Conflict("shared_execution_version_required"));
         }
@@ -443,7 +443,7 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: ExecutorPollInput,
     ) -> Result<Option<SharedRuntimeDelivery>> {
-        self.poll_shared_runtime_inner(p, policy, input, false)
+        self.poll_shared_runtime_inner(p, policy, input, false, false)
             .await
     }
     pub async fn poll_shared_runtime_v4(
@@ -452,7 +452,15 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: ExecutorPollInput,
     ) -> Result<Option<SharedRuntimeDelivery>> {
-        self.poll_shared_runtime_inner(p, policy, input, true).await
+        self.poll_shared_runtime_inner(p, policy, input, true, false).await
+    }
+    pub async fn poll_shared_runtime_v5(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        input: ExecutorPollInput,
+    ) -> Result<Option<SharedRuntimeDelivery>> {
+        self.poll_shared_runtime_inner(p, policy, input, true, true).await
     }
     async fn poll_shared_runtime_inner(
         &self,
@@ -460,6 +468,7 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: ExecutorPollInput,
         allow_claude: bool,
+        allow_octos: bool,
     ) -> Result<Option<SharedRuntimeDelivery>> {
         enabled(policy)?;
         if let Some(id) = &input.after {
@@ -484,28 +493,28 @@ impl DomainStore {
             // a usage receipt; delivery() grants history recovery only.
             let ids=sql_query("SELECT a.id AS assignment_id,r.id AS runtime_id
                 FROM hagency_agent_v1.management_shared_assignments a
-                LEFT JOIN hagency_agent_v1.management_shared_runtimes r ON r.assignment_id=a.id AND (r.payload::jsonb->>'version'='1' OR ($8 AND r.payload::jsonb->>'version'='4')) AND NOT r.issuance_void
+                LEFT JOIN hagency_agent_v1.management_shared_runtimes r ON r.assignment_id=a.id AND (r.payload::jsonb->>'version'='1' OR ($8 AND r.payload::jsonb->>'version'='4') OR ($9 AND r.payload::jsonb->>'version'='5')) AND NOT r.issuance_void
                 LEFT JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id
                 WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id) AND (
                     (r.id IS NOT NULL AND ((r.state<>'stopped' AND
                      (r.state<>'qualified' OR r.permanent_fence OR r.activity_until_ms<=$5))
                      OR (r.state='stopped' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w
                          WHERE w.runtime_id=r.id AND w.started_at_ms IS NOT NULL AND w.latest_receipt IS NULL))))
-                    OR (r.id IS NULL AND $7 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes root WHERE root.assignment_id=a.id AND root.payload::jsonb->>'version' IN ('1','4') AND NOT root.issuance_void) AND a.executor_generation=$4 AND a.state='pending_native'
+                    OR (r.id IS NULL AND $7 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes root WHERE root.assignment_id=a.id AND root.payload::jsonb->>'version' IN ('1','4','5') AND NOT root.issuance_void) AND a.executor_generation=$4 AND a.state='pending_native'
                         AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_controls sc WHERE sc.assignment_id=a.id AND sc.mode='paused')
                         AND m.state='matrix_verified' AND m.verified_at_ms>$5-$6 AND m.verified_at_ms<=$5
                         AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_runtime_commands x WHERE x.assignment_id=a.id)
                         AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests ar
                             LEFT JOIN hagency_agent_v1.management_projects p ON p.id=ar.plan_id
                             JOIN hagency_agent_v1.management_contributions c ON c.id=COALESCE(ar.pool_contribution_id,p.contribution_id)
-                            WHERE ar.id=a.request_id AND (c.runtime='codex' OR ($8 AND c.runtime='claude')))))
+                            WHERE ar.id=a.request_id AND (c.runtime='codex' OR ($8 AND c.runtime='claude') OR ($9 AND c.runtime='octos')))))
                 ORDER BY CASE WHEN $3='' THEN coalesce(r.permanent_fence OR r.state='unknown'
                     OR r.state='qualified' AND r.activity_until_ms<=$5
                     OR r.state IN ('pending','issued') AND r.expires_at_ms<=$5,false) ELSE false END DESC,
                     (a.id<=$3),a.id LIMIT 32")
                 .bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(&cursor)
                 .bind::<BigInt,_>(generation).bind::<BigInt,_>(now).bind::<BigInt,_>(MAX_FACT_AGE_MS)
-                .bind::<Bool,_>(issuing(policy)).bind::<Bool,_>(allow_claude).load::<RuntimeCandidate>(db).await?;
+                .bind::<Bool,_>(issuing(policy)).bind::<Bool,_>(allow_claude).bind::<Bool,_>(allow_octos).load::<RuntimeCandidate>(db).await?;
             for id in ids {
                 if let Some(id)=id.runtime_id {
                     let r=runtime(db,&id).await?;
@@ -519,6 +528,7 @@ impl DomainStore {
                 let (version,capability,execution_policy)=match provider.id.as_str() {
                     "codex" => (1,SHARED_EXECUTION_CAPABILITY,SHARED_TEXT_POLICY),
                     "claude" if allow_claude => (4,SHARED_CLAUDE_CAPABILITY,SHARED_CLAUDE_POLICY),
+                    "octos" if allow_octos => (5,SHARED_OCTOS_CAPABILITY,SHARED_OCTOS_POLICY),
                     _ => continue,
                 };
                 let receipt:ManagedAgentReservationReceipt=decode(w.receipt.as_deref().ok_or(Error::Conflict("agent_reservation_required"))?)?;

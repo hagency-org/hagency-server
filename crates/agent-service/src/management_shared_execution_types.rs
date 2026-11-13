@@ -9,6 +9,10 @@ pub const SHARED_EXECUTION_CAPABILITY: &str = "hagency.managed_agents.execution.
 pub const SHARED_TEXT_POLICY: &str = "codex_text_v1";
 pub const SHARED_CLAUDE_CAPABILITY: &str = "hagency.managed_agents.execution.v4";
 pub const SHARED_CLAUDE_POLICY: &str = "claude_text_v1";
+/// Octos has its own root so an older executor can never interpret it as
+/// a Codex or Claude command. Issuance remains separately capability-gated.
+pub const SHARED_OCTOS_CAPABILITY: &str = "hagency.managed_agents.execution.v5";
+pub const SHARED_OCTOS_POLICY: &str = "octos_text_v1";
 pub const MAX_SHARED_TEXT: usize = 4096;
 pub const MAX_SHARED_REPLY: usize = 32 * 1024;
 fn exact(n: i64) -> bool {
@@ -42,6 +46,7 @@ impl SharedRuntimeCommand {
         match (self.version, self.capability.as_str(), self.policy.as_str()) {
             (1, SHARED_EXECUTION_CAPABILITY, SHARED_TEXT_POLICY) => Ok("codex"),
             (4, SHARED_CLAUDE_CAPABILITY, SHARED_CLAUDE_POLICY) => Ok("claude"),
+            (5, SHARED_OCTOS_CAPABILITY, SHARED_OCTOS_POLICY) => Ok("octos"),
             _ => Err(invalid()),
         }
     }
@@ -59,6 +64,12 @@ impl SharedRuntimeCommand {
             ("claude", Some("standard"), true) => Ok("claude_tools_standard_web_v1"),
             ("claude", Some("yolo"), false) => Ok("claude_tools_yolo_v1"),
             ("claude", Some("yolo"), true) => Ok("claude_tools_yolo_web_v1"),
+            ("octos", None, false) => Ok(SHARED_OCTOS_POLICY),
+            ("octos", None, true) => Ok("octos_text_live_web_v1"),
+            ("octos", Some("standard"), false) => Ok("octos_tools_standard_v1"),
+            ("octos", Some("standard"), true) => Ok("octos_tools_standard_web_v1"),
+            ("octos", Some("yolo"), false) => Ok("octos_tools_yolo_v1"),
+            ("octos", Some("yolo"), true) => Ok("octos_tools_yolo_web_v1"),
             _ => Err(invalid()),
         }
     }

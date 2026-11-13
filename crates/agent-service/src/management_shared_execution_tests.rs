@@ -267,6 +267,91 @@ async fn shared_claude_opt_in_replays_original_root_and_prevents_unsafe_downgrad
     );
 }
 
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_octos_v5_gates_original_and_successor_from_older_workers() {
+    #[derive(QueryableByName)]
+    struct Check {
+        #[diesel(sql_type = Bool)]
+        matched: bool,
+    }
+    let (f, request, _assignment, matrix) = Box::pin(prepared_pool(false)).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+
+    // Upgrade an existing schema, and ensure opening the store is repeatable.
+    db.batch_execute(include_str!("management_shared_octos_down.sql"))
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        DomainStore::open(&f.url, "example.test", "_hagency_test_")
+            .await
+            .unwrap();
+        assert!(sql_query("SELECT version=36 AS matched FROM hagency_agent_v1.management_deployment")
+            .get_result::<Check>(&mut db).await.unwrap().matched);
+    }
+    sql_query("UPDATE hagency_agent_v1.management_contributions SET runtime='octos' WHERE id=(SELECT pool_contribution_id FROM hagency_agent_v1.management_agent_requests WHERE id=$1)")
+        .bind::<Text, _>(&request.id).execute(&mut db).await.unwrap();
+    assert!(f.domain.poll_shared_runtime(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
+    assert!(f.domain.poll_shared_runtime_v4(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
+    let first = f.domain.poll_shared_runtime_v5(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().expect("v5 worker can claim Octos");
+    assert_eq!(first.command.version, 5);
+    assert_eq!(first.command.runtime().unwrap(), "octos");
+    assert_eq!(first.command.policy, SHARED_OCTOS_POLICY);
+    assert!(f.domain.poll_shared_runtime(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
+    assert!(f.domain.poll_shared_runtime_v4(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
+    let root = f.domain.poll_shared_runtime_v5(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().unwrap();
+    assert_eq!(root.command_digest, first.command_digest);
+    assert_eq!(root.command.command_id, first.command.command_id);
+
+    let duplicate = sql_query("INSERT INTO hagency_agent_v1.management_shared_runtimes(id,assignment_id,payload,digest,created_at_ms,expires_at_ms,permanent_fence) SELECT $1,assignment_id,jsonb_set(payload::jsonb,'{commandId}',to_jsonb($1::text))::text,digest,created_at_ms,expires_at_ms,true FROM hagency_agent_v1.management_shared_runtimes WHERE id=$2")
+        .bind::<Text,_>("sex_duplicate_octos").bind::<Text,_>(&root.command.command_id)
+        .execute(&mut db).await.unwrap_err().to_string();
+    assert!(duplicate.contains("original_shared_runtime"), "{duplicate}");
+    assert!(db.batch_execute(include_str!("management_shared_octos_down.sql")).await.unwrap_err().to_string().contains("shared_octos_downgrade_has_runtime"));
+
+    save(&f, &root, "qualified", 200).await.unwrap().activity.unwrap();
+    let stopped = attempts::stop(&f, &root, 220).await;
+    let successor = f.domain.start_shared_attempt(&f.owner.p, &f.policy, attempts::start(&root, &stopped), &matrix.gateway).await.unwrap();
+    assert_eq!(successor.command.original_runtime_command.runtime().unwrap(), "octos");
+    assert!(f.domain.poll_shared_attempt(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
+    assert!(f.domain.poll_shared_attempt_v4(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
+    let replay = f.domain.poll_shared_attempt_v5(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().unwrap();
+    assert_eq!(replay.command_digest, successor.command_digest);
+    assert_eq!(replay.command.original_runtime_command.version, 5);
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_octos_demand_is_visible_only_to_v5_workers() {
+    use crate::{management_shared_demand_types::SharedDemandPollInput, transport::RoutedEvent};
+    use std::collections::BTreeSet;
+    #[derive(QueryableByName)]
+    struct Puppet { #[diesel(sql_type = Text)] id: String }
+    let (f, request, assignment, matrix) = Box::pin(prepared_pool(true)).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("UPDATE hagency_agent_v1.management_contributions SET runtime='octos' WHERE id=(SELECT pool_contribution_id FROM hagency_agent_v1.management_agent_requests WHERE id=$1)")
+        .bind::<Text,_>(&request.id).execute(&mut db).await.unwrap();
+    intake_tests::arm(&f, &assignment, &matrix).await;
+    let root = f.domain.poll_shared_runtime_v5(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().unwrap();
+    let puppet = sql_query("SELECT puppet_mxid AS id FROM hagency_agent_v1.management_agent_matrix WHERE assignment_id=$1")
+        .bind::<Text,_>(&assignment.id).get_result::<Puppet>(&mut db).await.unwrap().id;
+    let event = RoutedEvent {
+        event_id:"$octos_demand:test".into(), room_id:request.room_id.clone(), sender_mxid:f.outsider.p.mxid.clone(),
+        body:"Please inspect the workspace".into(), mentioned_mxids:BTreeSet::from([puppet]),
+        thread_root:None, encrypted:false, is_edit:false,
+    };
+    let received = sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS count")
+        .get_result::<Count>(&mut db).await.unwrap().count;
+    f.domain.route_shared_event(&f.policy, &event, received, &matrix.gateway).await.unwrap();
+    assert!(f.domain.poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default()).await.unwrap().demand.is_none());
+    assert!(f.domain.poll_shared_demand_v4(&f.owner.p, &f.policy, SharedDemandPollInput::default()).await.unwrap().demand.is_none());
+    assert!(f.domain.poll_shared_demand_v5(&f.owner.p, &f.policy, SharedDemandPollInput::default()).await.unwrap().demand.is_none(),
+        "an Octos request must not bind to a first command before it starts");
+    save(&f, &root, "qualified", 200).await.unwrap();
+    let offered = f.domain.poll_shared_demand_v5(&f.owner.p, &f.policy, SharedDemandPollInput::default()).await.unwrap().demand.unwrap();
+    assert_eq!(offered.offer.event_id, event.event_id);
+}
+
 /// A carried pool Agent's activity lease follows its pool's capacity chain:
 /// with chain lifetimes on it outlasts the month its reserve command names.
 #[tokio::test]
@@ -1426,6 +1511,13 @@ async fn shared_poll(f: &Fixture) -> SharedRuntimeDelivery {
         .unwrap()
         .unwrap()
 }
+async fn shared_poll_for_runtime(f: &Fixture, octos: bool) -> SharedRuntimeDelivery {
+    if octos {
+        f.domain.poll_shared_runtime_v5(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().unwrap()
+    } else {
+        shared_poll(f).await
+    }
+}
 fn evidence(d: &SharedRuntimeDelivery, state: &str, revision: i64) -> SharedProcessInput {
     SharedProcessInput {
         command_digest: d.command_digest.clone(),
@@ -1960,7 +2052,7 @@ async fn shared_runtime_v11_migration_is_atomic_preserves_original_v1() {
             .is_none()
     );
     assert!(
-        sql_query("SELECT version=35 AS matched FROM hagency_agent_v1.management_deployment")
+        sql_query("SELECT version=36 AS matched FROM hagency_agent_v1.management_deployment")
             .get_result::<Check>(&mut db)
             .await
             .unwrap()
@@ -2757,13 +2849,23 @@ async fn split_pool_limits_initial_command_requires_native_no_issue_proof_before
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn pool_policy_grant_initial_command_requires_native_no_issue_proof_before_retry() {
-    initial_command_no_issue_proof_for(Some(100000), true).await;
+    initial_command_no_issue_proof_for(Some(100000), true, false).await;
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn octos_pool_policy_first_command_waits_and_accepts_no_issue_proof() {
+    initial_command_no_issue_proof_for(Some(100000), true, true).await;
 }
 async fn initial_command_no_issue_proof(cap: Option<i64>) {
-    initial_command_no_issue_proof_for(cap, false).await;
+    initial_command_no_issue_proof_for(cap, false, false).await;
 }
-async fn initial_command_no_issue_proof_for(cap: Option<i64>, pool_policy: bool) {
+async fn initial_command_no_issue_proof_for(cap: Option<i64>, pool_policy: bool, octos: bool) {
     let (f, request, assignment, matrix) = prepared_pool_terms(true, true, cap, pool_policy).await;
+    if octos {
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        sql_query("UPDATE hagency_agent_v1.management_contributions SET runtime='octos' WHERE id=(SELECT pool_contribution_id FROM hagency_agent_v1.management_agent_requests WHERE id=$1)")
+            .bind::<Text, _>(&request.id).execute(&mut db).await.unwrap();
+    }
     let queued = crate::transport::RoutedEvent {
         event_id: "$before-first-process".into(),
         room_id: request.room_id.clone(),
@@ -2778,16 +2880,16 @@ async fn initial_command_no_issue_proof_for(cap: Option<i64>, pool_policy: bool)
         .route_shared_event(&f.policy, &queued, now_ms(), &matrix.gateway)
         .await
         .unwrap();
-    let first = shared_poll(&f).await;
+    let first = shared_poll_for_runtime(&f, octos).await;
     assert!(first.execution_allowed);
     // The executor also asks for demands while its first command has not
     // started. On River this pinned the waiting message to that command, and
     // the message ended as head_changed when the command was replaced.
-    let early = f
-        .domain
-        .poll_shared_demand(&f.owner.p, &f.policy, Default::default())
-        .await
-        .unwrap();
+    let early = if octos {
+        f.domain.poll_shared_demand_v5(&f.owner.p, &f.policy, Default::default()).await.unwrap()
+    } else {
+        f.domain.poll_shared_demand(&f.owner.p, &f.policy, Default::default()).await.unwrap()
+    };
     assert!(
         early.demand.is_none(),
         "no demand names a first command that has not started"
@@ -2828,7 +2930,7 @@ async fn initial_command_no_issue_proof_for(cap: Option<i64>, pool_policy: bool)
         (first.command.expires_at_ms - now_ms() + 30).max(1) as u64,
     ))
     .await;
-    let cleanup = shared_poll(&f).await;
+    let cleanup = shared_poll_for_runtime(&f, octos).await;
     assert_eq!(cleanup.command.command_id, first.command.command_id);
     assert!(!cleanup.execution_allowed && cleanup.cleanup_allowed);
     proof.token = cleanup.token.clone();
@@ -2871,7 +2973,7 @@ async fn initial_command_no_issue_proof_for(cap: Option<i64>, pool_policy: bool)
         )
         .await
         .unwrap();
-    let second = shared_poll(&f).await;
+    let second = shared_poll_for_runtime(&f, octos).await;
     assert!(second.execution_allowed);
     assert_ne!(second.command.command_id, first.command.command_id);
     assert_eq!(second.command.assignment_id, assignment.id);
@@ -2964,4 +3066,29 @@ fn shared_claude_root_cannot_relabel_legacy_codex_or_broaden_owner_policy() {
             "{field}"
         );
     }
+}
+
+#[test]
+fn shared_octos_root_has_a_distinct_closed_policy() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/management-shared-execution-v1.json"
+    )).unwrap();
+    let original: SharedRuntimeCommand = serde_json::from_value(fixture["command"].clone()).unwrap();
+    let mut octos = original.clone();
+    octos.version = 5;
+    octos.capability = SHARED_OCTOS_CAPABILITY.into();
+    octos.policy = SHARED_OCTOS_POLICY.into();
+    octos.validate("example.test").unwrap();
+    assert_eq!(octos.runtime().unwrap(), "octos");
+    assert_eq!(octos.execution_policy(false, None).unwrap(), SHARED_OCTOS_POLICY);
+    assert_eq!(octos.execution_policy(true, None).unwrap(), "octos_text_live_web_v1");
+    assert_eq!(octos.execution_policy(false, Some("standard")).unwrap(), "octos_tools_standard_v1");
+    assert_eq!(octos.execution_policy(true, Some("yolo")).unwrap(), "octos_tools_yolo_web_v1");
+    assert!(octos.execution_policy(false, Some("arbitrary")).is_err());
+    for field in ["version", "capability", "policy"] {
+        let mut mixed = serde_json::to_value(&octos).unwrap();
+        mixed[field] = fixture["command"][field].clone();
+        assert!(serde_json::from_value::<SharedRuntimeCommand>(mixed).unwrap().validate("example.test").is_err());
+    }
+    assert_eq!(allocation_digest(&original).unwrap(), fixture["commandDigest"]);
 }

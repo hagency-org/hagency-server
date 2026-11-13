@@ -385,6 +385,7 @@ impl App {
                 "managed-agent-budget-delta-v1",
                 "shared-budget-execution-v1",
                 "shared-claude-execution-v1",
+                "shared-octos-execution-v1",
                 "agent-settlement-v1",
             ];
             if self

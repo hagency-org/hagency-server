@@ -112,6 +112,12 @@ pub(super) async fn call(
             .map_err(|_| Error::Unavailable("encoding_failed"))?
         }
 
+        (&Method::POST, ["shared-execution", "demands", "poll-v5"]) => serde_json::to_value(
+            domain
+                .poll_shared_demand_v5(p, policy, body(req).await?)
+                .await?,
+        )
+        .map_err(|_| Error::Unavailable("encoding_failed"))?,
         (&Method::POST, ["shared-execution", "demands", "poll-v4"]) => serde_json::to_value(
             domain
                 .poll_shared_demand_v4(p, policy, body(req).await?)
@@ -178,6 +184,9 @@ pub(super) async fn call(
         (&Method::POST, ["shared-execution", "attempts", "start"]) => {
             json!({"delivery":domain.start_shared_attempt(p,policy,body(req).await?,gateway).await?})
         }
+        (&Method::POST, ["shared-execution", "attempts", "poll-v5"]) => {
+            json!({"delivery":domain.poll_shared_attempt_v5(p,policy,body(req).await?).await?})
+        }
         (&Method::POST, ["shared-execution", "attempts", "poll-v4"]) => {
             json!({"delivery":domain.poll_shared_attempt_v4(p,policy,body(req).await?).await?})
         }
@@ -223,6 +232,9 @@ pub(super) async fn call(
         }
         (&Method::POST, ["agent-requests", id, "work", "query"]) => {
             json!({"work":domain.shared_work_history(p,policy,id,body(req).await?).await?})
+        }
+        (&Method::POST, ["shared-execution", "runtime", "poll-v5"]) => {
+            json!({"delivery":domain.poll_shared_runtime_v5(p,policy,body(req).await?).await?})
         }
         (&Method::POST, ["shared-execution", "runtime", "poll-v4"]) => {
             json!({"delivery":domain.poll_shared_runtime_v4(p,policy,body(req).await?).await?})

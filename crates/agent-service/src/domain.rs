@@ -589,6 +589,8 @@ impl DomainStore {
             let management=sql_query("SELECT version=34 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
             if management.matched {db.batch_execute(include_str!("management_executor_ledgers_schema.sql")).await?;}
             let management=sql_query("SELECT version=35 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
+            if management.matched {db.batch_execute(include_str!("management_shared_octos_schema.sql")).await?;}
+            let management=sql_query("SELECT version=36 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
             if !management.matched { return Err(Error::Conflict("management_schema_incompatible")); }
             db.batch_execute(include_str!("management_pool_limits_validation.sql")).await?;
             db.batch_execute(include_str!("management_agent_periods_recovery.sql")).await?;
