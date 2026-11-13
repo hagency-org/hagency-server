@@ -289,3 +289,34 @@ fn trace_follows_a_release_through_task_events_and_ignores_forged_lines() {
     assert_eq!((code, out["matches"].as_array().unwrap().len()), (0, 2));
     assert_eq!(gitfab(&["trace", "--keys", "keys", "--id", "nothing", "events.jsonl"], dir).0, 1);
 }
+
+#[test]
+fn trace_by_text_finds_the_signed_spec_and_not_an_edited_copy() {
+    use sha2::Digest;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    assert_eq!(gitfab(&["keygen", "--key-id", "k1", "--dir", "keys"], dir).0, 0);
+    let spec = "# Spec v2\n\n验收标准：标题 1 到 120 个字符。\n";
+    let digest = format!("sha256:{}", hex::encode(sha2::Sha256::digest(spec.as_bytes())));
+    let event = json!({
+        "schema_version": "gitfab.task.v1", "event_id": "run-3.2.0", "timestamp": "2026-11-12T03:00:00Z",
+        "project_id": "DEMO-02", "task_id": "task-3", "run_id": "run-3", "matrix_room_id": "!room:example.org",
+        "matrix_thread_event_id": "$root", "git_backend": "github", "repo_ref": "https://github.com/org/demo-02",
+        "baseline_sha": "a".repeat(40), "spec_ref": "spec/DEMO-02.md@v1", "phase": "spec", "status": "succeeded",
+        "actor_id": "@agent:example.org", "input_digest": format!("sha256:{}", "a".repeat(64)),
+        "output_digest": digest, "artifact_refs": [], "request_id": "req-3", "signature": null, "round": 0
+    });
+    std::fs::write(dir.join("events.jsonl"), sign(dir, &event).to_string() + "\n").unwrap();
+    std::fs::write(dir.join("spec.md"), spec).unwrap();
+    std::fs::write(dir.join("edited.md"), spec.replace("120", "200")).unwrap();
+
+    let (code, out) = gitfab(&["trace", "--keys", "keys", "--text", "spec.md", "events.jsonl"], dir);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["id"], digest);
+    assert_eq!(out["matches"][0]["phase"], "spec");
+    let (code, out) = gitfab(&["trace", "--keys", "keys", "--text", "edited.md", "events.jsonl"], dir);
+    assert_eq!((code, out["matches"].as_array().map(Vec::len)), (1, Some(0)), "{out}");
+
+    let (_, report) = gitfab(&["report", "--keys", "keys", "--project", "DEMO-02", "events.jsonl"], dir);
+    assert!(report.as_str().unwrap().contains(&format!("输出 {}", &digest[..19])), "{report}");
+}

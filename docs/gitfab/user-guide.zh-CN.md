@@ -114,6 +114,16 @@ gitfab-board --keys <公钥目录> --journal <事件日志> --receipts /var/lib/
 
 每条命令把报告写进 `evidence/<acceptance_run_id>/`。设 `ACCEPTANCE_RUN_ID=ar-…` 可让多条命令共用一个证据包。退出码：0 通过，1 有核对不通过，2 配置不全。命令细节见 `acceptance/README.zh-CN.md`。
 
+查看与追溯（都只读，只采用验签通过的记录）：
+
+```
+gitfab report --keys acceptance/keys --project DEMO-02 <事件日志> <部署回执>    # 一个项目做了什么（Markdown）
+gitfab trace  --keys acceptance/keys --id <任务/运行/提交/Release/镜像 digest> <文件…>
+gitfab trace  --keys acceptance/keys --text spec.md <事件日志>                  # 这段文本是否为某个签名阶段的原文
+```
+
+报告里每个 Spec 版本和每次评审回复都标出输出摘要，可以集中查看 Spec 的历史版本。`trace --text` 用文件的 SHA-256 查找输入或输出正是这段文本的签名阶段：原样保存的 Spec 或评审回复能找到对应事件；改动过的文本对不上任何签名记录，返回 1。
+
 ## 9. 演示用例
 
 | 项目 | 后端 | 测试仓库 | 演示重点 |

@@ -103,12 +103,18 @@ enum Command {
     },
     /// Every verified signed record that names an identifier: a project, task, run, commit SHA, Release
     /// id or tag, image digest or a link. Exit 1 when nothing matches.
+    ///
+    /// With `--text FILE`, the identifier is the file's SHA-256: it finds the signed stage whose input or
+    /// output was exactly that text, so an edited Spec or Reviewer reply matches nothing.
     Trace {
         #[arg(long)]
         keys: PathBuf,
         /// The identifier to follow.
+        #[arg(long, required_unless_present = "text", conflicts_with = "text")]
+        id: Option<String>,
+        /// A text (a Spec, a Reviewer reply) to find by its digest.
         #[arg(long)]
-        id: String,
+        text: Option<PathBuf>,
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
@@ -332,8 +338,21 @@ fn run(command: Command) -> Result<bool, String> {
             println!("{}", report(&ring, &project, &files)?);
             Ok(true)
         }
-        Command::Trace { keys, id, files } => {
+        Command::Trace {
+            keys,
+            id,
+            text,
+            files,
+        } => {
             let ring = Keyring::load_dir(&keys).map_err(|e| e.to_string())?;
+            let id = match (id, text) {
+                (Some(id), _) => id,
+                (None, Some(file)) => {
+                    let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", display(&file)))?;
+                    format!("sha256:{}", hex::encode(sha2::Sha256::digest(&bytes)))
+                }
+                (None, None) => unreachable!("clap requires --id or --text"),
+            };
             let found = trace(&ring, &id, &files)?;
             let any = !found.is_empty();
             print(&json!({"id": id, "matches": found}));
@@ -405,7 +424,7 @@ fn display(path: &Path) -> String {
 /// Fields an identifier is looked up in, and the fields shown for each match.
 const TRACE_FIELDS: &[&str] = &[
     "project_id", "project", "task_id", "run_id", "event_id", "release_id", "tag", "commit_sha",
-    "baseline_sha", "image_digest", "artifact_digest",
+    "baseline_sha", "image_digest", "artifact_digest", "input_digest", "output_digest",
 ];
 
 /// Records naming `id` (Annex 2 §5: project, task, commit and Release ids lead to one another).
@@ -483,6 +502,12 @@ fn report(ring: &Keyring, project: &str, files: &[PathBuf]) -> Result<String, St
             let mut links: Vec<String> = e["artifact_refs"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
             if let Some(sha) = e["commit_sha"].as_str() {
                 links.push(format!("提交 {}", &sha[..sha.len().min(12)]));
+            }
+            // Each Spec version and Reviewer reply is named by its digest; `trace --text` finds it again.
+            if matches!(e["phase"].as_str(), Some("spec" | "review"))
+                && let Some(digest) = e["output_digest"].as_str()
+            {
+                links.push(format!("输出 {}", &digest[..digest.len().min(19)]));
             }
             out += &format!(
                 "| {} | {} | {} | {} | {} | {} |\n",
