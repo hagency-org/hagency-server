@@ -139,12 +139,15 @@ async fn run(h: &Harness, id: &str) -> OrchestratorRun {
     h.f.transport.orchestrator_run(id).await.unwrap().unwrap()
 }
 
+/// A Plan reply with the Module block every Plan must carry.
+const PLAN_REPLY: &str = "Plan: add route, add test.\n```gitfab-modules\n[{\"id\":\"M1\",\"title\":\"healthz\",\"spec\":\"GET /healthz returns 200\",\"tests\":[\"cargo test --locked\"],\"capabilities\":[\"rust\"]}]\n```";
+
 /// The simulated Agent: claims the run's current dispatch, runs it and delivers `body` to the Room.
 async fn answer(h: &Harness, run_id: &str, body: &str) {
-    let dispatch = run(h, run_id)
-        .await
+    let current = run(h, run_id).await;
+    let dispatch = current
         .dispatch_id
-        .expect("a dispatch is waiting");
+        .unwrap_or_else(|| panic!("a dispatch is waiting: {:?}", current.state));
     let n = h.answers.fetch_add(1, Ordering::SeqCst);
     let execution = format!("exec-{run_id}-{n}");
     running(&h.f, &h.lease, &dispatch, &execution).await;
@@ -258,7 +261,7 @@ async fn postgres_a_run_goes_from_spec_to_release_with_one_rework_and_a_signed_j
     );
 
     for (stage, round, reply) in [
-        (Stage::Plan, 0, "Plan: add route, add test."),
+        (Stage::Plan, 0, PLAN_REPLY),
         (
             Stage::Execute,
             1,
@@ -771,7 +774,7 @@ async fn postgres_a_run_opens_its_pull_request_and_publishes_the_release_on_the_
         .await
         .unwrap();
     for reply in [
-        "plan",
+        PLAN_REPLY,
         "pushed ccc to agent/DEMO-02/task-healthz",
         "tests pass",
         "VERDICT: approve",
@@ -806,6 +809,12 @@ async fn postgres_a_run_opens_its_pull_request_and_publishes_the_release_on_the_
         assert_eq!(field(phase, "platform_error"), Some(Value::Null), "{phase}");
     }
     assert_eq!(field("plan", "commit_sha"), Some(Value::Null));
+    assert_eq!(
+        field("plan", "modules"),
+        Some(
+            json!([{"id":"M1","title":"healthz","spec":"GET /healthz returns 200","tests":["cargo test --locked"],"capabilities":["rust"]}])
+        )
+    );
     let posts = h.room.posts.lock().unwrap();
     assert!(
         posts

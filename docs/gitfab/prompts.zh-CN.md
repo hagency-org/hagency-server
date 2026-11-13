@@ -61,9 +61,20 @@ PRD 不是发给 Agent 的提示词，而是 `specRef` 指向的冻结文件，S
 
 原文：
 
-> 根据已确认的 Spec 给出实施计划：步骤、涉及文件、测试方法。
+> 根据已确认的 Spec 给出实施计划：步骤、涉及文件、测试方法。并把任务拆成 Module，在回复中用一个 ```gitfab-modules 代码块给出 JSON 数组，每项含 id（字母数字、-、_）、title、spec（该 Module 的范围与验收要求）、tests（测试命令或用例，至少一项）、capabilities（所需能力，至少一项），最多 16 项。缺少或格式不对的计划不算完成。
+
+Module 代码块示例：
+
+````text
+```gitfab-modules
+[{"id":"M1","title":"任务存储","spec":"内存存储；ID 递增且删除后不复用","tests":["cargo test --locked store"],"capabilities":["rust"]},
+ {"id":"M2","title":"HTTP 接口","spec":"六个接口的状态码与错误体按 Spec","tests":["acceptance/fixtures/DEMO-02/cases.json"],"capabilities":["rust","http"]}]
+```
+````
 
 配置要点：
+- Module 清单的读取是严格的（`orchestrator_modules.rs`）：只认一个代码块，字段不能多也不能少，id 不能重复，spec、tests、capabilities 不能为空。没有合格清单的 Plan 回复按失败处理，自动重派一次，仍不合格则整个运行失败。
+- 合格的清单作为任务卡写入 Plan 成功事件的 `modules` 字段（每项含 id、title、spec、tests、capabilities），并随 Plan 全文带入 Execute 阶段。
 - Plan 由协调角色（coordinator）完成，Execute 由实现角色（implementer）完成，派发规则固定，见 `orchestrator_flow.rs` 的 `Stage::role()`。
 - 计划里的“测试方法”应指向 PRD 冻结的测试命令，便于 Test 阶段直接执行。
 

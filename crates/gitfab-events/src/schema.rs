@@ -78,6 +78,8 @@ const TASK_OPTIONAL: Fields = &[
     ("findings", Array),
     ("commit_sha", Sha),
     ("platform_error", Text),
+    // The Plan's Module breakdown: id, title, spec, tests and capabilities of each Module.
+    ("modules", Array),
 ];
 
 const IDENTITY_FIELDS: Fields = &[

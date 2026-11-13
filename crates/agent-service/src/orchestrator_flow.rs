@@ -497,6 +497,17 @@ pub fn observed(row: &DispatchRow, stage: Stage) -> Option<Outcome> {
         "completed" => match row.outcome.as_deref() {
             Some("replied") => match (row.reply_state.as_deref(), row.reply_blocked) {
                 (_, true) => Some(Outcome::Unknown),
+                // A Plan must carry its Module breakdown; one without it is not a finished Plan
+                // and is retried once like any failed stage.
+                (Some("sent"), false)
+                    if stage == Stage::Plan
+                        && crate::orchestrator_modules::modules(
+                            row.reply_body.as_deref().unwrap_or(""),
+                        )
+                        .is_err() =>
+                {
+                    Some(Outcome::Failed)
+                }
                 (Some("sent"), false) => {
                     let verdict = (stage == Stage::Review)
                         .then(|| row.reply_body.as_deref().and_then(verdict))
@@ -900,7 +911,7 @@ mod tests {
         assert_eq!(
             observed(
                 &row("completed", Some("replied"), Some("sent"), "done"),
-                Stage::Plan
+                Stage::Execute
             ),
             Some(Outcome::Replied(None))
         );
@@ -910,6 +921,25 @@ mod tests {
                 Stage::Plan
             ),
             Some(Outcome::Unknown)
+        );
+    }
+
+    #[test]
+    fn a_plan_reply_counts_only_with_its_module_breakdown() {
+        let sent = |body: &str| row("completed", Some("replied"), Some("sent"), body);
+        assert_eq!(
+            observed(&sent("Plan: steps only."), Stage::Plan),
+            Some(Outcome::Failed)
+        );
+        let plan = "Steps.\n```gitfab-modules\n[{\"id\":\"M1\",\"title\":\"t\",\"spec\":\"s\",\"tests\":[\"cargo test\"],\"capabilities\":[\"rust\"]}]\n```";
+        assert_eq!(
+            observed(&sent(plan), Stage::Plan),
+            Some(Outcome::Replied(None))
+        );
+        // Only the Plan is held to it.
+        assert_eq!(
+            observed(&sent("Plan: steps only."), Stage::Execute),
+            Some(Outcome::Replied(None))
         );
     }
 

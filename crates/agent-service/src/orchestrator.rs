@@ -187,7 +187,9 @@ fn instruction(stage: Stage) -> &'static str {
         Stage::Spec => {
             "根据目标起草本任务的 Spec：范围、验收标准、不做的事、风险。只输出 Spec 正文，等待人工确认。"
         }
-        Stage::Plan => "根据已确认的 Spec 给出实施计划：步骤、涉及文件、测试方法。",
+        Stage::Plan => {
+            "根据已确认的 Spec 给出实施计划：步骤、涉及文件、测试方法。并把任务拆成 Module，在回复中用一个 ```gitfab-modules 代码块给出 JSON 数组，每项含 id（字母数字、-、_）、title、spec（该 Module 的范围与验收要求）、tests（测试命令或用例，至少一项）、capabilities（所需能力，至少一项），最多 16 项。缺少或格式不对的计划不算完成。"
+        }
         Stage::Execute => {
             "按计划在仓库中实现，提交到任务分支。回复中列出提交 SHA、改动文件和自测结果。若上一轮评审驳回，逐条处理其中的问题。"
         }
@@ -769,6 +771,15 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                 && let Some(reply) = reply.filter(|_| finishes_completed)
             {
                 event["findings"] = findings(reply);
+            }
+            // The Plan's Module breakdown is the task card list (Annex 1 Chapter 2).
+            if phase == "plan"
+                && status == "succeeded"
+                && let Some(Ok(modules)) = reply
+                    .filter(|_| finishes_completed)
+                    .map(crate::orchestrator_modules::modules)
+            {
+                event["modules"] = json!(modules);
             }
             events.push(json!({"event": event, "actorType": actor_type}));
         }

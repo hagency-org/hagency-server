@@ -27,7 +27,8 @@ JSON on stdout with a stable `code` per failure.
   succeeded), an execution result, a Reviewer verdict (terminal review status) or a release.
 - **Schema.** Unknown `schema_version`, missing or mistyped required fields and undeclared fields are
   refused. Timestamps are UTC RFC 3339 ending in `Z`. Strings may not contain credentials in URLs or local
-  absolute paths. Declared optional fields: `round` and `findings` on task events, `corrects` on memory and
+  absolute paths. Declared optional fields: `round`, `findings`, `commit_sha`, `platform_error` and `modules` (the
+  Plan's Module breakdown) on task events, `corrects` on memory and
   token events.
 - **Ledger.** Idempotent by `event_id` (`release_id` for releases). An identical duplicate counts once; the
   same key with different canonical content fails the ledger with `conflict`. Corrections are new events
