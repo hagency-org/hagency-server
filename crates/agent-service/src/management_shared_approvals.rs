@@ -338,8 +338,10 @@ mod claude_tests {
             "sessionAllowed":false,"managerCanDecide":false});
         assert_eq!(plain_request_runtime(&request).unwrap(), "octos");
         for (pointer, value) in [
-            ("/sessionAllowed", json!(true)), ("/managerCanDecide", json!(true)),
-            ("/params/input", json!("command")), ("/params/toolName", json!("")),
+            ("/sessionAllowed", json!(true)),
+            ("/managerCanDecide", json!(true)),
+            ("/params/input", json!("command")),
+            ("/params/toolName", json!("")),
         ] {
             let mut wrong = request.clone();
             *wrong.pointer_mut(pointer).unwrap() = value;

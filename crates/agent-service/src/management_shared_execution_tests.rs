@@ -286,20 +286,59 @@ async fn shared_octos_v5_gates_original_and_successor_from_older_workers() {
         DomainStore::open(&f.url, "example.test", "_hagency_test_")
             .await
             .unwrap();
-        assert!(sql_query("SELECT version=36 AS matched FROM hagency_agent_v1.management_deployment")
-            .get_result::<Check>(&mut db).await.unwrap().matched);
+        assert!(
+            sql_query("SELECT version=36 AS matched FROM hagency_agent_v1.management_deployment")
+                .get_result::<Check>(&mut db)
+                .await
+                .unwrap()
+                .matched
+        );
     }
     sql_query("UPDATE hagency_agent_v1.management_contributions SET runtime='octos' WHERE id=(SELECT pool_contribution_id FROM hagency_agent_v1.management_agent_requests WHERE id=$1)")
         .bind::<Text, _>(&request.id).execute(&mut db).await.unwrap();
-    assert!(f.domain.poll_shared_runtime(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
-    assert!(f.domain.poll_shared_runtime_v4(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
-    let first = f.domain.poll_shared_runtime_v5(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().expect("v5 worker can claim Octos");
+    assert!(
+        f.domain
+            .poll_shared_runtime(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        f.domain
+            .poll_shared_runtime_v4(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let first = f
+        .domain
+        .poll_shared_runtime_v5(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await
+        .unwrap()
+        .expect("v5 worker can claim Octos");
     assert_eq!(first.command.version, 5);
     assert_eq!(first.command.runtime().unwrap(), "octos");
     assert_eq!(first.command.policy, SHARED_OCTOS_POLICY);
-    assert!(f.domain.poll_shared_runtime(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
-    assert!(f.domain.poll_shared_runtime_v4(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
-    let root = f.domain.poll_shared_runtime_v5(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().unwrap();
+    assert!(
+        f.domain
+            .poll_shared_runtime(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        f.domain
+            .poll_shared_runtime_v4(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let root = f
+        .domain
+        .poll_shared_runtime_v5(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(root.command_digest, first.command_digest);
     assert_eq!(root.command.command_id, first.command.command_id);
 
@@ -307,15 +346,58 @@ async fn shared_octos_v5_gates_original_and_successor_from_older_workers() {
         .bind::<Text,_>("sex_duplicate_octos").bind::<Text,_>(&root.command.command_id)
         .execute(&mut db).await.unwrap_err().to_string();
     assert!(duplicate.contains("original_shared_runtime"), "{duplicate}");
-    assert!(db.batch_execute(include_str!("management_shared_octos_down.sql")).await.unwrap_err().to_string().contains("shared_octos_downgrade_has_runtime"));
+    assert!(
+        db.batch_execute(include_str!("management_shared_octos_down.sql"))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("shared_octos_downgrade_has_runtime")
+    );
 
-    save(&f, &root, "qualified", 200).await.unwrap().activity.unwrap();
+    save(&f, &root, "qualified", 200)
+        .await
+        .unwrap()
+        .activity
+        .unwrap();
     let stopped = attempts::stop(&f, &root, 220).await;
-    let successor = f.domain.start_shared_attempt(&f.owner.p, &f.policy, attempts::start(&root, &stopped), &matrix.gateway).await.unwrap();
-    assert_eq!(successor.command.original_runtime_command.runtime().unwrap(), "octos");
-    assert!(f.domain.poll_shared_attempt(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
-    assert!(f.domain.poll_shared_attempt_v4(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().is_none());
-    let replay = f.domain.poll_shared_attempt_v5(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().unwrap();
+    let successor = f
+        .domain
+        .start_shared_attempt(
+            &f.owner.p,
+            &f.policy,
+            attempts::start(&root, &stopped),
+            &matrix.gateway,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        successor
+            .command
+            .original_runtime_command
+            .runtime()
+            .unwrap(),
+        "octos"
+    );
+    assert!(
+        f.domain
+            .poll_shared_attempt(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        f.domain
+            .poll_shared_attempt_v4(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let replay = f
+        .domain
+        .poll_shared_attempt_v5(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(replay.command_digest, successor.command_digest);
     assert_eq!(replay.command.original_runtime_command.version, 5);
 }
@@ -326,29 +408,76 @@ async fn shared_octos_demand_is_visible_only_to_v5_workers() {
     use crate::{management_shared_demand_types::SharedDemandPollInput, transport::RoutedEvent};
     use std::collections::BTreeSet;
     #[derive(QueryableByName)]
-    struct Puppet { #[diesel(sql_type = Text)] id: String }
+    struct Puppet {
+        #[diesel(sql_type = Text)]
+        id: String,
+    }
     let (f, request, assignment, matrix) = Box::pin(prepared_pool(true)).await;
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     sql_query("UPDATE hagency_agent_v1.management_contributions SET runtime='octos' WHERE id=(SELECT pool_contribution_id FROM hagency_agent_v1.management_agent_requests WHERE id=$1)")
         .bind::<Text,_>(&request.id).execute(&mut db).await.unwrap();
     intake_tests::arm(&f, &assignment, &matrix).await;
-    let root = f.domain.poll_shared_runtime_v5(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().unwrap();
+    let root = f
+        .domain
+        .poll_shared_runtime_v5(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await
+        .unwrap()
+        .unwrap();
     let puppet = sql_query("SELECT puppet_mxid AS id FROM hagency_agent_v1.management_agent_matrix WHERE assignment_id=$1")
         .bind::<Text,_>(&assignment.id).get_result::<Puppet>(&mut db).await.unwrap().id;
     let event = RoutedEvent {
-        event_id:"$octos_demand:test".into(), room_id:request.room_id.clone(), sender_mxid:f.outsider.p.mxid.clone(),
-        body:"Please inspect the workspace".into(), mentioned_mxids:BTreeSet::from([puppet]),
-        thread_root:None, encrypted:false, is_edit:false,
+        event_id: "$octos_demand:test".into(),
+        room_id: request.room_id.clone(),
+        sender_mxid: f.outsider.p.mxid.clone(),
+        body: "Please inspect the workspace".into(),
+        mentioned_mxids: BTreeSet::from([puppet]),
+        thread_root: None,
+        encrypted: false,
+        is_edit: false,
     };
-    let received = sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS count")
-        .get_result::<Count>(&mut db).await.unwrap().count;
-    f.domain.route_shared_event(&f.policy, &event, received, &matrix.gateway).await.unwrap();
-    assert!(f.domain.poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default()).await.unwrap().demand.is_none());
-    assert!(f.domain.poll_shared_demand_v4(&f.owner.p, &f.policy, SharedDemandPollInput::default()).await.unwrap().demand.is_none());
-    assert!(f.domain.poll_shared_demand_v5(&f.owner.p, &f.policy, SharedDemandPollInput::default()).await.unwrap().demand.is_none(),
-        "an Octos request must not bind to a first command before it starts");
+    let received =
+        sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS count")
+            .get_result::<Count>(&mut db)
+            .await
+            .unwrap()
+            .count;
+    f.domain
+        .route_shared_event(&f.policy, &event, received, &matrix.gateway)
+        .await
+        .unwrap();
+    assert!(
+        f.domain
+            .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
+            .await
+            .unwrap()
+            .demand
+            .is_none()
+    );
+    assert!(
+        f.domain
+            .poll_shared_demand_v4(&f.owner.p, &f.policy, SharedDemandPollInput::default())
+            .await
+            .unwrap()
+            .demand
+            .is_none()
+    );
+    assert!(
+        f.domain
+            .poll_shared_demand_v5(&f.owner.p, &f.policy, SharedDemandPollInput::default())
+            .await
+            .unwrap()
+            .demand
+            .is_none(),
+        "an Octos request must not bind to a first command before it starts"
+    );
     save(&f, &root, "qualified", 200).await.unwrap();
-    let offered = f.domain.poll_shared_demand_v5(&f.owner.p, &f.policy, SharedDemandPollInput::default()).await.unwrap().demand.unwrap();
+    let offered = f
+        .domain
+        .poll_shared_demand_v5(&f.owner.p, &f.policy, SharedDemandPollInput::default())
+        .await
+        .unwrap()
+        .demand
+        .unwrap();
     assert_eq!(offered.offer.event_id, event.event_id);
 }
 
@@ -1513,7 +1642,11 @@ async fn shared_poll(f: &Fixture) -> SharedRuntimeDelivery {
 }
 async fn shared_poll_for_runtime(f: &Fixture, octos: bool) -> SharedRuntimeDelivery {
     if octos {
-        f.domain.poll_shared_runtime_v5(&f.owner.p, &f.policy, ExecutorPollInput::default()).await.unwrap().unwrap()
+        f.domain
+            .poll_shared_runtime_v5(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .await
+            .unwrap()
+            .unwrap()
     } else {
         shared_poll(f).await
     }
@@ -2886,9 +3019,15 @@ async fn initial_command_no_issue_proof_for(cap: Option<i64>, pool_policy: bool,
     // started. On River this pinned the waiting message to that command, and
     // the message ended as head_changed when the command was replaced.
     let early = if octos {
-        f.domain.poll_shared_demand_v5(&f.owner.p, &f.policy, Default::default()).await.unwrap()
+        f.domain
+            .poll_shared_demand_v5(&f.owner.p, &f.policy, Default::default())
+            .await
+            .unwrap()
     } else {
-        f.domain.poll_shared_demand(&f.owner.p, &f.policy, Default::default()).await.unwrap()
+        f.domain
+            .poll_shared_demand(&f.owner.p, &f.policy, Default::default())
+            .await
+            .unwrap()
     };
     assert!(
         early.demand.is_none(),
@@ -3072,23 +3211,45 @@ fn shared_claude_root_cannot_relabel_legacy_codex_or_broaden_owner_policy() {
 fn shared_octos_root_has_a_distinct_closed_policy() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../tests/fixtures/management-shared-execution-v1.json"
-    )).unwrap();
-    let original: SharedRuntimeCommand = serde_json::from_value(fixture["command"].clone()).unwrap();
+    ))
+    .unwrap();
+    let original: SharedRuntimeCommand =
+        serde_json::from_value(fixture["command"].clone()).unwrap();
     let mut octos = original.clone();
     octos.version = 5;
     octos.capability = SHARED_OCTOS_CAPABILITY.into();
     octos.policy = SHARED_OCTOS_POLICY.into();
     octos.validate("example.test").unwrap();
     assert_eq!(octos.runtime().unwrap(), "octos");
-    assert_eq!(octos.execution_policy(false, None).unwrap(), SHARED_OCTOS_POLICY);
-    assert_eq!(octos.execution_policy(true, None).unwrap(), "octos_text_live_web_v1");
-    assert_eq!(octos.execution_policy(false, Some("standard")).unwrap(), "octos_tools_standard_v1");
-    assert_eq!(octos.execution_policy(true, Some("yolo")).unwrap(), "octos_tools_yolo_web_v1");
+    assert_eq!(
+        octos.execution_policy(false, None).unwrap(),
+        SHARED_OCTOS_POLICY
+    );
+    assert_eq!(
+        octos.execution_policy(true, None).unwrap(),
+        "octos_text_live_web_v1"
+    );
+    assert_eq!(
+        octos.execution_policy(false, Some("standard")).unwrap(),
+        "octos_tools_standard_v1"
+    );
+    assert_eq!(
+        octos.execution_policy(true, Some("yolo")).unwrap(),
+        "octos_tools_yolo_web_v1"
+    );
     assert!(octos.execution_policy(false, Some("arbitrary")).is_err());
     for field in ["version", "capability", "policy"] {
         let mut mixed = serde_json::to_value(&octos).unwrap();
         mixed[field] = fixture["command"][field].clone();
-        assert!(serde_json::from_value::<SharedRuntimeCommand>(mixed).unwrap().validate("example.test").is_err());
+        assert!(
+            serde_json::from_value::<SharedRuntimeCommand>(mixed)
+                .unwrap()
+                .validate("example.test")
+                .is_err()
+        );
     }
-    assert_eq!(allocation_digest(&original).unwrap(), fixture["commandDigest"]);
+    assert_eq!(
+        allocation_digest(&original).unwrap(),
+        fixture["commandDigest"]
+    );
 }

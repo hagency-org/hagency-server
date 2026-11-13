@@ -365,7 +365,8 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: ExecutorPollInput,
     ) -> Result<Option<SharedAttemptDelivery>> {
-        self.poll_shared_attempt_inner(p, policy, input, true, false).await
+        self.poll_shared_attempt_inner(p, policy, input, true, false)
+            .await
     }
     pub async fn poll_shared_attempt_v5(
         &self,
@@ -373,7 +374,8 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: ExecutorPollInput,
     ) -> Result<Option<SharedAttemptDelivery>> {
-        self.poll_shared_attempt_inner(p, policy, input, true, true).await
+        self.poll_shared_attempt_inner(p, policy, input, true, true)
+            .await
     }
     async fn poll_shared_attempt_inner(
         &self,

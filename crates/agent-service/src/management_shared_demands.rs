@@ -399,7 +399,8 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: SharedDemandPollInput,
     ) -> Result<SharedDemandPoll> {
-        self.poll_shared_demand_inner(p, policy, input, false, false).await
+        self.poll_shared_demand_inner(p, policy, input, false, false)
+            .await
     }
     pub async fn poll_shared_demand_v4(
         &self,
@@ -407,7 +408,8 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: SharedDemandPollInput,
     ) -> Result<SharedDemandPoll> {
-        self.poll_shared_demand_inner(p, policy, input, true, false).await
+        self.poll_shared_demand_inner(p, policy, input, true, false)
+            .await
     }
     pub async fn poll_shared_demand_v5(
         &self,
@@ -415,7 +417,8 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: SharedDemandPollInput,
     ) -> Result<SharedDemandPoll> {
-        self.poll_shared_demand_inner(p, policy, input, true, true).await
+        self.poll_shared_demand_inner(p, policy, input, true, true)
+            .await
     }
     async fn poll_shared_demand_inner(
         &self,

@@ -452,7 +452,8 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: ExecutorPollInput,
     ) -> Result<Option<SharedRuntimeDelivery>> {
-        self.poll_shared_runtime_inner(p, policy, input, true, false).await
+        self.poll_shared_runtime_inner(p, policy, input, true, false)
+            .await
     }
     pub async fn poll_shared_runtime_v5(
         &self,
@@ -460,7 +461,8 @@ impl DomainStore {
         policy: &ManagementPolicy,
         input: ExecutorPollInput,
     ) -> Result<Option<SharedRuntimeDelivery>> {
-        self.poll_shared_runtime_inner(p, policy, input, true, true).await
+        self.poll_shared_runtime_inner(p, policy, input, true, true)
+            .await
     }
     async fn poll_shared_runtime_inner(
         &self,
