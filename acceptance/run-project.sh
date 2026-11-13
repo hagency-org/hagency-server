@@ -158,6 +158,9 @@ pending=""
 sub verify.events "$here/verify-events.sh"
 sub verify.release "$here/verify-release.sh" "$PROJECT_ID"
 FINAL_SHA=$(json_field final_sha <"$RUN_DIR/verify-release-report.json" 2>/dev/null || true)
+# The frozen black-box cases, run by the acceptance side on the Release verify-release just checked.
+release_tag=$(json_field tag <"$RUN_DIR/deploy-receipt.json" 2>/dev/null || true)
+sub verify.blackbox "$here/verify-blackbox.sh" "$PROJECT_ID" ${release_tag:+--tag "$release_tag"}
 if [ "$FAILED_STAGE" = verify.release ] && [ -n "$pending" ]; then
     finish 3
 fi
