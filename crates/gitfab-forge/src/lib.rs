@@ -174,6 +174,35 @@ pub struct Http {
     api: String,
     token: String,
     backend: Backend,
+    max_wait: std::time::Duration,
+}
+
+/// Retries after a rate limit, each waiting what the platform asks for.
+const RATE_LIMIT_RETRIES: u32 = 3;
+
+/// How long a rate-limited answer asks to wait, or `None` when it is not a rate limit: 429, or 403
+/// with no requests left (GitHub's primary limit). `Retry-After` wins, then the reset time, then a
+/// doubling backoff.
+fn rate_limit_wait(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+    attempt: u32,
+    now_s: u64,
+) -> Option<std::time::Duration> {
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+    };
+    let limited = status == 429 || (status == 403 && header("x-ratelimit-remaining") == Some(0));
+    if !limited {
+        return None;
+    }
+    let seconds = header("retry-after")
+        .or_else(|| header("x-ratelimit-reset").map(|reset| reset.saturating_sub(now_s)))
+        .unwrap_or(1 << attempt);
+    Some(std::time::Duration::from_secs(seconds))
 }
 
 impl Http {
@@ -186,7 +215,14 @@ impl Http {
                 .into(),
             token,
             backend,
+            max_wait: std::time::Duration::from_secs(60),
         }
+    }
+
+    /// The longest single wait after a rate limit; a longer one is returned as the error instead.
+    pub fn with_max_wait(mut self, max_wait: std::time::Duration) -> Self {
+        self.max_wait = max_wait;
+        self
     }
 }
 
@@ -207,7 +243,21 @@ impl Transport for Http {
         if let Some(body) = request.body {
             builder = builder.json(&body);
         }
-        let response = builder.send().await.map_err(|_| Error::Network)?;
+        let mut attempt = 0;
+        let response = loop {
+            let template = builder.try_clone().ok_or(Error::Network)?;
+            let response = template.send().await.map_err(|_| Error::Network)?;
+            let now_s = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            match rate_limit_wait(response.status().as_u16(), response.headers(), attempt, now_s) {
+                Some(wait) if attempt < RATE_LIMIT_RETRIES && wait <= self.max_wait => {
+                    attempt += 1;
+                    tokio::time::sleep(wait).await;
+                }
+                _ => break response,
+            }
+        };
         let status = response.status().as_u16();
         let text = response.text().await.map_err(|_| Error::Network)?;
         let body = serde_json::from_str(&text).unwrap_or(Value::Null);

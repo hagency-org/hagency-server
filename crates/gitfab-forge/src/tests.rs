@@ -379,3 +379,74 @@ async fn gitcode_review_is_approved_when_every_assigned_reviewer_accepted() {
         assert_eq!(got, want);
     }
 }
+
+/// A local HTTP server that answers each request with the next canned head and counts requests.
+fn canned(answers: Vec<&'static str>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let api = format!("http://{}", listener.local_addr().unwrap());
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = seen.clone();
+    std::thread::spawn(move || {
+        for (stream, head) in listener.incoming().zip(answers) {
+            let Ok(mut s) = stream else { continue };
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                match s.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => raw.extend_from_slice(&buf[..n]),
+                }
+            }
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let body = "{\"full_name\":\"octo/demo\",\"default_branch\":\"main\",\"html_url\":\"https://github.com/octo/demo\"}";
+            let _ = write!(s, "{head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        }
+    });
+    (api, seen)
+}
+
+#[tokio::test]
+async fn a_rate_limited_call_waits_as_asked_and_retries() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (api, seen) = canned(vec!["HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0", "HTTP/1.1 200 OK"]);
+    let forge = Forge::new(Backend::GitHub, Http::new(Backend::GitHub, Some(&api), "t".into()));
+    assert_eq!(forge.repo(&repo()).await.unwrap().default_branch, "main");
+    assert_eq!(seen.load(SeqCst), 2);
+
+    // GitHub's primary limit is a 403 with no requests left; it is retried too.
+    let (api, seen) = canned(vec![
+        "HTTP/1.1 403 Forbidden\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: 0",
+        "HTTP/1.1 200 OK",
+    ]);
+    let forge = Forge::new(Backend::GitHub, Http::new(Backend::GitHub, Some(&api), "t".into()));
+    assert!(forge.repo(&repo()).await.is_ok());
+    assert_eq!(seen.load(SeqCst), 2);
+}
+
+#[tokio::test]
+async fn a_refusal_or_a_long_rate_limit_is_returned_not_waited_for() {
+    use std::sync::atomic::Ordering::SeqCst;
+    // A plain 403 is a refusal: no retry.
+    let (api, seen) = canned(vec!["HTTP/1.1 403 Forbidden", "HTTP/1.1 200 OK"]);
+    let forge = Forge::new(Backend::GitHub, Http::new(Backend::GitHub, Some(&api), "t".into()));
+    let error = forge.repo(&repo()).await.unwrap_err();
+    assert!(matches!(error, Error::Status { status: 403, .. }), "{error}");
+    assert_eq!(seen.load(SeqCst), 1);
+
+    // A wait beyond the limit becomes the error at once.
+    let (api, seen) = canned(vec!["HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3600", "HTTP/1.1 200 OK"]);
+    let http = Http::new(Backend::GitCode, Some(&api), "t".into()).with_max_wait(std::time::Duration::from_secs(5));
+    let started = std::time::Instant::now();
+    let error = Forge::new(Backend::GitCode, http).repo(&repo()).await.unwrap_err();
+    assert!(matches!(error, Error::Status { status: 429, .. }), "{error}");
+    assert_eq!(seen.load(SeqCst), 1);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+    // Retries stop after three.
+    let limited = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0";
+    let (api, seen) = canned(vec![limited; 5]);
+    let forge = Forge::new(Backend::GitHub, Http::new(Backend::GitHub, Some(&api), "t".into()));
+    assert!(forge.repo(&repo()).await.is_err());
+    assert_eq!(seen.load(SeqCst), 4);
+}
