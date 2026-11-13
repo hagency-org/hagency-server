@@ -617,6 +617,21 @@ impl<T: Transport> Forge<T> {
         }
     }
 
+    /// Whether a Pull Request conflicts with its base: `Some(true)` conflicting, `Some(false)` clean,
+    /// `None` while the platform has not worked it out. Merging stays with people, one Pull Request
+    /// at a time; GitFab only reports it.
+    pub async fn conflict(&self, repo: &Repo, pull: &PullRequest) -> Result<Option<bool>> {
+        let value = self.get(format!("{}/pulls/{}", repo.path(), pull.number)).await?;
+        Ok(match self.backend {
+            Backend::GitHub => value.get("mergeable").and_then(Value::as_bool).map(|ok| !ok),
+            Backend::GitCode => value
+                .pointer("/mergeable_state/conflict_passed")
+                .and_then(Value::as_bool)
+                .or_else(|| value.get("mergeable").and_then(Value::as_bool))
+                .map(|ok| !ok),
+        })
+    }
+
     /// Review state of a Pull Request. GitHub: each reviewer's latest approving or change-requesting
     /// review counts (comments do not; a dismissal withdraws it). GitCode: the Pull Request's
     /// assigned reviewers and whether each has accepted.

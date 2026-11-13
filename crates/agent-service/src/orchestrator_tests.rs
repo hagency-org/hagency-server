@@ -726,6 +726,11 @@ fn fake_github() -> crate::orchestrator_git::GitHosts {
             ("GET", p) if p.starts_with(&format!("/commits/{head}/check-runs")) => {
                 (200, json!({"check_runs": []}))
             }
+            ("GET", "/pulls/7") => (200, {
+                let mut p = pull.clone();
+                p["mergeable"] = json!(true);
+                p
+            }),
             ("GET", "/pulls/7/reviews?per_page=100") => (
                 200,
                 json!([{"user": {"login": "maintainer"}, "state": "APPROVED"}]),
@@ -815,7 +820,7 @@ async fn postgres_a_run_opens_its_pull_request_and_publishes_the_release_on_the_
     assert!(
         posts
             .iter()
-            .any(|(_, b)| b == &format!("平台测试状态：通过（{pr}）；平台审查：已批准"))
+            .any(|(_, b)| b == &format!("平台测试状态：通过（{pr}）；平台审查：已批准；合并：与默认分支无冲突"))
     );
     assert!(
         posts

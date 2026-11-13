@@ -450,3 +450,25 @@ async fn a_refusal_or_a_long_rate_limit_is_returned_not_waited_for() {
     assert!(forge.repo(&repo()).await.is_err());
     assert_eq!(seen.load(SeqCst), 4);
 }
+
+#[tokio::test]
+async fn conflicts_are_read_from_each_platform() {
+    let pull = PullRequest { number: 5, url: String::new(), head_sha: String::new() };
+    for (body, want) in [
+        (json!({"mergeable": true, "mergeable_state": "clean"}), Some(false)),
+        (json!({"mergeable": false, "mergeable_state": "dirty"}), Some(true)),
+        (json!({"mergeable": null}), None),
+    ] {
+        let fake = Fake::default().on("GET", "/repos/octo/demo/pulls/5", 200, body);
+        assert_eq!(Forge::new(Backend::GitHub, &fake).conflict(&repo(), &pull).await.unwrap(), want);
+    }
+    for (body, want) in [
+        (json!({"mergeable": true, "mergeable_state": {"conflict_passed": true}}), Some(false)),
+        (json!({"mergeable": true, "mergeable_state": {"conflict_passed": false}}), Some(true)),
+        (json!({"mergeable": false}), Some(true)),
+        (json!({}), None),
+    ] {
+        let fake = Fake::default().on("GET", "/repos/octo/demo/pulls/5", 200, body);
+        assert_eq!(Forge::new(Backend::GitCode, &fake).conflict(&repo(), &pull).await.unwrap(), want);
+    }
+}

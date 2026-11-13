@@ -188,12 +188,14 @@ pub(crate) async fn step(
                     // Informational: the run's verdict comes from the Reviewer Agent, so a review
                     // that cannot be read does not fail the step.
                     let review = host.review(repo, &pull).await.ok();
+                    let conflict = host.conflict(repo, &pull).await.ok().flatten();
                     GitStep {
                         note: Some(format!(
-                            "平台测试状态：{}（{}）；平台审查：{}",
+                            "平台测试状态：{}（{}）；平台审查：{}；合并：{}",
                             checks_text(state),
                             pull.url,
-                            review_text(review)
+                            review_text(review),
+                            conflict_text(conflict)
                         )),
                         commit: commit(&pull.head_sha),
                         refs: vec![pull.url],
@@ -241,6 +243,14 @@ fn checks_text(state: Checks) -> &'static str {
         Checks::Failure => "失败",
         Checks::Pending => "进行中",
         Checks::None => "平台未上报测试",
+    }
+}
+
+fn conflict_text(conflict: Option<bool>) -> &'static str {
+    match conflict {
+        Some(false) => "与默认分支无冲突",
+        Some(true) => "与默认分支有冲突，需在任务分支上解决后重新执行（GitFab 不自动合并）",
+        None => "平台尚未给出冲突状态",
     }
 }
 
@@ -396,6 +406,11 @@ mod tests {
                         }
                     } else if p.starts_with("/repos/o/r/pulls/3/reviews") {
                         reviews.clone()
+                    } else if p == "/repos/o/r/pulls/3" {
+                        Response {
+                            status: 200,
+                            body: json!({"number": 3, "mergeable": false}),
+                        }
                     } else {
                         panic!("unexpected call {} {p}", r.method)
                     }
@@ -405,7 +420,13 @@ mod tests {
             let step = step(&host, &repo, &run(), Stage::Test, 1).await;
             let note = step.note.unwrap();
             assert!(note.starts_with("平台测试状态：通过"), "{note}");
-            assert!(note.ends_with(want), "{note}");
+            assert!(note.contains(want), "{note}");
+            assert!(
+                note.ends_with(
+                    "合并：与默认分支有冲突，需在任务分支上解决后重新执行（GitFab 不自动合并）"
+                ),
+                "{note}"
+            );
             assert_eq!(step.error, None);
             assert_eq!(step.commit.as_deref(), Some("b".repeat(40).as_str()));
         }
