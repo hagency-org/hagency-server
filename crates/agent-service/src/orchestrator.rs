@@ -154,6 +154,27 @@ fn truncate(text: &str, limit: usize) -> &str {
     &text[..end]
 }
 
+/// The Reviewer's reply as kept in the signed event: its first 4 KiB, and its verdict line too when
+/// a long reply puts the verdict past the cut.
+fn findings(reply: &str) -> Value {
+    let head = truncate(reply, FINDINGS_LIMIT);
+    let verdict = crate::orchestrator_flow::verdict;
+    match verdict(reply) {
+        Some(v) if verdict(head) != Some(v) || head.len() < reply.len() => {
+            let line = reply
+                .lines()
+                .rev()
+                .find(|l| verdict(l) == Some(v))
+                .map(str::trim);
+            match line {
+                Some(line) if !head.ends_with(line) => json!([head, line]),
+                _ => json!([head]),
+            }
+        }
+        _ => json!([head]),
+    }
+}
+
 fn timestamp(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
         .unwrap_or_default()
@@ -170,9 +191,9 @@ fn instruction(stage: Stage) -> &'static str {
         Stage::Execute => {
             "按计划在仓库中实现，提交到任务分支。回复中列出提交 SHA、改动文件和自测结果。若上一轮评审驳回，逐条处理其中的问题。"
         }
-        Stage::Test => "运行验收测试，回复测试命令、通过与失败数、失败原因和日志位置。",
+        Stage::Test => "运行 PRD 冻结的测试命令，逐条回复：命令原文、退出码、通过与失败数、失败原因、日志摘要（末尾若干行）和日志位置、产出的工件。",
         Stage::Review => {
-            "评审本轮实现和测试结果是否满足 Spec。逐条列出问题，最后单独一行写结论：VERDICT: approve、VERDICT: reject 或 VERDICT: blocked。"
+            "评审本轮实现和测试结果是否满足 Spec。逐条对照 Spec 的验收标准，写明是否满足以及证据（测试输出、提交 SHA 或改动位置）；再逐条列出问题；最后单独一行写结论：VERDICT: approve、VERDICT: reject 或 VERDICT: blocked。"
         }
         Stage::Release => "按发布流程打标签并发布，回复标签、提交 SHA、制品摘要和回退方式。",
     }
@@ -729,7 +750,7 @@ impl<R: StageRoom> Orchestrator<'_, R> {
             if phase == "review"
                 && let Some(reply) = reply.filter(|_| finishes_completed)
             {
-                event["findings"] = json!([truncate(reply, FINDINGS_LIMIT)]);
+                event["findings"] = findings(reply);
             }
             events.push(json!({"event": event, "actorType": actor_type}));
         }
@@ -1293,6 +1314,17 @@ mod tests {
             crate::workers::parse_event(&raw).is_none(),
             "ordinary and pooled routing ignore it"
         );
+    }
+
+    #[test]
+    fn a_long_review_keeps_its_verdict_line_in_the_findings() {
+        assert_eq!(findings("ok\nVERDICT: approve"), json!(["ok\nVERDICT: approve"]));
+        assert_eq!(findings("no verdict"), json!(["no verdict"]));
+        let long = format!("{}\nVERDICT: reject\n", "标准 1：未满足。\n".repeat(400));
+        let kept = findings(&long);
+        assert_eq!(kept.as_array().unwrap().len(), 2);
+        assert!(kept[0].as_str().unwrap().len() <= FINDINGS_LIMIT);
+        assert_eq!(kept[1], "VERDICT: reject");
     }
 
     #[test]

@@ -71,7 +71,7 @@ PRD 不是发给 Agent 的提示词，而是 `specRef` 指向的冻结文件，S
 
 原文：
 
-> 评审本轮实现和测试结果是否满足 Spec。逐条列出问题，最后单独一行写结论：VERDICT: approve、VERDICT: reject 或 VERDICT: blocked。
+> 评审本轮实现和测试结果是否满足 Spec。逐条对照 Spec 的验收标准，写明是否满足以及证据（测试输出、提交 SHA 或改动位置）；再逐条列出问题；最后单独一行写结论：VERDICT: approve、VERDICT: reject 或 VERDICT: blocked。
 
 配置要点：
 - 结论行的读取是严格的：必须单独一行，写成 `VERDICT: approve`、`VERDICT: reject` 或 `VERDICT: blocked`。没有结论行的回复不算通过（`orchestrator_flow.rs` 的 `verdict_lines_are_read_strictly`）。
@@ -82,5 +82,5 @@ PRD 不是发给 Agent 的提示词，而是 `specRef` 指向的冻结文件，S
 ## 其他阶段（仅列原文，不在本指南配置范围）
 
 - Execute：按计划在仓库中实现，提交到任务分支。回复中列出提交 SHA、改动文件和自测结果。若上一轮评审驳回，逐条处理其中的问题。
-- Test：运行验收测试，回复测试命令、通过与失败数、失败原因和日志位置。
+- Test：运行 PRD 冻结的测试命令，逐条回复：命令原文、退出码、通过与失败数、失败原因、日志摘要（末尾若干行）和日志位置、产出的工件。
 - Release：按发布流程打标签并发布，回复标签、提交 SHA、制品摘要和回退方式。配置了 Git 平台 Token 时，PR 与 Release 由编排器在平台上创建，链接写入签名事件。

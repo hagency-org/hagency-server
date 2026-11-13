@@ -518,11 +518,10 @@ fn report(ring: &Keyring, project: &str, files: &[PathBuf]) -> Result<String, St
             if let Some(error) = e["platform_error"].as_str() {
                 out += &format!("|  | 平台未完成 | {} |  |  |  |\n", error.replace('|', "/").replace('\n', " "));
             }
-            if let Some(findings) = e["findings"].as_array().and_then(|f| f.first()).and_then(Value::as_str) {
-                let line = findings.lines().find(|l| l.trim().starts_with("VERDICT:")).unwrap_or("").trim();
-                if !line.is_empty() {
-                    out += &format!("|  | 评审结论 | {line} |  |  |  |\n");
-                }
+            // A long Reviewer reply keeps its verdict line as a second entry; the last one counts.
+            let findings = e["findings"].as_array().into_iter().flatten().filter_map(Value::as_str);
+            if let Some(line) = findings.flat_map(str::lines).map(str::trim).rfind(|l| l.starts_with("VERDICT:")) {
+                out += &format!("|  | 评审结论 | {line} |  |  |  |\n");
             }
         }
     }
