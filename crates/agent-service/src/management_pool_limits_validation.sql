@@ -1,5 +1,7 @@
--- Schema 33: provider-specific immutable roots share the same lifetime tables. V5 calendar grants retain the same
--- native no-issuance proof requirements as V4; a missing receipt is no proof.
+-- Schema 33: provider-specific immutable roots share the same lifetime tables. V5 and V6 calendar grants retain the
+-- same native no-issuance proof requirements as V4; a missing receipt is no proof. V6 (the pool owns the renewal
+-- policy) was left out of the list at first, so a first command that never started under a V6 grant could not be
+-- retired and its Agent stayed in pending_native for good.
 -- This function is replaced on every start, so changing it needs no schema
 -- version: v2 successors accept the same not_started proof as v3.
 CREATE OR REPLACE FUNCTION hagency_agent_v1.validate_shared_runtime() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -14,7 +16,7 @@ BEGIN
   -- recurring original command. No absence of evidence grants a retry.
   IF NEW.payload::jsonb->>'version'='1' AND NEW.payload::jsonb->>'state'='not_started' THEN
    IF NEW.payload::jsonb->>'processDigest' IS NOT NULL OR NEW.payload::jsonb->>'policyDigest' IS NOT NULL
-    OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes r WHERE r.id=NEW.runtime_id AND r.payload::jsonb->>'version' IN ('1','4') AND r.payload::jsonb->'reserveCommand'->'poolGrant'->>'version' IN ('4','5') AND r.payload::jsonb->'reserveCommand'->'poolGrant'->'calendar' IS NOT NULL AND r.payload::jsonb->'reserveCommand'->'poolGrant'->'calendar'<>'null'::jsonb AND r.permanent_fence AND r.state IN('pending','issued') AND r.activity_epoch=0 AND r.process_digest IS NULL)
+    OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes r WHERE r.id=NEW.runtime_id AND r.payload::jsonb->>'version' IN ('1','4') AND r.payload::jsonb->'reserveCommand'->'poolGrant'->>'version' IN ('4','5','6') AND r.payload::jsonb->'reserveCommand'->'poolGrant'->'calendar' IS NOT NULL AND r.payload::jsonb->'reserveCommand'->'poolGrant'->'calendar'<>'null'::jsonb AND r.permanent_fence AND r.state IN('pending','issued') AND r.activity_epoch=0 AND r.process_digest IS NULL)
     OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w WHERE w.runtime_id=NEW.runtime_id)
     OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_process_receipts p WHERE p.runtime_id=NEW.runtime_id)
    THEN RAISE EXCEPTION 'shared_original_not_unstarted'; END IF;

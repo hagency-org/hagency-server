@@ -50,6 +50,21 @@ async fn prepared_pool_limits(
     PendingManagedAssignment,
     MatrixFixture,
 ) {
+    prepared_pool_terms(durable, recurring, cap, false).await
+}
+/// `pool_policy`: a V6 grant, where the renewal policy belongs to the pool and
+/// the Agent request names none.
+async fn prepared_pool_terms(
+    durable: bool,
+    recurring: bool,
+    cap: Option<i64>,
+    pool_policy: bool,
+) -> (
+    Fixture,
+    crate::management_pool_types::PoolAgentRequest,
+    PendingManagedAssignment,
+    MatrixFixture,
+) {
     use crate::management_pool_types::DecidePoolAgent;
     use crate::management_tests::allocations::pool_agents;
     let mut f = pool_agents::isolated_fixture().await;
@@ -73,7 +88,16 @@ async fn prepared_pool_limits(
             time_zone: "America/Los_Angeles".into(),
         };
         let period = calendar.period_at(now_ms() as u64).unwrap();
-        grant.receipt.version = if cap.is_some() { 5 } else { 4 };
+        grant.receipt.version = if pool_policy {
+            6
+        } else if cap.is_some() {
+            5
+        } else {
+            4
+        };
+        if pool_policy {
+            grant.receipt.renewal_mode = Some(crate::recurring_quota::RenewalMode::Automatic);
+        }
         grant.receipt.per_request_tokens = cap;
         grant.receipt.admission_request_id = Some(pool.request.id.clone());
         grant.receipt.calendar = Some(calendar);
@@ -90,7 +114,7 @@ async fn prepared_pool_limits(
         pool_agents::pool(&f, &f.outsider.p).await
     };
     let mut input = pool_agents::input(&pool, "pool_runtime");
-    if recurring {
+    if recurring && !pool_policy {
         input.renewal_mode = Some(crate::recurring_quota::RenewalMode::Automatic);
     }
     let request = f
@@ -2728,8 +2752,18 @@ async fn recurring_initial_command_requires_native_no_issue_proof_before_retry()
 async fn split_pool_limits_initial_command_requires_native_no_issue_proof_before_retry() {
     initial_command_no_issue_proof(Some(100000)).await;
 }
+/// The grant format River's pools use since publication-first: without this
+/// the first command of such an Agent, once missed, could never be retired.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn pool_policy_grant_initial_command_requires_native_no_issue_proof_before_retry() {
+    initial_command_no_issue_proof_for(Some(100000), true).await;
+}
 async fn initial_command_no_issue_proof(cap: Option<i64>) {
-    let (f, request, assignment, matrix) = prepared_pool_limits(true, true, cap).await;
+    initial_command_no_issue_proof_for(cap, false).await;
+}
+async fn initial_command_no_issue_proof_for(cap: Option<i64>, pool_policy: bool) {
+    let (f, request, assignment, matrix) = prepared_pool_terms(true, true, cap, pool_policy).await;
     let queued = crate::transport::RoutedEvent {
         event_id: "$before-first-process".into(),
         room_id: request.room_id.clone(),
@@ -2746,6 +2780,34 @@ async fn initial_command_no_issue_proof(cap: Option<i64>) {
         .unwrap();
     let first = shared_poll(&f).await;
     assert!(first.execution_allowed);
+    // The executor also asks for demands while its first command has not
+    // started. On River this pinned the waiting message to that command, and
+    // the message ended as head_changed when the command was replaced.
+    let early = f
+        .domain
+        .poll_shared_demand(&f.owner.p, &f.policy, Default::default())
+        .await
+        .unwrap();
+    assert!(
+        early.demand.is_none(),
+        "no demand names a first command that has not started"
+    );
+    assert_eq!(
+        first
+            .command
+            .reserve_command
+            .pool_grant
+            .as_ref()
+            .unwrap()
+            .version,
+        if pool_policy {
+            6
+        } else if cap.is_some() {
+            5
+        } else {
+            4
+        }
+    );
     let mut proof = evidence(&first, "not_started", 101);
     proof.receipt.process_digest = None;
     assert!(
