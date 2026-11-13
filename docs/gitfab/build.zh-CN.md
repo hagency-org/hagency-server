@@ -31,6 +31,8 @@ cargo build --release --locked \
 
 自动化环境（CI、多个 agent 共用机器）建议加 `CARGO_INCREMENTAL=0`，避免增量编译缓存占用大量磁盘。
 
+内存少于约 8 GB 的机器（包括默认配置的 Docker 虚拟机）要限制并行编译数，例如 `CARGO_BUILD_JOBS=2`；否则编译 ICU 相关依赖时可能因内存不足被系统终止（`signal: 9, SIGKILL`）。在 4 GB 内存、8 核的 Debian 12 容器中，不加限制会失败，加 `CARGO_BUILD_JOBS=2` 后构建成功。
+
 ## 测试
 
 ```sh
