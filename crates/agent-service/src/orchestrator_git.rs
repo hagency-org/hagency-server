@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use hagency_gitfab_forge::{
-    Backend, Checks, Forge, Http, PullRequest, Repo, Request, Response, Transport,
+    Backend, Checks, Forge, Http, PullRequest, Repo, Request, Response, Review, Transport,
 };
 
 use crate::orchestrator_flow::Stage;
@@ -185,11 +185,15 @@ pub(crate) async fn step(
             Stage::Test => match host.open_pull(repo, &branch, &base).await? {
                 Some(pull) => {
                     let state = host.checks(repo, &pull).await?;
+                    // Informational: the run's verdict comes from the Reviewer Agent, so a review
+                    // that cannot be read does not fail the step.
+                    let review = host.review(repo, &pull).await.ok();
                     GitStep {
                         note: Some(format!(
-                            "平台测试状态：{}（{}）",
+                            "平台测试状态：{}（{}）；平台审查：{}",
                             checks_text(state),
-                            pull.url
+                            pull.url,
+                            review_text(review)
                         )),
                         commit: commit(&pull.head_sha),
                         refs: vec![pull.url],
@@ -237,6 +241,16 @@ fn checks_text(state: Checks) -> &'static str {
         Checks::Failure => "失败",
         Checks::Pending => "进行中",
         Checks::None => "平台未上报测试",
+    }
+}
+
+fn review_text(state: Option<Review>) -> &'static str {
+    match state {
+        Some(Review::None) => "无人审查",
+        Some(Review::Pending) => "待审查",
+        Some(Review::Approved) => "已批准",
+        Some(Review::ChangesRequested) => "要求修改",
+        None => "未能读取",
     }
 }
 
@@ -339,6 +353,62 @@ mod tests {
         let error = step.error.unwrap();
         assert!(error.contains("403") && error.contains("POST"), "{error}");
         assert!(step.note.unwrap().starts_with("Git 平台操作未完成"));
+    }
+
+    #[tokio::test]
+    async fn the_test_step_names_the_platform_review_and_survives_an_unreadable_one() {
+        for (reviews, want) in [
+            (
+                Response {
+                    status: 200,
+                    body: json!([{"user": {"login": "m"}, "state": "APPROVED"}]),
+                },
+                "平台审查：已批准",
+            ),
+            (
+                Response {
+                    status: 403,
+                    body: json!({"message": "Resource not accessible"}),
+                },
+                "平台审查：未能读取",
+            ),
+        ] {
+            let head = "b".repeat(40);
+            let pull = json!({"number": 3, "html_url": "https://github.com/o/r/pull/3",
+                "head": {"ref": "agent/DEMO-02/task-1", "sha": head}});
+            let host = host(move |r| {
+                repo_answer(r).unwrap_or_else(|| {
+                    let p = r.path.as_str();
+                    if p.starts_with("/repos/o/r/pulls?state=open") {
+                        Response {
+                            status: 200,
+                            body: json!([pull]),
+                        }
+                    } else if p.ends_with("/status") {
+                        Response {
+                            status: 200,
+                            body: json!({"total_count": 1, "state": "success"}),
+                        }
+                    } else if p.contains("/check-runs") {
+                        Response {
+                            status: 200,
+                            body: json!({"check_runs": []}),
+                        }
+                    } else if p.starts_with("/repos/o/r/pulls/3/reviews") {
+                        reviews.clone()
+                    } else {
+                        panic!("unexpected call {} {p}", r.method)
+                    }
+                })
+            });
+            let repo = Repo::from_ref("https://github.com/o/r").unwrap();
+            let step = step(&host, &repo, &run(), Stage::Test, 1).await;
+            let note = step.note.unwrap();
+            assert!(note.starts_with("平台测试状态：通过"), "{note}");
+            assert!(note.ends_with(want), "{note}");
+            assert_eq!(step.error, None);
+            assert_eq!(step.commit.as_deref(), Some("b".repeat(40).as_str()));
+        }
     }
 
     #[test]

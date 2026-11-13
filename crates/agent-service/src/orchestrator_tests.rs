@@ -726,6 +726,10 @@ fn fake_github() -> crate::orchestrator_git::GitHosts {
             ("GET", p) if p.starts_with(&format!("/commits/{head}/check-runs")) => {
                 (200, json!({"check_runs": []}))
             }
+            ("GET", "/pulls/7/reviews?per_page=100") => (
+                200,
+                json!([{"user": {"login": "maintainer"}, "state": "APPROVED"}]),
+            ),
             ("GET", "/releases/tags/gitfab-task-healthz-r1") => (404, json!({})),
             ("POST", "/releases") => {
                 assert_eq!(r.body.as_ref().unwrap()["target_commitish"], head.as_str());
@@ -785,6 +789,18 @@ async fn postgres_a_run_opens_its_pull_request_and_publishes_the_release_on_the_
     assert_eq!(refs("execute"), Some(json!([pr])));
     assert_eq!(refs("test"), Some(json!([pr])));
     assert_eq!(refs("release"), Some(json!([release, pr])));
+    let field = |phase: &str, name: &str| {
+        journal(&h)
+            .into_iter()
+            .find(|e| e["phase"] == phase && e["status"] == "succeeded")
+            .map(|e| e[name].clone())
+    };
+    let head = json!("c".repeat(40));
+    for phase in ["execute", "test", "release"] {
+        assert_eq!(field(phase, "commit_sha"), Some(head.clone()), "{phase}");
+        assert_eq!(field(phase, "platform_error"), Some(Value::Null), "{phase}");
+    }
+    assert_eq!(field("plan", "commit_sha"), Some(Value::Null));
     let posts = h.room.posts.lock().unwrap();
     assert!(
         posts
@@ -799,7 +815,7 @@ async fn postgres_a_run_opens_its_pull_request_and_publishes_the_release_on_the_
     assert!(
         posts
             .iter()
-            .any(|(_, b)| b == &format!("平台测试状态：通过（{pr}）"))
+            .any(|(_, b)| b == &format!("平台测试状态：通过（{pr}）；平台审查：已批准"))
     );
     assert!(
         posts

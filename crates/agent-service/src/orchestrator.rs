@@ -753,6 +753,18 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                 "signature": null,
                 "round": round,
             });
+            if let Some((slot, step)) = &git
+                && finishes_completed
+                && status == "succeeded"
+                && slot.stage.phase() == phase
+            {
+                if let Some(sha) = &step.commit {
+                    event["commit_sha"] = json!(sha);
+                }
+                if let Some(error) = &step.error {
+                    event["platform_error"] = json!(truncate(error, FINDINGS_LIMIT));
+                }
+            }
             if phase == "review"
                 && let Some(reply) = reply.filter(|_| finishes_completed)
             {
