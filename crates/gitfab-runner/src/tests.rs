@@ -11,6 +11,7 @@ use super::*;
 struct Fake {
     images: Arc<Mutex<HashMap<String, (String, bool)>>>,
     running: Arc<Mutex<Option<String>>>,
+    signed: Arc<Mutex<Vec<String>>>,
 }
 
 impl Engine for Fake {
@@ -36,6 +37,13 @@ impl Engine for Fake {
     }
     fn base_images(&self, _context: &Path) -> Result<Vec<Value>, String> {
         Ok(vec![json!({"name": "busybox:1.36", "digest": format!("sha256:{}", "b".repeat(64))})])
+    }
+    fn cosign_sign(&self, image_ref: &str, key: &Path) -> Result<(), String> {
+        if key.ends_with("missing.key") {
+            return Err("cosign key: No such file".into());
+        }
+        self.signed.lock().unwrap().push(image_ref.to_owned());
+        Ok(())
     }
     fn push(&self, tag: &str, remote: &str) -> Result<String, String> {
         let repository = remote.rsplit_once(':').unwrap().0;
@@ -106,6 +114,7 @@ fn release(tag: &str) -> Release {
         commit: "c".repeat(40),
         tag: tag.into(),
         registry: None,
+        cosign_key: None,
     }
 }
 
@@ -229,4 +238,30 @@ fn a_release_pushed_to_a_registry_is_named_by_its_manifest_digest() {
     deploy(&fake, &release("v2"), &dir.path().join("app"), &sbom, &probe, &out).unwrap();
     let all = signed_receipts(&out, &ring);
     assert_eq!(all[1]["image_ref"], json!(format!("gitfab/demo-01:v2@{}", all[1]["image_digest"].as_str().unwrap())));
+}
+
+#[test]
+fn a_published_release_is_signed_before_it_runs_and_a_failed_signing_leaves_the_service() {
+    let (dir, fake, probe, out, _ring) = setup();
+    let sbom = dir.path().join("sbom");
+    let mut first = release("v1");
+    first.registry = Some("127.0.0.1:5000/gitfab".into());
+    first.cosign_key = Some(dir.path().join("cosign.key"));
+    deploy(&fake, &first, &dir.path().join("app"), &sbom, &probe, &out).unwrap();
+    let signed = fake.signed.lock().unwrap().clone();
+    assert_eq!(signed.len(), 1);
+    assert!(signed[0].starts_with("127.0.0.1:5000/gitfab/demo-01@sha256:"), "{signed:?}");
+
+    // A key that cannot sign stops the deployment before the running service is replaced.
+    let running = fake.running.lock().unwrap().clone();
+    let mut second = release("v2");
+    second.registry = first.registry.clone();
+    second.cosign_key = Some(dir.path().join("missing.key"));
+    assert!(deploy(&fake, &second, &dir.path().join("app"), &sbom, &probe, &out).is_err());
+    assert_eq!(*fake.running.lock().unwrap(), running);
+
+    // Signing needs a registry to hold the signature.
+    let mut unpublished = release("v3");
+    unpublished.cosign_key = Some(dir.path().join("cosign.key"));
+    assert!(deploy(&fake, &unpublished, &dir.path().join("app"), &sbom, &probe, &out).unwrap_err().contains("--registry"));
 }

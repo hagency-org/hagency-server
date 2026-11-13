@@ -38,6 +38,7 @@
 | Docker Engine / CLI | 运行时 | Apache-2.0 | Runner 构建镜像、启动容器 |
 | curl | 运行时 | curl（MIT 类） | 验收脚本与大屏读取接口 |
 | anchore/syft 镜像（默认 v1.18.1） | 运行时（容器） | Apache-2.0 | Runner 生成 SPDX SBOM；可用 GITFAB_SYFT_IMAGE 替换 |
+| sigstore/cosign 镜像（默认 v2.4.1） | 运行时（容器，可选） | Apache-2.0 | Runner 用 --cosign-key 时签名镜像；verify-release 核对签名；可用 GITFAB_COSIGN_IMAGE 替换 |
 | busybox 镜像 | 仅本机测试 | GPL-2.0 | 部署与回退实测用的示例服务，不随交付物分发 |
 
 ## 原有组件的依赖变化

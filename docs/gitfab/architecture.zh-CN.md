@@ -31,7 +31,7 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
  GitHub / GitCode ◄── 编排器：建 PR、读测试状态、发 Release（服务器保管的 Token）
 
  gitfab-runner（Linux Runner，独立密钥）
-   └─ 构建镜像 → SBOM（syft）→ 替换容器 → 健康与版本检查 → 签名部署回执；失败自动恢复上一版
+   └─ 构建镜像 →（可选）推送 Registry、cosign 签名 → SBOM（syft）→ 替换容器 → 健康与版本检查 → 签名部署回执；失败自动恢复上一版
 
  gitfab-board（只读大屏）◄── 事件日志 + 部署回执（逐条验签）+ 实时探测 + /gitfab/v1/agents
 

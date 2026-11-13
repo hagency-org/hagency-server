@@ -76,6 +76,9 @@ enum Command {
         /// then names it by its manifest digest.
         #[arg(long)]
         registry: Option<String>,
+        /// Sign the published image with this cosign key (mode 0600; its password in COSIGN_PASSWORD).
+        #[arg(long, requires = "registry")]
+        cosign_key: Option<PathBuf>,
     },
     /// Return the project to its good Release before the current one.
     Rollback {
@@ -109,9 +112,9 @@ fn setup(common: &Common) -> Result<(Probe, Receipts), String> {
 
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
-        Command::Deploy { common, project, task, backend, repo, commit, tag, context, sbom_dir, registry } => setup(&common)
+        Command::Deploy { common, project, task, backend, repo, commit, tag, context, sbom_dir, registry, cosign_key } => setup(&common)
             .and_then(|(probe, out)| {
-                let release = Release { project, task, backend, repo, commit, tag, registry };
+                let release = Release { project, task, backend, repo, commit, tag, registry, cosign_key };
                 deploy(&Docker, &release, &context, &sbom_dir, &probe, &out)
             }),
         Command::Rollback { common, project } => {

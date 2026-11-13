@@ -158,6 +158,22 @@ case "$image_ref" in
         if docker buildx imagetools inspect "$image_ref" >"$RUN_DIR/registry-manifest.txt" 2>&1 \
             || docker manifest inspect "$image_ref" >"$RUN_DIR/registry-manifest.txt" 2>&1; then
             check deploy.registry ok "$image_ref"
+            # Signed with cosign when the Runner had --cosign-key: verified with the pinned cosign.pem,
+            # offline (no transparency log), so trust rests on the pinned key alone.
+            if [ -f "$keys/cosign.pem" ]; then
+                insecure=""
+                case "${image_ref%%/*}" in 127.0.0.1:* | localhost:* | 127.0.0.1 | localhost) insecure=--allow-insecure-registry ;; esac
+                if docker run --rm --network host -v "$keys/cosign.pem:/k/cosign.pub:ro" \
+                    "${GITFAB_COSIGN_IMAGE:-gcr.io/projectsigstore/cosign:v2.4.1}" verify --key /k/cosign.pub \
+                    --insecure-ignore-tlog $insecure "$image_ref" >"$RUN_DIR/cosign-verify.json" 2>"$RUN_DIR/.cosign-err"; then
+                    check deploy.cosign ok "signature of $image_ref verifies with the pinned cosign.pem"
+                else
+                    check deploy.cosign fail "$image_ref: $(grep -v '^WARNING' "$RUN_DIR/.cosign-err" | tail -1)"
+                fi
+                rm -f "$RUN_DIR/.cosign-err"
+            else
+                check deploy.cosign skip "no cosign.pem pinned in the keys directory"
+            fi
         else
             check deploy.registry fail "$image_ref not served by the registry: $(tail -1 "$RUN_DIR/registry-manifest.txt")"
         fi ;;

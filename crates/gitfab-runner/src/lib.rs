@@ -37,6 +37,21 @@ pub trait Engine {
     /// Pushes local image `tag` as `remote` (`registry/repository:tag`); returns the pushed
     /// reference pinned to its manifest digest, `registry/repository@sha256:…`.
     fn push(&self, tag: &str, remote: &str) -> Result<String, String>;
+    /// Signs a pushed image (`registry/repository@sha256:…`) with a cosign key; the signature is
+    /// stored in the registry next to the image.
+    fn cosign_sign(&self, image_ref: &str, key: &Path) -> Result<(), String>;
+}
+
+/// The cosign image the Runner and verify-release use (`GITFAB_COSIGN_IMAGE` overrides it).
+pub fn cosign_image() -> String {
+    std::env::var("GITFAB_COSIGN_IMAGE").unwrap_or_else(|_| "gcr.io/projectsigstore/cosign:v2.4.1".into())
+}
+
+/// A registry on this machine is reached over plain HTTP; any other must use HTTPS.
+fn local_registry(image_ref: &str) -> bool {
+    let host = image_ref.split('/').next().unwrap_or_default();
+    let name = host.rsplit_once(':').map_or(host, |(h, _)| h);
+    matches!(name, "127.0.0.1" | "localhost")
 }
 
 /// Image references in the `FROM` lines of a Dockerfile, skipping earlier stages and `scratch`.
@@ -108,6 +123,31 @@ impl Engine for Docker {
     }
     fn has_image(&self, image: &str) -> bool {
         docker(&["image", "inspect", image]).is_ok()
+    }
+    fn cosign_sign(&self, image_ref: &str, key: &Path) -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(key).map_err(|e| format!("cosign key: {e}"))?.permissions().mode();
+        if mode & 0o077 != 0 {
+            return Err("cosign key: must be mode 0600".into());
+        }
+        let dir = key.parent().and_then(Path::to_str).ok_or("cosign key: no directory")?;
+        let file = key.file_name().and_then(|f| f.to_str()).ok_or("cosign key: no file name")?;
+        let mount = format!("{dir}:/k:ro");
+        let key_arg = format!("/k/{file}");
+        let image = cosign_image();
+        // The key password comes from COSIGN_PASSWORD in the Runner's environment, never an argument.
+        let mut args = vec!["run", "--rm", "--network", "host", "-e", "COSIGN_PASSWORD", "-v", &mount];
+        let config = std::env::var("HOME").map(|h| format!("{h}/.docker/config.json")).unwrap_or_default();
+        let auth = format!("{config}:/root/.docker/config.json:ro");
+        if Path::new(&config).is_file() {
+            args.extend(["-v", &auth]);
+        }
+        args.extend([image.as_str(), "sign", "--yes", "--key", &key_arg, "--tlog-upload=false"]);
+        if local_registry(image_ref) {
+            args.push("--allow-insecure-registry");
+        }
+        args.push(image_ref);
+        docker(&args).map(|_| ())
     }
     fn push(&self, tag: &str, remote: &str) -> Result<String, String> {
         docker(&["tag", tag, remote])?;
@@ -237,6 +277,8 @@ pub struct Release {
     pub tag: String,
     /// Where the image is published (`host[:port]/namespace`); its manifest digest then names it.
     pub registry: Option<String>,
+    /// A cosign key (mode 0600) to sign the published image with; needs `registry`.
+    pub cosign_key: Option<std::path::PathBuf>,
 }
 
 fn container(project: &str) -> String {
@@ -329,6 +371,13 @@ pub fn deploy(
         )?,
         None => format!("{image_tag}@{image}"),
     };
+    // Signed before it runs: a signing failure leaves the running service untouched.
+    if let Some(key) = &release.cosign_key {
+        if release.registry.is_none() {
+            return Err("--cosign-key needs --registry: cosign signs a published image".into());
+        }
+        engine.cosign_sign(&image_ref, key)?;
+    }
     let sbom = engine.sbom(&image)?;
     let bases = engine.base_images(context)?;
     std::fs::create_dir_all(sbom_dir).map_err(|e| e.to_string())?;
