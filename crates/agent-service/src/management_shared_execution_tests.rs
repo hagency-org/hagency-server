@@ -19,6 +19,36 @@ mod protocol_tests;
 #[path = "management_shared_ticket_tests.rs"]
 mod ticket_tests;
 
+fn recurring_fixture_calendar(
+    now: u64,
+) -> (
+    crate::recurring_quota::Calendar,
+    crate::recurring_quota::Period,
+) {
+    let mut calendar = crate::recurring_quota::Calendar {
+        cadence: crate::recurring_quota::Cadence::Daily,
+        time_zone: "America/Los_Angeles".into(),
+    };
+    let mut period = calendar.period_at(now).unwrap();
+    // Some integration tests wait for a real 30-second execution ticket. Do
+    // not let their fixture's daily grant expire during that wait at midnight.
+    if period.end_ms.saturating_sub(now) < 120_000 {
+        calendar.time_zone = "UTC".into();
+        period = calendar.period_at(now).unwrap();
+    }
+    (calendar, period)
+}
+
+#[test]
+fn recurring_fixture_grant_survives_ticket_expiry_near_midnight() {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-13T07:59:45Z")
+        .unwrap()
+        .timestamp_millis() as u64;
+    let (calendar, period) = recurring_fixture_calendar(now);
+    assert_eq!(calendar.time_zone, "UTC");
+    assert!(period.end_ms - now > 120_000);
+}
+
 async fn prepared_pool(
     durable: bool,
 ) -> (
@@ -83,11 +113,7 @@ async fn prepared_pool_terms(
         f.domain.set_pool_grant_succession(true);
         let pool = admitted(&f).await;
         let mut grant = grant_input(&f, &pool, &f.outsider.p).await;
-        let calendar = crate::recurring_quota::Calendar {
-            cadence: crate::recurring_quota::Cadence::Daily,
-            time_zone: "America/Los_Angeles".into(),
-        };
-        let period = calendar.period_at(now_ms() as u64).unwrap();
+        let (calendar, period) = recurring_fixture_calendar(now_ms() as u64);
         grant.receipt.version = if pool_policy {
             6
         } else if cap.is_some() {
