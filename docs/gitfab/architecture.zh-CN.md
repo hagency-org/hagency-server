@@ -2,7 +2,7 @@
 
 GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出”的软件工坊流水线：Human 在 Matrix 房间提出任务，编排器按 Spec → 确认 → Plan → Execute → Test → Review → Release 推进，Agent 在任务分支上实现，编排器在 GitHub 或 GitCode 上建 PR、读测试状态、发 Release，Runner 部署并回执，所有关键事件签名留痕，大屏只读展示。原有的房间、Agent、资源池和执行设备逻辑不改，只增补。
 
-本文描述的是 `feat/gitfab-events` 分支上的实现。设计取舍见 `docs/design/2026-11-12-gitfab-orchestrator.zh-CN.md`。
+本文描述的是 `feat/gitfab-events` 分支上的实现。设计取舍见 `docs/design/2026-11-12-gitfab-orchestrator.zh-CN.md`。部署到已在使用的环境前，先读 `upgrade.zh-CN.md`（不启用时的影响、新增表、启用与回退步骤）。
 
 ## 组件
 
