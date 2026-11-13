@@ -52,3 +52,5 @@ CLI：`ledger --keys <DIR> [--report md] <FILE.jsonl>...`
 ## 验收
 
 `acceptance/fixtures/DEMO-05/` 中：`valid.jsonl` 的输出与 `valid.expected.json` 一致；`duplicate.jsonl` 输出与 `duplicate.expected.json` 一致；`conflict.jsonl`、`tampered.jsonl`、`float.jsonl` 退出码为 `1`，报告的冲突和错误行号与 `failures.expected.json` 一致。公钥在 `keys/`。另由 `./acceptance/verify-ledger.sh DEMO-05` 复算系统自身产生的事件。
+
+镜像中可执行文件 `ledger` 在 PATH 上；验收方用 `acceptance/verify-blackbox.sh DEMO-05` 在部署的镜像中运行它，夹具目录只读挂载在 `/fixtures`（用例见 `cases.json`）。

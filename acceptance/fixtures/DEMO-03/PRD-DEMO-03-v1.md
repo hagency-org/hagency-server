@@ -46,3 +46,5 @@
 ## 验收
 
 `acceptance/fixtures/DEMO-03/samples/*.md` 逐个运行，输出中的 `rule_id`、`severity`、`line` 和 `summary` 与同名 `.expected.json` 一致，退出码与其中 `exit_code` 一致。
+
+镜像中可执行文件 `mdcheck` 在 PATH 上；验收方用 `acceptance/verify-blackbox.sh DEMO-03` 在部署的镜像中运行它，夹具目录只读挂载在 `/fixtures`（用例见 `cases.json`）。

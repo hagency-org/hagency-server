@@ -86,7 +86,10 @@ done
 echo "manifests checked: $(ls -d "$tmp"/evidence/ar-* | wc -l | tr -d ' ') bundles"
 
 expect 2 "verify-blackbox needs the Runner receipts" "$here/verify-blackbox.sh" DEMO-01
-expect 2 "verify-blackbox needs a project's cases" "$here/verify-blackbox.sh" DEMO-05
+expect 2 "verify-blackbox needs a known project" "$here/verify-blackbox.sh" DEMO-09
+for p in DEMO-01 DEMO-02 DEMO-03 DEMO-04 DEMO-05; do
+    expect 0 "$p has valid black-box cases" python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); assert any(k in c for k in ("startup","http","cli","container"))' "$here/fixtures/$p/cases.json"
+done
 
 # Retention: an intact bundle archives and checks; a changed one is refused; a changed archive fails.
 bundle=$(basename "$(ls -d "$tmp"/evidence/ar-* | head -1)")

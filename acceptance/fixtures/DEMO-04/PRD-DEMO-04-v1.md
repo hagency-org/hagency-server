@@ -64,3 +64,5 @@ CLI：`relnotes --version <VERSION> --date <YYYY-MM-DD> [--digest] <INPUT.json>`
 ## 验收
 
 `acceptance/fixtures/DEMO-04/input.json` 以 `--version v1.0.0 --date 2026-11-12` 运行，输出与 `expected.md` 逐字节一致，`--digest` 与 `expected.digest` 一致。
+
+镜像中可执行文件 `relnotes` 在 PATH 上；验收方用 `acceptance/verify-blackbox.sh DEMO-04` 在部署的镜像中运行它，夹具目录只读挂载在 `/fixtures`（用例见 `cases.json`）。

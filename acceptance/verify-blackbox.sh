@@ -53,7 +53,7 @@ if [ "$code" = 2 ]; then
     finish 2
 fi
 # One check per section of cases.json, with the failed cases named.
-for section in startup http container; do
+for section in startup http cli container; do
     summary=$(python3 - "$RUN_DIR/blackbox-result.json" "$section" <<'EOF'
 import json, sys
 s = json.load(open(sys.argv[1]))["sections"].get(sys.argv[2])

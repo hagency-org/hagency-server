@@ -14,9 +14,18 @@ or `raw_body`, and expect `status`, `content_type` (prefix), `json` (subset matc
 `save` keeps response fields for later `${name}`. `${release}` and `${sha}` are the Release values.
 Container cases: `non_root` (the image does not run as root) and `healthcheck` (the image declares
 one).
+
+CLI cases run `command` from the image's PATH with `args`, the project's fixture directory mounted
+read-only at /fixtures (`${fixtures}` in args), and `stdin_file` as standard input. Expectations name
+fixture files, so the frozen expected outputs stay the single source: `exit_code` (or
+`exit_code_from`, a JSON file's `exit_code`), `stdout_json_file` (subset match after dropping
+`exit_code`; lists match element by element and must be the same length), `stdout_file` (byte for
+byte) and `stdout_trimmed_file` (equal after trimming whitespace). `file#key` picks one member of a
+JSON file.
 """
 import argparse
 import json
+import os
 import re
 import socket
 import subprocess
@@ -39,7 +48,17 @@ def substitute(value, names):
 
 
 def subset(want, got, at="$"):
-    """Differences where `got` does not contain `want` (dicts by key, everything else equal)."""
+    """Differences where `got` does not contain `want`: dicts by key, lists element by element with
+    the same length, everything else equal."""
+    if isinstance(want, list):
+        if not isinstance(got, list):
+            return [f"{at}: expected an array"]
+        if len(want) != len(got):
+            return [f"{at}: {len(got)} elements, expected {len(want)}"]
+        out = []
+        for i, (w, g) in enumerate(zip(want, got)):
+            out.extend(subset(w, g, f"{at}[{i}]"))
+        return out
     if isinstance(want, dict):
         if not isinstance(got, dict):
             return [f"{at}: expected an object"]
@@ -161,6 +180,61 @@ def run_http(cases, base, names):
     return {"passed": len(cases) - len(failed), "failed": failed}
 
 
+def fixture(root, ref):
+    """Bytes of a fixture file, or the JSON member `file#key`, under the fixture root only."""
+    name, _, key = ref.partition("#")
+    path = os.path.realpath(os.path.join(root, name))
+    if not path.startswith(os.path.realpath(root) + os.sep):
+        raise ValueError(f"{ref}: outside the fixtures")
+    data = open(path, "rb").read()
+    if key:
+        return json.loads(data)[key]
+    return data
+
+
+def run_cli(cases, image, root, names):
+    failed = []
+    names = dict(names, fixtures="/fixtures")
+    for case in cases:
+        case = substitute(case, names)
+        why = []
+        try:
+            stdin = fixture(root, case["stdin_file"]) if "stdin_file" in case else None
+            name = f"{PREFIX}-cli-{int(time.time() * 1000)}"
+            cmd = ["docker", "run", "--rm", "-i", "--name", name, "-v", f"{root}:/fixtures:ro",
+                   "--entrypoint", case["command"], image, *case.get("args", [])]
+            p = subprocess.run(cmd, input=stdin, capture_output=True, timeout=60)
+        except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as e:
+            failed.append({"case": case["name"], "why": f"could not run: {e}"})
+            continue
+        want_code = case.get("exit_code")
+        if "exit_code_from" in case:
+            source = fixture(root, case["exit_code_from"])
+            want_code = (json.loads(source) if isinstance(source, bytes) else source).get("exit_code")
+        if want_code is not None and p.returncode != want_code:
+            why.append(f"exit {p.returncode}, expected {want_code}")
+        try:
+            if "stdout_file" in case and p.stdout != fixture(root, case["stdout_file"]):
+                why.append(f"stdout differs from {case['stdout_file']}")
+            if "stdout_trimmed_file" in case and p.stdout.strip() != fixture(root, case["stdout_trimmed_file"]).strip():
+                why.append(f"stdout differs from {case['stdout_trimmed_file']}")
+            if "stdout_json_file" in case:
+                want = fixture(root, case["stdout_json_file"])
+                want = json.loads(want) if isinstance(want, bytes) else want
+                if isinstance(want, dict):
+                    want = {k: v for k, v in want.items() if k != "exit_code"}
+                try:
+                    got = json.loads(p.stdout or b"null")
+                    why += subset(want, got)
+                except ValueError:
+                    why.append("stdout is not JSON")
+        except (OSError, ValueError, KeyError) as e:
+            why.append(f"expected output: {e}")
+        if why:
+            failed.append({"case": case["name"], "why": "; ".join(why)[:300]})
+    return {"passed": len(cases) - len(failed), "failed": failed}
+
+
 def run_container(spec, image):
     failed = []
     p = docker("image", "inspect", "-f", "{{json .Config}}", image)
@@ -223,6 +297,8 @@ def main():
                 sections["http"] = run_http(cases["http"], base, names)
         finally:
             docker("rm", "-f", name)
+    if cases.get("cli"):
+        sections["cli"] = run_cli(cases["cli"], a.image, os.path.dirname(os.path.abspath(a.cases)), names)
     if cases.get("container"):
         sections["container"] = run_container(cases["container"], a.image)
     ok = all(not s["failed"] for s in sections.values())
