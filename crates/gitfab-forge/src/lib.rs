@@ -132,6 +132,18 @@ pub enum Checks {
     Failure,
 }
 
+/// Human review of a Pull Request on the platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Review {
+    /// Nobody reviewed it or was asked to.
+    None,
+    /// Reviewers were asked and not all have approved.
+    Pending,
+    Approved,
+    /// GitHub only: a reviewer's latest review asks for changes.
+    ChangesRequested,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {
     pub tag: String,
@@ -551,6 +563,60 @@ impl<T: Transport> Forge<T> {
                         Some(_) => Checks::Pending,
                     },
                 )
+            }
+        }
+    }
+
+    /// Review state of a Pull Request. GitHub: each reviewer's latest approving or change-requesting
+    /// review counts (comments do not; a dismissal withdraws it). GitCode: the Pull Request's
+    /// assigned reviewers and whether each has accepted.
+    pub async fn review(&self, repo: &Repo, pull: &PullRequest) -> Result<Review> {
+        let number = pull.number;
+        match self.backend {
+            Backend::GitHub => {
+                let reviews = self
+                    .get(format!("{}/pulls/{number}/reviews?per_page=100", repo.path()))
+                    .await?;
+                let mut latest: std::collections::BTreeMap<String, String> = Default::default();
+                for review in reviews.as_array().into_iter().flatten() {
+                    let user = review
+                        .pointer("/user/login")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    match review.get("state").and_then(Value::as_str) {
+                        Some(state @ ("APPROVED" | "CHANGES_REQUESTED")) => {
+                            latest.insert(user.to_owned(), state.to_owned());
+                        }
+                        Some("DISMISSED") => {
+                            latest.remove(user);
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(if latest.values().any(|s| s == "CHANGES_REQUESTED") {
+                    Review::ChangesRequested
+                } else if latest.is_empty() {
+                    Review::None
+                } else {
+                    Review::Approved
+                })
+            }
+            Backend::GitCode => {
+                let value = self.get(format!("{}/pulls/{number}", repo.path())).await?;
+                let reviewers: Vec<bool> = value
+                    .get("assignees")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .map(|a| a.get("accept").and_then(Value::as_bool) == Some(true))
+                    .collect();
+                Ok(if reviewers.is_empty() {
+                    Review::None
+                } else if reviewers.iter().all(|accepted| *accepted) {
+                    Review::Approved
+                } else {
+                    Review::Pending
+                })
             }
         }
     }

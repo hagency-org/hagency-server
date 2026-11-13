@@ -102,6 +102,6 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
 ## 已知限制
 
 - 编排器只支持不加密的项目房间。
-- 平台审查状态（PR review）尚未读取；测试状态 GitHub 取提交状态与 check-runs（细粒度 Token 时改读 Actions），GitCode 取 PR 的 pipeline_status。
+- 平台审查状态可用 `gitfab-forge review` 读取（GitHub 取每位审查人最后一次批准或要求修改，GitCode 取指派审查人的 accept），但编排器尚未把它写进阶段说明；流程里的评审结论来自 Reviewer Agent。测试状态 GitHub 取提交状态与 check-runs（细粒度 Token 时改读 Actions），GitCode 取 PR 的 pipeline_status。
 - GitCode 经典 Token 不能限定单个仓库。
 - 事件日志尚未写入 Git。

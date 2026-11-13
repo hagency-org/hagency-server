@@ -334,3 +334,48 @@ async fn a_gitcode_pull_request_created_with_only_web_url_is_read() {
     let pull = Forge::new(Backend::GitCode, &fake).upsert_pull(&repo(), "b", "main", "t", "").await.unwrap();
     assert_eq!(pull.url, "https://gitcode.com/octo/demo/merge_requests/1");
 }
+
+#[tokio::test]
+async fn github_review_takes_each_reviewers_latest_verdict() {
+    let pull = PullRequest {
+        number: 4,
+        url: String::new(),
+        head_sha: String::new(),
+    };
+    let review = |user: &str, state: &str| json!({"user": {"login": user}, "state": state});
+    for (reviews, want) in [
+        (json!([]), Review::None),
+        (json!([review("a", "COMMENTED")]), Review::None),
+        (json!([review("a", "CHANGES_REQUESTED"), review("a", "APPROVED")]), Review::Approved),
+        (json!([review("a", "APPROVED"), review("b", "CHANGES_REQUESTED")]), Review::ChangesRequested),
+        (json!([review("a", "CHANGES_REQUESTED"), review("a", "DISMISSED")]), Review::None),
+    ] {
+        let fake = Fake::default().on("GET", "/repos/octo/demo/pulls/4/reviews?per_page=100", 200, reviews);
+        let got = Forge::new(Backend::GitHub, &fake).review(&repo(), &pull).await.unwrap();
+        assert_eq!(got, want);
+    }
+}
+
+#[tokio::test]
+async fn gitcode_review_is_approved_when_every_assigned_reviewer_accepted() {
+    let pull = PullRequest {
+        number: 9,
+        url: String::new(),
+        head_sha: String::new(),
+    };
+    let reviewer = |accept: bool| json!({"login": "r", "assigness": true, "code_owner": false, "accept": accept});
+    for (assignees, want) in [
+        (json!([]), Review::None),
+        (json!([reviewer(true), reviewer(false)]), Review::Pending),
+        (json!([reviewer(true), reviewer(true)]), Review::Approved),
+    ] {
+        let fake = Fake::default().on(
+            "GET",
+            "/repos/octo/demo/pulls/9",
+            200,
+            json!({"number": 9, "assignees": assignees}),
+        );
+        let got = Forge::new(Backend::GitCode, &fake).review(&repo(), &pull).await.unwrap();
+        assert_eq!(got, want);
+    }
+}

@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use hagency_gitfab_forge::{Backend, Checks, Error, Forge, Http, Repo};
+use hagency_gitfab_forge::{Backend, Checks, Error, Forge, Http, Repo, Review};
 use serde_json::{Value, json};
 
 #[derive(Parser)]
@@ -62,6 +62,9 @@ enum Command {
     },
     /// Test state of a Pull Request (exit 1 unless it passed).
     Checks { repo: String, number: u64 },
+    /// Review state of a Pull Request on the platform: none, pending, approved or changes_requested.
+    /// Reads only; exit 1 unless approved.
+    Review { repo: String, number: u64 },
     /// The published Release for a tag (exit 1 when there is none). Reads only.
     ReleaseInfo {
         repo: String,
@@ -216,6 +219,22 @@ async fn run(cli: Cli) -> Result<Value, Failure> {
             let state = forge.checks(&repo, &pull).await?;
             let report = json!({"number": number, "headSha": pull.head_sha, "checks": format!("{state:?}").to_lowercase()});
             if state != Checks::Success {
+                return Err(Failure::Check(report));
+            }
+            report
+        }
+        Command::Review { repo: name, number } => {
+            let repo = repo(&name)?;
+            let pull = forge.pull(&repo, number).await?;
+            let state = forge.review(&repo, &pull).await?;
+            let state = match state {
+                Review::None => "none",
+                Review::Pending => "pending",
+                Review::Approved => "approved",
+                Review::ChangesRequested => "changes_requested",
+            };
+            let report = json!({"number": number, "review": state});
+            if state != "approved" {
                 return Err(Failure::Check(report));
             }
             report
