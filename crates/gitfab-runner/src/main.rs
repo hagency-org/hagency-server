@@ -49,6 +49,8 @@ struct Common {
 }
 
 #[derive(Subcommand)]
+// Parsed once per run; boxing the larger variant would buy nothing.
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Build `--context` at the Release commit, start it and record the receipt.
     Deploy {
