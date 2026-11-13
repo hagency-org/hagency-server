@@ -20,6 +20,12 @@
    board_token_file = "/etc/hagency/keys/board-token"     # 可选：大屏读取 Agent 状态
    ```
    所有 Token 文件必须是 0600，否则服务拒绝启动并说明原因。
+   事件日志与 Runner 回执定时写入 Git（附件 3 第 7.1 节），例如 crontab 每分钟一次：
+   ```
+   * * * * * /opt/hagency/scripts/gitfab-journal-git.sh /var/lib/hagency/data/gitfab/events.jsonl /var/lib/gitfab/journal-git
+   * * * * * /opt/hagency/scripts/gitfab-journal-git.sh /var/lib/gitfab/receipts.jsonl /var/lib/gitfab/journal-git
+   ```
+   脚本只提交新增的整行；日志前面的内容被改动或变短时拒绝提交并返回 1，Git 历史保留每行最初写入的样子。
 3. 重启后检查：日志出现 `GitFab orchestrator enabled`；`GET /hagency/gitfab/v1/public-keys` 返回公钥。把公钥文件交给验收方，放进 `acceptance/keys/`。
 
 Git 平台 Token 的最小权限：
