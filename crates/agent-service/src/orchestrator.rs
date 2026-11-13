@@ -514,6 +514,12 @@ impl<R: StageRoom> Orchestrator<'_, R> {
             Err(Error::Conflict("orchestrator_thread_in_use")) => {
                 return refuse("本 Thread 已经有另一个任务的流程。");
             }
+            Err(Error::Conflict("orchestrator_task_in_use")) => {
+                return refuse(&format!(
+                    "任务 {} 在本房间已有进行中的流程，请在它的 Thread 里继续，不会重复创建。",
+                    start.task_id
+                ));
+            }
             Err(e) => return Err(e),
         };
         Ok((

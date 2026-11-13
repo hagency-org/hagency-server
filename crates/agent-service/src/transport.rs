@@ -948,12 +948,14 @@ impl TransportStore {
         let id = format!("orun_{}", entity_id()?);
         let state = crate::orchestrator_flow::State::NotStarted.to_json().to_string();
         self.db.with_connection(async |db| {
-            sql_query("INSERT INTO hagency_agent_v1.orchestrator_runs(id,project_id,task_id,room_id,thread_root,requester_mxid,bindings,context,state,created_at_ms,updated_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10,$10) ON CONFLICT (room_id,thread_root) DO NOTHING")
+            sql_query("INSERT INTO hagency_agent_v1.orchestrator_runs(id,project_id,task_id,room_id,thread_root,requester_mxid,bindings,context,state,created_at_ms,updated_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10,$10) ON CONFLICT DO NOTHING")
                 .bind::<Text,_>(&id).bind::<Text,_>(&init.project_id).bind::<Text,_>(&init.task_id).bind::<Text,_>(&init.room_id)
                 .bind::<Text,_>(&init.thread_root).bind::<Text,_>(&init.requester_mxid).bind::<Text,_>(init.bindings.to_string())
                 .bind::<Text,_>(init.context.to_string()).bind::<Text,_>(&state).bind::<BigInt,_>(now).execute(db).await?;
             let row = sql_query(format!("SELECT {ORCHESTRATOR_RUN_COLUMNS} FROM hagency_agent_v1.orchestrator_runs WHERE room_id=$1 AND thread_root=$2"))
-                .bind::<Text,_>(&init.room_id).bind::<Text,_>(&init.thread_root).get_result::<OrchestratorRunRow>(db).await?;
+                .bind::<Text,_>(&init.room_id).bind::<Text,_>(&init.thread_root).get_result::<OrchestratorRunRow>(db).await.optional()?;
+            // Nothing in this thread: the insert met another open run of the same task in the Room.
+            let Some(row) = row else { return Err(Error::Conflict("orchestrator_task_in_use")) };
             let run = row.into_run()?;
             if run.init != *init { return Err(Error::Conflict("orchestrator_thread_in_use")); }
             Ok(run)

@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS hagency_agent_v1.orchestrator_runs(
     updated_at_ms bigint NOT NULL,
     UNIQUE (room_id, thread_root)
 );
+-- A task is worked on by one open run per Room: posting the same request again does not start a second.
+CREATE UNIQUE INDEX IF NOT EXISTS orchestrator_runs_open_task
+    ON hagency_agent_v1.orchestrator_runs (room_id, task_id)
+    WHERE state->>'kind' NOT IN ('completed', 'failed');
 -- `/gitfab` messages Humans post in project Rooms; routed here instead of to Agents.
 CREATE TABLE IF NOT EXISTS hagency_agent_v1.orchestrator_commands(
     event_id text PRIMARY KEY CHECK (event_id LIKE '$%'),

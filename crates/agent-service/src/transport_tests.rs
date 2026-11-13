@@ -3422,6 +3422,13 @@ async fn postgres_orchestrator_run_is_one_per_thread_and_saves_with_a_revision()
         f.transport.create_orchestrator_run(&other, now).await.unwrap_err(),
         Error::Conflict("orchestrator_thread_in_use")
     ));
+    // Posting the same task again in a new thread starts nothing while its run is open.
+    let mut again = init.clone();
+    again.thread_root = "$gitfab-run-root-again".into();
+    assert!(matches!(
+        f.transport.create_orchestrator_run(&again, now).await.unwrap_err(),
+        Error::Conflict("orchestrator_task_in_use")
+    ));
     let mut bad = init.clone();
     bad.thread_root = "$gitfab-run-root-2".into();
     bad.bindings = serde_json::json!({"coordinator": f.binding, "implementer": f.binding});
@@ -3465,4 +3472,35 @@ async fn postgres_orchestrator_run_is_one_per_thread_and_saves_with_a_revision()
         .unwrap();
     assert!(!f.transport.active_orchestrator_runs(10).await.unwrap().iter().any(|r| r.id == run.id));
     assert_eq!(f.transport.orchestrator_run("orun_missing").await.unwrap(), None);
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_a_finished_task_can_be_started_again_in_a_new_thread() {
+    use crate::orchestrator_flow::State;
+    use crate::transport::OrchestratorRunUpdate;
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    let init = OrchestratorRunInit {
+        project_id: "proj_gitfab".into(),
+        task_id: "task_again".into(),
+        room_id: "!gitfab-again:example.test".into(),
+        thread_root: "$gitfab-again-1".into(),
+        requester_mxid: "@owner:example.test".into(),
+        bindings: serde_json::json!({"coordinator": f.binding, "implementer": f.binding, "reviewer": f.binding}),
+        context: serde_json::json!({"goal": "g", "gitBackend": "github", "repoRef": "https://github.com/example/demo",
+            "baselineSha": "a".repeat(40), "specRef": "spec/x.md@v1"}),
+    };
+    let first = f.transport.create_orchestrator_run(&init, now).await.unwrap();
+    f.transport
+        .save_orchestrator_run(&first.id, first.revision, &OrchestratorRunUpdate {
+            state: &State::Failed { reason: "aborted" }, dispatch_id: None, handoff: None,
+            pending_events: &serde_json::json!([]),
+        }, now)
+        .await
+        .unwrap();
+    let mut again = init.clone();
+    again.thread_root = "$gitfab-again-2".into();
+    let second = f.transport.create_orchestrator_run(&again, now).await.unwrap();
+    assert_ne!(second.id, first.id);
 }
