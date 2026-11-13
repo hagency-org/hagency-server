@@ -23,7 +23,7 @@ cp acceptance/gitfab.env.example acceptance/gitfab.env   # 填写地址和凭据
 | `verify-events.sh [FILE...]` | 可用 | 校验全部事件：schema、Ed25519 签名、关键事件的身份事件；默认读 `GITFAB_JOURNAL` |
 | `verify-ledger.sh DEMO-05 [FILE...]` | 可用 | 导出该项目的 memory/token 事件到证据包，验签并复算账本 |
 | `run-project.sh DEMO-0N --backend ...` | 可用：以验收人身份在项目房间发出请求（作为任务 Thread 的根），发起流程并跟踪到结束；Spec 由人在 Thread 里确认，或设 `GITFAB_AUTO_APPROVE_SPEC=1` 由脚本确认；随后在同一证据包里执行 verify-events 和 verify-release | 0 通过；1 流程失败、转人工或核对不通过；2 配置不全 |
-| `verify-release.sh DEMO-0N` | 可用：验签；找到项目最近的 Release 事件；只读核对平台上的 Release 和 PR 测试；核对 Runner 部署回执（验签、健康检查通过、提交与 PR 头一致、SBOM 摘要一致）；核对容器正在运行回执中的镜像、健康和版本接口当前可用 | 0 全部通过；1 有核对不通过；2 配置不全 |
+| `verify-release.sh DEMO-0N` | 可用：验签；找到项目最近的 Release 事件；只读核对平台上的 Release 和 PR 测试；核对 Runner 部署回执（验签、健康检查通过、提交与 PR 头一致、SBOM 摘要一致）；回执以 Registry manifest digest 记录镜像时（Runner 用了 `--registry`），核对 Registry 仍按该 digest 提供镜像；核对容器正在运行回执中的镜像、健康和版本接口当前可用 | 0 全部通过；1 有核对不通过；2 配置不全 |
 | `rollback.sh DEMO-0N` | 可用：调用 `gitfab-runner rollback` 回到上一个正常的 Release，核对新回执验签通过、结果为通过、容器运行目标镜像、健康和版本接口返回目标 Release | 0 通过；1 回退或核对失败；2 配置不全 |
 
 ## 自检
