@@ -16,7 +16,9 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
  hagency-server ─ agent-service ─────────┤
    ├─ 路由 worker：识别 /gitfab 命令 → orchestrator_commands
    ├─ 编排器 worker（orchestrator.rs，每 5 秒一轮）
-   │     流程规则：orchestrator_flow.rs（纯函数）
+   │     流程规则：orchestrator_flow.rs（纯函数；Spec 须列验收标准）
+   │     Plan 的 Module 清单：orchestrator_modules.rs；固定队伍与能力：orchestrator_team.rs
+   │     状态提示：Spec 待确认、人工介入、完成、失败时在 Thread 发 m.notice
    │     派发：个人 Agent 走 bindings；资源池 Agent 走原有 route_shared_event
    │     平台：orchestrator_git.rs → gitfab-forge（GitHub / GitCode REST）
    │     签名日志：Recorder → gitfab-events journal（JSONL，追加）
@@ -25,6 +27,8 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
    └─ PostgreSQL：orchestrator_runs、orchestrator_stage_events、orchestrator_commands
         │ 派发 / 回复（原有 transport）
         ▼
+ hagency-desktop：带 org.hagency.gitfab_stage 的消息下方显示任务、阶段与状态（src/agent_chat/gitfab_card.rs）
+
  Agent（执行设备上的 Codex、Claude 等；个人 Agent 或资源池 Agent）
    └─ 只做 git：在 agent/<project_id>/<task_id> 分支提交并推送
 
@@ -43,7 +47,9 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
 | 组件 | 位置 | 说明 |
 |---|---|---|
 | 流程规则 | `crates/agent-service/src/orchestrator_flow.rs` | 状态机，纯函数无 I/O：阶段、角色、返工上限（2 次）、超时与人工介入 |
-| 编排器 worker | `crates/agent-service/src/orchestrator.rs` | 推进运行、派发阶段消息、记录签名事件、房间命令 |
+| 编排器 worker | `crates/agent-service/src/orchestrator.rs` | 推进运行、派发阶段消息、记录签名事件、房间命令、状态提示 |
+| Module 清单 | `crates/agent-service/src/orchestrator_modules.rs` | 解析并校验 Plan 回复里的 `gitfab-modules` 代码块（spec、tests、capabilities） |
+| 固定队伍 | `crates/agent-service/src/orchestrator_team.rs` | `[gitfab.team]` 声明的角色与能力；核对派工规则用到的角色、Module 所需能力 |
 | 平台动作 | `crates/agent-service/src/orchestrator_git.rs` | Execute 成功建/更新 PR，Test 成功读测试状态，Release 成功发 Release |
 | Agent 状态 | `crates/agent-service/src/orchestrator_status.rs` | 大屏用的 Running / Pending / Active |
 | HTTP | `crates/agent-service/src/api_gitfab.rs` | 发起、查看、Spec 确认、人工决定 |
@@ -52,6 +58,7 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
 | Git 平台 | `crates/gitfab-forge/` | GitHub 与 GitCode 一套接口；命令 `gitfab-forge` |
 | 部署 | `crates/gitfab-runner/` | 部署、自动恢复、回退、SBOM 证明；命令 `gitfab-runner` |
 | 大屏 | `crates/gitfab-board/` | 只读页面与 `/api/snapshot`；命令 `gitfab-board` |
+| 桌面端任务行 | hagency-desktop `src/agent_chat/gitfab_card.rs` | 读消息的 `org.hagency.gitfab_stage` 元数据显示任务、阶段、轮次与等待/结束状态，不解析正文 |
 | 服务端接线 | `crates/backend/src/{config.rs,main.rs,gitfab.rs}` | `[gitfab]` 配置、签名密钥加载、启动编排器 |
 | 验收包 | `acceptance/` | 六个入口、项目配置、夹具、自测 |
 
@@ -59,8 +66,8 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
 
 1. **发起**：Human 在不加密的项目房间发 `/gitfab start <任务 ID>`（附仓库、基线、Spec、角色、目标），或调用 API。这条消息成为任务 Thread 的根。运行写入 `orchestrator_runs`，记录 intake 事件。
 2. **派发**：编排器把阶段消息发到 Thread，并按角色交给对应 Agent：个人 Agent 通过原有 bindings 派发；资源池 Agent（`mas_…`）构造“发起人提及该 Agent”的事件交给原有 `route_shared_event`，原有的成员、额度、队列检查照常生效。
-3. **Spec 闸门**：Spec 回复后运行停在 `awaiting_spec_approval`，只有发起人能确认、要求修改或拒绝。
-4. **执行与平台**：Plan → Execute → Test → Review。Execute 成功后编排器在平台上建或更新 PR；Test 成功后读取平台测试状态；Review 驳回自动返工最多 2 次，第 3 次转人工；超时转人工，绝不自动重派。
+3. **Spec 闸门**：Spec 回复必须有“验收标准”一节并逐条列出，否则重派一次；合格后运行停在 `awaiting_spec_approval`，只有发起人能确认、要求修改或拒绝。Spec 正文的 SHA-256 记在出稿事件，此后每个事件带 `spec_revision`。
+4. **执行与平台**：Plan 回复必须带 `gitfab-modules` 清单（每个 Module 有 spec、tests、capabilities；配置了固定队伍时只能要求实现角色声明的能力），清单写入 Plan 签名事件的 `modules`。然后 Execute → Test → Review。Execute 成功后编排器在平台上建或更新 PR；Test 成功后读取平台测试状态；Review 驳回自动返工最多 2 次，第 3 次转人工；超时转人工，绝不自动重派。运行停下等人或结束时（Spec 待确认、人工介入、完成、失败），编排器在 Thread 发一条带原因与可用命令的状态提示。
 5. **发布**：Release 阶段成功后编排器以 PR 头提交为目标发 Release。PR 与 Release 链接写入该阶段签名事件的 `artifact_refs`，并在 Thread 里说明。
 6. **部署**：Runner 取该 Release 部署，写签名回执；起不来就恢复上一版并如实记录。
 7. **验收与展示**：`verify-release.sh` 核对事件、平台、回执、SBOM、容器与线上版本；大屏随时读取同一批记录。
@@ -102,6 +109,6 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
 ## 已知限制
 
 - 编排器只支持不加密的项目房间。
-- 平台审查状态可用 `gitfab-forge review` 读取（GitHub 取每位审查人最后一次批准或要求修改，GitCode 取指派审查人的 accept），但编排器尚未把它写进阶段说明；流程里的评审结论来自 Reviewer Agent。测试状态 GitHub 取提交状态与 check-runs（细粒度 Token 时改读 Actions），GitCode 取 PR 的 pipeline_status。
+- 平台审查状态（GitHub 取每位审查人最后一次批准或要求修改，GitCode 取指派审查人的 accept）与合并冲突状态写在 Test 阶段的平台说明里，仅供参考；流程是否通过评审以 Reviewer Agent 的结论行为准。测试状态 GitHub 取提交状态与 check-runs（细粒度 Token 时改读 Actions），GitCode 取 PR 的 pipeline_status。
 - GitCode 经典 Token 不能限定单个仓库。
 - 事件日志写入 Git 由 `scripts/gitfab-journal-git.sh` 定时完成（只接受追加，前面的行被改或文件变短即拒绝提交）；推送到远端仓库由运维安排。
