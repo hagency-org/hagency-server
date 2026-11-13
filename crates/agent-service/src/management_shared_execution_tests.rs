@@ -2763,8 +2763,7 @@ async fn initial_command_no_issue_proof(cap: Option<i64>) {
     initial_command_no_issue_proof_for(cap, false).await;
 }
 async fn initial_command_no_issue_proof_for(cap: Option<i64>, pool_policy: bool) {
-    let (f, request, assignment, matrix) =
-        prepared_pool_terms(true, true, cap, pool_policy).await;
+    let (f, request, assignment, matrix) = prepared_pool_terms(true, true, cap, pool_policy).await;
     let queued = crate::transport::RoutedEvent {
         event_id: "$before-first-process".into(),
         room_id: request.room_id.clone(),
