@@ -98,6 +98,9 @@ pub(crate) struct GitStep {
     pub commit: Option<String>,
     /// Why the platform did not do it (refused, unreachable, unexpected answer).
     pub error: Option<String>,
+    /// Git blob SHA of the run's Spec file at that head, so an edit to the confirmed Spec in the
+    /// repository shows as a different blob between the run's events.
+    pub spec_blob: Option<String>,
 }
 
 /// A head SHA the platform reported, when it is one.
@@ -180,6 +183,7 @@ pub(crate) async fn step(
                     commit: commit(&pull.head_sha),
                     refs: vec![pull.url],
                     error: None,
+                    spec_blob: None,
                 }
             }
             Stage::Test => match host.open_pull(repo, &branch, &base).await? {
@@ -200,6 +204,7 @@ pub(crate) async fn step(
                         commit: commit(&pull.head_sha),
                         refs: vec![pull.url],
                         error: None,
+                        spec_blob: None,
                     }
                 }
                 None => no_pull(&branch),
@@ -214,6 +219,7 @@ pub(crate) async fn step(
                         commit: commit(&head_sha),
                         refs: vec![release.url, url],
                         error: None,
+                        spec_blob: None,
                     }
                 }
                 _ => no_pull(&branch),
@@ -222,11 +228,32 @@ pub(crate) async fn step(
         })
     }
     .await;
-    result.unwrap_or_else(|e| GitStep {
+    let mut step = result.unwrap_or_else(|e| GitStep {
         note: Some(format!("Git 平台操作未完成：{e}")),
         error: Some(e.to_string()),
         ..GitStep::default()
-    })
+    });
+    // Informational: a Spec file that cannot be read leaves the field out, and acceptance reports it.
+    if let (Some(head), Some(path)) = (step.commit.clone(), spec_path(run)) {
+        match host.file_blob(repo, &path, &head).await {
+            Ok(blob) => step.spec_blob = blob.as_deref().and_then(commit),
+            Err(e) => tracing::warn!(error = %e, "gitfab Spec file was not read"),
+        }
+    }
+    step
+}
+
+/// The repository path of the run's Spec: `specRef` without its `@version`, when it is a relative
+/// path inside the repository.
+pub(crate) fn spec_path(run: &OrchestratorRun) -> Option<String> {
+    let path = context(run, "specRef").split('@').next()?.trim();
+    (!path.is_empty()
+        && !path.contains("://")
+        && !path.starts_with('/')
+        && path
+            .split('/')
+            .all(|s| !s.is_empty() && s != "." && s != ".."))
+    .then(|| path.to_owned())
 }
 
 fn no_pull(branch: &str) -> GitStep {
@@ -311,6 +338,30 @@ mod tests {
             body: json!({"full_name": "o/r", "default_branch": "main",
                 "html_url": "https://github.com/o/r"}),
         })
+    }
+
+    #[test]
+    fn the_spec_path_is_the_spec_reference_inside_the_repository() {
+        let with = |spec: &str| {
+            let mut r = run();
+            r.init.context["specRef"] = json!(spec);
+            spec_path(&r)
+        };
+        assert_eq!(
+            with("spec/DEMO-02.md@v1").as_deref(),
+            Some("spec/DEMO-02.md")
+        );
+        assert_eq!(with("docs/spec.md").as_deref(), Some("docs/spec.md"));
+        for outside in [
+            "",
+            "@v1",
+            "/etc/spec.md",
+            "../spec.md",
+            "https://example.test/spec.md",
+            "spec//x.md",
+        ] {
+            assert_eq!(with(outside), None, "{outside}");
+        }
     }
 
     #[tokio::test]
@@ -411,6 +462,13 @@ mod tests {
                             status: 200,
                             body: json!({"number": 3, "mergeable": false}),
                         }
+                    } else if p
+                        == format!("/repos/o/r/contents/spec/DEMO-02.md?ref={}", "b".repeat(40))
+                    {
+                        Response {
+                            status: 200,
+                            body: json!({"type": "file", "sha": "e".repeat(40)}),
+                        }
                     } else {
                         panic!("unexpected call {} {p}", r.method)
                     }
@@ -429,6 +487,7 @@ mod tests {
             );
             assert_eq!(step.error, None);
             assert_eq!(step.commit.as_deref(), Some("b".repeat(40).as_str()));
+            assert_eq!(step.spec_blob.as_deref(), Some("e".repeat(40).as_str()));
         }
     }
 

@@ -68,6 +68,12 @@ enum Command {
         phase: String,
         #[arg(long)]
         status: String,
+        /// Only events of this run.
+        #[arg(long)]
+        run: Option<String>,
+        /// The first matching event instead of the last.
+        #[arg(long)]
+        first: bool,
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
@@ -236,6 +242,8 @@ fn run(command: Command) -> Result<bool, String> {
             project,
             phase,
             status,
+            run,
+            first,
             files,
         } => {
             let ring = Keyring::load_dir(&keys).map_err(|e| e.to_string())?;
@@ -249,6 +257,8 @@ fn run(command: Command) -> Result<bool, String> {
                         && event["project_id"] == project.as_str()
                         && event["phase"] == phase.as_str()
                         && event["status"] == status.as_str()
+                        && run.as_deref().is_none_or(|r| event["run_id"] == r)
+                        && !(first && found.is_some())
                     {
                         found = Some(event);
                     }
@@ -259,7 +269,7 @@ fn run(command: Command) -> Result<bool, String> {
                 return Ok(false);
             };
             let mut flat = json!({"found": true});
-            for key in ["event_id", "run_id", "task_id", "timestamp", "round", "git_backend", "repo_ref", "commit_sha", "platform_error"] {
+            for key in ["event_id", "run_id", "task_id", "timestamp", "round", "git_backend", "repo_ref", "commit_sha", "platform_error", "spec_ref", "spec_revision", "spec_blob"] {
                 flat[key] = event[key].clone();
             }
             for (i, link) in event["artifact_refs"].as_array().into_iter().flatten().enumerate() {

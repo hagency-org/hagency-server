@@ -845,6 +845,10 @@ fn fake_github() -> crate::orchestrator_git::GitHosts {
                 200,
                 json!([{"user": {"login": "maintainer"}, "state": "APPROVED"}]),
             ),
+            ("GET", p) if p == format!("/contents/spec/DEMO-02.md?ref={head}") => (
+                200,
+                json!({"type": "file", "path": "spec/DEMO-02.md", "sha": "d".repeat(40)}),
+            ),
             ("GET", "/releases/tags/gitfab-task-healthz-r1") => (404, json!({})),
             ("POST", "/releases") => {
                 assert_eq!(r.body.as_ref().unwrap()["target_commitish"], head.as_str());
@@ -912,6 +916,11 @@ async fn postgres_a_run_opens_its_pull_request_and_publishes_the_release_on_the_
     };
     let head = json!("c".repeat(40));
     for phase in ["execute", "test", "release"] {
+        assert_eq!(
+            field(phase, "spec_blob"),
+            Some(json!("d".repeat(40))),
+            "{phase}"
+        );
         assert_eq!(field(phase, "commit_sha"), Some(head.clone()), "{phase}");
         assert_eq!(field(phase, "platform_error"), Some(Value::Null), "{phase}");
     }

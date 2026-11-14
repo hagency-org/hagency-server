@@ -54,7 +54,7 @@ PRD 不是发给 Agent 的提示词，而是 `specRef` 指向的冻结文件，S
 
 配置要点：
 - Spec 必须包含验收标准，这是后续 Test 与 Review 的依据。读取是严格的（`orchestrator_flow.rs` 的 `acceptance_criteria`）：要有一行写明“验收标准”（或 Acceptance criteria），其后、下一个标题之前至少一条列表项。没有的 Spec 回复按失败处理，自动重派一次，仍没有则运行失败。
-- Spec 的版本与摘要：Spec 出稿事件（spec / blocked）的 `output_digest` 是 Spec 正文的 SHA-256；此后每个阶段事件都带 `spec_revision`，写明它依据的是第几版 Spec（`revise` 一次加一）。
+- Spec 的版本与摘要：Spec 出稿事件（spec / blocked）的 `output_digest` 是 Spec 正文的 SHA-256；此后每个阶段事件都带 `spec_revision`，写明它依据的是第几版 Spec（`revise` 一次加一）。仓库里的 Spec 文件（`specRef` 去掉 `@版本`，例如 `spec/DEMO-02.md`）在 Execute、Test、Release 时读出 Git blob 记入事件 `spec_blob`；确认后若有人改了这个文件，verify-release 的 `spec.unchanged` 会失败并列出前后 blob。
 - “等待人工确认”对应编排器的闸门：Spec 回复后流程停在 `awaiting_spec_approval`，只有发起人在 Thread 里用 `/gitfab approve|revise|reject`（或 API）决定后才继续，Agent 无法绕过。
 - 选择 `revise` 会重新派发 Spec 阶段，Spec 版本号加一；上一版 Spec 作为“上一阶段产出”带入。需要的修改意见请直接在任务 Thread 里写给 Agent。
 

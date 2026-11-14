@@ -792,6 +792,9 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                 if let Some(sha) = &step.commit {
                     event["commit_sha"] = json!(sha);
                 }
+                if let Some(blob) = &step.spec_blob {
+                    event["spec_blob"] = json!(blob);
+                }
                 if let Some(error) = &step.error {
                     event["platform_error"] = json!(truncate(error, FINDINGS_LIMIT));
                 }

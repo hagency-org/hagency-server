@@ -320,3 +320,63 @@ fn trace_by_text_finds_the_signed_spec_and_not_an_edited_copy() {
     let (_, report) = gitfab(&["report", "--keys", "keys", "--project", "DEMO-02", "events.jsonl"], dir);
     assert!(report.as_str().unwrap().contains(&format!("输出 {}", &digest[..19])), "{report}");
 }
+
+#[test]
+fn find_narrows_to_a_run_and_can_take_its_first_event() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    assert_eq!(
+        gitfab(&["keygen", "--key-id", "k1", "--dir", "keys"], dir).0,
+        0
+    );
+    let event = |run: &str, n: u32, blob: char| {
+        json!({
+            "schema_version": "gitfab.task.v1", "event_id": format!("{run}.{n}.0"), "timestamp": "2026-11-12T03:00:00Z",
+            "project_id": "DEMO-02", "task_id": "task-1", "run_id": run, "matrix_room_id": "!room:example.org",
+            "matrix_thread_event_id": "$root", "git_backend": "github", "repo_ref": "https://github.com/org/demo-02",
+            "baseline_sha": "a".repeat(40), "spec_ref": "spec/DEMO-02.md@v1", "phase": "execute", "status": "succeeded",
+            "actor_id": "@agent:example.org", "input_digest": format!("sha256:{}", "a".repeat(64)),
+            "output_digest": null, "artifact_refs": [], "request_id": "req", "signature": null, "round": n,
+            "spec_revision": 1, "spec_blob": blob.to_string().repeat(40)
+        })
+    };
+    let lines = [
+        event("run-1", 1, 'b'),
+        event("run-1", 2, 'c'),
+        event("run-2", 1, 'd'),
+    ]
+    .iter()
+    .map(|e| sign(dir, e).to_string() + "\n")
+    .collect::<String>();
+    std::fs::write(dir.join("events.jsonl"), lines).unwrap();
+    let find = |extra: &[&str]| {
+        let mut args = vec![
+            "find",
+            "--keys",
+            "keys",
+            "--project",
+            "DEMO-02",
+            "--phase",
+            "execute",
+            "--status",
+            "succeeded",
+        ];
+        args.extend_from_slice(extra);
+        args.push("events.jsonl");
+        gitfab(&args, dir)
+    };
+    let (code, out) = find(&[]);
+    assert_eq!(
+        (code, out["run_id"].as_str()),
+        (0, Some("run-2")),
+        "the project's last by default"
+    );
+    let (_, out) = find(&["--run", "run-1"]);
+    assert_eq!(out["spec_blob"], "c".repeat(40));
+    let (_, out) = find(&["--run", "run-1", "--first"]);
+    assert_eq!(
+        (out["spec_blob"].as_str(), out["spec_revision"].as_i64()),
+        (Some("b".repeat(40).as_str()), Some(1))
+    );
+    assert_eq!(find(&["--run", "run-3"]).0, 1);
+}

@@ -472,3 +472,58 @@ async fn conflicts_are_read_from_each_platform() {
         assert_eq!(Forge::new(Backend::GitCode, &fake).conflict(&repo(), &pull).await.unwrap(), want);
     }
 }
+
+#[tokio::test]
+async fn a_file_is_named_by_its_blob_on_both_platforms() {
+    let blob = "b".repeat(40);
+    for backend in [Backend::GitHub, Backend::GitCode] {
+        let prefix = "/repos/octo/demo";
+        let fake = Fake::default()
+            .on(
+                "GET",
+                &format!("{prefix}/contents/spec/DEMO-02.md?ref=abc"),
+                200,
+                json!({"type": "file", "path": "spec/DEMO-02.md", "sha": blob}),
+            )
+            .on(
+                "GET",
+                &format!("{prefix}/contents/spec/missing.md?ref=abc"),
+                404,
+                json!({}),
+            )
+            .on(
+                "GET",
+                &format!("{prefix}/contents/spec?ref=abc"),
+                200,
+                json!([{"type": "file"}]),
+            );
+        let forge = Forge::new(backend, &fake);
+        assert_eq!(
+            forge
+                .file_blob(&repo(), "spec/DEMO-02.md", "abc")
+                .await
+                .unwrap(),
+            Some(blob.clone())
+        );
+        assert_eq!(
+            forge
+                .file_blob(&repo(), "spec/missing.md", "abc")
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(matches!(
+            forge.file_blob(&repo(), "spec", "abc").await,
+            Err(Error::Shape { .. })
+        ));
+        for bad in ["", "/etc/passwd", "spec/../x", "spec//x", "./spec"] {
+            assert!(
+                matches!(
+                    forge.file_blob(&repo(), bad, "abc").await,
+                    Err(Error::InvalidPath)
+                ),
+                "{bad}"
+            );
+        }
+    }
+}

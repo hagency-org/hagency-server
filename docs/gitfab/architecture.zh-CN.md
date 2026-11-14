@@ -50,7 +50,7 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
 | 编排器 worker | `crates/agent-service/src/orchestrator.rs` | 推进运行、派发阶段消息、记录签名事件、房间命令、状态提示 |
 | Module 清单 | `crates/agent-service/src/orchestrator_modules.rs` | 解析并校验 Plan 回复里的 `gitfab-modules` 代码块（spec、tests、capabilities） |
 | 固定队伍 | `crates/agent-service/src/orchestrator_team.rs` | `[gitfab.team]` 声明的角色与能力；核对派工规则用到的角色、Module 所需能力 |
-| 平台动作 | `crates/agent-service/src/orchestrator_git.rs` | Execute 成功建/更新 PR，Test 成功读测试状态，Release 成功发 Release |
+| 平台动作 | `crates/agent-service/src/orchestrator_git.rs` | Execute 成功建/更新 PR，Test 成功读测试状态，Release 成功发 Release；三者都读出 PR 头提交里 Spec 文件的 Git blob 记入事件 `spec_blob`，verify-release 据此发现确认后对 Spec 文件的改动 |
 | Agent 状态 | `crates/agent-service/src/orchestrator_status.rs` | 大屏用的 Running / Pending / Active |
 | HTTP | `crates/agent-service/src/api_gitfab.rs` | 发起、查看、Spec 确认、人工决定 |
 | 存储 | `crates/agent-service/src/orchestrator_schema.sql`、`transport.rs` | 运行、阶段派发、房间命令三张表 |

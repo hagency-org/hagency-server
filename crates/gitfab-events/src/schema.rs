@@ -82,6 +82,8 @@ const TASK_OPTIONAL: Fields = &[
     ("modules", Array),
     // The Spec version the stage worked from.
     ("spec_revision", Int),
+    // Git blob SHA of the Spec file at the stage's commit.
+    ("spec_blob", Sha),
 ];
 
 const IDENTITY_FIELDS: Fields = &[

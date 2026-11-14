@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Verifies a project's Release (Annex 1 Git backend, Annex 3 §9, §10): the journal's events verify, the
 # last signed Release event of the project names a Release and a Pull Request, the Release exists on the
-# platform and the Pull Request's checks passed. Platform reads only; nothing is created or changed.
+# platform and the Pull Request's checks passed, and the run's Spec file has the same Git blob at its
+# first Execute, at the Release and at the Pull Request head (no silent edit after confirmation).
+# Platform reads only; nothing is created or changed.
 #
 # Then the Runner's deployment receipt (Annex 3 §9): it verifies, its health check passed, it names the
 # Pull Request's head commit, its SBOM file matches, the project's container runs its image, and the
@@ -90,6 +92,30 @@ else
 fi
 rm -f "$RUN_DIR/.forge-err"
 FINAL_SHA=$(json_field headSha <"$RUN_DIR/release-checks.json")
+
+# 3b. The confirmed Spec was not edited in the repository during the run (Annex 1: an approved Spec
+# does not change silently): its Git blob at the run's first Execute, at the Release, and at the Pull
+# Request head as the platform shows it now must be the same.
+spec_ref=$(printf '%s' "$event" | json_field spec_ref)
+spec_path=${spec_ref%%@*}
+release_blob=$(printf '%s' "$event" | json_field spec_blob)
+first_blob=""
+if "$gitfab" find --keys "$keys" --project "$PROJECT_ID" --phase execute --status succeeded \
+    --run "$run_id" --first "$journal" >"$RUN_DIR/spec-first-execute.json" 2>/dev/null; then
+    first_blob=$(json_field spec_blob <"$RUN_DIR/spec-first-execute.json")
+fi
+live_blob=""
+if [ -n "$FINAL_SHA" ] && [ -n "$spec_path" ] \
+    && platform file "$REPO" --path "$spec_path" --ref "$FINAL_SHA" >"$RUN_DIR/spec-platform.json" 2>/dev/null; then
+    live_blob=$(json_field blob <"$RUN_DIR/spec-platform.json")
+fi
+if [ -z "$first_blob" ] || [ -z "$release_blob" ] || [ -z "$live_blob" ]; then
+    check spec.unchanged fail "$spec_path: Spec file blob missing (first Execute ${first_blob:-none}, Release ${release_blob:-none}, platform ${live_blob:-none})"
+elif [ "$first_blob" = "$release_blob" ] && [ "$release_blob" = "$live_blob" ]; then
+    check spec.unchanged ok "$spec_path blob $first_blob from the first Execute to the Release"
+else
+    check spec.unchanged fail "$spec_path changed after confirmation: first Execute $first_blob, Release $release_blob, platform $live_blob"
+fi
 
 # 4. The Runner's signed deployment receipt for this Release, and the deployment as it runs now.
 receipts=${GITFAB_RECEIPTS:-}

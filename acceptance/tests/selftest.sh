@@ -107,4 +107,35 @@ other=$(basename "$(ls -d "$tmp"/evidence/ar-* | sed -n 2p)")
 printf 'x' >>"$tmp/evidence/$other/$(ls "$tmp/evidence/$other" | grep -v manifest.json | head -1)"
 expect 1 "a bundle changed after its manifest is not archived" "$here/archive.sh" "$other" --retain-until 2028-12-31
 
+# The confirmed Spec file: verify-release compares its Git blob at the run's first Execute, at the
+# Release and on the platform, through a stand-in for gitfab-forge (reads only, nothing leaves here).
+spec_case() { # name, blob letter at the first Execute, at the Release, on the platform
+    local name=$1 dir=$tmp/spec-$1
+    mkdir -p "$dir/projects" "$dir/bin"
+    printf 'PROJECT_ID=DEMO-02\nBACKEND=github\nREPO=o/demo-02\nBRANCH=main\nBASELINE_SHA=%040d\n' 0 >"$dir/projects/DEMO-02.env"
+    : >"$dir/token" && chmod 600 "$dir/token"
+    printf '#!/usr/bin/env bash\nfor a; do case "$a" in release-info) echo "{\\"tag\\":\\"t\\"}"; exit 0;; checks) echo "{\\"headSha\\":\\"%040d\\"}"; exit 0;; file) echo "{\\"blob\\":\\"%s\\"}"; exit 0;; esac; done; exit 2\n' 0 "$(printf '%040d' 0 | tr 0 "$4")" >"$dir/bin/forge"
+    chmod 755 "$dir/bin/forge"
+    "$gitfab" keygen --key-id spec-selftest --dir "$dir/keys" >/dev/null
+    : >"$dir/events.jsonl"
+    for pb in "execute $2" "release $3"; do
+        python3 -c '
+import json,sys
+phase,blob=sys.argv[1],sys.argv[2]
+refs=["https://github.com/o/demo-02/releases/tag/t","https://github.com/o/demo-02/pull/7"] if phase=="release" else []
+print(json.dumps({"schema_version":"gitfab.task.v1","event_id":"run-1."+phase,"timestamp":"2026-11-14T03:00:00Z","project_id":"DEMO-02","task_id":"task-1","run_id":"run-1","matrix_room_id":"!r:x","matrix_thread_event_id":"$root","git_backend":"github","repo_ref":"https://github.com/o/demo-02","baseline_sha":"0"*40,"spec_ref":"spec/DEMO-02.md@v1","phase":phase,"status":"succeeded","actor_id":"@a:x","input_digest":"sha256:"+"a"*64,"output_digest":None,"artifact_refs":refs,"request_id":"r","signature":None,"round":1,"spec_revision":1,"spec_blob":blob*40,"commit_sha":"0"*40}))' ${pb} >"$dir/e.json"
+        "$gitfab" sign --key "$dir/keys/spec-selftest.key" --key-id spec-selftest "$dir/e.json" | tr -d '\n' >>"$dir/events.jsonl"
+        echo >>"$dir/events.jsonl"
+    done
+    GITFAB_PROJECTS_DIR=$dir/projects GITFAB_KEYS_DIR=$dir/keys GITFAB_GITHUB_TOKEN_FILE=$dir/token GITFAB_FORGE_BIN=$dir/bin/forge \
+        ACCEPTANCE_RUN_ID=ar-spec-$name "$here/verify-release.sh" DEMO-02 "$dir/events.jsonl" >/dev/null 2>&1 || true
+    python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(next(c["status"] for c in r["checks"] if c["name"]=="spec.unchanged"))' \
+        "$GITFAB_EVIDENCE_DIR/ar-spec-$name/verify-release-report.json"
+}
+for c in "same b b b ok" "edited-before-release b e e fail" "edited-on-platform b b f fail"; do
+    set -- $c
+    got=$(spec_case "$1" "$2" "$3" "$4")
+    if [ "$got" = "$5" ]; then echo "ok   Spec file $1: spec.unchanged $got"; else echo "FAIL Spec file $1: spec.unchanged $got, expected $5"; failures=$((failures + 1)); fi
+done
+
 [ "$failures" -eq 0 ] && echo "selftest passed" || { echo "selftest: $failures failure(s)"; exit 1; }

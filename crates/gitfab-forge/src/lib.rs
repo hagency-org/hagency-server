@@ -47,6 +47,8 @@ impl Backend {
 pub enum Error {
     #[error("repository must be written as owner/name")]
     InvalidRepo,
+    #[error("file path must be relative, without empty, . or .. segments")]
+    InvalidPath,
     #[error("{backend:?} answered {status} to {method} {path}")]
     Status {
         backend: Backend,
@@ -374,6 +376,44 @@ impl<T: Transport> Forge<T> {
             Err(Error::Status { status: 422, .. }) => Ok(false),
             Err(e) => Err(e),
         }
+    }
+
+    /// Git blob SHA of the file at `path` in `git_ref`, or `None` when there is no such file. The
+    /// blob SHA names the exact content, so two reads compare without fetching it. Both platforms
+    /// answer `GET …/contents/{path}?ref=` with the file's `sha`.
+    pub async fn file_blob(
+        &self,
+        repo: &Repo,
+        path: &str,
+        git_ref: &str,
+    ) -> Result<Option<String>> {
+        if path.is_empty()
+            || path.starts_with('/')
+            || path
+                .split('/')
+                .any(|s| s.is_empty() || s == "." || s == "..")
+        {
+            return Err(Error::InvalidPath);
+        }
+        let segments: Vec<String> = path.split('/').map(enc).collect();
+        let call = format!(
+            "{}/contents/{}?ref={}",
+            repo.path(),
+            segments.join("/"),
+            enc(git_ref)
+        );
+        let Some(value) = self.call("GET", call.clone(), None, true).await? else {
+            return Ok(None);
+        };
+        // A directory answers with a list; only a file has one blob.
+        if !value.is_object() || value["type"].as_str().is_some_and(|t| t != "file") {
+            return Err(Error::Shape {
+                backend: self.backend,
+                path: strip_query(&call),
+                field: "type",
+            });
+        }
+        Ok(Some(self.field(&value, &call, "sha")?.to_owned()))
     }
 
     /// One Pull Request by number.

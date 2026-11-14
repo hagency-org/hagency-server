@@ -65,6 +65,14 @@ enum Command {
     /// Review state of a Pull Request on the platform: none, pending, approved or changes_requested.
     /// Reads only; exit 1 unless approved.
     Review { repo: String, number: u64 },
+    /// Git blob SHA of a file at a commit or branch (exit 1 when there is no such file). Reads only.
+    File {
+        repo: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long = "ref")]
+        git_ref: String,
+    },
     /// The published Release for a tag (exit 1 when there is none). Reads only.
     ReleaseInfo {
         repo: String,
@@ -98,7 +106,9 @@ impl From<Error> for Failure {
             Error::Status { .. } | Error::Shape { .. } => {
                 Failure::Check(json!({"error": error.to_string()}))
             }
-            Error::InvalidRepo | Error::Network => Failure::Setup(error.to_string()),
+            Error::InvalidRepo | Error::InvalidPath | Error::Network => {
+                Failure::Setup(error.to_string())
+            }
         }
     }
 }
@@ -239,6 +249,18 @@ async fn run(cli: Cli) -> Result<Value, Failure> {
             }
             report
         }
+        Command::File {
+            repo: name,
+            path,
+            git_ref,
+        } => match forge.file_blob(&repo(&name)?, &path, &git_ref).await? {
+            Some(blob) => json!({"path": path, "ref": git_ref, "blob": blob}),
+            None => {
+                return Err(Failure::Check(
+                    json!({"path": path, "ref": git_ref, "exists": false}),
+                ));
+            }
+        },
         Command::ReleaseInfo { repo: name, tag } => {
             match forge.find_release(&repo(&name)?, &tag).await? {
                 Some(release) => json!({"tag": release.tag, "url": release.url}),
