@@ -105,12 +105,15 @@ def check_rust_schema(schema, metadata):
     match = matches[metadata.get('occurrence', 0)]
     fields = []
     defaulted = set()
+    omitted = set()  # skip_serializing_if: absent rather than null when None
     for item in re.finditer(r'((?:\s*#\[[^\n]+\]\s*)*)(?:pub )?(\w+): ([^,\n]+),', match[1]):
         attrs, field, typ = item.groups()
         if not re.search(r'\bskip_serializing\b', attrs):
             fields.append((field, typ.strip()))
             if re.search(r'\bdefault\b|\bskip_serializing_if\b', attrs):
                 defaulted.add(camel(field))
+            if re.search(r'\bskip_serializing_if\b', attrs):
+                omitted.add(field)
     require([f for f, _ in fields] == metadata['serializedFields'], 'Rust field drift ' + name)
     require(set(schema['properties']) == {camel(f) for f, _ in fields}, 'spec property drift ' + name)
     require(set(schema['required']) == set(schema['properties']) - defaulted, 'Rust required/defaulted field drift: ' + name)
@@ -120,6 +123,8 @@ def check_rust_schema(schema, metadata):
         require(schema.get('additionalProperties') is False, 'spec strictness missing ' + name)
     for field, typ in fields:
         prop = schema['properties'][camel(field)]
+        if field in omitted and typ.startswith('Option<') and 'anyOf' not in prop:
+            typ = typ[7:-1]
         optional = typ.startswith('Option<')
         require(('anyOf' in prop) == optional, 'Rust nullable drift ' + name + '.' + field)
         if optional:
@@ -130,7 +135,7 @@ def check_rust_schema(schema, metadata):
         if typ.startswith('Vec<') and typ.endswith('>'):
             require(prop.get('type') == 'array' and prop.get('items', {}).get('$ref') == '#/components/schemas/' + typ[4:-1], 'Rust array type drift ' + name + '.' + field)
             continue
-        expected = {'String': 'string', 'i64': 'integer', 'usize': 'integer', 'u64': 'integer', 'bool': 'boolean', 'BTreeSet<String>': 'array'}.get(typ)
+        expected = {'String': 'string', 'i64': 'integer', 'usize': 'integer', 'u64': 'integer', 'u32': 'integer', 'bool': 'boolean', "&'static str": 'string', 'BTreeSet<String>': 'array'}.get(typ)
         require(prop.get('type') == expected if expected else prop.get('$ref') == '#/components/schemas/' + typ, 'Rust type drift ' + name + '.' + field)
 
 
@@ -225,7 +230,7 @@ def validate(doc):
         worker_health = doc['paths']['/workers-healthz']['get']
         require(worker_health['security'] == [] and set(worker_health['responses']) == {'200', '503'}, 'worker health security/status drift')
         require(set(doc['components']['schemas']['WorkerQueueHealth']['properties']) == {'name', 'running', 'consecutiveFailures', 'lastSuccessAgeMs', 'lastActivityAgeMs', 'error'}, 'worker health must remain aggregate and body-free')
-        require(len(operations) == 136, 'reviewed owner route count drift')
+        require(len(operations) == 137, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -312,6 +317,10 @@ class GuardTests(unittest.TestCase):
         self.rejection(lambda d: d['components']['schemas']['DeviceGrant']['properties']['generation'].update(type='string', examples=['bad']))
     def test_non_strict_request(self):
         self.rejection(lambda d: d['components']['schemas']['Start'].update(additionalProperties=True))
+    def test_execution_start_must_document_room_context(self):
+        self.rejection(lambda d: d['components']['schemas']['ExecutionStart']['properties'].pop('roomContext'))
+    def test_omittable_room_context_must_not_be_required(self):
+        self.rejection(lambda d: d['components']['schemas']['ExecutionStart']['required'].append('roomContext'))
     def test_unresolved_ref(self):
         self.rejection(lambda d: d['components']['schemas']['Start']['properties'].update(lease={'$ref': '#/components/schemas/Unknown'}))
     def test_bad_example(self):

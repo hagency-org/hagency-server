@@ -15749,6 +15749,119 @@
           ]
         }
       }
+    },
+    "/hagency/api/v1/execution/events/progress": {
+      "post": {
+        "operationId": "reportExecutionProgress",
+        "summary": "Report live turn steps for the room status message",
+        "description": "Device bearer. Reports the current and recent plain-word steps (at most 5, each 1-512 bytes) and the step count of the exact running execution. The first accepted report creates one status message per dispatch (\"Working…\", an m.notice in the request's thread posted by the Agent's puppet); later reports edit it with m.replace, at most once per 1.5 s. When the dispatch ends the server edits it to \"Done in N s · M steps\" or to the request's failure text, and suppresses the generic prolonged-processing notice. Requires the current assigned owner device, live original lease/epoch, unchanged binding generation, fresh Matrix permissions and a plaintext Room; stale reports are refused. Cosmetic: never fences, delays or replays the turn. accepted=false means nothing changed.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "progress": {
+                      "type": "object",
+                      "properties": {
+                        "accepted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "accepted"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "progress"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProgressReport"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/events/progress\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        }
+      }
     }
   },
   "components": {
@@ -16662,6 +16775,9 @@
           },
           "newlyStarted": {
             "type": "boolean"
+          },
+          "roomContext": {
+            "$ref": "#/components/schemas/RoomContext"
           }
         },
         "required": [
@@ -16674,7 +16790,8 @@
           "name": "ExecutionStart",
           "serializedFields": [
             "dispatch",
-            "newly_started"
+            "newly_started",
+            "room_context"
           ],
           "strictInput": false
         },
@@ -16697,8 +16814,42 @@
               "outcome": "example"
             },
             "newlyStarted": false
+          },
+          {
+            "dispatch": {
+              "id": "example",
+              "bindingId": "example",
+              "agentId": "example",
+              "eventId": "example",
+              "roomId": "example",
+              "requesterMxid": "example",
+              "threadRoot": "example",
+              "body": "example",
+              "state": "pending",
+              "bindingGeneration": 1,
+              "dispatchEpoch": 1,
+              "dispatchDeviceId": "example",
+              "executionId": "example",
+              "outcome": "example"
+            },
+            "newlyStarted": true,
+            "roomContext": {
+              "scope": "thread",
+              "messages": [
+                {
+                  "eventId": "$example",
+                  "sender": "@ann:example",
+                  "senderDisplayName": "Ann",
+                  "body": "example",
+                  "originServerTs": 1,
+                  "edited": true
+                }
+              ],
+              "omittedOlder": false
+            }
           }
-        ]
+        ],
+        "description": "roomContext is present only when newlyStarted is true (the context is read before the start commits)."
       },
       "SubmitReply": {
         "type": "object",
@@ -22023,6 +22174,170 @@
           ],
           "strictInput": true
         }
+      },
+      "ProgressReport": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "dispatchId": {
+            "type": "string"
+          },
+          "executionId": {
+            "type": "string"
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/String"
+            },
+            "maxItems": 5
+          },
+          "steps": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "lease",
+          "dispatchId",
+          "executionId",
+          "recent",
+          "steps"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "name": "Progress",
+          "serializedFields": [
+            "lease",
+            "dispatch_id",
+            "execution_id",
+            "recent",
+            "steps"
+          ],
+          "strictInput": true
+        },
+        "examples": [
+          {
+            "lease": {
+              "agentId": "example",
+              "epoch": 1
+            },
+            "dispatchId": "example",
+            "executionId": "example",
+            "recent": [
+              "reading src/main.rs"
+            ],
+            "steps": 1
+          }
+        ]
+      },
+      "RoomContext": {
+        "type": "object",
+        "description": "Recent visible plaintext messages before the request, oldest first; advisory only.",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "room",
+              "thread"
+            ]
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RoomContextMessage"
+            }
+          },
+          "omittedOlder": {
+            "type": "boolean"
+          },
+          "unavailable": {
+            "type": "string",
+            "enum": [
+              "encrypted",
+              "unreadable"
+            ]
+          }
+        },
+        "required": [
+          "scope",
+          "messages",
+          "omittedOlder"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/room_context.rs",
+          "name": "RoomContext",
+          "serializedFields": [
+            "scope",
+            "messages",
+            "omitted_older",
+            "unavailable"
+          ],
+          "strictInput": false
+        },
+        "examples": [
+          {
+            "scope": "room",
+            "messages": [],
+            "omittedOlder": false,
+            "unavailable": "encrypted"
+          }
+        ]
+      },
+      "RoomContextMessage": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string"
+          },
+          "sender": {
+            "type": "string"
+          },
+          "senderDisplayName": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "originServerTs": {
+            "type": "integer"
+          },
+          "edited": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "eventId",
+          "sender",
+          "body",
+          "originServerTs"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/room_context.rs",
+          "name": "RoomContextMessage",
+          "serializedFields": [
+            "event_id",
+            "sender",
+            "sender_display_name",
+            "body",
+            "origin_server_ts",
+            "edited"
+          ],
+          "strictInput": false
+        },
+        "examples": [
+          {
+            "eventId": "$example",
+            "sender": "@ann:example",
+            "body": "example",
+            "originServerTs": 1
+          }
+        ]
       }
     },
     "securitySchemes": {
@@ -22042,7 +22357,7 @@
   },
   "x-source-sha256": {
     "crates/agent-service/src/api.rs": "2a4ab6acfd5e4c72d90bd238ff3691b3107236249a7c36fcd79cc8847b816276",
-    "crates/agent-service/src/api_transport.rs": "f1edd833398d6d3e2c1d72f9618faea40d789e6d408896580a3c7a34be4e7b02",
+    "crates/agent-service/src/api_transport.rs": "6790883b002f21a4e3ac2d57da6691c1c6bcaa933b8a383afe011d2d10245699",
     "crates/agent-service/src/transport_history.rs": "839283ce0e2dde651652cce7239099069b008fd63ed12aa1febde66c8068ba4d",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
     "crates/agent-service/src/api_project_board.rs": "315e3c9359438a28c04694b68d9619f281c1b3fcdabc557d4a6971373110cc47",
@@ -22051,15 +22366,15 @@
     "crates/agent-service/src/agent_crypto_receive.rs": "ab953385061b318dbefca41c01203b240c40fa9dcfd763f5e3984ee450605850",
     "crates/agent-service/src/transport_ciphertexts.rs": "c3db5bd5d59da1f5b42302d3b623bd19633ebdd87295dc7c860ad472bb751224",
     "crates/agent-service/src/ciphertext_schema.sql": "ea43c360e60a316d3cd15e16494bee1b5c60f5482b4d0ad9bbe0883c2f07ad29",
-    "crates/agent-service/src/workers.rs": "1fd0bee02edab8f716424c49ca157303d949e10ae25b4e7710ba78555132eb37",
+    "crates/agent-service/src/workers.rs": "3f300e1e22304d54b55d4543e21c490e682c5e546957e5c295e4b5c04818cfb3",
     "crates/agent-service/src/encrypted_dispatches.rs": "2fc78608661e2d4729c578546fbbf2c831dde442b7d5bbd39a4039be844d0b5e",
     "crates/agent-service/src/encrypted_dispatches_schema.sql": "73c338d99a17eb64e2173c6fdb7246962039d5e7229e03345bad14237852427d",
-    "crates/agent-service/src/transport.rs": "684f89bbec3debbd5dc1e508032dede5fa9f0ffdde0f9580709d66cfe94b7e67",
+    "crates/agent-service/src/transport.rs": "5e6c0c2595aae929dc9bfde67d6cafe95d0603b2dcd62a76f339fbd752c01e89",
     "crates/agent-service/src/encrypted_execution.rs": "404f3bffd0a202fdaefb0aff4c80201806673bf019babbecfad287eafbce63cc",
     "crates/agent-service/src/encrypted_execution_schema.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "dc6cd49f41d5cab901249a217704e6b0afd6f5186f7cc1b3c1eb64e8ec1d3218",
     "crates/agent-service/src/domain.rs": "318b28f06be729d8b5b51b5427d8bde8fa78f4427cf3345996be67d65018680f",
-    "crates/agent-service/src/matrix_client.rs": "91419bcee1691a323d06bed8cef393c2eba112efbbb4c4df0c743746f72f3be2",
+    "crates/agent-service/src/matrix_client.rs": "83c1bb9fcf4b70955eb3cff49047c6c22c1d5c89da9f0194eb9c133f46f6535e",
     "crates/agent-service/src/worker_runtime.rs": "7e1de44fa9d7635bfb24a68659a687345573698799f85e418c77eb6c9e1abebe",
     "crates/agent-service/src/transport_e2ee.rs": "ef9c470ee9c12b188a9ed781f5fdf5739e8aa2cb39d7f45d8da40d171949fedf"
   },

@@ -46,6 +46,9 @@ pub mod management_types;
 pub mod matrix_client;
 pub mod recurring_quota;
 mod reply_format;
+pub mod room_context;
+#[cfg(test)]
+mod room_context_tests;
 pub mod store;
 pub mod transport;
 #[cfg(test)]
