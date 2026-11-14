@@ -1741,8 +1741,17 @@ async fn encrypted_shared_budget_work_keeps_plaintext_out_of_results_and_sends()
             .any(|row| row["approval"]["id"] == id.as_str())
     };
     let query = || serde_json::from_value(json!({"roomId":w.room_id})).unwrap();
-    assert!(!listed(&f.domain.shared_approvals(&f.owner.p, query()).await.unwrap()));
-    let outsider = f.domain.shared_approvals(&f.outsider.p, query()).await.unwrap();
+    assert!(!listed(
+        &f.domain
+            .shared_approvals(&f.owner.p, query())
+            .await
+            .unwrap()
+    ));
+    let outsider = f
+        .domain
+        .shared_approvals(&f.outsider.p, query())
+        .await
+        .unwrap();
     assert!(listed(&outsider));
     assert_eq!(
         f.domain.shared_approval(&f.outsider.p, &id).await.unwrap()["canDecide"],
