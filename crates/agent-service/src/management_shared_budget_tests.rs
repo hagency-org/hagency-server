@@ -1707,6 +1707,76 @@ async fn encrypted_shared_budget_work_keeps_plaintext_out_of_results_and_sends()
             .await
             .is_err()
     );
+    // A request the sender decides: the owner neither sees nor decides it.
+    let id = format!("sap_sender_{}", w.id);
+    let mut sender = json!({"authority":a.authority,"workId":w.id,"workDigest":allocation_digest(&w).unwrap(),"id":id,"remainingMs":100000,"requesterDecides":true,"request":{"encrypted":{"algorithm":"m.olm.v1.curve25519-aes-sha2","requestDigest":"c".repeat(64),"deviceId":"HAGE2EEAPPROVAL"},"sessionAllowed":false,"managerCanDecide":false}});
+    assert!(
+        f.domain
+            .register_shared_approval(&f.owner.p, serde_json::from_value(sender.clone()).unwrap())
+            .await
+            .is_err()
+    );
+    sender["request"]["managerCanDecide"] = json!(true);
+    let created = f
+        .domain
+        .register_shared_approval(&f.owner.p, serde_json::from_value(sender.clone()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(created["approval"]["deciderMxid"], w.requester_mxid);
+    assert_eq!(w.requester_mxid, f.outsider.p.mxid);
+    let mut old_style = sender.clone();
+    old_style["requesterDecides"] = json!(false);
+    assert!(
+        f.domain
+            .register_shared_approval(&f.owner.p, serde_json::from_value(old_style).unwrap())
+            .await
+            .is_err()
+    );
+    assert!(f.domain.shared_approval(&f.owner.p, &id).await.is_err());
+    let listed = |value: &Value| {
+        value["approvals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["approval"]["id"] == id.as_str())
+    };
+    let query = || serde_json::from_value(json!({"roomId":w.room_id})).unwrap();
+    assert!(!listed(
+        &f.domain
+            .shared_approvals(&f.owner.p, query())
+            .await
+            .unwrap()
+    ));
+    let outsider = f
+        .domain
+        .shared_approvals(&f.outsider.p, query())
+        .await
+        .unwrap();
+    assert!(listed(&outsider));
+    assert_eq!(
+        f.domain.shared_approval(&f.outsider.p, &id).await.unwrap()["canDecide"],
+        true
+    );
+    let decide = json!({"id":id,"digest":created["digest"],"decision":"approve_once"});
+    assert!(
+        f.domain
+            .decide_shared_approval(&f.owner.p, serde_json::from_value(decide.clone()).unwrap())
+            .await
+            .is_err()
+    );
+    f.domain
+        .decide_shared_approval(&f.outsider.p, serde_json::from_value(decide).unwrap())
+        .await
+        .unwrap();
+    let take = json!({"authority":a.authority,"id":id,"digest":created["digest"]});
+    let consumed = f
+        .domain
+        .take_shared_approval(&f.owner.p, serde_json::from_value(take).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(consumed["decidedByMxid"], f.outsider.p.mxid);
+    assert_eq!(consumed["decision"], "approve_once");
+    assert_eq!(consumed["ownerApproved"], false);
     let mut result = usage(&f, &d, &w, 260, 12, "completed").await;
     assert!(
         f.domain
