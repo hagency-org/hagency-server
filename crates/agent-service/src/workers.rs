@@ -930,6 +930,7 @@ pub(crate) fn start_shared_controlled(
         let mut processing_cursor = String::new();
         let mut pause_cursor = String::new();
         let mut request_cursor = String::new();
+        let mut progress_cursor = String::new();
         let mut shared_reply_cursor = String::new();
         let mut file_cursor = String::new();
         // Each durable queue advances on its own clock. A slow Matrix lookup
@@ -992,6 +993,17 @@ pub(crate) fn start_shared_controlled(
                 "request_notices",
                 ctx,
                 send_request_notices_controlled(&t, &g, &m, &mut request_cursor, &ctx)
+            ),
+            worker_loop!(
+                "progress_status",
+                ctx,
+                crate::transport::progress_status::send_progress(
+                    &t,
+                    &g,
+                    &m,
+                    &mut progress_cursor,
+                    &ctx
+                )
             ),
             async {
                 if let Some((domain, policy)) = &shared {

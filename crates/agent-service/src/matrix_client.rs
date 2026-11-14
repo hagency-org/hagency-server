@@ -98,6 +98,18 @@ impl MatrixClient {
         .await?;
         Ok(())
     }
+    /// Read-only Client-Server GET as a namespace-confined puppet (the
+    /// homeserver applies that puppet's own history visibility).
+    pub(crate) async fn read_as(
+        &self,
+        puppet: &str,
+        segments: &[&str],
+        query: &[(&str, &str)],
+    ) -> Result<Value> {
+        self.puppet(puppet)?;
+        let query = [&[("user_id", puppet)], query].concat();
+        self.request(Method::GET, segments, &query, None).await
+    }
     async fn request(
         &self,
         method: Method,

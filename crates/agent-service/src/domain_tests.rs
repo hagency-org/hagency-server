@@ -2405,3 +2405,6 @@ fn version12_room_ids_are_opaque_but_user_ids_still_require_servers() {
         assert!(matrix_id(invalid, if invalid.starts_with('@') { '@' } else { '!' }).is_err());
     }
 }
+// TODO(R4): domain_tests.rs is over budget; split per concern like room_owners below.
+#[path = "domain_room_owners_tests.rs"]
+mod room_owners;

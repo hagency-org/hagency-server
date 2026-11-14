@@ -3,8 +3,13 @@ use crate::{
     Error, Result,
     api::now_ms,
     gateway::Gateway,
+    matrix_client::MatrixClient,
+    room_context::RoomContext,
     store::Principal,
-    transport::{DeliveryFacts, ExecutionHistorySnapshot, LeaseRef, SubmitReply, TransportStore},
+    transport::{
+        DeliveryFacts, EventHeader, ExecutionHistorySnapshot, ExecutionStart, LeaseRef,
+        SubmitReply, TransportStore,
+    },
 };
 use salvo::prelude::*;
 use serde::Deserialize;
@@ -16,6 +21,14 @@ async fn body<T: serde::de::DeserializeOwned>(req: &mut Request) -> Result<T> {
         .map_err(|_| Error::Invalid("invalid_arguments"))
 }
 async fn facts(t: &TransportStore, g: &Gateway, p: &Principal, id: &str) -> Result<DeliveryFacts> {
+    Ok(header_facts(t, g, p, id).await?.1)
+}
+async fn header_facts(
+    t: &TransportStore,
+    g: &Gateway,
+    p: &Principal,
+    id: &str,
+) -> Result<(EventHeader, DeliveryFacts)> {
     let header = t.owned_event_header(p, id, now_ms()).await?;
     let scope = t.binding_scope(&header.binding_id).await?;
     g.delivery(
@@ -26,12 +39,29 @@ async fn facts(t: &TransportStore, g: &Gateway, p: &Principal, id: &str) -> Resu
         &scope.puppet_mxid,
     )
     .await
+    .map(|f| (header, f))
+}
+/// Reads the advisory room context BEFORE the durable start transition, so no
+/// slow remote call sits between that commit and its response: a caller that
+/// times out during the read retries into a still-unstarted dispatch and gets
+/// `newlyStarted=true`. Only a new start may run the model, so only it carries
+/// the context.
+async fn start_with_context(
+    context: impl Future<Output = RoomContext>,
+    start: impl Future<Output = Result<ExecutionStart>>,
+) -> Result<Value> {
+    let context = context.await;
+    let mut start = start.await?;
+    if start.newly_started {
+        start.room_context = Some(context);
+    }
+    Ok(json!({"execution":start}))
 }
 pub(crate) async fn call(
     t: &TransportStore,
     g: &Gateway,
     p: &Principal,
-    matrix: Option<&crate::matrix_client::MatrixClient>,
+    matrix: Option<&MatrixClient>,
     req: &mut Request,
 ) -> Result<Value> {
     if req.method() != salvo::http::Method::POST {
@@ -312,10 +342,15 @@ pub(crate) async fn call(
         }
         "/hagency/api/v1/execution/events/start" => {
             let b: Start = body(req).await?;
-            let f = facts(t, g, p, &b.dispatch_id).await?;
-            Ok(
-                json!({"execution":t.start_execution(p,&b.lease,&b.dispatch_id,&b.execution_id,&f,now_ms()).await?}),
+            let (h, f) = header_facts(t, g, p, &b.dispatch_id).await?;
+            // roomContext is optional and additive; older devices ignore it.
+            let context =
+                crate::room_context::for_dispatch(matrix, g, &f, &h.event_id, &h.thread_root);
+            start_with_context(
+                context,
+                t.start_execution(p, &b.lease, &b.dispatch_id, &b.execution_id, &f, now_ms()),
             )
+            .await
         }
         "/hagency/api/v1/execution/events/processing" => {
             let b: Start = body(req).await?;
@@ -364,6 +399,32 @@ pub(crate) async fn call(
             Ok(
                 json!({"dispatchId":b.dispatch_id,"executionId":b.execution_id,"attachments":t.execution_attachments(p,&b.lease,&b.dispatch_id,&b.execution_id,&f,now_ms()).await?}),
             )
+        }
+        "/hagency/api/v1/execution/events/progress" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Progress {
+                lease: LeaseRef,
+                dispatch_id: String,
+                execution_id: String,
+                recent: Vec<String>,
+                steps: u32,
+            }
+            let b: Progress = body(req).await?;
+            let f = facts(t, g, p, &b.dispatch_id).await?;
+            let accepted = t
+                .record_progress(
+                    p,
+                    &b.lease,
+                    &b.dispatch_id,
+                    &b.execution_id,
+                    &b.recent,
+                    b.steps,
+                    &f,
+                    now_ms(),
+                )
+                .await?;
+            Ok(json!({"progress":{"accepted":accepted}}))
         }
         "/hagency/api/v1/execution/events/authorize-tool" => {
             let b: Start = body(req).await?;
@@ -430,3 +491,6 @@ async fn encrypted_receipt(
         .await?;
     Ok(json!({"admission":t.ciphertext_admission(p,b,&f,ack,now_ms()).await?}))
 }
+#[cfg(test)]
+#[path = "api_transport_tests.rs"]
+mod tests;

@@ -1329,6 +1329,28 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
+        hagency_agent_v1.progress_status (id) {
+            id -> Text,
+            owner_event_id -> Text,
+            execution_id -> Text,
+            binding_id -> Text,
+            binding_generation -> Int8,
+            started_at_ms -> Int8,
+            recent -> Jsonb,
+            step_count -> Int8,
+            final_body -> Nullable<Text>,
+            revision -> Int8,
+            sent_revision -> Int8,
+            matrix_txn_id -> Text,
+            status_event_id -> Nullable<Text>,
+            state -> Text,
+            worker_token -> Nullable<Text>,
+            worker_until_ms -> Int8,
+            last_sent_ms -> Int8,
+        }
+    }
+
+    diesel::table! {
         hagency_agent_v1.projects (id) {
             id -> Text,
             space_id -> Text,
@@ -1399,7 +1421,7 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
-        hagency_agent_v1.rooms (room_id) {
+        hagency_agent_v1.rooms (room_id, project_id) {
             room_id -> Text,
             project_id -> Text,
             active -> Bool,
@@ -1630,6 +1652,7 @@ pub mod hagency_agent_v1 {
     diesel::joinable!(processing_outbox -> devices (dispatch_device_id));
     diesel::joinable!(processing_outbox -> owner_events (owner_event_id));
     diesel::joinable!(processing_outbox -> users (owner_user_id));
+    diesel::joinable!(progress_status -> owner_events (owner_event_id));
     diesel::joinable!(reply_outbox -> agents (agent_id));
     diesel::joinable!(reply_outbox -> bindings (binding_id));
     diesel::joinable!(reply_outbox -> owner_events (owner_event_id));
@@ -1747,6 +1770,7 @@ pub mod hagency_agent_v1 {
         pause_notice_outbox,
         personal_e2ee_candidates,
         processing_outbox,
+        progress_status,
         projects,
         readiness_receipts,
         readiness_room,

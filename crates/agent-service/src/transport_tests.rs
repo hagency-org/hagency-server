@@ -4,19 +4,20 @@ use crate::{
     identity::Identity,
     store::{RegisterDevice, Store},
 };
-struct Fixture {
-    auth: Store,
-    domain: DomainStore,
-    transport: TransportStore,
-    credential: String,
-    device_token: String,
-    p: Principal,
-    second: Principal,
-    agent: String,
-    binding: String,
-    facts: DeliveryFacts,
+// Shared with progress_status_tests.rs (a child of transport).
+pub(super) struct Fixture {
+    pub(super) auth: Store,
+    pub(super) domain: DomainStore,
+    pub(super) transport: TransportStore,
+    pub(super) credential: String,
+    pub(super) device_token: String,
+    pub(super) p: Principal,
+    pub(super) second: Principal,
+    pub(super) agent: String,
+    pub(super) binding: String,
+    pub(super) facts: DeliveryFacts,
 }
-async fn fixture() -> Fixture {
+pub(super) async fn fixture() -> Fixture {
     let url =
         std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").expect("dedicated test database required");
     fixture_at(&url).await
@@ -197,7 +198,7 @@ fn event(f: &Fixture, id: &str, mention: bool, thread: Option<&str>) -> RoutedEv
         is_edit: false,
     }
 }
-async fn enqueue(f: &Fixture, id: &str) -> String {
+pub(super) async fn enqueue(f: &Fixture, id: &str) -> String {
     match f
         .transport
         .ingest_routed(
@@ -216,7 +217,7 @@ async fn enqueue(f: &Fixture, id: &str) -> String {
         _ => panic!("expected queue insertion"),
     }
 }
-async fn running(f: &Fixture, lease: &LeaseRef, id: &str, execution: &str) {
+pub(super) async fn running(f: &Fixture, lease: &LeaseRef, id: &str, execution: &str) {
     f.transport
         .claim_event(&f.p, lease, id, &f.facts, crate::api::now_ms())
         .await
