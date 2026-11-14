@@ -84,6 +84,9 @@ const TASK_OPTIONAL: Fields = &[
     ("spec_revision", Int),
     // Git blob SHA of the Spec file at the stage's commit.
     ("spec_blob", Sha),
+    // For an Agent's record: the Agent's owner, and the owner whose resource executed a pool Agent.
+    ("actor_owner", Text),
+    ("resource_owner", Text),
 ];
 
 const IDENTITY_FIELDS: Fields = &[

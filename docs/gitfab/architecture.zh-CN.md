@@ -72,6 +72,10 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
 6. **部署**：Runner 取该 Release 部署，写签名回执；起不来就恢复上一版并如实记录。
 7. **验收与展示**：`verify-release.sh` 核对事件、平台、回执、SBOM、容器与线上版本；大屏随时读取同一批记录。
 
+## 身份与追溯
+
+签名任务事件的 `actor_id` 是做这一步的人或 Agent：发起人的 Matrix 账号、Agent 的傀儡账号，或编排器本身（`system:gitfab-orchestrator`）。Agent 做的步骤另记 `actor_owner`（该 Agent 的主人）；资源池 Agent 再记 `resource_owner`（提供执行资源的 owner）。个人 Agent 取自房间绑定，资源池 Agent 取自分派记录（`management_shared_assignments` 的 manager 与 executor owner）。
+
 ## 信任与密钥
 
 | 密钥 / 凭据 | 持有方 | 用途 | 存放 |

@@ -29,7 +29,8 @@ JSON on stdout with a stable `code` per failure.
   refused. Timestamps are UTC RFC 3339 ending in `Z`. Strings may not contain credentials in URLs or local
   absolute paths. Declared optional fields: `round`, `findings`, `commit_sha`, `platform_error`, `modules` (the
   Plan's Module breakdown) `spec_revision` (the Spec version a stage worked from) and `spec_blob` (the Git blob of the Spec
-  file at the stage's commit, so an edit after confirmation shows) on task events, `corrects` on memory and
+  file at the stage's commit, so an edit after confirmation shows), `actor_owner` and `resource_owner`
+  (on an Agent's record: who owns the Agent, and for a pool Agent whose resource ran it) on task events, `corrects` on memory and
   token events.
 - **Ledger.** Idempotent by `event_id` (`release_id` for releases). An identical duplicate counts once; the
   same key with different canonical content fails the ledger with `conflict`. Corrections are new events

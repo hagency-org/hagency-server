@@ -809,6 +809,17 @@ impl<R: StageRoom> Orchestrator<'_, R> {
             if let Some(rev) = spec_revision {
                 event["spec_revision"] = json!(rev);
             }
+            // An Agent's record names who owns it, and for a pool Agent whose resource ran it.
+            if actor_type == "agent"
+                && let Some(stage) = Stage::from_phase(phase)
+                && let Ok(binding) = binding_for(&run, stage)
+                && let Ok(Some((owner, resource))) = self.transport.agent_owners(binding).await
+            {
+                event["actor_owner"] = json!(owner);
+                if let Some(resource) = resource.filter(|r| *r != owner) {
+                    event["resource_owner"] = json!(resource);
+                }
+            }
             if phase == "review"
                 && let Some(reply) = reply.filter(|_| finishes_completed)
             {

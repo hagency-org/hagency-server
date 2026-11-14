@@ -1653,6 +1653,12 @@ async fn shared_work_reads_back_for_the_gitfab_orchestrator() {
             && *puppet == mx.puppet_mxid),
         "{agents:?}"
     );
+    // A pool Agent's records name its owner and the owner whose resource runs it.
+    assert_eq!(
+        t.agent_owners(&mx.assignment_id).await.unwrap(),
+        Some((r.manager_mxid.clone(), Some(f.owner.p.mxid.clone())))
+    );
+    assert_eq!(t.agent_owners("mas_missing").await.unwrap(), None);
     let stage = "$gitfab_pool_stage";
     assert_eq!(t.shared_dispatch(&mx.assignment_id, stage).await.unwrap(), None);
     let seen = |row: Option<DispatchRow>| row.and_then(|r| observed(&r, Stage::Review));

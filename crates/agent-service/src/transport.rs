@@ -1061,6 +1061,32 @@ impl TransportStore {
             Ok(rows.into_iter().map(|r| (r.assignment_id, r.agent_id, r.puppet_mxid)).collect())
         }).await
     }
+    /// The Matrix IDs of an Agent's owner and, for a pool Agent, of the owner whose resource executes it,
+    /// for the binding (`bnd_…`) or pool assignment (`mas_…`) a run names. `None` when it is unknown.
+    pub(crate) async fn agent_owners(
+        &self,
+        binding: &str,
+    ) -> Result<Option<(String, Option<String>)>> {
+        if !binding.starts_with("mas_") {
+            return match self.binding_scope(binding).await {
+                Ok(scope) => Ok(Some((scope.owner_mxid, None))),
+                Err(Error::NotFound(_)) => Ok(None),
+                Err(e) => Err(e),
+            };
+        }
+        #[derive(diesel::QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = Text)]
+            owner: String,
+            #[diesel(sql_type = Text)]
+            executor: String,
+        }
+        self.db.with_connection(async |db| {
+            let row = sql_query("SELECT mu.mxid AS owner,eu.mxid AS executor FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.users mu ON mu.id=a.manager_user_id JOIN hagency_agent_v1.users eu ON eu.id=a.executor_owner_user_id WHERE a.id=$1")
+                .bind::<Text,_>(binding).get_result::<Row>(db).await.optional()?;
+            Ok(row.map(|r| (r.owner, Some(r.executor))))
+        }).await
+    }
     /// What became of a stage message admitted for a pool Agent, read from its work item (and reply) or,
     /// before a work item exists, from its durable intake row. `None` when nothing was recorded.
     pub(crate) async fn shared_dispatch(&self, assignment_id: &str, event_id: &str) -> Result<Option<crate::orchestrator_flow::DispatchRow>> {

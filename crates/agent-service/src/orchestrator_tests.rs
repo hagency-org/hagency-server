@@ -355,6 +355,31 @@ async fn postgres_a_run_goes_from_spec_to_release_with_one_rework_and_a_signed_j
     );
 
     let events = journal(&h);
+    // An Agent's record names its owner; Human and system records do not.
+    for e in events
+        .iter()
+        .filter(|e| e["schema_version"] == "gitfab.task.v1")
+    {
+        let agent = e["actor_id"] != h.f.facts.requester_mxid.as_str()
+            && e["actor_id"] != "system:gitfab-orchestrator";
+        let expected = if agent {
+            json!(h.f.facts.owner_mxid)
+        } else {
+            Value::Null
+        };
+        assert_eq!(e["actor_owner"], expected, "{e}");
+        assert_eq!(
+            e["resource_owner"],
+            Value::Null,
+            "a personal Agent runs on its owner's device"
+        );
+    }
+    assert!(
+        events
+            .iter()
+            .any(|e| e["actor_owner"] == h.f.facts.owner_mxid.as_str()),
+        "some stage was recorded as the Agent's"
+    );
     // Every stage names the Spec version it worked from; the drafted Spec is kept by its digest.
     for e in events
         .iter()
