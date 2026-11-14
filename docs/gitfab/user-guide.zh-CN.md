@@ -174,5 +174,5 @@ PRD 草案在 `acceptance/fixtures/DEMO-0N/`，冻结前需双方书面确认。
 - **Spec 一直等待**：只有发起人发的 `/gitfab approve|revise|reject` 有效。
 - **服务启动失败，提示 must be mode 0600**：把对应 Token 文件改为 `chmod 600`。
 - **PR 或 Release 没出现**：检查是否配置了该后端的 Token；平台调用失败时 Thread 里会有“Git 平台操作未完成”的说明，流程不会因此卡住。
-- **房间是加密的**：编排器不处理加密房间，请新建不加密的项目房间。
+- **房间是加密的**：编排器不处理加密房间，请新建不加密的项目房间。在加密房间里发起时会被明确拒绝：房间命令回复“本房间已启用端到端加密……（encrypted_room_requires_client_crypto）”，API 返回 409 `encrypted_room_requires_client_crypto`，不会创建流程。若客户端发的是加密消息，服务端读不到命令内容，Thread 里不会有任何回复，同样说明需要换不加密的房间。
 - **两个任务改了同一个文件**：每个任务各有自己的分支和 PR，GitFab 不做自动合并，PR 由人逐个合并。Test 阶段的说明会写出平台给的合并状态；显示“与默认分支有冲突”时，在该任务分支上解决冲突（或基于最新默认分支重新执行），再用 `/gitfab continue` 或重新发起。

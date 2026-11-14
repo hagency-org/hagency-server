@@ -108,7 +108,7 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
 
 ## 已知限制
 
-- 编排器只支持不加密的项目房间。
+- 编排器只支持不加密的项目房间：发起时检查房间加密状态，加密房间以 `encrypted_room_requires_client_crypto` 明确拒绝（房间命令与 API 两个入口）；流程进行中房间才开启加密时，阶段消息被路由拒收，按阶段失败处理。
 - 平台审查状态（GitHub 取每位审查人最后一次批准或要求修改，GitCode 取指派审查人的 accept）与合并冲突状态写在 Test 阶段的平台说明里，仅供参考；流程是否通过评审以 Reviewer Agent 的结论行为准。测试状态 GitHub 取提交状态与 check-runs（细粒度 Token 时改读 Actions），GitCode 取 PR 的 pipeline_status。
 - GitCode 经典 Token 不能限定单个仓库。
 - 事件日志写入 Git 由 `scripts/gitfab-journal-git.sh` 定时完成（只接受追加，前面的行被改或文件变短即拒绝提交）；推送到远端仓库由运维安排。

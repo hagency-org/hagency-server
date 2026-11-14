@@ -64,6 +64,13 @@ pub(crate) fn matches(path: &str) -> bool {
     p.len() >= 8 && p[4] == "projects" && p[6] == "gitfab" && p[7] == "runs"
 }
 
+/// Whether a Room's current state turns on end-to-end encryption.
+fn room_is_encrypted(state: &[Value]) -> bool {
+    state
+        .iter()
+        .any(|e| e["type"] == "m.room.encryption" && e["state_key"] == "")
+}
+
 fn view(run: &OrchestratorRun) -> Value {
     json!({
         "id": run.id,
@@ -145,6 +152,10 @@ impl Gitfab<'_> {
                         return Err(Error::Unauthorized("binding_outside_run_room"));
                     }
                 }
+                // Stage messages are plaintext: an encrypted Room is refused, named, up front.
+                if room_is_encrypted(&self.gateway.state(&start.room_id).await?) {
+                    return Err(Error::Conflict("encrypted_room_requires_client_crypto"));
+                }
                 let init = OrchestratorRunInit {
                     project_id: project.id.clone(),
                     task_id: start.task_id,
@@ -186,5 +197,20 @@ impl Gitfab<'_> {
             Some(run) if run.init.project_id == project_id => Ok(run),
             _ => Err(Error::NotFound("orchestrator_run_not_found")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    #[test]
+    fn a_room_with_encryption_state_is_encrypted() {
+        let member = json!({"type": "m.room.member", "state_key": "@a:x", "content": {"membership": "join"}});
+        let encryption = json!({"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}});
+        assert!(!super::room_is_encrypted(&[member.clone()]));
+        assert!(super::room_is_encrypted(&[member, encryption]));
+        let odd = json!({"type": "m.room.encryption", "state_key": "x"});
+        assert!(!super::room_is_encrypted(&[odd]));
     }
 }

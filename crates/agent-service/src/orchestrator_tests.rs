@@ -655,6 +655,40 @@ fn command(h: &Harness, id: &str, thread: Option<&str>, body: &str) -> RoutedEve
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_a_start_in_an_encrypted_room_is_refused_by_name() {
+    let mut h = harness(true).await;
+    h.room.facts.encrypted = true;
+    let o = orchestrator(&h, DEFAULT_STAGE_TIMEOUT_MS);
+    let now = crate::api::now_ms;
+    let start = command(
+        &h,
+        "gitfab-cmd-encrypted",
+        None,
+        &format!(
+            "/gitfab start task-enc\nproject: DEMO-02\nrepo: https://github.com/example/gitfab-demo-02\nbaseline: {}\nspec: spec/DEMO-02.md@v1\ngoal: Add GET /healthz",
+            "c".repeat(40)
+        ),
+    );
+    h.f.transport
+        .record_orchestrator_command(&start, now())
+        .await
+        .unwrap();
+    o.pass(now()).await.unwrap();
+    assert!(
+        h.f.transport
+            .orchestrator_run_in_thread(&h.f.facts.room_id, "$gitfab-cmd-encrypted")
+            .await
+            .unwrap()
+            .is_none(),
+        "no run in an encrypted Room"
+    );
+    let posts = h.room.posts.lock().unwrap();
+    assert_eq!(posts.len(), 1, "only the refusal: {posts:?}");
+    assert!(posts[0].1.contains("encrypted_room_requires_client_crypto"));
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_humans_start_and_confirm_a_run_with_room_commands() {
     let h = harness(true).await;
     let o = orchestrator(&h, DEFAULT_STAGE_TIMEOUT_MS);

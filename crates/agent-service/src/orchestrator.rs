@@ -500,6 +500,13 @@ impl<R: StageRoom> Orchestrator<'_, R> {
             if !facts.requester_in_room {
                 return refuse("发起人不在本房间。");
             }
+            // Stage messages are plaintext the server sends, so an encrypted Room is refused here,
+            // named, rather than failing at the first dispatch.
+            if facts.encrypted {
+                return refuse(
+                    "本房间已启用端到端加密，编排器只能在不加密的项目房间运行（encrypted_room_requires_client_crypto）。请新建不加密的项目房间再发起。",
+                );
+            }
         }
         let mut context = json!({
             "goal": start.goal, "gitBackend": start.backend, "repoRef": start.repo,
