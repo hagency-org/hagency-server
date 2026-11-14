@@ -200,6 +200,14 @@ fn administer(p: &Principal, f: &AdminFacts, room: &str, now: i64) -> Result<()>
     Ok(())
 }
 
+fn joined_member(p: &Principal, f: &AdminFacts, room: &str, now: i64) -> Result<()> {
+    fresh(f.observed_at_ms, now)?;
+    if f.actor_mxid != p.mxid || f.room_id != room || !f.joined {
+        return Err(Error::Unauthorized("room_membership_required"));
+    }
+    Ok(())
+}
+
 fn membership(p: &Principal, f: &RoomFacts, room: &str, space: &str, now: i64) -> Result<()> {
     fresh(f.observed_at_ms, now)?;
 
@@ -517,6 +525,8 @@ impl DomainStore {
                 db.batch_execute(include_str!("domain_schema.sql")).await?;
                 db.batch_execute(include_str!("owner_direct_schema.sql")).await?;
             }
+            // ADR 0001: databases created before per-owner room registration.
+            db.batch_execute(include_str!("room_registration_schema.sql")).await?;
             db.batch_execute(include_str!("configuration_schema.sql")).await?;
             let management=sql_query("SELECT to_regclass('hagency_agent_v1.management_deployment') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !management.matched { db.batch_execute(include_str!("management_schema.sql")).await?; }
@@ -883,7 +893,10 @@ impl DomainStore {
                     let project = Self::project_db(db, project_id).await?;
 
                     administer(p, sf, &project.space_id, now)?;
-                    administer(p, rf, room, now)?;
+                    // Each owner registers a room in their own project (ADR 0001):
+                    // being a joined member is enough; room admins keep control
+                    // through Matrix power levels, kicks, room pause and room policy.
+                    joined_member(p, rf, room, now)?;
 
                     if !sf.is_space
                         || rf.is_space
@@ -923,27 +936,40 @@ impl DomainStore {
             let params = (room,);
             q::table
                 .select(crate::domain::Room::as_select())
-                .filter((q::room_id).eq(&params.0))
+                .filter((q::room_id).eq(&params.0).and(q::project_id.eq(project_id)))
                 .get_result::<Room>(db)
                 .await
         }
         .optional()?;
 
         if let Some(existing) = existing {
-            if existing.project_id != project_id {
-                return Err(Error::Conflict("room_already_registered"));
-            }
             return Ok(existing);
         }
+        // Another owner may already have registered this room: its room-level
+        // policy and disabled state were set by room admins and apply to every owner.
+        let sibling = {
+            use crate::schema::agent_tables::rooms as q;
+            q::table
+                .select(crate::domain::Room::as_select())
+                .filter(q::room_id.eq(room))
+                .order((q::revision.desc(), q::project_id.asc()))
+                .first::<Room>(db)
+                .await
+        }
+        .optional()?;
+        let (active, policy) = match sibling {
+            Some(room) => (room.active, room.creation_policy),
+            None => (true, encode(&RoomCreationPolicy::default())?),
+        };
 
         let result = {
             use crate::schema::agent_tables::rooms as q;
-            let params = (room, project_id, encode(&RoomCreationPolicy::default())?);
             diesel::insert_into(q::table)
                 .values((
-                    q::room_id.eq(&params.0),
-                    q::project_id.eq(&params.1),
-                    q::creation_policy.eq(&params.2),
+                    q::room_id.eq(room),
+                    q::project_id.eq(project_id),
+                    q::creation_policy.eq(&policy),
+                    q::active.eq(active),
                 ))
                 .returning(crate::domain::Room::as_select())
                 .get_result::<Room>(db)
@@ -1033,6 +1059,18 @@ impl DomainStore {
                             .await
                     }
                     .map_err(revision)?;
+                    // A room admin's policy covers every owner's registration of the room.
+                    {
+                        use crate::schema::agent_tables::rooms as q;
+                        diesel::update(q::table)
+                            .filter(q::room_id.eq(room).and(q::project_id.ne(project_id)))
+                            .set((
+                                q::creation_policy.eq(&updated.creation_policy),
+                                q::revision.eq(q::revision + 1),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;
                     Self::audit(db, p, "room.creation_policy", room, now).await?;
                     Ok(updated)
                 })
@@ -2556,10 +2594,11 @@ impl DomainStore {
             sql_query("INSERT INTO hagency_agent_v1.scope_pauses(kind,scope_id,paused) VALUES('room',$1,true) ON CONFLICT(kind,scope_id) DO UPDATE SET paused=excluded.paused").bind::<Text,_>(room_id).execute(db).await?;
             let count={
                 use crate::schema::agent_tables::bindings as q;
-                let params = (project_id, room_id);
+                let params = (room_id,);
+                // Every owner's bindings in the room, not only this project's (ADR 0001).
                 diesel::update(q::table)
                     .filter(
-                        (((q::project_id).eq(&params.0)).and((q::room_id).eq(&params.1))).and(
+                        ((q::room_id).eq(&params.0)).and(q::scope_kind.eq("project")).and(
                             (q::state.eq_any(vec!["active", "joining"]))
                                 .or(((q::state).eq("suspended")).and(diesel::dsl::not(q::admin_room_paused))),
                         ),
@@ -2633,10 +2672,11 @@ impl DomainStore {
             sql_query("INSERT INTO hagency_agent_v1.scope_pauses(kind,scope_id,paused) VALUES('room',$1,false) ON CONFLICT(kind,scope_id) DO UPDATE SET paused=excluded.paused").bind::<Text,_>(room_id).execute(db).await?;
             let count={
                 use crate::schema::agent_tables::bindings as q;
-                let params = (project_id, room_id);
+                let params = (room_id,);
+                // Every owner's bindings in the room, not only this project's (ADR 0001).
                 diesel::update(q::table)
                     .filter(
-                        (((q::project_id).eq(&params.0)).and((q::room_id).eq(&params.1)))
+                        ((q::room_id).eq(&params.0)).and(q::scope_kind.eq("project"))
                             .and(q::admin_room_paused),
                     )
                     .set((q::admin_room_paused.eq(false),))

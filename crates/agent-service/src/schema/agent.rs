@@ -1399,7 +1399,7 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
-        hagency_agent_v1.rooms (room_id) {
+        hagency_agent_v1.rooms (room_id, project_id) {
             room_id -> Text,
             project_id -> Text,
             active -> Bool,
