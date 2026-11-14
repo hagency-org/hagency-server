@@ -80,7 +80,7 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
 | Runner 回执密钥 | Runner | 部署回执、SBOM 证明 | Runner 本机文件（0600），与服务端密钥分开 |
 | Git 平台 Token | 服务端 | 建 PR、读状态、发 Release | `[gitfab] github_token_file` / `gitcode_token_file`（0600），只进 Authorization 头 |
 | 大屏 Token | 服务端与大屏 | 读 Agent 状态 | `[gitfab] board_token_file`（0600），定长比较 |
-| Agent 推送凭据 | 执行设备 | 推送任务分支 | 执行端自己的仓库凭据，不经过 GitFab |
+| Agent 推送凭据 | 执行设备 | 推送任务分支 | 执行端自己的仓库凭据，不经过 GitFab；`scripts/gitfab-workspace.sh` 开的隔离 worktree 只允许推本任务分支到授权仓库（本机护栏，平台分支保护与仓库级 Token 才是约束） |
 
 原则：
 - Agent 拿不到服务器的平台 Token，也不能提供 PR 或 Release 链接，链接由服务器从平台读回并签名记录。

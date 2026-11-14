@@ -45,6 +45,9 @@ python3 scripts/test-agent-service-postgres.py --lib orchestrator
 # 验收包自测（需先构建 gitfab）
 GITFAB_BIN=$PWD/target/release/gitfab bash acceptance/tests/selftest.sh
 
+# 执行端隔离工作区（只用临时目录里的本地仓库）
+bash scripts/test-gitfab-workspace.sh
+
 # 日志不含凭据（对运行中的服务端；只输出计数，不输出日志内容）
 scripts/gitfab-log-canary.sh http://127.0.0.1:8099 <服务端日志文件>
 ```
