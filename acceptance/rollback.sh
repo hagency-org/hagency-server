@@ -57,7 +57,7 @@ set -e
 if [ "$code" -eq 0 ]; then
     check rollback.run ok "$(tr -d '\n' <"$RUN_DIR/rollback-run.json")"
 else
-    check rollback.run fail "gitfab-runner exit $code: $(tr -d '\n' <"$RUN_DIR/rollback-run.err" "$RUN_DIR/rollback-run.json")"
+    check rollback.run fail "gitfab-runner exit $code: $(cat "$RUN_DIR/rollback-run.err" "$RUN_DIR/rollback-run.json" 2>/dev/null | tr -d '\n')"
 fi
 rm -f "$RUN_DIR/rollback-run.err"
 

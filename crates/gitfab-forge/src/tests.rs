@@ -336,6 +336,23 @@ async fn a_gitcode_pull_request_created_with_only_web_url_is_read() {
 }
 
 #[tokio::test]
+async fn a_pull_request_created_without_its_head_commit_is_read_back() {
+    let fake = Fake::default()
+        .on("GET", "/repos/octo/demo/pulls?state=open&base=main&per_page=100", 200, json!([]))
+        .on("POST", "/repos/octo/demo/pulls", 200, json!({"number": 2, "web_url": "https://gitcode.com/octo/demo/merge_requests/2"}))
+        .on("GET", "/repos/octo/demo/pulls/2", 200, json!({"number": 2, "html_url": "https://gitcode.com/octo/demo/merge_requests/2", "head": {"sha": "93d7"}}));
+    let pull = Forge::new(Backend::GitCode, &fake).upsert_pull(&repo(), "b", "main", "t", "").await.unwrap();
+    assert_eq!((pull.number, pull.head_sha.as_str()), (2, "93d7"));
+    // A read that fails keeps the created Pull Request, without a commit.
+    let fake = Fake::default()
+        .on("GET", "/repos/octo/demo/pulls?state=open&base=main&per_page=100", 200, json!([]))
+        .on("POST", "/repos/octo/demo/pulls", 200, json!({"number": 2, "web_url": "https://gitcode.com/octo/demo/merge_requests/2"}))
+        .on("GET", "/repos/octo/demo/pulls/2", 500, json!({}));
+    let pull = Forge::new(Backend::GitCode, &fake).upsert_pull(&repo(), "b", "main", "t", "").await.unwrap();
+    assert_eq!((pull.url.as_str(), pull.head_sha.as_str()), ("https://gitcode.com/octo/demo/merge_requests/2", ""));
+}
+
+#[tokio::test]
 async fn github_review_takes_each_reviewers_latest_verdict() {
     let pull = PullRequest {
         number: 4,

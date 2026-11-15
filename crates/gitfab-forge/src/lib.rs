@@ -558,7 +558,19 @@ impl<T: Transport> Forge<T> {
                 json!({"title": title, "head": head, "base": base, "body": body}),
             )
             .await?;
-        self.pull_from(&created, &path)
+        let pull = self.pull_from(&created, &path)?;
+        if !pull.head_sha.is_empty() {
+            return Ok(pull);
+        }
+        // GitCode can answer a new Pull Request before it knows the head commit; reading it back
+        // names the commit, and a failed read keeps the Pull Request without one.
+        match self.pull(repo, pull.number).await {
+            Ok(read) if !read.head_sha.is_empty() => Ok(PullRequest {
+                head_sha: read.head_sha,
+                ..pull
+            }),
+            _ => Ok(pull),
+        }
     }
 
     async fn get_body(&self, method: &'static str, path: String, body: Value) -> Result<Value> {

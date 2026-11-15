@@ -83,12 +83,12 @@ platform() {
 if platform release-info "$REPO" --tag "$tag" >"$RUN_DIR/release-platform.json" 2>"$RUN_DIR/.forge-err"; then
     check release.platform ok "$BACKEND has Release $tag"
 else
-    check release.platform fail "$BACKEND: $(tr -d '\n' <"$RUN_DIR/release-platform.json" "$RUN_DIR/.forge-err")"
+    check release.platform fail "$BACKEND: $(cat "$RUN_DIR/release-platform.json" "$RUN_DIR/.forge-err" 2>/dev/null | tr -d '\n')"
 fi
 if platform checks "$REPO" "$number" >"$RUN_DIR/release-checks.json" 2>"$RUN_DIR/.forge-err"; then
     check release.checks ok "Pull Request $number checks passed"
 else
-    check release.checks fail "Pull Request $number: $(tr -d '\n' <"$RUN_DIR/release-checks.json" "$RUN_DIR/.forge-err")"
+    check release.checks fail "Pull Request $number: $(cat "$RUN_DIR/release-checks.json" "$RUN_DIR/.forge-err" 2>/dev/null | tr -d '\n')"
 fi
 rm -f "$RUN_DIR/.forge-err"
 FINAL_SHA=$(json_field headSha <"$RUN_DIR/release-checks.json")
