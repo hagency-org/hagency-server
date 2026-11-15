@@ -27,12 +27,15 @@ mod execution_configuration;
 mod execution_devices;
 #[path = "owner_direct.rs"]
 mod owner_direct;
+#[path = "project_folders.rs"]
+mod project_folders;
 #[path = "management_shared_protocol.rs"]
 pub(crate) mod shared_protocol;
 #[path = "shared_rooms.rs"]
 mod shared_rooms;
 pub(crate) use execution_devices::require_assigned;
 pub use execution_devices::{OwnerDevice, SetExecutionDevice};
+pub use project_folders::{PROJECT_FOLDER_CAPABILITY, ProjectFolder, validate_project_folder};
 
 #[path = "project_board/mod.rs"]
 pub mod project_board;
@@ -600,6 +603,7 @@ impl DomainStore {
             db.batch_execute(include_str!("management_shared_demand_retry_schema.sql")).await?;
             db.batch_execute("CREATE INDEX IF NOT EXISTS management_command_recovery ON hagency_agent_v1.management_commands(actor_user_id,device_id,command_id)").await?;
             db.batch_execute(include_str!("visibility_schema.sql")).await?;
+            db.batch_execute(include_str!("project_folders_schema.sql")).await?;
             db.batch_execute(include_str!("agent_crypto_schema.sql")).await?;
 
             let pause_initialized=sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='bindings' AND column_name='owner_service_paused') AS matched").get_result::<Flag>(db).await?;
@@ -847,7 +851,25 @@ impl DomainStore {
         f: &AdminFacts,
         now: i64,
     ) -> Result<Project> {
+        self.adopt_project(p, space, None, f, now)
+            .await
+            .map(|(project, _)| project)
+    }
+
+    /// Registers a Space as a project. With `folder`, the project's opt-in
+    /// folder is stored in the same transaction and returned as stored.
+    pub async fn adopt_project(
+        &self,
+        p: &Principal,
+        space: &str,
+        folder: Option<&str>,
+        f: &AdminFacts,
+        now: i64,
+    ) -> Result<(Project, Option<String>)> {
         matrix_id(space, '!')?;
+        if let Some(folder) = folder {
+            validate_project_folder(folder)?;
+        }
 
         if !f.is_space {
             return Err(Error::Invalid("project_requires_space"));
@@ -858,7 +880,14 @@ impl DomainStore {
                 db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
                     Self::authorize(db, p, now).await?;
                     administer(p, f, space, now)?;
-                    Self::register_project_transaction(db, p, space, now).await
+                    let project = Self::register_project_transaction(db, p, space, now).await?;
+                    let folder = match folder {
+                        Some(folder) => {
+                            Some(Self::keep_project_folder(db, p, &project.id, folder, now).await?)
+                        }
+                        None => None,
+                    };
+                    Ok((project, folder))
                 })
                 .await
             })

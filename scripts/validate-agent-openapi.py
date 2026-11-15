@@ -178,6 +178,9 @@ def validate(doc):
                 require(operation['security'] == [{'deviceBearer': []}], 'configuration device security drift')
             elif (path == '/hagency/api/v1/agents' and method == 'post') or (path == '/hagency/api/v1/agents/{agentId}/execution-device' and method == 'put'):
                 require(operation['security'] == [{'deviceBearer': []}], 'device management security drift')
+            elif path == '/hagency/api/v1/room-project-folder':
+                # A hosting daemon asks with its execution device; an owner may use the session.
+                require(operation['security'] == [{'deviceBearer': []}, {'userBearer': []}] and method == 'get', 'room project folder bearer/method drift')
             elif path.startswith('/hagency/api/v1/') and path not in ['/hagency/api/v1/discovery', '/hagency/api/v1/readiness', '/hagency/api/v1/sessions/pasion']:
                 require(operation['security'] == [{'userBearer': []}], 'owner session security drift')
     for schema in doc['components']['schemas'].values():
@@ -225,7 +228,7 @@ def validate(doc):
         worker_health = doc['paths']['/workers-healthz']['get']
         require(worker_health['security'] == [] and set(worker_health['responses']) == {'200', '503'}, 'worker health security/status drift')
         require(set(doc['components']['schemas']['WorkerQueueHealth']['properties']) == {'name', 'running', 'consecutiveFailures', 'lastSuccessAgeMs', 'lastActivityAgeMs', 'error'}, 'worker health must remain aggregate and body-free')
-        require(len(operations) == 136, 'reviewed owner route count drift')
+        require(len(operations) == 137, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -306,6 +309,10 @@ class GuardTests(unittest.TestCase):
         self.rejection(lambda d: d['paths']['/hagency/api/v1/agents/{agentId}/execution-device']['put'].update(security=[{'userBearer': []}]))
     def test_configuration_requires_current_device(self):
         self.rejection(lambda d: d['paths']['/hagency/api/v1/agents/{agentId}/configuration']['get'].update(security=[{'userBearer': []}]))
+    def test_room_project_folder_accepts_execution_device(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/room-project-folder']['get'].update(security=[{'userBearer': []}]))
+    def test_missing_room_project_folder_route(self):
+        self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/room-project-folder'))
     def test_private_or_missing_field(self):
         self.rejection(lambda d: d['components']['schemas']['ReplyIntent']['properties'].update(workerToken={'type': 'string'}))
     def test_rust_type_drift(self):
