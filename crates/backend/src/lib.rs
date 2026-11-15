@@ -5,4 +5,5 @@ pub mod frontend;
 pub use palpo::MatrixServer;
 
 pub mod pasion;
+pub mod telemetry;
 pub use pasion_backend::PasionServer;
