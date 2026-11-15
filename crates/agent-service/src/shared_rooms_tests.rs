@@ -769,3 +769,165 @@ async fn audience_upgrade_keeps_pool_agents_listed_and_bindable() {
             .is_err()
     );
 }
+
+/// A pooled Agent holds no binding. The computer that runs its live assignment
+/// finds the space's project folder in the Rooms added for the Agent and in its
+/// original Room once that Room belongs to the space; the Agent's manager does
+/// not run it there and gets nothing.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn pool_agent_room_project_folder_reaches_its_executor_only() {
+    let (f, request, assignment, matrix) = prepared_pool(true).await;
+    let space = "!folder-space:example.test";
+    let room = "!folder-room:example.test";
+    let manager = &f.outsider.p;
+    let puppet = f
+        .domain
+        .managed_agent_matrix(manager, &f.policy, &request.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .puppet_mxid;
+    let admin_levels = json!({"type":"m.room.power_levels","state_key":"","content":{"users":{manager.mxid.clone():100,SERVICE:100}}});
+    {
+        let mut states = matrix.states.lock().unwrap();
+        states.insert(space.into(),vec![
+            json!({"type":"m.room.create","state_key":"","content":{"type":"m.space"}}),
+            json!({"type":"m.room.member","state_key":manager.mxid,"content":{"membership":"join"}}),
+            json!({"type":"m.room.power_levels","state_key":"","content":{"users":{manager.mxid.clone():100}}}),
+            json!({"type":"m.space.child","state_key":room,"content":{"via":["example.test"]}}),
+            json!({"type":"m.space.child","state_key":request.room_id,"content":{"via":["example.test"]}}),
+        ]);
+        let mut events = states[&request.room_id].clone();
+        events.retain(|e| e["state_key"] != puppet);
+        events.push(admin_levels.clone());
+        states.insert(room.into(), events);
+    }
+    let now = crate::api::now_ms;
+    let sf = matrix
+        .gateway
+        .admin(space, &manager.mxid, None)
+        .await
+        .unwrap();
+    let (project, folder) = f
+        .domain
+        .adopt_project(manager, space, Some("Pool work"), &sf, now())
+        .await
+        .unwrap();
+    assert_eq!(folder.as_deref(), Some("Pool work"));
+    let rf = matrix
+        .gateway
+        .admin(room, &manager.mxid, Some(space))
+        .await
+        .unwrap();
+    f.domain
+        .register_room(manager, &project.id, room, &sf, &rf, now())
+        .await
+        .unwrap();
+    let service = svc(&f, matrix.gateway.clone());
+    let ask = async |token: &str, room: &str| {
+        let mut response = TestClient::get(format!(
+            "https://example.test/hagency/api/v1/room-project-folder?roomId={}",
+            percent_encoding::utf8_percent_encode(room, percent_encoding::NON_ALPHANUMERIC)
+        ))
+        .add_header("host", "example.test", true)
+        .bearer_auth(token)
+        .send(&service)
+        .await;
+        assert_eq!(response.status_code, Some(StatusCode::OK), "{room}");
+        response.take_json::<Value>().await.unwrap()
+    };
+    let shown = json!({"projectFolder":{"projectId":project.id,"folder":"Pool work"}});
+    let hidden = json!({"projectFolder":null});
+    assert_eq!(
+        ask(&f.owner.token, room).await,
+        hidden,
+        "no Agent there yet"
+    );
+
+    let input = crate::domain::BindRoom {
+        project_id: project.id.clone(),
+        room_id: room.into(),
+        idempotency_key: "folder-room".into(),
+    };
+    let added = f
+        .domain
+        .try_bind_shared_room(
+            manager,
+            &assignment.agent_id,
+            &input,
+            &matrix.gateway,
+            &matrix.matrix,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(added.binding.state, "joining");
+    // The executor device bearer of the live assignment, and its owner's
+    // session, see the folder while the Agent joins and once it is active.
+    for token in [&f.owner.token, &f.owner.session] {
+        assert_eq!(ask(token, room).await, shown);
+    }
+    for _ in 0..3 {
+        f.domain
+            .reconcile_shared_room(&added.binding.id, &matrix.gateway, &matrix.matrix)
+            .await
+            .unwrap();
+    }
+    #[derive(QueryableByName)]
+    struct RoomState {
+        #[diesel(sql_type=Text)]
+        state: String,
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let state = async |db: &mut AsyncPgConnection| {
+        sql_query("SELECT state FROM hagency_agent_v1.shared_agent_rooms WHERE id=$1")
+            .bind::<Text, _>(&added.binding.id)
+            .get_result::<RoomState>(db)
+            .await
+            .unwrap()
+            .state
+    };
+    assert_eq!(state(&mut db).await, "active");
+    assert_eq!(ask(&f.owner.token, room).await, shown);
+    // The manager does not run the Agent; neither does anyone else.
+    for token in [&f.outsider.token, &f.outsider.session, &f.admin.token] {
+        assert_eq!(ask(token, room).await, hidden);
+    }
+
+    // The original Room counts once it is a Room of the space.
+    assert_eq!(ask(&f.owner.token, &request.room_id).await, hidden);
+    matrix
+        .states
+        .lock()
+        .unwrap()
+        .get_mut(&request.room_id)
+        .unwrap()
+        .push(admin_levels);
+    let of = matrix
+        .gateway
+        .admin(&request.room_id, &manager.mxid, Some(space))
+        .await
+        .unwrap();
+    f.domain
+        .register_room(manager, &project.id, &request.room_id, &sf, &of, now())
+        .await
+        .unwrap();
+    assert_eq!(ask(&f.owner.token, &request.room_id).await, shown);
+    assert_eq!(ask(&f.outsider.token, &request.room_id).await, hidden);
+
+    // An added Room the Agent leaves stops counting; the original one stays.
+    member(
+        &mut matrix.states.lock().unwrap(),
+        room,
+        &manager.mxid,
+        "leave",
+    );
+    f.domain
+        .reconcile_shared_room(&added.binding.id, &matrix.gateway, &matrix.matrix)
+        .await
+        .unwrap();
+    assert!(matches!(state(&mut db).await.as_str(), "leaving" | "left"));
+    assert_eq!(ask(&f.owner.token, room).await, hidden);
+    assert_eq!(ask(&f.owner.token, &request.room_id).await, shown);
+}

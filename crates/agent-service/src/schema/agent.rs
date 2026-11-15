@@ -1329,6 +1329,15 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
+        hagency_agent_v1.project_folders (project_id) {
+            project_id -> Text,
+            folder -> Text,
+            set_by_user_id -> Text,
+            created_at_ms -> Int8,
+        }
+    }
+
+    diesel::table! {
         hagency_agent_v1.projects (id) {
             id -> Text,
             space_id -> Text,
@@ -1630,6 +1639,8 @@ pub mod hagency_agent_v1 {
     diesel::joinable!(processing_outbox -> devices (dispatch_device_id));
     diesel::joinable!(processing_outbox -> owner_events (owner_event_id));
     diesel::joinable!(processing_outbox -> users (owner_user_id));
+    diesel::joinable!(project_folders -> projects (project_id));
+    diesel::joinable!(project_folders -> users (set_by_user_id));
     diesel::joinable!(reply_outbox -> agents (agent_id));
     diesel::joinable!(reply_outbox -> bindings (binding_id));
     diesel::joinable!(reply_outbox -> owner_events (owner_event_id));
@@ -1747,6 +1758,7 @@ pub mod hagency_agent_v1 {
         pause_notice_outbox,
         personal_e2ee_candidates,
         processing_outbox,
+        project_folders,
         projects,
         readiness_receipts,
         readiness_room,

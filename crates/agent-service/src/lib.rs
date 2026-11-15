@@ -44,6 +44,8 @@ pub mod management_shared_work_types;
 mod management_tests;
 pub mod management_types;
 pub mod matrix_client;
+#[cfg(test)]
+mod project_folders_tests;
 pub mod recurring_quota;
 mod reply_format;
 pub mod store;
