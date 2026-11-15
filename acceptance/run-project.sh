@@ -141,6 +141,40 @@ while :; do
     sleep "${GITFAB_POLL_SECONDS:-10}"
 done
 
+# 3b. The Runner deploys the Release outside GitFab (its operator or a hook on the Release). Wait for
+# its signed receipt of this run's Release tag, so verify-release checks this run and not an earlier
+# deployment. GITFAB_DEPLOY_WAIT_MINUTES=0 skips the wait.
+wait_minutes=${GITFAB_DEPLOY_WAIT_MINUTES:-30}
+case "$wait_minutes" in '' | *[!0-9]*) wait_minutes=30 ;; esac
+if [ -n "${GITFAB_RECEIPTS:-}" ] && [ -n "${GITFAB_JOURNAL:-}" ] && [ "$wait_minutes" -gt 0 ]; then
+    keys=${GITFAB_KEYS_DIR:-$ACCEPTANCE_DIR/keys}
+    tag=""
+    if gitfab=$(gitfab_bin) && "$gitfab" find --keys "$keys" --project "$PROJECT_ID" --phase release \
+        --status succeeded --run "$run_id" "$GITFAB_JOURNAL" >"$RUN_DIR/.release-event" 2>/dev/null; then
+        tag=$(json_field artifact_ref_0 <"$RUN_DIR/.release-event")
+        tag=${tag##*/}
+    fi
+    rm -f "$RUN_DIR/.release-event"
+    if [ -z "$tag" ]; then
+        check deploy.wait fail "run $run_id has no signed Release event with a Release link"
+    else
+        log "waiting up to $wait_minutes minutes for the Runner's receipt of $PROJECT_ID $tag"
+        until="$(($(date +%s) + wait_minutes * 60))"
+        while :; do
+            if "$gitfab" receipt --keys "$keys" --project "$PROJECT_ID" --tag "$tag" "$GITFAB_RECEIPTS" \
+                >/dev/null 2>&1; then
+                check deploy.wait ok "Runner receipt for $PROJECT_ID $tag"
+                break
+            fi
+            if [ "$(date +%s)" -ge "$until" ]; then
+                check deploy.wait fail "no signed receipt for $PROJECT_ID $tag after $wait_minutes minutes"
+                break
+            fi
+            sleep "${GITFAB_POLL_SECONDS:-10}"
+        done
+    fi
+fi
+
 # 4. The same acceptance run verifies what the run produced.
 here=$(dirname "$0")
 sub() {

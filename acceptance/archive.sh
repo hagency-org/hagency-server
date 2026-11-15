@@ -14,6 +14,12 @@ set -euo pipefail
 # Standalone: lib/common.sh would open a new evidence bundle, and archiving must not create one.
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
+# The same configuration as the other commands, so GITFAB_EVIDENCE_DIR there is where bundles are.
+GITFAB_CONFIG=${GITFAB_CONFIG:-$here/gitfab.env}
+if [ -f "$GITFAB_CONFIG" ]; then
+    # shellcheck disable=SC1090
+    . "$GITFAB_CONFIG"
+fi
 if [ -n "${GITFAB_BIN:-}" ]; then gitfab=$GITFAB_BIN
 elif command -v gitfab >/dev/null 2>&1; then gitfab=$(command -v gitfab)
 elif [ -x "$root/target/release/gitfab" ]; then gitfab=$root/target/release/gitfab
