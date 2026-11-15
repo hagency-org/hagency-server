@@ -312,6 +312,7 @@ async fn run() -> anyhow::Result<()> {
                 &conf.pasion.as_ref().unwrap().resources()?,
                 Some(hagency_server::pasion::MOUNT),
             ))
+            .push(hagency_server::upstream_redirect::router())
             .push(router);
     }
     let mut service = matrix.service(router);
