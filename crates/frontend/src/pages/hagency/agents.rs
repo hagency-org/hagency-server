@@ -102,8 +102,8 @@ pub fn Agents() -> Element {
                 for binding in rows(&binding_data,"bindings") {
                     {let id=text(&binding,"id");let is_direct=binding["scopeKind"]=="owner_direct";
                     rsx! {div {class:"hg-card hg-stack",key:"{id}",
-                        h3 {if is_direct {"Private chat with you"}else {"Project Room"}}
-                        code {{text(&binding,"roomId")}}
+                        h3 {{binding_title(is_direct)}}
+                        details {summary {"Room ID"}code {{text(&binding,"roomId")}}}
                         p {class:"hg-note",{format!("Server binding: {}",text(&binding,"state"))}}
                         div {class:"hg-actions",
                             if let Some(action)=binding_action(&text(&binding,"state")) {
@@ -158,6 +158,13 @@ fn availability_action(state: &str) -> Option<&'static str> {
 fn binding_action(state: &str) -> Option<&'static str> {
     availability_action(state)
 }
+fn binding_title(is_direct: bool) -> &'static str {
+    if is_direct {
+        "Private chat with you"
+    } else {
+        "Project Room"
+    }
+}
 fn binding_body(project: &str, room: &str, key: &str) -> Value {
     json!({"projectId":project.trim(),"roomId":room.trim(),"idempotencyKey":key})
 }
@@ -170,6 +177,12 @@ mod tests {
             binding_body(" prj_owned ", " !discussion:server ", "bind-key"),
             json!({"projectId":"prj_owned","roomId":"!discussion:server","idempotencyKey":"bind-key"})
         );
+    }
+    #[test]
+    fn binding_card_title_is_readable_and_not_a_room_id() {
+        assert_eq!(binding_title(true), "Private chat with you");
+        assert_eq!(binding_title(false), "Project Room");
+        assert!(!binding_title(true).starts_with('!'));
     }
     #[test]
     fn creating_and_retired_agents_cannot_be_resumed_from_web() {
