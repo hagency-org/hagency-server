@@ -144,7 +144,7 @@ for env in "$ACCEPTANCE_DIR"/projects/*.env; do
         key=${line%%=*}
         case "$key" in
             HAGENCY_PROJECT | ROOM_ID | COORDINATOR | IMPLEMENTER | REVIEWER | SPEC_REF | GOAL | DEPLOY_PORT \
-                | CONTAINER_PORT | HEALTH_PATH | VERSION_PATH) ;;
+                | RELEASE_TAG | CONTAINER_PORT | HEALTH_PATH | VERSION_PATH) ;;
             PROJECT_ID | BACKEND | REPO | BRANCH | BASELINE_SHA | PRD | PRD_SHA256)
                 [ "$key" != "$line" ] && printf -v "$key" '%s' "${line#*=}" || bad=$line ;;
             *) bad=$line ;;

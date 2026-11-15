@@ -47,6 +47,8 @@ for key in REPO BASELINE_SHA HAGENCY_PROJECT ROOM_ID COORDINATOR IMPLEMENTER REV
     value=${!key}
     case "$value" in "" | *【*) missing="$missing $key" ;; esac
 done
+# Optional; a project whose PRD fixes the Release tag format (DEMO-01) lists it with a placeholder.
+case "$RELEASE_TAG" in *【*) missing="$missing RELEASE_TAG" ;; esac
 for key in GITFAB_SERVER_URL GITFAB_MATRIX_URL GITFAB_MATRIX_TOKEN_FILE GITFAB_SESSION_TOKEN_FILE; do
     [ -n "${!key:-}" ] || missing="$missing $key"
 done
@@ -87,7 +89,7 @@ start+="\"bindings\":{\"coordinator\":$(json_text "$COORDINATOR"),\"implementer\
 start+="\"reviewer\":$(json_text "$REVIEWER")},\"context\":{\"goal\":$(json_text "$GOAL"),"
 start+="\"gitBackend\":$(json_text "$BACKEND"),\"repoRef\":$(json_text "$REPO"),"
 start+="\"baselineSha\":$(json_text "$BASELINE_SHA"),\"specRef\":$(json_text "$SPEC_REF"),"
-start+="\"projectId\":$(json_text "$PROJECT_ID")}}"
+start+="\"projectId\":$(json_text "$PROJECT_ID")${RELEASE_TAG:+,\"releaseTag\":$(json_text "$RELEASE_TAG")}}}"
 http_send POST "$runs" "$GITFAB_SESSION_TOKEN_FILE" "$start"
 run_id=$(printf '%s' "$HTTP_BODY" | json_field id)
 [ -n "$run_id" ] || run_id=$(printf '%s' "$HTTP_BODY" | json_field runId)

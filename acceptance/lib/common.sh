@@ -83,7 +83,7 @@ backend_token_file() {
 load_project() {
     local env="${GITFAB_PROJECTS_DIR:-$ACCEPTANCE_DIR/projects}/$1.env" line key
     BACKEND="" REPO="" BRANCH="" BASELINE_SHA="" PRD="" PRD_SHA256=""
-    HAGENCY_PROJECT="" ROOM_ID="" COORDINATOR="" IMPLEMENTER="" REVIEWER="" SPEC_REF="" GOAL=""
+    HAGENCY_PROJECT="" ROOM_ID="" COORDINATOR="" IMPLEMENTER="" REVIEWER="" SPEC_REF="" GOAL="" RELEASE_TAG=""
     DEPLOY_PORT="" CONTAINER_PORT=8080 HEALTH_PATH=/healthz VERSION_PATH=/version
     case "$1" in '' | */* | .*) return 1 ;; esac
     [ -f "$env" ] || return 1
@@ -93,7 +93,7 @@ load_project() {
         case "$key" in
             PROJECT_ID) ;;
             BACKEND | REPO | BRANCH | BASELINE_SHA | PRD | PRD_SHA256 | HAGENCY_PROJECT | ROOM_ID | COORDINATOR \
-                | IMPLEMENTER | REVIEWER | SPEC_REF | GOAL | DEPLOY_PORT | CONTAINER_PORT | HEALTH_PATH | VERSION_PATH)
+                | IMPLEMENTER | REVIEWER | SPEC_REF | GOAL | RELEASE_TAG | DEPLOY_PORT | CONTAINER_PORT | HEALTH_PATH | VERSION_PATH)
                 [ "$key" != "$line" ] || return 1
                 printf -v "$key" '%s' "${line#*=}" ;;
             *) return 1 ;;

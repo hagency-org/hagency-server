@@ -123,7 +123,7 @@ gitfab-board --keys <公钥目录> --journal <事件日志> --receipts /var/lib/
 
 ## 8. 验收（验收人）
 
-配置 `acceptance/gitfab.env`（照 `gitfab.env.example`）和 `acceptance/projects/DEMO-0N.env`，然后按顺序：
+配置 `acceptance/gitfab.env`（照 `gitfab.env.example`）和 `acceptance/projects/DEMO-0N.env`，然后按顺序。`RELEASE_TAG` 可选，填写后作为 run 的 `releaseTag`，编排器用它作 Release 标签；不填时标签为 `gitfab-<任务>-r<轮次>`。DEMO-01 的 PRD 要求版本形如 `v1.2.3`，所以必须填写，且每次验收运行换一个新标签：
 
 ```
 ./acceptance/preflight.sh
