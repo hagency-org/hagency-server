@@ -24,7 +24,8 @@ struct Cli {
     /// Runner receipt journals.
     #[arg(long = "receipts")]
     receipts: Vec<PathBuf>,
-    /// Live deployment probe, `PROJECT=PORT` (health /healthz, version /version).
+    /// Live deployment probe, `PROJECT=PORT` or `PROJECT=PORT:/health-path` (health /healthz unless given,
+    /// version /version), e.g. `DEMO-01=18095:/health` as in the project's HEALTH_PATH.
     #[arg(long = "probe")]
     probes: Vec<String>,
     #[arg(long, default_value = "127.0.0.1:8090")]
@@ -81,11 +82,11 @@ fn main() -> std::process::ExitCode {
     };
     let mut probes = Vec::new();
     for p in &cli.probes {
-        let Some((project, port)) = p.split_once('=').and_then(|(a, b)| Some((a, b.parse().ok()?))) else {
-            eprintln!("--probe must be PROJECT=PORT: {p}");
+        let Some((project, port, health)) = parse_probe(p) else {
+            eprintln!("--probe must be PROJECT=PORT or PROJECT=PORT:/health-path: {p}");
             return std::process::ExitCode::from(2);
         };
-        probes.push(Probe { project: project.into(), port, health_path: "/healthz".into(), version_path: "/version".into() });
+        probes.push(Probe { project: project.into(), port, health_path: health.into(), version_path: "/version".into() });
     }
     let server = cli.server.zip(cli.server_token_file);
     let sources = Sources { journals: cli.journals, receipts: cli.receipts, keys, probes, server };
@@ -116,5 +117,29 @@ mod tests {
             assert_eq!(respond(method, "/api/snapshot", &sources).0, 405, "{method}");
         }
         assert_eq!(respond("GET", "/api/runs", &sources).0, 404);
+    }
+}
+
+/// `PROJECT=PORT[:/health-path]`.
+fn parse_probe(text: &str) -> Option<(&str, u16, &str)> {
+    let (project, rest) = text.split_once('=')?;
+    let (port, health) = match rest.split_once(':') {
+        Some((port, path)) if path.starts_with('/') => (port, path),
+        Some(_) => return None,
+        None => (rest, "/healthz"),
+    };
+    (!project.is_empty()).then_some(())?;
+    Some((project, port.parse().ok()?, health))
+}
+
+#[cfg(test)]
+mod probe_tests {
+    #[test]
+    fn a_probe_names_its_health_path_or_takes_healthz() {
+        assert_eq!(super::parse_probe("DEMO-02=18080"), Some(("DEMO-02", 18080, "/healthz")));
+        assert_eq!(super::parse_probe("DEMO-01=18095:/health"), Some(("DEMO-01", 18095, "/health")));
+        for bad in ["DEMO-01", "=1", "DEMO-01=x", "DEMO-01=1:health", "DEMO-01=70000"] {
+            assert_eq!(super::parse_probe(bad), None, "{bad}");
+        }
     }
 }

@@ -119,7 +119,7 @@ gitfab-board --keys <公钥目录> --journal <事件日志> --receipts /var/lib/
   --probe DEMO-02=18080 --server https://<hagency 服务器> --server-token-file <大屏 Token 文件>
 ```
 
-用最新版 Chrome 打开 `http://127.0.0.1:8090/`。页面每 5 秒刷新，只读：概览、Agent 状态、任务进度、部署结果、Token 记录、签名与审计事件流。
+`--probe` 写成 `项目=端口`，健康路径默认 `/healthz`；项目的健康路径不同时写成 `项目=端口:/路径`（例如 DEMO-01 为 `DEMO-01=18095:/health`）。用最新版 Chrome 打开 `http://127.0.0.1:8090/`。页面每 5 秒刷新，只读：概览、Agent 状态、任务进度、部署结果、Token 记录、签名与审计事件流。
 
 ## 8. 验收（验收人）
 
