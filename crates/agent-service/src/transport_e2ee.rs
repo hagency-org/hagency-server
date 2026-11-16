@@ -221,13 +221,13 @@ impl TransportStore {
                 match retired {
                     Ok(0) => {}
                     Ok(_) => {
-                        if matrix.logout_device(puppet, &id).await.is_ok() {
-                            if let Ok(mut db) = self.db.lock().await {
-                                // Unknown login outcomes retain their nonce until
-                                // a later cleanup after the claim deadline.
-                                let _=sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET revoked=true WHERE scope_id=$1 AND device_id=$2 AND retiring AND issuance_nonce IS NULL")
+                        if matrix.logout_device(puppet, &id).await.is_ok()
+                            && let Ok(mut db) = self.db.lock().await
+                        {
+                            // Unknown login outcomes retain their nonce until
+                            // a later cleanup after the claim deadline.
+                            let _=sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET revoked=true WHERE scope_id=$1 AND device_id=$2 AND retiring AND issuance_nonce IS NULL")
                                     .bind::<Text,_>(&lease.agent_id).bind::<Text,_>(&id).execute(&mut *db).await;
-                            }
                         }
                     }
                     Err(_) => {
