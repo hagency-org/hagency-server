@@ -1,0 +1,8 @@
+[database]
+uri = "postgres://hagency:hagency_dev@postgres:5432/pasion"
+[hagency]
+resources_dir = "/app/resources/pasion"
+delegate_matrix_auth = true
+[account]
+password_registration_enabled = true
+password_registration_contact_required = false

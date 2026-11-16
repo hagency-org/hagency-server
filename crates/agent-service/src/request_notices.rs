@@ -4,18 +4,37 @@ use super::*;
 
 const SELECT: &str = "SELECT n.id,n.owner_event_id,n.kind,n.matrix_txn_id,n.state,n.worker_token,e.binding_id,e.requester_mxid,e.event_id,e.thread_root,e.binding_generation FROM hagency_agent_v1.request_notice_outbox n JOIN hagency_agent_v1.owner_events e ON e.id=n.owner_event_id";
 
+/// Notice text in the configured language: `HAGENCY_NOTICE_LANGUAGE` = `en`,
+/// `zh`, or unset for both lines (English first). Rooms carry no language, so
+/// the server operator picks one.
 pub(crate) fn body(kind: &str) -> &'static str {
+    localized(bilingual(kind))
+}
+/// A bilingual "English\nChinese" text in the configured notice language.
+pub(crate) fn localized(text: &'static str) -> &'static str {
+    static LANGUAGE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let language = LANGUAGE.get_or_init(|| std::env::var("HAGENCY_NOTICE_LANGUAGE").unwrap_or_default());
+    in_language(text, language)
+}
+fn in_language(text: &'static str, language: &str) -> &'static str {
+    match (language, text.split_once('\n')) {
+        ("en", Some((english, _))) => english,
+        ("zh", Some((_, chinese))) => chinese,
+        _ => text,
+    }
+}
+fn bilingual(kind: &str) -> &'static str {
     match kind {
         "waiting" => {
-            "⏳ 请求已收到，Agent 当前尚未开始处理（可能离线或正在处理其他请求）。请求仍在等待，无需重复发送；恢复后会继续处理。"
+            "⏳ Request received; the Agent has not started on it yet (offline or busy). It stays queued, no need to resend.\n⏳ 请求已收到，Agent 当前尚未开始处理（可能离线或正在处理其他请求）。请求仍在等待，无需重复发送。"
         }
-        "processing" => "⏳ Agent 仍在处理本次请求，耗时较长，请稍候。无需重复发送。",
-        "delivery" => "⏳ 本次处理已结束，但回复暂未送达，系统正在重试发送。无需重复发送请求。",
-        "failed" => "⚠️ 本次请求处理失败，未生成可发送的回复。后续请求仍可正常处理。",
-        "rejected" => "⏸️ 本次请求未获处理授权。其他符合授权条件的请求仍可正常处理。",
-        "expired" => "⚠️ 本次请求等待超时，尚未开始处理，已结束等待。你可以重新发送请求。",
+        "processing" => "⏳ Still working on this request; it is taking a while. No need to resend.\n⏳ Agent 仍在处理本次请求，耗时较长，请稍候。",
+        "delivery" => "⏳ Finished, but the reply has not been delivered yet; retrying. No need to resend.\n⏳ 本次处理已结束，但回复暂未送达，系统正在重试发送。",
+        "failed" => "⚠️ This request failed before a reply could be sent. If the Agent needed a tool your policy declines (high-risk tools: Decline), change it under Limits and Approvals or set it to Ask me, then ask again. New requests still work.\n⚠️ 本次请求处理失败，未生成可发送的回复。若 Agent 需要的工具被策略拒绝，请在“额度与审批”中调整后重试。",
+        "rejected" => "⏸️ This request was not authorized by the Agent's owner. Other authorized requests still work.\n⏸️ 本次请求未获处理授权。",
+        "expired" => "⚠️ This request timed out before processing started. You can send it again.\n⚠️ 本次请求等待超时，尚未开始处理。你可以重新发送请求。",
         _ => {
-            "⚠️ 本次请求处理已中断，暂时无法确认执行结果。为避免重复执行，系统不会自动重跑这条请求；你可以继续发送新请求。"
+            "⚠️ This request was interrupted and its result cannot be confirmed. It will not be rerun automatically; you can send a new request.\n⚠️ 本次请求处理已中断，暂时无法确认执行结果，系统不会自动重跑。"
         }
     }
 }
@@ -112,5 +131,20 @@ impl TransportStore {
             .bind::<Nullable<Text>,_>(outcome.as_ref().ok().map(String::as_str))
             .bind::<BigInt,_>(if state=="unknown" {now+5000} else {0}).execute(&mut *guard).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+    #[test]
+    fn english_rooms_get_only_the_english_line() {
+        let text = bilingual("processing");
+        assert_eq!(in_language(text, "en"), "⏳ Still working on this request; it is taking a while. No need to resend.");
+        assert!(in_language(text, "zh").starts_with("⏳ Agent"));
+        assert_eq!(in_language(text, ""), text);
+        for kind in ["waiting", "processing", "delivery", "failed", "rejected", "expired", "interrupted"] {
+            assert!(!in_language(bilingual(kind), "en").contains('\n'), "{kind} has no English-only line");
+        }
     }
 }

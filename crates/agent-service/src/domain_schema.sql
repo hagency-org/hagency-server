@@ -9,9 +9,10 @@ CREATE TABLE IF NOT EXISTS hagency_agent_v1.projects (
  revision bigint NOT NULL DEFAULT 1 CHECK(revision>0)
 );
 CREATE TABLE IF NOT EXISTS hagency_agent_v1.rooms (
- room_id text PRIMARY KEY, project_id text NOT NULL REFERENCES hagency_agent_v1.projects(id),
+ room_id text NOT NULL, project_id text NOT NULL REFERENCES hagency_agent_v1.projects(id),
  active boolean NOT NULL DEFAULT true, creation_policy text NOT NULL,
- revision bigint NOT NULL DEFAULT 1 CHECK(revision>0), UNIQUE(room_id,project_id)
+ revision bigint NOT NULL DEFAULT 1 CHECK(revision>0), UNIQUE(room_id,project_id),
+ PRIMARY KEY(room_id,project_id)
 );
 CREATE TABLE IF NOT EXISTS hagency_agent_v1.agents (
  id text PRIMARY KEY, owner_user_id text NOT NULL REFERENCES hagency_agent_v1.users(id),

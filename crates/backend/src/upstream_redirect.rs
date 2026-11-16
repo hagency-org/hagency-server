@@ -30,6 +30,38 @@ async fn redirect(req: &mut Request, res: &mut Response) {
     }
 }
 
+/// Pasion's registration steps (e.g. after "Create account" in Element or a new
+/// GitHub sign-up) link to `/auth/auth/register/steps/<id>/finish`: its mount
+/// added twice. Strip the duplicate so the step page loads (Nov 15 demo).
+// TODO(upstream): drop once Pasion stops double-prefixing step URLs.
+const DOUBLED_PATH: &str = "auth/auth/{**rest}";
+
+/// `/auth/auth/x?q` → `/auth/x?q`.
+#[must_use]
+pub fn undoubled_location(path: &str, query: Option<&str>) -> String {
+    let mount = crate::pasion::MOUNT.trim_end_matches('/');
+    let single = path.strip_prefix(mount).unwrap_or(path);
+    match query.filter(|q| !q.is_empty()) {
+        Some(query) => format!("{single}?{query}"),
+        None => single.to_owned(),
+    }
+}
+
+#[handler]
+async fn undouble(req: &mut Request, res: &mut Response) {
+    let location = undoubled_location(req.uri().path(), req.uri().query());
+    res.status_code(StatusCode::TEMPORARY_REDIRECT);
+    if res.add_header(salvo::http::header::LOCATION, location, true).is_err() {
+        res.status_code(StatusCode::BAD_REQUEST);
+    }
+}
+
+/// Routes `/auth/auth/**` back to a single mount; push before Pasion's router.
+#[must_use]
+pub fn doubled_router() -> Router {
+    Router::with_path(DOUBLED_PATH).get(undouble).head(undouble)
+}
+
 /// Routes `/upstream/**` to the Pasion mount.
 #[must_use]
 pub fn router() -> Router {
@@ -48,6 +80,24 @@ mod tests {
             "/auth/upstream/authorize/01ABC?kind=continue_authorization_grant&id=01G"
         );
         assert_eq!(mounted_location("/upstream/callback/01ABC", None), "/auth/upstream/callback/01ABC");
+    }
+
+    #[test]
+    fn a_doubled_mount_is_undone_once() {
+        assert_eq!(
+            undoubled_location("/auth/auth/register/steps/01M7/finish", None),
+            "/auth/register/steps/01M7/finish"
+        );
+        assert_eq!(undoubled_location("/auth/auth/x", Some("a=1")), "/auth/x?a=1");
+    }
+
+    #[tokio::test]
+    async fn the_doubled_step_link_reaches_pasion() {
+        let service = Service::new(Router::new().push(doubled_router()));
+        let mut res = TestClient::get("http://127.0.0.1:8090/auth/auth/register/steps/01M7/finish").send(&service).await;
+        assert_eq!(res.status_code, Some(StatusCode::TEMPORARY_REDIRECT));
+        assert_eq!(res.headers().get("location").and_then(|v| v.to_str().ok()), Some("/auth/register/steps/01M7/finish"));
+        let _ = res.take_string().await;
     }
 
     #[tokio::test]

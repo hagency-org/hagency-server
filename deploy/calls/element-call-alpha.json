@@ -1,0 +1,2 @@
+{ "default_server_config": { "m.homeserver": { "base_url": "http://127.0.0.1:8090", "server_name": "localhost:8450" } },
+  "livekit": { "livekit_service_url": "http://127.0.0.1:8071" } }

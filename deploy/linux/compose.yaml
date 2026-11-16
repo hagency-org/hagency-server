@@ -1,0 +1,35 @@
+# Linux smoke stack: postgres + hagency-server (Palpo and Pasion embedded).
+# New project name, new ports, new volumes: never shares state with 8088/55438.
+#   docker compose -f hagency-server/deploy/linux/compose.yaml up -d
+name: hagency-linux
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_USER: hagency
+      POSTGRES_DB: hagency
+      POSTGRES_PASSWORD: hagency_dev   # dev-only; use Secrets Manager/RDS in AWS
+    volumes:
+      - database:/var/lib/postgresql
+      - ../databases.sql:/docker-entrypoint-initdb.d/20-components.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hagency -d hagency"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  server:
+    image: ${HAGENCY_SERVER_IMAGE:-hagency-linux/server:arm64}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:18090:8088"
+    volumes:
+      - ./config:/app/config:ro
+      - server-data:/app/data
+    # Optional first-start admin: set HAGENCY_BOOTSTRAP_PASSWORD_FILE to a file
+    # outside the repo and pass --bootstrap-admin via `command:` override.
+    stop_grace_period: 40s
+volumes:
+  database:
+  server-data:

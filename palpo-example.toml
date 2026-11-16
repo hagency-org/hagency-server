@@ -1,0 +1,1549 @@
+### Palpo Configuration
+###
+### THIS FILE IS GENERATED. CHANGES/CONTRIBUTIONS IN THE REPO WILL BE
+### OVERWRITTEN!
+###
+### You should rename this file before configuring your server. Changes to
+### documentation and defaults can be contributed in source code at
+### crate/server/config/server.rs. This file is generated when building.
+###
+### Any values pre-populated are the default values for said config option.
+###
+### At the minimum, you MUST edit all the config options to your environment
+### that say "YOU NEED TO EDIT THIS".
+###
+### For more information, see:
+### https://palpo.im/guide/configuration.html
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# listeners =
+
+# CIDR ranges of reverse proxies trusted to set X-Forwarded-For for
+# per-IP rate limits. Leave empty when Palpo is directly exposed.
+#
+# trusted_proxies = []
+
+# The server_name is the pretty name of this server. It is used as a
+# suffix for user and room IDs/aliases.
+# YOU NEED TO EDIT THIS.
+#
+# example: "palpo.im"
+#
+# server_name =
+
+# Optional homepage content source for `GET /`.
+#
+# If this is a local path, palpo serves that file directly.
+# If this starts with `http://` or `https://`, palpo fetches the remote HTML
+# at request time.
+# When the remote fetch fails, palpo logs a warning and falls back to the built-in default
+# page.
+#
+# home_page =
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# allow_check_for_updates =
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# max_concurrent_requests =
+
+# Seconds to cache native (non-delegated) access-token authentications in
+# memory, avoiding a per-request database lookup on the auth hot path.
+#
+# The cache is process-local and only invalidated within the process that
+# performs a logout / token rotation / account-state change. In a
+# multi-instance deployment sharing one database, another instance could
+# keep accepting a just-revoked token for up to this many seconds. Leave at
+# 0 (disabled) unless you run a single instance.
+#
+# native_token_cache_ttl = 0
+
+# Text which will be added to the end of the user's displayname upon
+# registration with a space before the text. In Conduit, this was the
+# lightning bolt emoji.
+#
+# To disable, set this to "" (an empty string).
+#
+# new_user_displayname_suffix = "💕"
+
+# Enable to query all nameservers until the domain is found. Referred to
+# as "trust_negative_responses" in hickory_resolver. This can avoid
+# useless DNS queries if the first nameserver responds with NXDOMAIN or
+# an empty NOERROR response.
+#
+# query_all_nameservers =
+
+# Enable using *only* TCP for querying your specified nameservers instead
+# of UDP.
+#
+# If you are running palpo in a container environment, this config
+# option may need to be enabled. For more details, see:
+# https://palpo.im/troubleshooting.html#potential-dns-issues-when-using-docker
+#
+# query_over_tcp_only = false
+
+# DNS A/AAAA record lookup strategy
+#
+# Takes a number of one of the following options:
+# 1 - Ipv4Only (Only query for A records, no AAAA/IPv6)
+#
+# 2 - Ipv6Only (Only query for AAAA records, no A/IPv4)
+#
+# 3 - Ipv4AndIpv6 (Query for A and AAAA records in parallel, uses whatever
+# returns a successful response first)
+#
+# 4 - Ipv6thenIpv4 (Query for AAAA record, if that fails then query the A
+# record)
+#
+# 5 - Ipv4thenIpv6 (Query for A record, if that fails then query the AAAA
+# record)
+#
+# If you don't have IPv6 networking, then for better DNS performance it
+# may be suitable to set this to Ipv4Only (1) as you will never ever use
+# the AAAA record contents even if the AAAA record is successful instead
+# of the A record.
+#
+# ip_lookup_strategy = 5
+
+# Allowed CORS origins. If empty, all origins are allowed.
+# Example: ["https://example.com", "https://app.example.com"]
+#
+# allowed_origins = []
+
+# Max request size for file uploads in bytes. Defaults to 20MB.
+#
+# max_upload_size = 20971520
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# max_fetch_prev_events = 192
+
+# Default/base connection timeout. This is used only by URL
+# previews and update/news endpoint checks.
+#
+# request_conn_timeout = 10_000
+
+# Default/base request timeout. The time waiting to receive more
+# data from another server. This is used only by URL previews,
+# update/news, and misc endpoint checks.
+#
+# request_timeout = 35_000
+
+# Default/base request total timeout. The time limit for a whole
+# request. This is set very high to not cancel healthy requests while
+# serving as a backstop. This is used only by URL previews and update/news
+# endpoint checks.
+#
+# request_total_timeout = 320_000
+
+# Default/base idle connection pool timeout. This is used only
+# by URL previews and update/news endpoint checks.
+#
+# request_idle_timeout = 5_000
+
+# Default/base max idle connections per host. This is used only by URL
+# previews and update/news endpoint checks. Defaults to 1 as generally the
+# same open connection can be re-used.
+#
+# request_idle_per_host = 1
+
+# Appservice URL request connection timeout. Defaults to 35 seconds as
+# generally appservices are hosted within the same network.
+#
+# appservice_timeout = 35
+
+# Appservice URL idle connection pool timeout
+#
+# appservice_idle_timeout = 300_000
+
+# Notification gateway pusher idle connection pool timeout.
+#
+# pusher_idle_timeout = 15_000
+
+# Maximum time to receive a request from a client
+#
+# client_receive_timeout = 75_000
+
+# Maximum time to process a request received from a client
+#
+# client_request_timeout = 180_000
+
+# Maximum time to transmit a response to a client
+#
+# client_response_timeout = 120_000
+
+# Grace period for clean shutdown of client requests.
+#
+# client_shutdown_timeout = 10_000
+
+# Grace period for clean shutdown of federation requests.
+#
+# sender_shutdown_timeout = 5_000
+
+# Path to a file on the system that gets read for additional registration
+# tokens. Multiple tokens can be added if you separate them with
+# whitespace
+#
+# palpo must be able to access the file, and it must not be empty
+#
+# example: "/etc/palpo/.reg_token"
+#
+# registration_token_file =
+
+# Per-IP rate limiting for login endpoints.
+# Uses token-bucket algorithm: tokens refill at `per_second` rate,
+# up to `burst` capacity. Each request costs 1 token.
+# Set `per_second` to 0 to disable.
+#
+# rc_login = { per_second = 0.003, burst = 5 } (~1 login per 5 min, burst of 5)
+
+# Per-IP rate limiting for registration endpoints.
+#
+# rc_registration = { per_second = 0.17, burst = 3 } (~1 per 6s, burst of 3)
+
+# Per-IP rate limiting for username availability checks.
+#
+# rc_registration_available = { per_second = 0.5, burst = 5 }
+
+# Per-IP rate limiting for registration token validity checks.
+#
+# rc_registration_token_validity = { per_second = 0.1, burst = 5 }
+
+# Per-user rate limiting for failed password UIAA attempts during password
+# change and account deactivation.
+#
+# rc_password = { per_second = 0.17, burst = 3 }
+
+# Per-user rate limiting for authenticated, non-read-only API endpoints.
+#
+# rc_message = { per_second = 10.0, burst = 50 }
+
+# Per-user rate limiting for user directory searches.
+#
+# rc_user_directory = { per_second = 0.016, burst = 200 }
+
+# Always calls /forget on behalf of the user if leaving a room. This is a
+# part of MSC4267 "Automatically forgetting rooms on leave"
+#
+# forget_forced_upon_leave = false
+
+# Set this to true to require authentication on the normally
+# unauthenticated profile retrieval endpoints (GET)
+# "/_matrix/client/v3/profile/{user_id}".
+#
+# This can prevent profile scraping.
+#
+# require_auth_for_profile_requests = false
+
+# Enables registration. If set to false, no users can register on this
+# server.
+#
+# If set to true without a token configured, users can register with no
+# form of 2nd-step only if you set the following option to true:
+# `yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse`
+#
+# If you would like registration only via token reg, please configure
+# `registration_token` or `registration_token_file`.
+#
+# allow_registration =
+
+# Enabling this setting opens registration to anyone without restrictions.
+# This makes your server vulnerable to abuse
+#
+# yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse = false
+
+# A static registration token that new users will have to provide when
+# creating an account. If unset and `allow_registration` is true,
+# you must set
+# `yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse`
+# to true to allow open registration without any conditions.
+#
+# YOU NEED TO EDIT THIS OR USE registration_token_file.
+#
+# example: "o&^uCtes4HPf0Vu@F20jQeeWE7"
+#
+# registration_token =
+
+# Controls whether encrypted rooms and events are allowed.
+#
+# allow_encryption =
+
+# Allow standard users to create rooms. Appservices and admins are always
+# allowed to create rooms
+#
+# allow_room_creation =
+
+# Set to false to disable users from joining or creating room versions
+# that aren't officially supported by palpo.
+#
+# palpo officially supports room versions 6 - 11.
+#
+# palpo has slightly experimental (though works fine in practice)
+# support for versions 3 - 5.
+#
+# allow_unstable_room_versions =
+
+# Default room version palpo will create rooms with.
+#
+# Per spec, room version 11 is the default.
+#
+# default_room_version = 11
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# allow_jaeger =
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# tracing_flame =
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# enable_admin_room =
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# appservice_registration_dir =
+
+# Servers listed here will be used to gather public keys of other servers
+# (notary trusted key servers).
+#
+# Currently, palpo doesn't support inbound batched key requests, so
+# this list should only contain other Synapse servers.
+#
+# example: ["matrix.org", "tchncs.de"]
+#
+# trusted_servers = ["matrix.org"]
+
+# OpenID token expiration/TTL.
+#
+# These are the OpenID tokens that are primarily used for Matrix account
+# integrations (e.g. Vector Integrations in Element), *not* OIDC/OpenID
+# Connect/etc.
+#
+# openid_token_ttl = 3600
+
+# Allow an existing session to mint a login token for another client.
+# This requires interactive authentication, but has security ramifications
+# as a malicious client could use the mechanism to spawn more than one
+# session.
+# Enabled by default.
+#
+# login_via_existing_session =
+
+# Login token expiration/TTL in milliseconds.
+#
+# These are short-lived tokens for the m.login.token endpoint.
+# This is used to allow existing sessions to create new sessions.
+# see login_via_existing_session.
+#
+# login_token_ttl = 120000
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# refresh_token_ttl =
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# session_ttl =
+
+# List/vector of room IDs or room aliases that palpo will make newly
+# registered users join. The rooms specified must be rooms that you have
+# joined at least once on the server, and must be public.
+#
+# example: ["#palpo:example.com",
+# "!eoIzvAvVwY23LPDay8:example.com"]
+#
+# auto_join_rooms = []
+
+# Config option to automatically deactivate the account of any user who
+# attempts to join a:
+# - banned room
+# - forbidden room alias
+# - room alias or ID with a forbidden server name
+#
+# This may be useful if all your banned lists consist of toxic rooms or
+# servers that no good faith user would ever attempt to join, and
+# to automatically remediate the problem without any admin user
+# intervention.
+#
+# This will also make the user leave all rooms. Federation (e.g. remote
+# room invites) are ignored here.
+#
+# Defaults to false as rooms can be banned for non-moderation-related
+# reasons and this performs a full user deactivation.
+#
+# auto_deactivate_banned_room_attempts = false
+
+# Block non-admin local users from sending room invites (local and
+# remote), and block non-admin users from receiving remote room invites.
+#
+# Admins are always allowed to send and receive all room invites.
+#
+# block_non_admin_invites = false
+
+# Set this to true to allow your server's public room directory to be
+# federated. Set this to false to protect against /publicRooms spiders,
+# but will forbid external users from viewing your server's public room
+# directory. If federation is disabled entirely (`allow_federation`), this
+# is inherently false.
+#
+# allow_public_room_directory_over_federation = false
+
+# Set this to true to allow your server's public room directory to be
+# queried without client authentication (access token) through the Client
+# APIs. Set this to false to protect against /publicRooms spiders.
+#
+# allow_public_room_directory_without_auth = false
+
+# Set this to true to lock down your server's public room directory and
+# only allow admins to publish rooms to the room directory. Unpublishing
+# is still allowed by all users with this enabled.
+#
+# lockdown_public_room_directory = false
+
+# This is a password that can be configured that will let you login to the
+# server bot account (currently `@conduit`) for emergency troubleshooting
+# purposes such as recovering/recreating your admin room, or inviting
+# yourself back.
+#
+# See https://palpo.im/troubleshooting.html#lost-access-to-admin-room for other ways to get back into your admin room.
+#
+# Once this password is unset, all sessions will be logged out for
+# security purposes.
+#
+# example: "x7k9m2p5#n8w1%q4r6"
+#
+# emergency_password =
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# notification_push_path = "/_matrix/push/v1/notify"
+
+# Set to true to allow user type "guest" registrations. Some clients like
+# Element attempt to register guest users automatically.
+#
+# allow_guest_registration = false
+
+# Set to true to log guest registrations in the admin room. Note that
+# these may be noisy or unnecessary if you're a public homeserver.
+#
+# log_guest_registrations = false
+
+# Set to true to allow guest registrations/users to auto join any rooms
+# specified in `auto_join_rooms`.
+#
+# allow_guests_auto_join_rooms = false
+
+# List of forbidden server names via regex patterns that we will block
+# incoming AND outgoing federation with, and block client room joins /
+# remote user invites.
+#
+# This check is applied on the room ID, room alias, sender server name,
+# sender user's server name, inbound federation X-Matrix origin, and
+# outbound federation handler.
+#
+# Basically "global" ACLs.
+#
+# example: ["badserver\.tld$", "badphrase", "19dollarfortnitecards"]
+#
+# forbidden_remote_server_names = []
+
+# List of forbidden server names via regex patterns that we will block all
+# outgoing federated room directory requests for. Useful for preventing
+# our users from wandering into bad servers or spaces.
+#
+# example: ["badserver\.tld$", "badphrase", "19dollarfortnitecards"]
+#
+# forbidden_remote_room_directory_server_names = []
+
+# Vector list of IPv4 and IPv6 CIDR ranges / subnets *in quotes* that you
+# do not want palpo to send outbound requests to. Defaults to
+# RFC1918, unroutable, loopback, multicast, and testnet addresses for
+# security.
+#
+# Please be aware that this is *not* a guarantee. You should be using a
+# firewall with zones as doing this on the application layer may have
+# bypasses.
+#
+# Currently this does not account for proxies in use like Synapse does.
+#
+# To disable, set this to be an empty vector (`[]`). If omitted, the
+# default denylist below is used.
+#
+# A safer recommended set is:
+# ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12",
+# "192.168.0.0/16", "100.64.0.0/10", "192.0.0.0/24", "169.254.0.0/16",
+# "192.88.99.0/24", "198.18.0.0/15", "192.0.2.0/24", "198.51.100.0/24",
+# "203.0.113.0/24", "224.0.0.0/4", "::1/128", "fe80::/10", "fc00::/7",
+# "2001:db8::/32", "ff00::/8", "fec0::/10"]
+#
+# ip_range_denylist =
+
+# Whether to query the servers listed in trusted_servers first or query
+# the origin server first. For best security, querying the origin server
+# first is advised to minimize the exposure to a compromised trusted
+# server. For maximum federation/join performance this can be set to true,
+# however other options exist to query trusted servers first under
+# specific high-load circumstances and should be evaluated before setting
+# this to true.
+#
+# query_trusted_key_servers_first = false
+
+# Whether to query the servers listed in trusted_servers first
+# specifically on room joins. This option limits the exposure to a
+# compromised trusted server to room joins only. The join operation
+# requires gathering keys from many origin servers which can cause
+# significant delays. Therefor this defaults to true to mitigate
+# unexpected delays out-of-the-box. The security-paranoid or those
+# willing to tolerate delays are advised to set this to false. Note that
+# setting query_trusted_key_servers_first to true causes this option to
+# be ignored.
+#
+# query_trusted_key_servers_first_on_join =
+
+# Only query trusted servers for keys and never the origin server. This is
+# intended for clusters or custom deployments using their trusted_servers
+# as forwarding-agents to cache and deduplicate requests. Notary servers
+# do not act as forwarding-agents by default, therefor do not enable this
+# unless you know exactly what you are doing.
+#
+# only_query_trusted_key_servers = false
+
+# Maximum number of keys to request in each trusted server batch query.
+#
+# trusted_server_batch_size = 1024
+
+# List of forbidden room aliases and room IDs as strings of regex
+# patterns.
+#
+# Regex can be used or explicit contains matches can be done by just
+# specifying the words (see example).
+#
+# This is checked upon room alias creation, custom room ID creation if
+# used, and startup as warnings if any room aliases in your database have
+# a forbidden room alias/ID.
+#
+# example: ["19dollarfortnitecards", "b[4a]droom", "badphrase"]
+#
+# forbidden_alias_names = []
+
+# List of forbidden username patterns/strings.
+#
+# Regex can be used or explicit contains matches can be done by just
+# specifying the words (see example).
+#
+# This is checked upon username availability check, registration, and
+# startup as warnings if any local users in your database have a forbidden
+# username.
+#
+# example: ["administrator", "b[a4]dusernam[3e]", "badphrase"]
+#
+# forbidden_usernames = []
+
+# Retry failed and incomplete messages to remote servers immediately upon
+# startup. This is called bursting. If this is disabled, said messages may
+# not be delivered until more messages are queued for that server. Do not
+# change this option unless server resources are extremely limited or the
+# scale of the server's deployment is huge. Do not disable this unless you
+# know what you are doing.
+#
+# startup_netburst =
+
+# Messages are dropped and not reattempted. The `startup_netburst` option
+# must be enabled for this value to have any effect. Do not change this
+# value unless you know what you are doing. Set this value to -1 to
+# reattempt every message without trimming the queues; this may consume
+# significant disk. Set this value to 0 to drop all messages without any
+# attempt at redelivery.
+#
+# startup_netburst_keep = 50
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# http_client =
+
+# Toggles ignore checking/validating TLS certificates
+#
+# This applies to everything, including URL previews, federation requests,
+# etc. This is a hidden argument that should NOT be used in production as
+# it is highly insecure and I will personally yell at you if I catch you
+# using this.
+#
+# allow_invalid_tls_certificates = false
+
+# Number of sender task workers; determines sender parallelism. Default is
+# '0' which means the value is determined internally, likely matching the
+# number of tokio worker-threads or number of cores, etc. Override by
+# setting a non-zero value.
+#
+# sender_workers = 0
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# delegated_auth =
+
+# [tls]
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# enable =
+
+# Path to a valid TLS certificate file.
+#
+# example: "/path/to/my/certificate.crt"
+#
+# cert =
+
+# Path to a valid TLS certificate private key.
+#
+# example: "/path/to/my/certificate.key"
+#
+# key =
+
+# Whether to listen and allow for HTTP and HTTPS connections (insecure!)
+#
+# dual_protocol = false
+
+# [admin]
+
+# Controls whether admin room notices like account registrations, password
+# changes, account deactivations, room directory publications, etc will be
+# sent to the admin room. Update notices and normal admin command
+# responses will still be sent.
+#
+# room_notices =
+
+# Allow admins to enter commands in rooms other than "#admins" (admin
+# room) by prefixing your message with "\!admin" or "\\!admin" followed up
+# a normal palpo admin command. The reply will be publicly visible to
+# the room, originating from the sender.
+#
+# example: \\!admin server show-config
+#
+# escape_commands =
+
+# Automatically activate the palpo admin room console / CLI on
+# startup. This option can also be enabled with `--console` palpo
+# argument.
+#
+# console_automatic = false
+
+# List of admin commands to execute on startup.
+#
+# This option can also be configured with the `--execute` palpo
+# argument and can take standard shell commands and environment variables
+#
+# For example: `./palpo --execute "server admin-notice palpo has
+# started up at $(date)"`
+#
+# example: startup_execute = ["server admin-notice palpo started"]`
+#
+# startup_execute = []
+
+# Ignore errors in startup commands.
+#
+# If false, palpo will error and fail to start if an admin execute
+# command (`--execute` / `startup_execute`) fails.
+#
+# execute_errors_ignore = false
+
+# List of admin commands to execute on SIGUSR2.
+#
+# Similar to admin_execute, but these commands are executed when the
+# server receives SIGUSR2 on supporting platforms.
+#
+# signal_execute = []
+
+# Controls the max log level for admin command log captures (logs
+# generated from running admin commands). Defaults to "info" on release
+# builds, else "debug" on debug builds.
+#
+# log_capture = "info"
+
+# The default room tag to apply on the admin room.
+#
+# On some clients like Element, the room tag "m.server_notice" is a
+# special pinned room at the very bottom of your room list. The palpo
+# admin room can be pinned here so you always have an easy-to-access
+# shortcut dedicated to your admin room.
+#
+# room_tag = "m.server_notice"
+
+# Shared secret for MAS (Matrix Authentication Service) endpoints.
+# When set, enables the `_synapse/mas/` endpoints which use this
+# secret as a Bearer token for authentication.
+#
+# mas_secret =
+
+# [jwt]
+
+# Enable JWT logins
+#
+# enable = false
+
+# Validation secret key. The type of key can be configured in 'format', but defaults to the
+# common HMAC which is a plaintext shared-secret, so you should keep this value private.
+#
+# secret =
+
+# Format of the 'key'. Only HMAC, ECDSA, and B64HMAC are supported
+# Binary keys cannot be pasted into this config, so B64HMAC is an
+# alternative to HMAC for properly random secret strings.
+# - HMAC is a plaintext shared-secret private-key.
+# - B64HMAC is a base64-encoded version of HMAC.
+# - ECDSA is a PEM-encoded public-key.
+#
+# format = "HMAC"
+
+# Automatically create new user from a valid claim, otherwise access is
+# denied for an unknown even with an authentic token.
+#
+# register_user = true
+
+# JWT algorithm
+#
+# algorithm = "HS256"
+
+# Optional audience claim list. The token must claim one or more values
+# from this list when set.
+#
+# audience = []
+
+# Optional issuer claim list. The token must claim one or more values
+# from this list when set.
+#
+# issuer = []
+
+# Require expiration claim in the token. This defaults to false for
+# synapse migration compatibility.
+#
+# require_exp = false
+
+# Require not-before claim in the token. This defaults to false for
+# synapse migration compatibility.
+#
+# require_nbf = false
+
+# Validate expiration time of the token when present. Whether or not it is
+# required depends on require_exp, but when present this ensures the token
+# is not used after a time.
+#
+# validate_exp = true
+
+# Validate not-before time of the token when present. Whether or not it is
+# required depends on require_nbf, but when present this ensures the token
+# is not used before a time.
+#
+# validate_nbf = true
+
+# Bypass validation for diagnostic/debug use only.
+#
+# validate_signature = true
+
+# [blurhash]
+
+# blurhash x component, 4 is recommended by https://blurha.sh/
+#
+# components_x = 4
+
+# blurhash y component, 3 is recommended by https://blurha.sh/
+#
+# components_y = 3
+
+# Max raw size that the server will blurhash, this is the size of the
+# image after converting it to raw data, it should be higher than the
+# upload limit but not too high. The higher it is the higher the
+# potential load will be for clients requesting blurhashes. The default
+# is 33.55MB. Setting it to 0 disables blurhash.
+#
+# max_raw_size = 33554432
+
+# [compression]
+
+# Set this to true for palpo to compress HTTP response bodies using
+# zstd.
+#
+# enable_zstd = false
+
+# Set this to true for palpo to compress HTTP response bodies using
+# gzip.
+#
+# If you are in a large amount of rooms, you may find that enabling this
+# is necessary to reduce the significantly large response bodies.
+#
+# enable_gzip = false
+
+# Set this to true for palpo to compress HTTP response bodies using
+# brotli.
+#
+# enable_brotli = false
+
+# [db]
+
+# Settings for the primary database. default reade env var PALPO_DB_URL.
+#
+# url =
+
+# Maximum number of long-lived PostgreSQL connections used by this process.
+# The budget includes both ordinary queries and database-backed coordination;
+# it must be at least 2.
+#
+# pool_size =
+
+# Connections carved out of `pool_size` for operations which hold a database-backed
+# coordination lock (currently building and publishing a locally authored room
+# event) while ordinary queries keep using the remaining connections. This caps how
+# many locally authored events the process can publish concurrently, so raise it
+# together with `pool_size` on a write-heavy deployment.
+#
+# Leave unset to derive it from `pool_size` as `pool_size / 4`, clamped to 1..=16.
+# When set it must be at least 1 and smaller than `pool_size`.
+#
+# coordination_pool_size =
+
+# Number of seconds to wait for unacknowledged TCP packets before treating the connection as
+# broken. This value will determine how long crates.io stays unavailable in case of full
+# packet loss between the application and the database: setting it too high will result in an
+# unnecessarily long outage (before the unhealthy database logic kicks in), while setting it
+# too low might result in healthy connections being dropped.
+#
+# tcp_timeout =
+
+# Time to wait for a connection to become available from the connection
+# pool before returning an error.
+# Time to wait for a connection to become available from the connection
+# pool before returning an error.
+#
+# connection_timeout =
+
+# Time to wait for a query response before canceling the query and
+# returning an error.
+#
+# statement_timeout =
+
+# Whether to enforce that all the database connections are encrypted with TLS.
+#
+# enforce_tls =
+
+# [delayed_events]
+
+# Allow scheduling MSC4140 delayed events.
+#
+# Delayed events let clients schedule message or state events that the
+# server sends into a room after a delay, e.g. reliable MatrixRTC
+# "hang up" events. When disabled new schedules are rejected and the
+# feature is not advertised; lookup and management routes remain available
+# so existing delayed events can still be inspected or cancelled, but they
+# are not sent automatically until the feature is enabled again. Disabled
+# by default while MSC4140 is unstable.
+#
+# enable = false
+
+# The maximum delay in milliseconds a client may request for a delayed
+# event. Requests above this limit are rejected with the unstable
+# `ORG.MATRIX.MSC4140_DELAY_TOO_LARGE` error code.
+# Defaults to 24 hours.
+#
+# max_delay_ms = 86400_000
+
+# How many delayed events a user may have scheduled at once. Requests
+# above this limit are rejected with `M_LIMIT_EXCEEDED`.
+# Defaults to 100.
+#
+# max_scheduled = 100
+
+# How long finalized (sent, cancelled, or errored) delayed events are
+# retained for lookup before they are pruned, in milliseconds.
+# Defaults to 7 days.
+#
+# retention_ms = 604800_000
+
+# [federation]
+
+# Controls whether federation is allowed or not. It is not recommended to
+# disable this after the fact due to potential federation breakage.
+#
+# enable =
+
+# Allows federation requests to be made to itself
+#
+# This isn't intended and is very likely a bug if federation requests are
+# being sent to yourself. This currently mainly exists for development
+# purposes.
+#
+# allow_loopback = false
+
+# Set this to true to allow federating device display names / allow
+# external users to see your device display name. If federation is
+# disabled entirely (`allow_federation`), this is inherently false. For
+# privacy reasons, this is best left disabled.
+#
+# allow_device_name = false
+
+# Config option to allow or disallow incoming federation requests that
+# obtain the profiles of our local users from
+# `/_matrix/federation/v1/query/profile`
+#
+# Increases privacy of your local user's such as display names, but some
+# remote users may get a false "this user does not exist" error when they
+# try to invite you to a DM or room. Also can protect against profile
+# spiders.
+#
+# This is inherently false if `allow_federation` is disabled
+#
+# allow_inbound_profile_lookup =
+
+# Allowlist of servers permitted to federate. If set, only servers
+# matching these patterns can communicate. Supports wildcards: `*.example.com`.
+# When `None`, all servers are allowed (subject to `denied_servers`).
+#
+# allowed_servers =
+
+# Denylist of servers blocked from federation. Takes precedence over
+# `allowed_servers`. Supports wildcards: `*.evil.com`.
+#
+# denied_servers = []
+
+# [client]
+
+# Well-known resolution connection timeout.
+#
+# well_known_conn_timeout = 6_000
+
+# HTTP well-known resolution request timeout.
+#
+# well_known_timeout = 10_000
+
+# Federation client request timeout. You most definitely want
+# this to be high to account for extremely large room joins, slow
+# homeservers, your own resources etc.
+#
+# federation_timeout = 300_000
+
+# Federation client request retry times.
+#
+# federation_retries = 3
+
+# Federation client idle connection pool timeout.
+#
+# federation_idle_timeout = 25
+
+# Federation client max idle connections per host. Defaults to 1 as
+# generally the same open connection can be re-used.
+#
+# federation_idle_per_host = 1
+
+# [logger]
+
+# Max log level for palpo. Allows debug, info, warn, or error.
+#
+# See also:
+# https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
+#
+# **Caveat**:
+# For release builds, the tracing crate is configured to only implement
+# levels higher than error to avoid unnecessary overhead in the compiled
+# binary from trace macros. For debug builds, this restriction is not
+# applied.
+#
+# level = "info"
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# format =
+
+# Output logs with ANSI colours.
+#
+# ansi_colors =
+
+# Configures the span events which will be outputted with the log.
+#
+# span_events = "none"
+
+# Configures whether EnvFilter matches values using regular expressions.
+# See the tracing_subscriber documentation on Directives.
+#
+# filter_regex = true
+
+# Toggles the display of ThreadId in tracing log output.
+#
+# thread_ids = false
+
+# Set to true to log guest registrations in the admin room. Note that
+# these may be noisy or unnecessary if you're a public homeserver.
+#
+# guest_registrations = false
+
+# [media]
+
+# Enable the legacy unauthenticated Matrix media repository endpoints.
+# These endpoints consist of:
+# - /_matrix/media/*/config
+# - /_matrix/media/*/upload
+# - /_matrix/media/*/preview_url
+# - /_matrix/media/*/download/*
+# - /_matrix/media/*/thumbnail/*
+#
+# The authenticated equivalent endpoints are always enabled.
+#
+# Defaults to true for now, but this is highly subject to change, likely
+# in the next release.
+#
+# allow_legacy =
+
+# Withhold the outbound-fetching legacy `preview_url` endpoint. When
+# enabled, download, thumbnail, config, create, and upload stay available
+# (upload is the only media upload path on this server); only the legacy
+# `preview_url` endpoint is not mounted.
+#
+# freeze_legacy =
+
+# Maximum number of bytes accepted when fetching a thumbnail from a
+# remote homeserver. Both authenticated and legacy thumbnail responses
+# are subject to this streamed hard limit.
+#
+# max_remote_thumbnail_size = 20000000
+
+# Maximum number of bytes accepted when fetching remote media content
+# from a remote homeserver via federation. The entire response is
+# buffered when the remote server returns a multipart response, so this
+# limit prevents unbounded memory allocation. Defaults to 100 MiB.
+#
+# max_remote_media_size = 104857600
+
+# Check consistency of the media directory at startup:
+# 1. When `media_compat_file_link` is enabled, this check will upgrade media when switching
+#    back and forth between Conduit and palpo. Both options must be enabled to handle this.
+# 2. When media is deleted from the directory, this check will also delete its database
+#    entry.
+#
+# If none of these checks apply to your use cases, and your media
+# directory is significantly large setting this to false may reduce
+# startup time.
+#
+# startup_check =
+
+# Enable backward-compatibility with Conduit's media directory by creating
+# symlinks of media.
+#
+# This option is only necessary if you plan on using Conduit again.
+# Otherwise setting this to false reduces filesystem clutter and overhead
+# for managing these symlinks in the directory. This is now disabled by
+# default. You may still return to upstream Conduit but you have to run
+# palpo at least once with this set to true and allow the
+# media_startup_check to take place before shutting down to return to
+# Conduit.
+#
+# compat_file_link = false
+
+# Prune missing media from the database as part of the media startup
+# checks.
+#
+# This means if you delete files from the media directory the
+# corresponding entries will be removed from the database. This is
+# disabled by default because if the media directory is accidentally moved
+# or inaccessible, the metadata entries in the database will be lost with
+# sadness.
+#
+# prune_missing = false
+
+# Vector list of regex patterns of server names that palpo will refuse
+# to download remote media from.
+#
+# example: ["badserver\.tld$", "badphrase", "19dollarfortnitecards"]
+#
+# prevent_downloads_from = []
+
+# [presence]
+
+# Allow local (your server only) presence updates/requests.
+#
+# Note that presence on palpo is very fast unlike Synapse's. If using
+# outgoing presence, this MUST be enabled.
+#
+# allow_local =
+
+# Allow incoming federated presence updates/requests.
+#
+# This option receives presence updates from other servers, but does not
+# send any unless `allow_outgoing_presence` is true. Note that presence on
+# palpo is very fast unlike Synapse's.
+#
+# allow_incoming =
+
+# Allow outgoing presence updates/requests.
+#
+# This option sends presence updates to other servers, but does not
+# receive any unless `allow_incoming_presence` is true. Note that presence
+# on palpo is very fast unlike Synapse's. If using outgoing presence,
+# you MUST enable `allow_local_presence` as well.
+#
+# allow_outgoing =
+
+# How many seconds without presence updates before you become idle.
+# Defaults to 5 minutes.
+#
+# idle_timeout = 300_000
+
+# How many seconds without presence updates before you become offline.
+# Defaults to 30 minutes.
+#
+# offline_timeout = 1800_000
+
+# Enable the presence idle timer for remote users.
+#
+# Disabling is offered as an optimization for servers participating in
+# many large rooms or when resources are limited. Disabling it may cause
+# incorrect presence states (i.e. stuck online) to be seen for some remote
+# users.
+#
+# timeout_remote_users =
+
+# [read_receipt]
+
+# Allow receiving incoming read receipts from remote servers.
+#
+# allow_incoming =
+
+# Allow sending read receipts to remote servers.
+#
+# allow_outgoing =
+
+# [turn]
+
+# This item is undocumented. Please contribute documentation for it.
+#
+# enable =
+
+# Static TURN username to provide the client if not using a shared secret
+# ("turn_secret"), It is recommended to use a shared secret over static
+# credentials.
+#
+# username = ""
+
+# Static TURN password to provide the client if not using a shared secret
+# ("turn_secret"). It is recommended to use a shared secret over static
+# credentials.
+#
+# password = ""
+
+# Vector list of TURN URIs/servers to use.
+#
+# Replace "example.turn.uri" with your TURN domain, such as the coturn
+# "realm" config option. If using TURN over TLS, replace the URI prefix
+# "turn:" with "turns:".
+#
+# example: ["turn:example.turn.uri?transport=udp",
+# "turn:example.turn.uri?transport=tcp"]
+#
+# uris = []
+
+# TURN secret to use for generating the HMAC-SHA1 hash apart of username
+# and password generation.
+#
+# This is more secure, but if needed you can use traditional static
+# username/password credentials.
+#
+# secret = ""
+
+# TURN secret to use that's read from the file path specified.
+#
+# This takes priority over "tsecret" first, and falls back to
+# "secret" if invalid or failed to open.
+#
+# example: "/etc/palpo/.turn_secret"
+#
+# secret_file =
+
+# TURN TTL, in seconds.
+#
+# ttl = 86400
+
+# Allow guests/unauthenticated users to access TURN credentials.
+#
+# This is the equivalent of Synapse's `turn_allow_guests` config option.
+# This allows any unauthenticated user to call the endpoint
+# `/_matrix/client/v3/voip/turnServer`.
+#
+# It is unlikely you need to enable this as all major clients support
+# authentication for this endpoint and prevents misuse of your TURN server
+# from potential bots.
+#
+# allow_guests = false
+
+# [typing]
+
+# Allow incoming typing updates from federation.
+#
+# allow_incoming =
+
+# Allow outgoing typing updates to federation.
+#
+# allow_outgoing =
+
+# Maximum time federation user can indicate typing.
+#
+# federation_timeout = 30_000
+
+# Minimum time local client can indicate typing. This does not override a
+# client's request to stop typing. It only enforces a minimum value in
+# case of no stop request.
+#
+# client_timeout_min = 15_000
+
+# Maximum time local client can indicate typing.
+#
+# client_timeout_max = 45_000
+
+# [url_preview]
+
+# Optional IP address or network interface-name to bind as the source of
+# URL preview requests. If not set, it will not bind to a specific
+# address or interface.
+#
+# Interface names only supported on Linux, Android, and Fuchsia platforms;
+# all other platforms can specify the IP address. To list the interfaces
+# on your system, use the command `ip link show`.
+#
+# example: `"eth0"` or `"1.2.3.4"`
+#
+# bound_interface =
+
+# Vector list of domains allowed to send requests to for URL previews.
+#
+# This is a *contains* match, not an explicit match. Putting "google.com"
+# will match "https://google.com" and
+# "http://mymaliciousdomainexamplegoogle.com" Setting this to "*" will
+# allow all URL previews. Please note that this opens up significant
+# attack surface to your server, you are expected to be aware of the risks
+# by doing so.
+#
+# domain_contains_allowlist = []
+
+# Vector list of explicit domains allowed to send requests to for URL
+# previews.
+#
+# This is an *explicit* match, not a contains match. Putting "google.com"
+# will match "https://google.com", "http://google.com", but not
+# "https://mymaliciousdomainexamplegoogle.com". Setting this to "*" will
+# allow all URL previews. Please note that this opens up significant
+# attack surface to your server, you are expected to be aware of the risks
+# by doing so.
+#
+# domain_explicit_allowlist = []
+
+# Vector list of explicit domains not allowed to send requests to for URL
+# previews.
+#
+# This is an *explicit* match, not a contains match. Putting "google.com"
+# will match "https://google.com", "http://google.com", but not
+# "https://mymaliciousdomainexamplegoogle.com". The denylist is checked
+# first before allowlist. Setting this to "*" will not do anything.
+#
+# domain_explicit_denylist = []
+
+# Vector list of URLs allowed to send requests to for URL previews.
+#
+# Note that this is a *contains* match, not an explicit match. Putting
+# "google.com" will match "https://google.com/",
+# "https://google.com/url?q=https://mymaliciousdomainexample.com", and
+# "https://mymaliciousdomainexample.com/hi/google.com" Setting this to "*"
+# will allow all URL previews. Please note that this opens up significant
+# attack surface to your server, you are expected to be aware of the risks
+# by doing so.
+#
+# url_contains_allowlist = []
+
+# Maximum amount of bytes allowed in a URL preview body size when
+# spidering. Defaults to 256KB in bytes.
+#
+# max_spider_size = 256000
+
+# Maximum number of bytes accepted for an image fetched while building a
+# URL preview. `Content-Length` is checked early and the response stream
+# is also counted so chunked responses cannot bypass this limit.
+#
+# max_image_size = 10000000
+
+# Option to decide whether you would like to run the domain allowlist
+# checks (contains and explicit) on the root domain or not. Does not apply
+# to URL contains allowlist. Defaults to false.
+#
+# Example usecase: If this is enabled and you have "wikipedia.org" allowed
+# in the explicit and/or contains domain allowlist, it will allow all
+# subdomains under "wikipedia.org" such as "en.m.wikipedia.org" as the
+# root domain is checked and matched. Useful if the domain contains
+# allowlist is still too broad for you but you still want to allow all the
+# subdomains under a root domain.
+#
+# check_root_domain = false
+
+# [well_known]
+
+# Client discovery endpoint (/.well-known/matrix/client)
+#
+# Used by Matrix clients (Element, FluffyChat, etc.) to find the correct
+# homeserver URL for user API calls (login, sync, sending messages, etc.).
+#
+# If not configured, defaults to using server_name with port 443 (HTTPS).
+#
+# IMPORTANT: Set this manually when Palpo is behind a reverse proxy, load balancer,
+# or CDN. The URL should be the external address that clients can reach.
+#
+# Format: Full URL with scheme (e.g., "https://matrix.example.com")
+#
+# Example scenarios:
+# - Direct deployment: client = "https://matrix.example.com"
+# - Behind proxy: client = "https://matrix.example.com" (proxy on port 443)
+# - With CDN: client = "https://cdn.example.com"
+# - Custom domain: client = "https://chat.example.com"
+# - Local testing: client = "http://localhost:8080"
+#
+# Example: "https://matrix.palpo.im"
+#
+# client =
+
+# Server discovery endpoint (/.well-known/matrix/server)
+#
+# Used by other Matrix servers (federation) to find the correct endpoint for
+# federated communication. This is the address that other homeservers will use
+# to connect to your server.
+#
+# If not configured, defaults to server_name with port 443.
+#
+# Format: "hostname:port" (e.g., "matrix.example.com:443")
+# Note: Only hostname and port, no protocol scheme. ALWAYS include the port:
+# a value without one makes other homeservers fall back to port 8448 (per the
+# Matrix server-resolution spec), which is almost never what you want behind a
+# reverse proxy on 443.
+#
+# Example scenarios:
+# - Behind proxy on 443: server = "matrix.example.com:443"
+# - Direct deployment on the standard federation port: server = "matrix.example.com:8448"
+# - Different federation port: server = "matrix.example.com:9008"
+#
+# Example: "matrix.palpo.im:443"
+#
+# server =
+
+# URL to a support page for this Matrix server. This can be included
+# in the server's support contact information to help users find
+# assistance or documentation.
+#
+# Example: "https://example.com/matrix-support"
+#
+# support_page =
+
+# The role/type of the support contact. This helps categorize what
+# kind of support is available (e.g. administrator, security contact).
+#
+# Common values include roles like "m.role.admin" or "m.role.security"
+#
+# support_role =
+
+# Email address for server support contact. Users and other server
+# administrators can use this to reach out for help or report issues.
+#
+# Example: "admin@example.com"
+#
+# support_email =
+
+# Matrix User ID (MXID) of a support contact on this server.
+# This provides an in-Matrix way for users to contact support.
+#
+# Example: "@admin:example.com"
+#
+# support_mxid =
+
+# URI to a PGP key for the support contact.
+#
+# This is exposed as `dev.zirco.msc4439.pgp_key` in `/.well-known/matrix/support`.
+#
+# Example: "https://example.com/security.asc"
+#
+# support_pgp_key =
+
+# MatrixRTC foci advertised in `/.well-known/matrix/client` (MSC4143), ordered
+# by priority. Element Call and other MatrixRTC clients read this to find the
+# LiveKit JWT service (e.g. lk-jwt-service) used for voice/video calls.
+#
+# Leave empty (the default) to advertise no foci.
+#
+# Example:
+#
+# ```toml
+# [[well_known.rtc_foci]]
+# type = "livekit"
+# livekit_service_url = "https://livekit-jwt.example.com"
+# ```
+#
+# rtc_foci = []
+
+# [oidc]
+
+# Enable OIDC/OAuth authentication
+#
+# Allows users to sign in using external providers (Google, GitHub, etc.)
+# instead of Matrix passwords
+#
+# enable = false
+
+# Provider configurations
+#
+# Map of provider name to configuration. Each provider needs:
+# - issuer: Provider base URL
+# - client_id: OAuth app ID
+# - client_secret: OAuth app secret
+# - redirect_uri: Callback URL (must match provider settings)
+# - scopes (optional): Permissions to request
+# - display_name (optional): UI display text
+#
+# GitHub example:
+# ```toml
+# [oidc.providers.github]
+# issuer = "https://github.com"
+# client_id = "your_app_id"
+# client_secret = "your_secret"
+# redirect_uri = "https://server/_matrix/client/oidc/callback"
+# scopes = ["read:user", "user:email"]
+# ```
+#
+# providers = {}
+
+# Default provider name
+#
+# Used when accessing /oidc/auth without specifying provider
+#
+# example: "github"
+#
+# default_provider = None (first alphabetically)
+
+# Auto-create new users on first login
+#
+# When true: New accounts created automatically
+# When false: Only existing Matrix users can use OAuth login
+#
+# allow_registration = true
+
+# User ID generation strategy (deprecated - auto-detected now)
+#
+# The system now automatically chooses the best identifier:
+# 1. Username (GitHub login, preferred_username)
+# 2. Email prefix (john from john@example.com)
+# 3. Provider ID with "user" prefix
+#
+# This field is kept for backwards compatibility
+#
+# user_mapping = "email"
+
+# Prefix for OAuth user IDs
+#
+# Adds prefix to distinguish OAuth users from regular Matrix users
+# Empty string for cleaner usernames
+#
+# example: "gh_" → @gh_username:server
+#
+# user_prefix = ""
+
+# Require verified email for login
+#
+# Set to false for GitHub users with private emails
+# Set to true for providers where email verification is critical
+#
+# require_email_verified = true
+
+# OAuth session timeout (seconds)
+#
+# Time limit for completing the OAuth flow
+#
+# session_timeout = 600 (10 minutes)
+
+# Enable PKCE security extension
+#
+# Adds extra security to OAuth flow (recommended)
+#
+# enable_pkce = true
+
+# External MAS (Matrix Authentication Service) issuer URL
+#
+# When set, Palpo advertises this URL as the OIDC issuer in
+# .well-known/matrix/client (m.authentication), enabling Element X
+# and other MSC3861-compatible clients to use the external MAS
+# for native OIDC login.
+#
+# This field is independent of `enable` above. Even with
+# enable = false (legacy OIDC client disabled), setting mas_issuer
+# will still advertise the issuer in .well-known discovery.
+#
+# example: "https://auth.example.com/"
+#
+# mas_issuer =
+
+# [delegated_auth]
+
+# Enable MSC3861 delegated OIDC authentication.
+# When enabled, Palpo accepts delegated OIDC access tokens from an
+# external authorization server (like Pasion) via token introspection.
+# Local password storage, local user registration, and local password
+# changes are disabled while delegated auth is enabled; local appservice
+# login remains available for bridge/admin integrations. Password login can
+# still be advertised when `password_login_endpoint` is set, in which case
+# Palpo delegates username/password verification to the auth service.
+#
+# enable = false
+
+# The issuer URL of the authorization server (e.g. "http://localhost:8080/").
+# Used in well-known responses and auth_metadata.
+#
+# issuer =
+
+# The token introspection endpoint URL (RFC 7662).
+# Defaults to "{issuer}/oauth2/introspect" if not set.
+#
+# introspection_endpoint =
+
+# The OAuth2 client_id that Palpo uses when redirecting users to the
+# authorization server for SSO login.
+#
+# client_id =
+
+# Public Palpo callback URL registered as a redirect URI for `client_id`
+# at the authorization server. Required for legacy Matrix SSO login.
+#
+# sso_callback_url =
+
+# Origins allowed to receive a legacy SSO login token. A loopback origin
+# without a port allows the client's ephemeral loopback port.
+#
+# sso_allowed_redirect_origins = []
+
+# Internal endpoint that accepts a Matrix password login exchange.
+# Palpo authenticates with `admin.mas_secret` as a Bearer token and expects
+# a delegated access token in response. When unset, `m.login.password` is
+# not advertised while delegated auth is enabled.
+#
+# password_login_endpoint =
+
+# Optional URL for account management UI.
+# Included in the well-known client response under m.authentication.
+#
+# account_management_url =
+
+# Cache TTL for introspection results in seconds.
+# Set to 0 to disable caching.
+#
+# introspection_cache_ttl = 300
+
+# Maximum authentication age in seconds for delegated administrative requests.
+# Requires `unstable-msc4363`. Unset means no freshness requirement.
+#
+# admin_max_age =
+
+# Acceptable administrative OIDC ACR values as a space-separated string,
+# in preference order. Requires `unstable-msc4363`; unset permits any assurance.
+#
+# admin_acr_values =

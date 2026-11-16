@@ -187,6 +187,14 @@ fn administer(p: &Principal, f: &AdminFacts, room: &str, now: i64) -> Result<()>
     Ok(())
 }
 
+fn joined_member(p: &Principal, f: &AdminFacts, room: &str, now: i64) -> Result<()> {
+    fresh(f.observed_at_ms, now)?;
+    if f.actor_mxid != p.mxid || f.room_id != room || !f.joined {
+        return Err(Error::Unauthorized("room_membership_required"));
+    }
+    Ok(())
+}
+
 fn membership(p: &Principal, f: &RoomFacts, room: &str, space: &str, now: i64) -> Result<()> {
     fresh(f.observed_at_ms, now)?;
 
@@ -441,6 +449,8 @@ impl DomainStore {
                 db.batch_execute(include_str!("domain_schema.sql")).await?;
                 db.batch_execute(include_str!("owner_direct_schema.sql")).await?;
             }
+            // ADR 0001: databases created before per-owner room registration.
+            db.batch_execute(include_str!("room_registration_schema.sql")).await?;
             db.batch_execute(include_str!("configuration_schema.sql")).await?;
             let management=sql_query("SELECT to_regclass('hagency_agent_v1.management_deployment') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
             if !management.matched { db.batch_execute(include_str!("management_schema.sql")).await?; }
@@ -697,7 +707,10 @@ impl DomainStore {
                 let project = Self::project_db(db, project_id).await?;
 
                 administer(p, sf, &project.space_id, now)?;
-                administer(p, rf, room, now)?;
+                // Each owner registers a room in their own project (ADR 0001):
+                // being a joined member is enough; room admins keep control
+                // through Matrix power levels, kicks, room pause and room policy.
+                joined_member(p, rf, room, now)?;
 
                 if !sf.is_space
                     || rf.is_space
@@ -728,16 +741,18 @@ impl DomainStore {
         room: &str,
         now: i64,
     ) -> Result<Room> {
-        let existing=sql_query("SELECT room_id,project_id,active,creation_policy,revision FROM hagency_agent_v1.rooms WHERE room_id=$1").bind::<Text,_>(room).get_result::<Room>(db).await.optional()?;
-
+        let existing=sql_query("SELECT room_id,project_id,active,creation_policy,revision FROM hagency_agent_v1.rooms WHERE room_id=$1 AND project_id=$2").bind::<Text,_>(room).bind::<Text,_>(project_id).get_result::<Room>(db).await.optional()?;
         if let Some(existing) = existing {
-            if existing.project_id != project_id {
-                return Err(Error::Conflict("room_already_registered"));
-            }
             return Ok(existing);
         }
-
-        let result=sql_query("INSERT INTO hagency_agent_v1.rooms(room_id,project_id,creation_policy) VALUES($1,$2,$3) RETURNING room_id,project_id,active,creation_policy,revision").bind::<Text,_>(room).bind::<Text,_>(project_id).bind::<Text,_>(encode(&RoomCreationPolicy::default())?).get_result::<Room>(db).await?;
+        // Another owner may already have registered this room: its room-level
+        // policy and disabled state were set by room admins and apply to every owner.
+        let sibling=sql_query("SELECT room_id,project_id,active,creation_policy,revision FROM hagency_agent_v1.rooms WHERE room_id=$1 ORDER BY revision DESC, project_id LIMIT 1").bind::<Text,_>(room).get_result::<Room>(db).await.optional()?;
+        let (active, policy) = match sibling {
+            Some(room) => (room.active, room.creation_policy),
+            None => (true, encode(&RoomCreationPolicy::default())?),
+        };
+        let result=sql_query("INSERT INTO hagency_agent_v1.rooms(room_id,project_id,creation_policy,active) VALUES($1,$2,$3,$4) RETURNING room_id,project_id,active,creation_policy,revision").bind::<Text,_>(room).bind::<Text,_>(project_id).bind::<Text,_>(policy).bind::<diesel::sql_types::Bool,_>(active).get_result::<Room>(db).await?;
         Self::audit(db, p, "room.register", room, now).await?;
         Ok(result)
     }
@@ -792,7 +807,9 @@ impl DomainStore {
             Self::room_db(db, room, project_id).await?;
             administer(p, f, room, now)?;
 
-            let updated=sql_query("UPDATE hagency_agent_v1.rooms SET creation_policy=$1,revision=revision+1 WHERE room_id=$2 AND project_id=$3 AND revision=$4 RETURNING room_id,project_id,active,creation_policy,revision").bind::<Text,_>(encoded).bind::<Text,_>(room).bind::<Text,_>(project_id).bind::<BigInt,_>(expected).get_result(db).await.map_err(revision)?;
+            let updated:Room=sql_query("UPDATE hagency_agent_v1.rooms SET creation_policy=$1,revision=revision+1 WHERE room_id=$2 AND project_id=$3 AND revision=$4 RETURNING room_id,project_id,active,creation_policy,revision").bind::<Text,_>(&encoded).bind::<Text,_>(room).bind::<Text,_>(project_id).bind::<BigInt,_>(expected).get_result(db).await.map_err(revision)?;
+            // A room admin's policy covers every owner's registration of the room.
+            sql_query("UPDATE hagency_agent_v1.rooms SET creation_policy=$1,revision=revision+1 WHERE room_id=$2 AND project_id<>$3").bind::<Text,_>(&encoded).bind::<Text,_>(room).bind::<Text,_>(project_id).execute(db).await?;
             Self::audit(db, p, "room.creation_policy", room, now).await?;
             Ok(updated)
         }
@@ -1693,7 +1710,8 @@ impl DomainStore {
             administer(p, f, room_id, now)?;
 
             sql_query("INSERT INTO hagency_agent_v1.scope_pauses(kind,scope_id,paused) VALUES('room',$1,true) ON CONFLICT(kind,scope_id) DO UPDATE SET paused=excluded.paused").bind::<Text,_>(room_id).execute(db).await?;
-            let count=sql_query("UPDATE hagency_agent_v1.bindings SET state='suspended',admin_room_paused=true,generation=generation+1 WHERE project_id=$1 AND room_id=$2 AND (state IN ('active','joining') OR (state='suspended' AND NOT admin_room_paused))").bind::<Text,_>(project_id).bind::<Text,_>(room_id).execute(db).await?;
+            // Every owner's bindings in the room, not only this project's (ADR 0001).
+            let count=sql_query("UPDATE hagency_agent_v1.bindings SET state='suspended',admin_room_paused=true,generation=generation+1 WHERE room_id=$1 AND scope_kind='project' AND (state IN ('active','joining') OR (state='suspended' AND NOT admin_room_paused))").bind::<Text,_>(room_id).execute(db).await?;
             Self::audit(db, p, "room.suspend_bindings", room_id, now).await?;
             Ok(count)
         }
@@ -1741,7 +1759,7 @@ impl DomainStore {
             administer(p, f, room_id, now)?;
 
             sql_query("INSERT INTO hagency_agent_v1.scope_pauses(kind,scope_id,paused) VALUES('room',$1,false) ON CONFLICT(kind,scope_id) DO UPDATE SET paused=excluded.paused").bind::<Text,_>(room_id).execute(db).await?;
-            let count=sql_query("UPDATE hagency_agent_v1.bindings SET admin_room_paused=false WHERE project_id=$1 AND room_id=$2 AND admin_room_paused").bind::<Text,_>(project_id).bind::<Text,_>(room_id).execute(db).await?;
+            let count=sql_query("UPDATE hagency_agent_v1.bindings SET admin_room_paused=false WHERE room_id=$1 AND scope_kind='project' AND admin_room_paused").bind::<Text,_>(room_id).execute(db).await?;
             Self::audit(db, p, "room.clear_pause", room_id, now).await?;
             Ok(count)
         }

@@ -106,17 +106,23 @@ def check_rust_schema(schema, metadata):
     fields = []
     for item in re.finditer(r'((?:\s*#\[[^\n]+\]\s*)*)(?:pub )?(\w+): ([^,\n]+),', match[1]):
         attrs, field, typ = item.groups()
-        if 'skip_serializing' not in attrs:
-            fields.append((field, typ.strip()))
-    require([f for f, _ in fields] == metadata['serializedFields'], 'Rust field drift ' + name)
-    require(set(schema['properties']) == {camel(f) for f, _ in fields}, 'spec property drift ' + name)
-    require(set(schema['required']) == set(schema['properties']), 'all Rust DTO fields are serialized/required: ' + name)
+        # skip_serializing_if fields are omitted when empty: documented, not required.
+        if 'skip_serializing_if' in attrs:
+            fields.append((field, typ.strip(), True))
+        elif 'skip_serializing' not in attrs:
+            fields.append((field, typ.strip(), False))
+    require([f for f, _, _ in fields] == metadata['serializedFields'], 'Rust field drift ' + name)
+    require(set(schema['properties']) == {camel(f) for f, _, _ in fields}, 'spec property drift ' + name)
+    required = {camel(f) for f, _, omittable in fields if not omittable}
+    require(set(schema['required']) == required, 'Rust DTO required/omittable field drift: ' + name)
     if metadata.get('strictInput'):
         preceding = source[max(0, match.start() - 300):match.start()]
         require('deny_unknown_fields' in preceding.rsplit('#[derive', 1)[-1], 'Rust strictness drift ' + name)
         require(schema.get('additionalProperties') is False, 'spec strictness missing ' + name)
-    for field, typ in fields:
+    for field, typ, omittable in fields:
         prop = schema['properties'][camel(field)]
+        if omittable and typ.startswith('Option<'):
+            typ = typ[7:-1]  # absent rather than null when None
         optional = typ.startswith('Option<')
         require(('anyOf' in prop) == optional, 'Rust nullable drift ' + name + '.' + field)
         if optional:
@@ -124,10 +130,13 @@ def check_rust_schema(schema, metadata):
             typ = typ[7:-1]
             prop = next(s for s in prop['anyOf'] if s != {'type': 'null'})
         typ = typ.split('::')[-1]
+        if typ == 'Vec<String>':
+            require(prop.get('type') == 'array' and prop.get('items') == {'type': 'string'}, 'Rust array type drift ' + name + '.' + field)
+            continue
         if typ.startswith('Vec<') and typ.endswith('>'):
             require(prop.get('type') == 'array' and prop.get('items', {}).get('$ref') == '#/components/schemas/' + typ[4:-1], 'Rust array type drift ' + name + '.' + field)
             continue
-        expected = {'String': 'string', 'i64': 'integer', 'usize': 'integer', 'u64': 'integer', 'bool': 'boolean', 'BTreeSet<String>': 'array'}.get(typ)
+        expected = {'String': 'string', 'i64': 'integer', 'usize': 'integer', 'u64': 'integer', 'u32': 'integer', 'bool': 'boolean', "&'static str": 'string', 'BTreeSet<String>': 'array'}.get(typ)
         require(prop.get('type') == expected if expected else prop.get('$ref') == '#/components/schemas/' + typ, 'Rust type drift ' + name + '.' + field)
 
 
@@ -188,7 +197,7 @@ def validate(doc):
         require({p for p, _ in operations if p.startswith('/hagency/api/v1/execution/')} == {p for p, _ in literal if p.startswith('/hagency/api/v1/execution/')}, 'invented transport route')
         require(('/hagency/api/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
         require(('/hagency/api/v1/projects/{projectId}/rooms', 'post') not in operations, 'unimplemented Room creation advertised')
-        require(len(operations) == 57, 'reviewed owner route count drift')
+        require(len(operations) == 63, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -221,6 +230,10 @@ class GuardTests(unittest.TestCase):
         self.rejection(lambda d: d['components']['schemas']['Start'].update(additionalProperties=True))
     def test_unresolved_ref(self):
         self.rejection(lambda d: d['components']['schemas']['Start']['properties'].update(lease={'$ref': '#/components/schemas/Unknown'}))
+    def test_execution_start_must_document_room_context(self):
+        self.rejection(lambda d: d['components']['schemas']['ExecutionStart']['properties'].pop('roomContext'))
+    def test_omittable_room_context_must_not_be_required(self):
+        self.rejection(lambda d: d['components']['schemas']['ExecutionStart']['required'].append('roomContext'))
     def test_bad_example(self):
         self.rejection(lambda d: d['components']['schemas']['Finish'].update(examples=[{'lease': {}, 'dispatchId': 'x', 'executionId': 'e', 'outcome': 'success'}]))
 

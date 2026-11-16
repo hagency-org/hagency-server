@@ -2169,3 +2169,6 @@ async fn exercise_membership_controller(url: &str) {
         "failed departure must retry"
     );
 }
+// TODO(R4): domain_tests.rs is over budget; split per concern like room_owners below.
+#[path = "domain_room_owners_tests.rs"]
+mod room_owners;

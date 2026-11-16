@@ -308,6 +308,7 @@ async fn run() -> anyhow::Result<()> {
         .push(frontend.router());
     if let Some(pasion) = &pasion {
         router = Router::new()
+            .push(hagency_server::upstream_redirect::doubled_router())
             .push(pasion.router(
                 &conf.pasion.as_ref().unwrap().resources()?,
                 Some(hagency_server::pasion::MOUNT),

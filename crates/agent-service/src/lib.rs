@@ -39,9 +39,13 @@ pub mod management_types;
 pub mod management_pool_types;
 pub mod recurring_quota;
 pub mod matrix_client;
+pub mod room_context;
+#[cfg(test)]
+mod room_context_tests;
 pub mod store;
 pub mod transport;
 mod workers;
+mod worker_pass;
 mod reply_format;
 
 pub type Result<T> = std::result::Result<T, Error>;

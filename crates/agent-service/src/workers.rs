@@ -592,40 +592,42 @@ pub(crate) fn start(
         let mut processing_cursor = String::new();
         let mut pause_cursor = String::new();
         let mut request_cursor = String::new();
+        let mut progress_cursor = String::new();
         let mut shared_reply_cursor = String::new();
         // Each durable queue advances on its own clock. A slow Matrix lookup
         // or retry in one queue must not stall intake or another queue's replies.
         // These futures are owned by the parent task, so aborting it drops all
         // in-flight work together rather than leaking detached workers.
         macro_rules! worker_loop {
-            ($pass:expr) => {
+            ($queue:literal, $pass:expr) => {
                 async {
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     loop {
                         interval.tick().await;
-                        let _ = $pass.await;
+                        crate::worker_pass::report_pass($queue, $pass.await);
                     }
                 }
             };
         }
         tokio::join!(
-            worker_loop!(t.invalidate_stale_dispatches(now_ms())),
-            worker_loop!(t.revoke_stale_matrix_devices(&m)),
-            worker_loop!(route_with_shared(
+            worker_loop!("invalidate_stale", t.invalidate_stale_dispatches(now_ms())),
+            worker_loop!("revoke_devices", t.revoke_stale_matrix_devices(&m)),
+            worker_loop!("route", route_with_shared(
                 &inbox,
                 &t,
                 &g,
                 &mut route_cursor,
                 shared.as_ref()
             )),
-            worker_loop!(send(&t, &g, &m, &mut reply_cursor)),
-            worker_loop!(send_processing(&t, &g, &m, &mut processing_cursor)),
-            worker_loop!(send_pause_notices(&t, &g, &m, &mut pause_cursor)),
-            worker_loop!(send_request_notices(&t, &g, &m, &mut request_cursor)),
+            worker_loop!("reply", send(&t, &g, &m, &mut reply_cursor)),
+            worker_loop!("processing", send_processing(&t, &g, &m, &mut processing_cursor)),
+            worker_loop!("pause_notice", send_pause_notices(&t, &g, &m, &mut pause_cursor)),
+            worker_loop!("request_notice", send_request_notices(&t, &g, &m, &mut request_cursor)),
+            worker_loop!("progress_status", crate::transport::progress_status::send_progress(&t, &g, &m, &mut progress_cursor)),
             async {
                 if let Some((domain, policy)) = &shared {
-                    worker_loop!(domain.send_shared_replies(
+                    worker_loop!("shared_reply", domain.send_shared_replies(
                         policy,
                         &g,
                         &m,

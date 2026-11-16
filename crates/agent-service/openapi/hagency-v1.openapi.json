@@ -3923,7 +3923,7 @@
       "post": {
         "operationId": "startExecution",
         "summary": "startExecution",
-        "description": "Persist executionId locally before request. Only newlyStarted=true allows a new model run; false must never repeat model/tools. Unknown result remains conservative. Request TTL starts at original durable AS receive time (default 24h, deployment configurable 1s..30d); expired requests cannot start new execution. Repeated already-started identity can only return newlyStarted=false.",
+        "description": "Persist executionId locally before request. Only newlyStarted=true allows a new model run; false must never repeat model/tools. Unknown result remains conservative. Request TTL starts at original durable AS receive time (default 24h, deployment configurable 1s..30d); expired requests cannot start new execution. Repeated already-started identity can only return newlyStarted=false. When newlyStarted=true the server may add execution.roomContext (crates/agent-service/src/room_context.rs RoomContext: scope room|thread, messages[{eventId,sender,senderDisplayName?,body,originServerTs,edited?}] oldest first and excluding the request, omittedOlder, unavailable?=encrypted|unreadable); it is advisory, untrusted room text read as the Agent puppet, and clients must ignore it when unknown.",
         "security": [
           {
             "deviceBearer": []
@@ -5251,6 +5251,119 @@
         }
       }
     },
+    "/hagency/api/v1/execution/events/progress": {
+      "post": {
+        "operationId": "reportExecutionProgress",
+        "summary": "Report live turn steps for the room status message",
+        "description": "Device bearer. Reports the current and recent plain-word steps (at most 5, each 1-512 bytes) and the step count of the exact running execution. The first accepted report creates one status message per dispatch (\"Working…\", an m.notice in the request's thread posted by the Agent's puppet); later reports edit it with m.replace, at most once per 1.5 s. When the dispatch ends the server edits it to \"Done in N s · M steps\" or to the request's failure text, and suppresses the generic prolonged-processing notice. Requires the current assigned owner device, live original lease/epoch, unchanged binding generation, fresh Matrix permissions and a plaintext Room; stale reports are refused. Cosmetic: never fences, delays or replays the turn. accepted=false means nothing changed.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "progress": {
+                      "type": "object",
+                      "properties": {
+                        "accepted": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "accepted"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "progress"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProgressReport"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/events/progress\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        }
+      }
+    },
     "/hagency/api/v1/bindings/{bindingId}/reply-policy": {
       "put": {
         "operationId": "setOwnedBindingReplyPolicy",
@@ -5883,6 +5996,542 @@
                 "$ref": "#/components/schemas/ConfigurationComplete"
               }
             }
+          }
+        }
+      }
+    },
+    "/hagency/api/v1/execution/e2ee-candidates": {
+      "post": {
+        "operationId": "listEncryptedCandidates",
+        "summary": "List saved encrypted-room candidate events",
+        "description": "Device bearer with the live lease of the binding's Agent. Returns up to 16 undone encrypted candidate events (raw saved Matrix event JSON, within the event TTL) for the device to decrypt, plus the Agent puppet MXID.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CryptoCandidateInput"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/e2ee-candidates\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "puppetMxid": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "events",
+                    "puppetMxid"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        }
+      }
+    },
+    "/hagency/api/v1/execution/e2ee-confirm": {
+      "post": {
+        "operationId": "confirmEncryptedCandidate",
+        "summary": "Confirm a decrypted candidate as a request",
+        "description": "Device bearer with the live lease. eventId is required; mentions (at most 128) and threadRoot come from the device's decryption. The server re-checks membership and routing; confirmed=false means the event was ignored.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CryptoCandidateInput"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/e2ee-confirm\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "confirmed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "confirmed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        }
+      }
+    },
+    "/hagency/api/v1/execution/replies/encrypted": {
+      "post": {
+        "operationId": "recordEncryptedReply",
+        "summary": "Record a reply the device sent encrypted",
+        "description": "Device bearer with the live lease. The device sent the encrypted answer itself; this records its Matrix event id for the exact running execution and completes the dispatch.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EncryptedReplyRequest"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/replies/encrypted\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "reply": {
+                      "$ref": "#/components/schemas/ReplyIntent"
+                    }
+                  },
+                  "required": [
+                    "reply"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        }
+      }
+    },
+    "/hagency/api/v1/devices/current": {
+      "get": {
+        "operationId": "getCurrentDevice",
+        "summary": "Describe the current registered device",
+        "description": "Bearer of a device-bound session. Observation only: rechecks the credential's device generation and returns its identity; no query parameters.",
+        "security": [
+          {
+            "userBearer": []
+          }
+        ],
+        "parameters": [],
+        "x-source": {
+          "file": "crates/agent-service/src/api.rs",
+          "anchors": [
+            "path == \"/hagency/api/v1/devices/current\" && method == salvo::http::Method::GET"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string"
+                    },
+                    "mxid": {
+                      "type": "string"
+                    },
+                    "subject": {
+                      "type": "string"
+                    },
+                    "clientId": {
+                      "type": "string"
+                    },
+                    "issuer": {
+                      "type": "string"
+                    },
+                    "deviceId": {
+                      "type": "string"
+                    },
+                    "generation": {
+                      "type": "integer"
+                    },
+                    "validUntilMs": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "mxid",
+                    "subject",
+                    "clientId",
+                    "issuer",
+                    "deviceId",
+                    "generation",
+                    "validUntilMs"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        }
+      }
+    },
+    "/hagency/api/v1/room-agents": {
+      "get": {
+        "operationId": "listRoomAgents",
+        "summary": "List the owner's Agents usable in rooms",
+        "description": "Personal Agents plus shared-project Agents whose Matrix identity is verified and pooled.",
+        "security": [
+          {
+            "userBearer": []
+          }
+        ],
+        "parameters": [],
+        "x-source": {
+          "file": "crates/agent-service/src/api.rs",
+          "anchors": [
+            "path == \"/hagency/api/v1/room-agents\" && method == salvo::http::Method::GET"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agents": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Agent"
+                      }
+                    }
+                  },
+                  "required": [
+                    "agents"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
           }
         }
       }
@@ -6756,6 +7405,9 @@
           },
           "newlyStarted": {
             "type": "boolean"
+          },
+          "roomContext": {
+            "$ref": "#/components/schemas/RoomContext"
           }
         },
         "required": [
@@ -6768,7 +7420,8 @@
           "name": "ExecutionStart",
           "serializedFields": [
             "dispatch",
-            "newly_started"
+            "newly_started",
+            "room_context"
           ],
           "strictInput": false
         },
@@ -6791,8 +7444,42 @@
               "outcome": "example"
             },
             "newlyStarted": false
+          },
+          {
+            "dispatch": {
+              "id": "example",
+              "bindingId": "example",
+              "agentId": "example",
+              "eventId": "example",
+              "roomId": "example",
+              "requesterMxid": "example",
+              "threadRoot": "example",
+              "body": "example",
+              "state": "pending",
+              "bindingGeneration": 1,
+              "dispatchEpoch": 1,
+              "dispatchDeviceId": "example",
+              "executionId": "example",
+              "outcome": "example"
+            },
+            "newlyStarted": true,
+            "roomContext": {
+              "scope": "thread",
+              "messages": [
+                {
+                  "eventId": "$example",
+                  "sender": "@ann:example",
+                  "senderDisplayName": "Ann",
+                  "body": "example",
+                  "originServerTs": 1,
+                  "edited": true
+                }
+              ],
+              "omittedOlder": false
+            }
           }
-        ]
+        ],
+        "description": "roomContext is present only when newlyStarted is true (the context is read before the start commits)."
       },
       "SubmitReply": {
         "type": "object",
@@ -9496,6 +10183,242 @@
             "additionalProperties": false
           }
         ]
+      },
+      "ProgressReport": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "dispatchId": {
+            "type": "string"
+          },
+          "executionId": {
+            "type": "string"
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5
+          },
+          "steps": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "lease",
+          "dispatchId",
+          "executionId",
+          "recent",
+          "steps"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "name": "Progress",
+          "serializedFields": [
+            "lease",
+            "dispatch_id",
+            "execution_id",
+            "recent",
+            "steps"
+          ],
+          "strictInput": true
+        },
+        "examples": [
+          {
+            "lease": {
+              "agentId": "example",
+              "epoch": 1
+            },
+            "dispatchId": "example",
+            "executionId": "example",
+            "recent": [
+              "reading src/main.rs"
+            ],
+            "steps": 1
+          }
+        ]
+      },
+      "RoomContext": {
+        "type": "object",
+        "description": "Recent visible plaintext messages before the request, oldest first; advisory only.",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "room",
+              "thread"
+            ]
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RoomContextMessage"
+            }
+          },
+          "omittedOlder": {
+            "type": "boolean"
+          },
+          "unavailable": {
+            "type": "string",
+            "enum": [
+              "encrypted",
+              "unreadable"
+            ]
+          }
+        },
+        "required": [
+          "scope",
+          "messages",
+          "omittedOlder"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/room_context.rs",
+          "name": "RoomContext",
+          "serializedFields": [
+            "scope",
+            "messages",
+            "omitted_older",
+            "unavailable"
+          ],
+          "strictInput": false
+        },
+        "examples": [
+          {
+            "scope": "room",
+            "messages": [],
+            "omittedOlder": false,
+            "unavailable": "encrypted"
+          }
+        ]
+      },
+      "RoomContextMessage": {
+        "type": "object",
+        "properties": {
+          "eventId": {
+            "type": "string"
+          },
+          "sender": {
+            "type": "string"
+          },
+          "senderDisplayName": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "originServerTs": {
+            "type": "integer"
+          },
+          "edited": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "eventId",
+          "sender",
+          "body",
+          "originServerTs"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/room_context.rs",
+          "name": "RoomContextMessage",
+          "serializedFields": [
+            "event_id",
+            "sender",
+            "sender_display_name",
+            "body",
+            "origin_server_ts",
+            "edited"
+          ],
+          "strictInput": false
+        },
+        "examples": [
+          {
+            "eventId": "$example",
+            "sender": "@ann:example",
+            "body": "example",
+            "originServerTs": 1
+          }
+        ]
+      },
+      "CryptoCandidateInput": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "bindingId": {
+            "type": "string"
+          },
+          "eventId": {
+            "type": "string"
+          },
+          "mentions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 128,
+            "uniqueItems": true
+          },
+          "threadRoot": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease",
+          "bindingId"
+        ],
+        "additionalProperties": false,
+        "examples": [
+          {
+            "lease": {
+              "agentId": "example",
+              "epoch": 1
+            },
+            "bindingId": "example"
+          }
+        ]
+      },
+      "EncryptedReplyRequest": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "reply": {
+            "type": "object",
+            "properties": {
+              "dispatchId": {
+                "type": "string"
+              },
+              "executionId": {
+                "type": "string"
+              },
+              "matrixEventId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "dispatchId",
+              "executionId",
+              "matrixEventId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "lease",
+          "reply"
+        ],
+        "additionalProperties": false
       }
     },
     "securitySchemes": {
@@ -9514,8 +10437,8 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "92951200ed52b60dc06d7a57ee4d0959a6df219ad03aca70a083a27917bbc04f",
-    "crates/agent-service/src/api_transport.rs": "572e64784679c2c40ff2da96b4ff558c38c157b67ff2544e576540b7922087f7",
+    "crates/agent-service/src/api.rs": "39b3361843c733ef4660c3a74f248463b5577ab1b61c01c4b4e28fe0a2a2a851",
+    "crates/agent-service/src/api_transport.rs": "44185b3a9199429a8e5ae2a7f04005c06c507fb7903ded69cf501b230f1372a6",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f"
   },

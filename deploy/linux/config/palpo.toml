@@ -1,0 +1,13 @@
+# Native Palpo ServerConfig for the Linux smoke-test instance.
+server_name = "localhost:18090"
+allow_registration = false
+trusted_servers = []
+[db]
+url = "postgres://hagency:hagency_dev@postgres:5432/palpo"
+pool_size = 10
+[well_known]
+client = "http://127.0.0.1:18090"
+server = "localhost:18090"
+[storage]
+backend = "fs"
+root = "/app/data/media"

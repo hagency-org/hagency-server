@@ -1,0 +1,48 @@
+# MatrixRTC calls for the two-server Hagency demo: LiveKit SFU, lk-jwt-service
+# (MatrixRTC authorization) and one Element Call app per demo homeserver.
+# Started by ../../../hagency-demo-up.sh (HAGENCY_DEMO_CALLS=0 skips it).
+#
+# Homeserver resolution: lk-jwt validates the caller's OpenID token by calling
+# the federation API of the caller's server_name (localhost:8450 / localhost:8452).
+# Those names carry explicit ports, so no .well-known is consulted and lk-jwt
+# dials "localhost:<port>". Inside a container that is the container itself, so
+# we add host-gateway addresses for "localhost": Go's dialer tries every address
+# the hosts file lists and falls through from the refused 127.0.0.1 to the Mac,
+# where the demo's TLS federation proxies listen. The proxies use a self-signed
+# certificate, hence LIVEKIT_INSECURE_SKIP_VERIFY_TLS (demo only).
+#
+# lk-jwt shares LiveKit's network namespace so the same ws://127.0.0.1:7880 is
+# both the URL handed to browsers on the Mac and the one lk-jwt uses to create
+# rooms in LiveKit.
+name: hagency-calls
+services:
+  livekit:
+    image: livekit/livekit-server:v1.9.1
+    command: --config /etc/livekit.yaml --node-ip 127.0.0.1
+    volumes: ["./livekit.yaml:/etc/livekit.yaml:ro"]
+    extra_hosts: ["localhost:host-gateway"]
+    ports:
+      - "127.0.0.1:7880:7880"
+      - "127.0.0.1:7881:7881"
+      - "127.0.0.1:8071:8080"
+      - "127.0.0.1:3478:3478/udp"
+      - "50100-50200:50100-50200/udp"
+  lk-jwt:
+    image: ghcr.io/element-hq/lk-jwt-service:0.3.0
+    network_mode: "service:livekit"
+    depends_on: [livekit]
+    environment:
+      LIVEKIT_URL: ws://127.0.0.1:7880
+      LIVEKIT_KEY: devkey
+      LIVEKIT_SECRET: devsecret_devsecret_devsecret_0123
+      LIVEKIT_JWT_PORT: "8080"
+      LIVEKIT_FULL_ACCESS_HOMESERVERS: "localhost:8450,localhost:8452"
+      LIVEKIT_INSECURE_SKIP_VERIFY_TLS: YES_I_KNOW_WHAT_I_AM_DOING
+  element-call-alpha:
+    image: ghcr.io/element-hq/element-call:v0.16.1
+    volumes: ["./element-call-alpha.json:/app/config.json:ro"]
+    ports: ["127.0.0.1:8093:8080"]
+  element-call-beta:
+    image: ghcr.io/element-hq/element-call:v0.16.1
+    volumes: ["./element-call-beta.json:/app/config.json:ro"]
+    ports: ["127.0.0.1:8094:8080"]

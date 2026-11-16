@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/*", "xtask"]
+exclude = [".run"]
 default-members = ["crates/backend"]
 resolver = "3"
 
@@ -76,3 +77,16 @@ zeroize = "1"
 [profile.release.package.palpo]
 opt-level = 1
 codegen-units = 256
+
+# Local stop-gap for Palpo's 3 s /sync wake-up (see .run/palpo-8c1759f/crates/server/src/watcher.rs).
+# Remove when upstream Palpo wakes waiting syncs on new events.
+# TODO(deferred, upstream blocker): .run/ is gitignored, so a clean checkout/CI cannot
+# build with this patch. Replace with the csheargm/palpo topic/sync-wakeup branch (git
+# dependency) or drop it once that lands upstream. Kept: the live demo needs it.
+[patch."https://github.com/palpo-im/palpo.git"]
+palpo = { path = ".run/palpo-8c1759f/crates/server" }
+palpo-core = { path = ".run/palpo-8c1759f/crates/core" }
+palpo-core-macros = { path = ".run/palpo-8c1759f/crates/core-macros" }
+palpo-data = { path = ".run/palpo-8c1759f/crates/data" }
+palpo-identifiers-validation = { path = ".run/palpo-8c1759f/crates/identifiers-validation" }
+palpo-server-macros = { path = ".run/palpo-8c1759f/crates/server-macros" }

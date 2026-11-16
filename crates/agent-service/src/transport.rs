@@ -18,6 +18,9 @@ mod e2ee;
 pub(crate) mod pause_notices;
 #[path = "processing.rs"]
 mod processing;
+// TODO(R4): transport.rs is over budget; live status messages live in their own module.
+#[path = "progress_status.rs"]
+pub(crate) mod progress_status;
 #[path = "request_notices.rs"]
 pub(crate) mod request_notices;
 pub use history::{ExecutionHistoryPage, ExecutionHistorySnapshot, HistoryExecution};
@@ -166,6 +169,9 @@ pub struct Dispatch {
 pub struct ExecutionStart {
     pub dispatch: Dispatch,
     pub newly_started: bool,
+    /// Present only on a new start; set by the API after the context read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_context: Option<crate::room_context::RoomContext>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -349,6 +355,8 @@ impl TransportStore {
             if !notices_initialized.matched {
                 db.batch_execute(include_str!("request_notices_schema.sql")).await?;
             }
+            // Idempotent; must exist before the notice view that suppresses "Still working…".
+            db.batch_execute(include_str!("progress_status_schema.sql")).await?;
             // Refresh the derived view for existing installations without changing journals.
             db.batch_execute(include_str!("request_notice_needed.sql")).await?;
             db.batch_execute("SELECT id FROM hagency_agent_v1.processing_sendable LIMIT 0").await
@@ -865,11 +873,11 @@ impl TransportStore {
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             let (now,_)=Self::authenticate(db,p,now).await?;let e=Self::dispatch(db,p,id).await?;Self::dispatch_scope(db,p,reference,&e,f,now).await?;fenced(&e,p,reference)?;
-            if e.state=="running"&&e.execution_id.as_deref()==Some(execution_id) {return Ok(ExecutionStart{dispatch:e,newly_started:false});}
+            if e.state=="running"&&e.execution_id.as_deref()==Some(execution_id) {return Ok(ExecutionStart{dispatch:e,newly_started:false,room_context:None});}
             Self::event_unexpired(db,id,self.limits.event_ttl_ms,now).await?;
             if e.state!="acknowledged" {return Err(Error::Conflict("dispatch_not_acknowledged"));}
             let reused=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.owner_events WHERE agent_id=$1 AND execution_id=$2) AS matched").bind::<Text,_>(&e.agent_id).bind::<Text,_>(execution_id).get_result::<Flag>(db).await?;if reused.matched {return Err(Error::Conflict("execution_id_reused"));}
-            sql_query("UPDATE hagency_agent_v1.owner_events SET state='running',execution_id=$1 WHERE id=$2").bind::<Text,_>(execution_id).bind::<Text,_>(id).execute(db).await?;Ok(ExecutionStart{dispatch:Self::dispatch(db,p,id).await?,newly_started:true})
+            sql_query("UPDATE hagency_agent_v1.owner_events SET state='running',execution_id=$1 WHERE id=$2").bind::<Text,_>(execution_id).bind::<Text,_>(id).execute(db).await?;Ok(ExecutionStart{dispatch:Self::dispatch(db,p,id).await?,newly_started:true,room_context:None})
         }).await
     }
     /// Fresh execution authority check immediately before a host tool. It grants

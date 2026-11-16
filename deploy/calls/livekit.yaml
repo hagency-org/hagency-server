@@ -1,0 +1,15 @@
+# LiveKit SFU for the local demo. Dev keys only; never reuse outside this Mac.
+port: 7880
+rtc:
+  tcp_port: 7881
+  port_range_start: 50100
+  port_range_end: 50200
+  use_external_ip: false
+# Embedded TURN: LiveKit hands its clients TURN credentials itself, so MatrixRTC
+# calls need no coturn and no Palpo [turn] section.
+turn:
+  enabled: true
+  udp_port: 3478
+  domain: localhost
+keys:
+  devkey: devsecret_devsecret_devsecret_0123

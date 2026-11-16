@@ -363,7 +363,7 @@ impl App {
             if path.starts_with("/hagency/api/v1/execution/e2ee-device") {
                 return self.e2ee_device(transport, &principal, &path, req).await;
             }
-            return crate::api_transport::call(transport, gateway, &principal, req).await;
+            return crate::api_transport::call(transport, gateway, self.matrix_client.as_ref(), &principal, req).await;
         }
         if let Some((domain, gateway)) = &self.domain
             && let Some(value) = Box::pin(crate::api_management::call(

@@ -1,0 +1,21 @@
+# Context is the hagency workspace root. Allow-list only what the build copies.
+*
+!hagency-server/rust-toolchain.toml
+!hagency-server/Cargo.toml
+!hagency-server/Cargo.lock
+!hagency-server/crates
+!hagency-server/xtask
+!hagency-server/scripts/docker-entrypoint.sh
+!hagency-server/resources/pasion
+!hagency-server/resources/frontend/public
+!hagency-server/.run/palpo-8c1759f
+hagency-server/.run/palpo-8c1759f/target
+hagency-server/.run/palpo-8c1759f/tests
+!hagency-client/rust-toolchain.toml
+!hagency-client/Cargo.toml
+!hagency-client/Cargo.lock
+!hagency-client/native
+!hagency-client/docs
+**/target
+**/node_modules
+**/.DS_Store

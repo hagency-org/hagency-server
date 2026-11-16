@@ -1,0 +1,12 @@
+# Linux smoke-test instance (deploy/linux/compose.yaml). Dev-only DB password,
+# same convention as config/examples; production must inject real credentials.
+listen = "0.0.0.0:8088"
+public_origin = "http://127.0.0.1:18090"
+database_url = "postgres://hagency:hagency_dev@postgres:5432/hagency"
+data_dir = "/app/data"
+palpo_config = "palpo.toml"
+pasion_config = "pasion.toml"
+public_dir = "/app/resources/frontend/public"
+
+[queue]
+event_ttl_ms = 86400000
