@@ -1251,6 +1251,51 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
+        hagency_agent_v1.orchestrator_commands (event_id) {
+            event_id -> Text,
+            room_id -> Text,
+            thread_root -> Nullable<Text>,
+            sender_mxid -> Text,
+            body -> Text,
+            received_at_ms -> Int8,
+            outcome -> Nullable<Text>,
+            handled_at_ms -> Nullable<Int8>,
+        }
+    }
+
+    diesel::table! {
+        hagency_agent_v1.orchestrator_runs (id) {
+            id -> Text,
+            project_id -> Text,
+            task_id -> Text,
+            room_id -> Text,
+            thread_root -> Text,
+            requester_mxid -> Text,
+            bindings -> Jsonb,
+            context -> Jsonb,
+            state -> Jsonb,
+            revision -> Int8,
+            dispatch_id -> Nullable<Text>,
+            handoff -> Nullable<Text>,
+            pending_events -> Jsonb,
+            created_at_ms -> Int8,
+            updated_at_ms -> Int8,
+        }
+    }
+
+    diesel::table! {
+        hagency_agent_v1.orchestrator_stage_events (binding_id, event_id) {
+            binding_id -> Text,
+            event_id -> Text,
+            run_id -> Text,
+            stage -> Text,
+            round -> Int4,
+            attempt -> Int4,
+            created_at_ms -> Int8,
+        }
+    }
+
+    diesel::table! {
         hagency_agent_v1.owner_events (id) {
             id -> Text,
             binding_id -> Text,
@@ -1754,6 +1799,9 @@ pub mod hagency_agent_v1 {
         management_shared_work_receipts,
         management_shared_work_refusals,
         management_verifications,
+        orchestrator_commands,
+        orchestrator_runs,
+        orchestrator_stage_events,
         owner_events,
         pause_notice_outbox,
         personal_e2ee_candidates,
