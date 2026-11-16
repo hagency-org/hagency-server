@@ -1,10 +1,10 @@
 {
   "version": 3,
   "mode": "strict-clean",
-  "reviewed_on": "2026-11-16",
+  "reviewed_on": "2026-11-17",
   "reviewed_sources": {
-    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f",
-    "palpo": "git+https://github.com/palpo-im/palpo.git?rev=de99cfe944ef64d10eaa8162f3fecaca26fa08df#de99cfe944ef64d10eaa8162f3fecaca26fa08df",
+    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844",
+    "palpo": "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7",
     "lettre": "git+https://github.com/chrislearn/lettre.git?rev=388699bd167493a1fe88d51fd0a28e17ab1a6596#388699bd167493a1fe88d51fd0a28e17ab1a6596",
     "opentelemetry-prometheus-text-exporter": "git+https://github.com/chrislearn/opentelemetry-prometheus-text-exporter.git?rev=b996a07c91ad7fad9ccbdb24076e818d4864dd30#b996a07c91ad7fad9ccbdb24076e818d4864dd30",
     "rav1e": "git+https://github.com/chrislearn/rav1e?rev=b1af6dfed0c7d413700cc81eb7d194b764295451#b1af6dfed0c7d413700cc81eb7d194b764295451"
