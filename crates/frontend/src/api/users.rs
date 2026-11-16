@@ -299,8 +299,9 @@ pub async fn get_user_devices(
 }
 
 pub async fn delete_user_device(user_id: &str, device_id: &str) -> Result<(), HttpError> {
-    let url = build_url(&device_delete_path(user_id, device_id), &[])?;
-    let _: serde_json::Value = api_client(&url, "DELETE", None).await?;
+    let (path, body) = device_delete_request(user_id, device_id);
+    let url = build_url(&path, &[])?;
+    let _: serde_json::Value = api_client(&url, "POST", Some(body.to_string())).await?;
     Ok(())
 }
 
@@ -323,11 +324,15 @@ pub async fn delete_all_user_devices(user_id: &str) -> Result<u64, HttpError> {
     Ok(deleted)
 }
 
-fn device_delete_path(user_id: &str, device_id: &str) -> String {
-    format!(
-        "/_palpo/admin/v2/users/{}/devices/{}",
-        urlencoding::encode(user_id),
-        urlencoding::encode(device_id)
+fn device_delete_request(user_id: &str, device_id: &str) -> (String, serde_json::Value) {
+    // A Device ID is opaque: even percent-encoded dot segments are normalized
+    // by browser URL parsing. Keep it in the admin endpoint's JSON body.
+    (
+        format!(
+            "/_palpo/admin/v2/users/{}/delete_devices",
+            urlencoding::encode(user_id)
+        ),
+        serde_json::json!({"devices": [device_id]}),
     )
 }
 
@@ -499,10 +504,24 @@ mod device_deletion_tests {
         assert_eq!(seen.into_inner(), vec!["one", "failed", "three"]);
     }
     #[test]
-    fn opaque_device_ids_are_encoded_as_one_path_segment() {
-        assert_eq!(
-            device_delete_path("@user:server", "opaque/with?query#fragment"),
-            "/_palpo/admin/v2/users/%40user%3Aserver/devices/opaque%2Fwith%3Fquery%23fragment"
-        );
+    fn opaque_device_ids_are_json_data_and_never_url_path_segments() {
+        for id in [
+            ".",
+            "..",
+            "/",
+            "?",
+            "#",
+            "%2e%2e",
+            "opaque/with?query#fragment",
+            "quote\"\\设备",
+        ] {
+            let (path, body) = device_delete_request("@user:server", id);
+            assert_eq!(
+                path,
+                "/_palpo/admin/v2/users/%40user%3Aserver/delete_devices"
+            );
+            let wire: serde_json::Value = serde_json::from_str(&body.to_string()).unwrap();
+            assert_eq!(wire, serde_json::json!({"devices": [id]}));
+        }
     }
 }
