@@ -22215,7 +22215,7 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "beca231723aab7f8702c0ec4f3b3f7fd1cfc969ba4f9549a419a77b0ba4d739d",
+    "crates/agent-service/src/api.rs": "aea26f60ea4250dbdcb49331141ec8ffbd37d46b02d69d157a6d826775886fdc",
     "crates/agent-service/src/api_transport.rs": "f1edd833398d6d3e2c1d72f9618faea40d789e6d408896580a3c7a34be4e7b02",
     "crates/agent-service/src/transport_history.rs": "839283ce0e2dde651652cce7239099069b008fd63ed12aa1febde66c8068ba4d",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
@@ -22225,10 +22225,10 @@
     "crates/agent-service/src/agent_crypto_receive.rs": "ab953385061b318dbefca41c01203b240c40fa9dcfd763f5e3984ee450605850",
     "crates/agent-service/src/transport_ciphertexts.rs": "c3db5bd5d59da1f5b42302d3b623bd19633ebdd87295dc7c860ad472bb751224",
     "crates/agent-service/src/ciphertext_schema.sql": "ea43c360e60a316d3cd15e16494bee1b5c60f5482b4d0ad9bbe0883c2f07ad29",
-    "crates/agent-service/src/workers.rs": "1fd0bee02edab8f716424c49ca157303d949e10ae25b4e7710ba78555132eb37",
+    "crates/agent-service/src/workers.rs": "5649fe94f93a0a9b266ae7c42594e62f9b5e380c39dc799908780c1db9b80fc2",
     "crates/agent-service/src/encrypted_dispatches.rs": "2fc78608661e2d4729c578546fbbf2c831dde442b7d5bbd39a4039be844d0b5e",
     "crates/agent-service/src/encrypted_dispatches_schema.sql": "73c338d99a17eb64e2173c6fdb7246962039d5e7229e03345bad14237852427d",
-    "crates/agent-service/src/transport.rs": "684f89bbec3debbd5dc1e508032dede5fa9f0ffdde0f9580709d66cfe94b7e67",
+    "crates/agent-service/src/transport.rs": "fc4e980e1dfa39948399a5d97f45fd62d16076d4972b0f0b8fdd8f4cb08a129c",
     "crates/agent-service/src/encrypted_execution.rs": "404f3bffd0a202fdaefb0aff4c80201806673bf019babbecfad287eafbce63cc",
     "crates/agent-service/src/encrypted_execution_schema.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "dc6cd49f41d5cab901249a217704e6b0afd6f5186f7cc1b3c1eb64e8ec1d3218",
