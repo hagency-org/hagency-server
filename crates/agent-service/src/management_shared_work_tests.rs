@@ -1862,10 +1862,13 @@ async fn shared_work_reads_back_for_the_gitfab_orchestrator() {
         .acknowledge_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await
         .unwrap();
-    f.domain
-        .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
-        .await
-        .unwrap();
+    assert!(
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .await
+            .unwrap()
+            .newly_started
+    );
     assert_eq!(
         seen(t.shared_dispatch(&mx.assignment_id, stage).await.unwrap()),
         None
