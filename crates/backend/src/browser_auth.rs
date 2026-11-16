@@ -1035,16 +1035,17 @@ mod tests {
                 .send(&service)
                 .await;
         assert_eq!(reply.status_code, Some(StatusCode::OK));
-        let requests = readiness.requests.lock().unwrap();
-        assert!(requests.iter().any(|(route, token)| route
-            == "GET /hagency/api/v1/agents/discover?after=a_2 HTTP/1.1"
-            && token == &format!("Bearer {}", "a".repeat(64))));
-        assert!(
-            requests
-                .iter()
-                .any(|(route, _)| route == "PUT /hagency/api/v1/agents/a_1/visibility HTTP/1.1")
-        );
-        drop(requests);
+        {
+            let requests = readiness.requests.lock().unwrap();
+            assert!(requests.iter().any(|(route, token)| route
+                == "GET /hagency/api/v1/agents/discover?after=a_2 HTTP/1.1"
+                && token == &format!("Bearer {}", "a".repeat(64))));
+            assert!(
+                requests
+                    .iter()
+                    .any(|(route, _)| route == "PUT /hagency/api/v1/agents/a_1/visibility HTTP/1.1")
+            );
+        }
         let reply =
             TestClient::put("http://example.test/hagency/api/browser/v1/agents/a_1/visibility")
                 .add_header("host", "example.test", true)
