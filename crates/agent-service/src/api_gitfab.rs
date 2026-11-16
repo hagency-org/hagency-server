@@ -208,7 +208,7 @@ mod tests {
     fn a_room_with_encryption_state_is_encrypted() {
         let member = json!({"type": "m.room.member", "state_key": "@a:x", "content": {"membership": "join"}});
         let encryption = json!({"type": "m.room.encryption", "state_key": "", "content": {"algorithm": "m.megolm.v1.aes-sha2"}});
-        assert!(!super::room_is_encrypted(&[member.clone()]));
+        assert!(!super::room_is_encrypted(std::slice::from_ref(&member)));
         assert!(super::room_is_encrypted(&[member, encryption]));
         let odd = json!({"type": "m.room.encryption", "state_key": "x"});
         assert!(!super::room_is_encrypted(&[odd]));
