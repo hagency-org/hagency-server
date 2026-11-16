@@ -2772,12 +2772,9 @@ async fn encrypted_pool_intake_requires_assigned_executor_before_any_model_work(
     let (f, request, assignment, matrix) = Box::pin(prepared_pool(true)).await;
     matrix.states.lock().unwrap().get_mut(&request.room_id).unwrap().push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
-    let received =
-        sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS count")
-            .get_result::<Count>(&mut db)
-            .await
-            .unwrap()
-            .count;
+    // Encrypted ingress is stamped by the host clock, not PostgreSQL's rounded
+    // millisecond clock, which can be one millisecond ahead of the source clock.
+    let received = crate::api::now_ms();
     let event = crate::transport::RoutedEvent {
         event_id: "$encrypted_pool".into(),
         room_id: request.room_id.clone(),
