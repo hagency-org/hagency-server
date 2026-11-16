@@ -2,6 +2,24 @@ use dioxus::prelude::*;
 
 use super::button::{Button, ButtonSize, ButtonVariant};
 
+/// Opaque service cursors are kept per filter scope; no URL from a response is fetched.
+#[component]
+pub fn CursorPagination(
+    mut cursors: Signal<Vec<Option<String>>>,
+    next_cursor: Option<String>,
+    loading: bool,
+) -> Element {
+    let page = cursors().len() + 1;
+    let has_next = next_cursor.is_some();
+    rsx! { div { class: "flex items-center justify-end gap-2 py-3",
+        Button { variant: ButtonVariant::Outline, disabled: loading || page == 1,
+            onclick: move |_| { cursors.write().pop(); }, "Previous" }
+        span { "Page {page}" }
+        Button { variant: ButtonVariant::Outline, disabled: loading || !has_next,
+            onclick: move |_| { if let Some(cursor) = next_cursor.clone() { cursors.write().push(Some(cursor)); } }, "Next" }
+    } }
+}
+
 #[component]
 pub fn Pagination(
     page: u64,

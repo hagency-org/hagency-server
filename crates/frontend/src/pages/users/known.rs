@@ -102,7 +102,8 @@ pub fn KnownUserList() -> Element {
                         },
                     }
                 }
-                select {
+                crate::components::ui::input::Select {
+                    aria_label: "User origin",
                     class: "flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm",
                     onchange: move |evt: FormEvent| {
                         origin.set(match evt.value().as_str() {
@@ -116,9 +117,9 @@ pub fn KnownUserList() -> Element {
                     option { value: "local", selected: current_origin == Origin::Local, {t("users.origin_local")} }
                     option { value: "remote", selected: current_origin == Origin::Remote, {t("users.origin_remote")} }
                 }
-                div { class: "flex items-center gap-2",
-                    label { class: "text-sm text-muted-foreground whitespace-nowrap", {t("common.rows")} }
-                    select {
+                crate::components::ui::input::Field { class: "flex items-center gap-2",
+                    crate::components::ui::input::Label { class: "text-sm text-muted-foreground whitespace-nowrap", {t("common.rows")} }
+                    crate::components::ui::input::Select {
                         class: "flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm",
                         value: "{per_page_val}",
                         onchange: move |evt: FormEvent| {

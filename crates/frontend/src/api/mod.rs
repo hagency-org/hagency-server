@@ -1,3 +1,4 @@
+pub mod admin_capabilities;
 pub mod appservices;
 pub mod auth;
 pub mod browser_auth;

@@ -100,8 +100,8 @@ pub fn ServerNotices() -> Element {
             spawn(async move {
                 // Fetch all users
                 broadcast_progress.set(Some((0, 0)));
-                let all_users = match users::get_users(1, 10000, "name", "asc", "").await {
-                    Ok(data) => data.data,
+                let all_users = match users::get_all_users_for_export("name", "asc").await {
+                    Ok(data) => data,
                     Err(e) => {
                         show_toast(
                             &format!("Failed to fetch users: {}", e.message),
@@ -231,7 +231,7 @@ pub fn ServerNotices() -> Element {
 
                         // User ID input (only in single user mode)
                         if !is_broadcast {
-                            div { class: "space-y-2",
+                            crate::components::ui::input::Field { class: "space-y-2",
                                 Label { r#for: "user_id".to_string(), {t("server_notices.user_id")} }
                                 Input {
                                     placeholder: "@user:example.com".to_string(),
@@ -242,9 +242,9 @@ pub fn ServerNotices() -> Element {
                             }
                         }
 
-                        div { class: "space-y-2",
-                            Label { r#for: "message".to_string(), {t("server_notices.message")} }
-                            textarea {
+                        crate::components::ui::input::Field { class: "space-y-2",
+                            Label { {t("server_notices.message")} }
+                            crate::components::ui::input::Textarea {
                                 class: "flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 touch-target",
                                 placeholder: t("server_notices.message_placeholder"),
                                 value: message.read().clone(),

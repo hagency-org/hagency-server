@@ -153,6 +153,9 @@ pub async fn get_room_members(
     per_page: u64,
 ) -> Result<ListResponse<String>, HttpError> {
     let from = (page - 1) * per_page;
+    let paginated = super::admin_capabilities::get()
+        .await?
+        .supports("room_members_pagination");
     let encoded = urlencoding::encode(room_id);
     let from_str = from.to_string();
     let limit_str = per_page.to_string();
@@ -170,7 +173,16 @@ pub async fn get_room_members(
     let response: Resp = api_client(&url, "GET", None).await?;
 
     Ok(ListResponse {
-        data: response.members,
+        data: if paginated {
+            response.members
+        } else {
+            response
+                .members
+                .into_iter()
+                .skip(from as usize)
+                .take(per_page as usize)
+                .collect()
+        },
         total: response.total,
     })
 }
@@ -318,46 +330,6 @@ pub async fn set_room_state(
     Ok(())
 }
 
-pub async fn set_room_name(room_id: &str, name: &str) -> Result<(), HttpError> {
-    set_room_state(
-        room_id,
-        "m.room.name",
-        "",
-        serde_json::json!({ "name": name }),
-    )
-    .await
-}
-
-pub async fn set_room_topic(room_id: &str, topic: &str) -> Result<(), HttpError> {
-    set_room_state(
-        room_id,
-        "m.room.topic",
-        "",
-        serde_json::json!({ "topic": topic }),
-    )
-    .await
-}
-
-pub async fn set_room_join_rules(room_id: &str, join_rule: &str) -> Result<(), HttpError> {
-    set_room_state(
-        room_id,
-        "m.room.join_rules",
-        "",
-        serde_json::json!({ "join_rule": join_rule }),
-    )
-    .await
-}
-
-pub async fn set_room_history_visibility(room_id: &str, visibility: &str) -> Result<(), HttpError> {
-    set_room_state(
-        room_id,
-        "m.room.history_visibility",
-        "",
-        serde_json::json!({ "history_visibility": visibility }),
-    )
-    .await
-}
-
 pub async fn put_room_alias(alias: &str, room_id: &str) -> Result<(), HttpError> {
     let encoded_alias = urlencoding::encode(alias);
     let base_url = get_base_url()?;
@@ -369,6 +341,7 @@ pub async fn put_room_alias(alias: &str, room_id: &str) -> Result<(), HttpError>
 }
 
 pub async fn delete_room_alias(alias: &str) -> Result<(), HttpError> {
+    super::admin_capabilities::require("alias_delete_preserves_state").await?;
     let encoded_alias = urlencoding::encode(alias);
     let base_url = get_base_url()?;
     let url = format!("{base_url}/_matrix/client/v3/directory/room/{encoded_alias}");
@@ -435,6 +408,7 @@ pub async fn set_room_directory_visibility(room_id: &str, public: bool) -> Resul
 }
 
 pub async fn make_room_admin(room_id: &str, user_id: &str) -> Result<(), HttpError> {
+    super::admin_capabilities::require("make_room_admin").await?;
     let encoded = urlencoding::encode(room_id);
     let url = build_url(
         &format!("/_palpo/admin/v1/rooms/{encoded}/make_room_admin"),
@@ -499,4 +473,28 @@ mod room_filter_tests {
             assert!(key(filter).starts_with(ROOM_LIST_CACHE_PREFIX));
         }
     }
+}
+
+pub async fn get_room_aliases(room_id: &str) -> Result<Vec<String>, HttpError> {
+    super::admin_capabilities::require("room_aliases").await?;
+    #[derive(serde::Deserialize)]
+    struct Response {
+        aliases: Vec<String>,
+    }
+    let encoded = urlencoding::encode(room_id);
+    let url = build_url(&format!("/_palpo/admin/v1/rooms/{encoded}/aliases"), &[])?;
+    let response: Response = api_client(&url, "GET", None).await?;
+    Ok(response.aliases)
+}
+pub async fn get_room_state_content(
+    room_id: &str,
+    event_type: &str,
+) -> Result<serde_json::Value, HttpError> {
+    let room = urlencoding::encode(room_id);
+    let event = urlencoding::encode(event_type);
+    let url = build_url(
+        &format!("/_matrix/client/v3/rooms/{room}/state/{event}/"),
+        &[],
+    )?;
+    api_client(&url, "GET", None).await
 }

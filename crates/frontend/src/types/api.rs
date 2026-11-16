@@ -46,7 +46,7 @@ pub struct User {
     #[serde(default)]
     pub locked: bool,
     #[serde(default)]
-    pub suspended: bool,
+    pub suspended: Option<bool>,
     #[serde(default)]
     pub user_type: Option<String>,
 }

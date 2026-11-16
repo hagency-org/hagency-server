@@ -24,11 +24,11 @@ pub fn MediaList() -> Element {
     let mut show_delete_dialog = use_signal(|| false);
     let mut show_purge_dialog = use_signal(|| false);
 
-    let search_val = search.read().clone();
     let page_val = *page.read();
 
     let mut media_data = use_resource(move || {
-        let search = search_val.clone();
+        let search = search();
+        let page_val = page();
         async move {
             media::get_user_media_statistics_cached(
                 page_val,

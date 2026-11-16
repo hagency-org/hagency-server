@@ -6,9 +6,33 @@ use serde_json::{Value, json};
 #[component]
 pub fn Agents() -> Element {
     let mut public_agents = use_resource(|| async {
-        browser_auth::call("/agents/discover", "GET", None)
-            .await
-            .map_err(|e| e.message)
+        let mut agents = Vec::new();
+        let mut after = None::<String>;
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..4096 {
+            let path = after
+                .as_deref()
+                .map(|cursor| format!("/agents/discover?after={}", urlencoding::encode(cursor)))
+                .unwrap_or_else(|| "/agents/discover".into());
+            let page = browser_auth::call(&path, "GET", None)
+                .await
+                .map_err(|e| e.message)?;
+            agents.extend(rows(&page, "agents"));
+            match page["nextAfter"].as_str() {
+                None => return Ok::<Value, String>(json!({"agents":agents})),
+                Some(cursor) if seen.insert(cursor.to_owned()) => after = Some(cursor.into()),
+                Some(_) => {
+                    return Err(
+                        "Agent discovery returned a repeated cursor. Refresh before retrying."
+                            .into(),
+                    );
+                }
+            }
+        }
+        Err(
+            "Agent discovery exceeded the page limit. Narrow the catalog query before retrying."
+                .into(),
+        )
     });
     let mut agents = use_resource(|| async {
         browser_auth::call("/agents", "GET", None)

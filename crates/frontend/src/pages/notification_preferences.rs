@@ -69,13 +69,19 @@ struct PrefsJson {
 pub fn is_notification_type_enabled(
     ntype: &crate::components::ui::notifications::NotificationType,
 ) -> bool {
-    let prefs = NOTIFICATION_PREFS.read();
-    match ntype {
-        crate::components::ui::notifications::NotificationType::ReportFiled => prefs.report_filed,
-        crate::components::ui::notifications::NotificationType::UserRegistered => {
-            prefs.user_registered
+    NOTIFICATION_PREFS.read().enabled(ntype)
+}
+
+impl NotificationPreferences {
+    fn enabled(&self, ntype: &crate::components::ui::notifications::NotificationType) -> bool {
+        use crate::components::ui::notifications::NotificationType;
+        match ntype {
+            NotificationType::ReportFiled => self.report_filed,
+            NotificationType::UserRegistered => self.user_registered,
+            NotificationType::SystemInfo => self.system_info,
+            NotificationType::FederationAlert => self.federation_alert,
+            NotificationType::JobFailure => self.job_failure,
         }
-        crate::components::ui::notifications::NotificationType::SystemInfo => prefs.system_info,
     }
 }
 
@@ -102,12 +108,12 @@ pub fn NotificationPreferencesPage() -> Element {
         },
         ToggleItem {
             label: "Federation Alert",
-            description: "Alerts about federation issues with remote servers",
+            description: "Browser alerts for failed remote-server connections shown in Federation",
             key: "federation_alert",
         },
         ToggleItem {
             label: "Job Failure",
-            description: "Notifications when background jobs fail",
+            description: "Browser alerts when a maintenance command fails to start",
             key: "job_failure",
         },
         ToggleItem {
@@ -190,5 +196,20 @@ pub fn NotificationPreferencesPage() -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn federation_and_job_preferences_are_applied_to_their_notification_types() {
+        use crate::components::ui::notifications::NotificationType;
+        let mut prefs = NotificationPreferences::default();
+        prefs.federation_alert = false;
+        prefs.job_failure = false;
+        assert!(!prefs.enabled(&NotificationType::FederationAlert));
+        assert!(!prefs.enabled(&NotificationType::JobFailure));
+        assert!(prefs.enabled(&NotificationType::ReportFiled));
     }
 }

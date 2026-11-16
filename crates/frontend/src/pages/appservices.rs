@@ -334,10 +334,22 @@ fn download_text(filename: &str, content: &str) {
 
 /// Copy `text` to the clipboard, then flash a confirmation toast.
 fn copy_to_clipboard(text: &str, label: &str) {
-    if let Some(clipboard) = web_sys::window().map(|w| w.navigator().clipboard()) {
-        let _ = clipboard.write_text(text);
-        show_toast(&format!("{label} copied"), ToastVariant::Success);
-    }
+    let text = text.to_string();
+    let label = label.to_string();
+    spawn(async move {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        match wasm_bindgen_futures::JsFuture::from(window.navigator().clipboard().write_text(&text))
+            .await
+        {
+            Ok(_) => show_toast(&format!("{label} copied"), ToastVariant::Success),
+            Err(_) => show_toast(
+                "Clipboard access failed. Select the displayed text to copy manually.",
+                ToastVariant::Error,
+            ),
+        }
+    });
 }
 
 /// Build a wire registration from the form, validating required fields and the
@@ -476,6 +488,7 @@ pub fn AppserviceList() -> Element {
     // when installing a fresh one. Drives the submit verb (PUT vs POST) and
     // whether the id field is locked.
     let mut edit_id = use_signal(|| Option::<String>::None);
+    let mut expected_url = use_signal(|| None::<String>);
 
     // Delete confirmation
     let mut delete_open = use_signal(|| false);
@@ -507,6 +520,7 @@ pub fn AppserviceList() -> Element {
     // Open the modal in *edit* mode, prefilled from an installed appservice.
     let mut open_edit = move |reg: AppserviceRegistration| {
         edit_id.set(Some(reg.id.clone()));
+        expected_url.set(reg.url.clone());
         form.set(registration_to_form(&reg, "custom"));
         configure_open.set(true);
     };
@@ -529,23 +543,39 @@ pub fn AppserviceList() -> Element {
             }
         };
         let editing = edit_id.read().clone();
+        let expected = expected_url();
+        if editing.is_some() && reg.url.as_deref().is_none_or(str::is_empty) {
+            show_toast(
+                "Online editing requires a callback URL. Other registration fields remain read only.",
+                ToastVariant::Error,
+            );
+            return;
+        }
         creating.set(true);
         spawn(async move {
             let result = match &editing {
-                Some(id) => appservices::update_appservice(id, &reg).await,
+                Some(id) => {
+                    appservices::update_appservice_url(
+                        id,
+                        reg.url.as_deref().unwrap(),
+                        expected.as_deref(),
+                    )
+                    .await
+                }
                 None => appservices::register_appservice(&reg).await,
             };
             match result {
                 Ok(_) => {
                     show_toast(
                         if editing.is_some() {
-                            "Appservice updated"
+                            "Appservice callback URL updated"
                         } else {
                             "Appservice registered"
                         },
                         ToastVariant::Success,
                     );
                     configure_open.set(false);
+                    expanded.set(None);
                     edit_id.set(None);
                     form.set(ConfigForm::default());
                     data.restart();
@@ -1020,11 +1050,15 @@ fn ConfigureDialog(
     let notes = template.map(|t| t.notes).unwrap_or("");
 
     let title = if editing {
-        format!("Edit {}", form.read().id)
+        format!("Edit callback URL: {}", form.read().id)
     } else {
         format!("Install {name}")
     };
-    let submit_label = if editing { "Save changes" } else { "Install" };
+    let submit_label = if editing {
+        "Save callback URL"
+    } else {
+        "Install"
+    };
 
     // Import scratch state — pasting/uploading a registration overwrites the
     // structured fields below. Only offered when installing fresh, since the id
@@ -1063,6 +1097,7 @@ fn ConfigureDialog(
                 }
             }
 
+            if editing {p {class:"px-6 text-sm text-muted-foreground", "Only the callback URL can be edited online. Tokens, namespaces and sender identity are shown read only; export the registration for server configuration changes. Saving compares the original URL to prevent overwriting another administrator's change."}}
             // Body — form fields
             div { class: "min-h-0 flex-1 overflow-y-auto p-6 space-y-4",
                     if !notes.is_empty() {
@@ -1079,7 +1114,7 @@ fn ConfigureDialog(
                                 "Import from registration.yaml (paste or upload)"
                             }
                             div { class: "space-y-2 border-t p-3",
-                                textarea {
+                                crate::components::ui::input::Textarea {
                                     class: "flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                                     placeholder: "Paste the registration.yaml (or JSON) your bridge generated…".to_string(),
                                     value: import_text.read().clone(),
@@ -1122,7 +1157,7 @@ fn ConfigureDialog(
                     }
 
                     div { class: "grid gap-4 sm:grid-cols-2",
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "Instance ID" }
                             Input {
                                 placeholder: "wechat-bridge".to_string(),
@@ -1138,18 +1173,18 @@ fn ConfigureDialog(
                                 }
                             }
                         }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "Sender localpart" }
                             Input {
                                 placeholder: "bot".to_string(),
                                 value: form.read().sender_localpart.clone(),
                                 oninput: move |e: FormEvent| form.write().sender_localpart = e.value(),
-                                disabled: creating,
+                                disabled: creating || editing,
                             }
                         }
                     }
 
-                    div { class: "space-y-1",
+                    crate::components::ui::input::Field { class: "space-y-1",
                         Label { "Bridge URL" }
                         Input {
                             placeholder: "http://localhost:29335".to_string(),
@@ -1166,24 +1201,24 @@ fn ConfigureDialog(
                         label: "as_token",
                         help: "Token the bridge uses to authenticate to the homeserver.",
                         value: form.read().as_token.clone(),
-                        disabled: creating,
+                        disabled: creating || editing,
                         on_input: move |v: String| form.write().as_token = v,
                     }
                     TokenField {
                         label: "hs_token",
                         help: "Token the homeserver sends with transactions so the bridge can verify them.",
                         value: form.read().hs_token.clone(),
-                        disabled: creating,
+                        disabled: creating || editing,
                         on_input: move |v: String| form.write().hs_token = v,
                     }
 
-                    div { class: "space-y-1",
+                    crate::components::ui::input::Field { class: "space-y-1",
                         Label { "Namespaces (JSON)" }
-                        textarea {
+                        crate::components::ui::input::Textarea {
                             class: "flex min-h-[160px] w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                             value: form.read().namespaces.clone(),
                             oninput: move |e: FormEvent| form.write().namespaces = e.value(),
-                            disabled: creating,
+                            disabled: creating || editing,
                         }
                         p { class: "text-xs text-muted-foreground",
                             "Each namespace entry is {{ exclusive: bool, regex: string }}. The template pre-fills a sensible default."
@@ -1196,7 +1231,7 @@ fn ConfigureDialog(
                                 r#type: "checkbox",
                                 class: "h-4 w-4 rounded border-input",
                                 checked: form.read().rate_limited.unwrap_or(false),
-                                disabled: creating,
+                                disabled: creating || editing,
                                 onchange: move |e: FormEvent| {
                                     form.write().rate_limited = Some(e.value() == "true");
                                 },
@@ -1208,7 +1243,7 @@ fn ConfigureDialog(
                                 r#type: "checkbox",
                                 class: "h-4 w-4 rounded border-input",
                                 checked: form.read().receive_ephemeral,
-                                disabled: creating,
+                                disabled: creating || editing,
                                 onchange: move |e: FormEvent| {
                                     form.write().receive_ephemeral = e.value() == "true";
                                 },
@@ -1246,8 +1281,8 @@ fn TokenField(
     on_input: EventHandler<String>,
 ) -> Element {
     rsx! {
-        div { class: "space-y-1",
-            div { class: "flex items-center justify-between",
+        crate::components::ui::input::Field { class: "space-y-1",
+            crate::components::ui::input::Field { class: "flex items-center justify-between",
                 Label { "{label}" }
                 button {
                     class: "text-xs font-medium text-primary hover:underline disabled:opacity-50",

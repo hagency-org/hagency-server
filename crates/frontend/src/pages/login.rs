@@ -1,7 +1,7 @@
 use crate::{
     api::{auth, browser_auth},
     components::{
-        theme::{get_resolved_theme, set_theme},
+        theme::set_theme,
         ui::{
             button::{Button, ButtonSize},
             icons::Icon,
@@ -40,7 +40,7 @@ pub fn LoginPage() -> Element {
     });
     // One check on page load, including a retained HttpOnly session after reload.
     let session = use_resource(|| async { browser_auth::ensure_session().await.ok() });
-    let mut dark = use_signal(|| get_resolved_theme() == "dark");
+    let mut dark = crate::components::theme::use_resolved_dark_mode();
     let mut busy = use_signal(|| false);
     let mut error = use_signal(String::new);
     let nav = use_navigator();
@@ -56,7 +56,7 @@ pub fn LoginPage() -> Element {
                     "Hagency"
                 }
                 div { class: "hg-welcome-controls",
-                    select {
+                    crate::components::ui::input::Select {
                         class: "hg-input", aria_label: t("language.select"),
                         value: current_language().code(),
                         onchange: move |evt: FormEvent| {

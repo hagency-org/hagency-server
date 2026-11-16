@@ -24,7 +24,7 @@ fn key_to_string(key: &keyboard_types::Key) -> Option<String> {
 }
 
 #[component]
-pub fn KeyboardShortcuts() -> Element {
+pub fn KeyboardShortcuts(children: Element) -> Element {
     let nav = use_navigator();
 
     let handle_keydown = move |evt: KeyboardEvent| {
@@ -103,11 +103,11 @@ pub fn KeyboardShortcuts() -> Element {
 
     rsx! {
         div {
-            tabindex: 0,
+            class: "contents",
             onkeydown: handle_keydown,
-            style: "outline:none;",
+            {children}
+            ShortcutHelpModal {}
         }
-        ShortcutHelpModal {}
     }
 }
 

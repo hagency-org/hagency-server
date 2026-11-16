@@ -106,7 +106,9 @@ pub fn ServerActions() -> Element {
                                                         if let Some(url) = url {
                                                             match palpo_admin::run_server_command(&url, &name, None).await {
                                                                 Ok(_) => show_toast("Command started successfully", ToastVariant::Success),
-                                                                Err(e) => show_toast(&format!("Failed: {}", e.message), ToastVariant::Error),
+                                                                Err(e) => { show_toast(&format!("Failed: {}", e.message), ToastVariant::Error);
+                                                                    crate::components::ui::notifications::add_typed_notification(&format!("Maintenance command {name} failed: {}", e.message),crate::components::ui::notifications::NotificationSeverity::Warning,Some(crate::components::ui::notifications::NotificationType::JobFailure));
+                                                                },
                                                             }
                                                         }
                                                     });

@@ -16,7 +16,7 @@
       root.setAttribute("data-theme", resolved);
     } else {
       root.classList.remove("light", "dark");
-      root.classList.add(resolved);
+      if (stored === "light" || stored === "dark") root.classList.add(stored);
     }
   } catch (_) {
     // The stylesheet still follows the system preference if storage is blocked.

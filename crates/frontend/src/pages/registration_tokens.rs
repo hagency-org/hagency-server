@@ -322,7 +322,7 @@ pub fn RegistrationTokenList() -> Element {
                         p { class: "text-sm text-muted-foreground", {t("registration_tokens.create_description")} }
                     }
                     div { class: "space-y-4 mt-4",
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { {t("registration_tokens.custom_token")} }
                             Input {
                                 placeholder: t("registration_tokens.custom_token_placeholder"),
@@ -332,7 +332,7 @@ pub fn RegistrationTokenList() -> Element {
                             }
                             p { class: "text-xs text-muted-foreground", {t("registration_tokens.custom_token_hint")} }
                         }
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { {t("registration_tokens.uses_allowed")} }
                             Input {
                                 r#type: "number".to_string(),
@@ -342,9 +342,9 @@ pub fn RegistrationTokenList() -> Element {
                                 disabled: is_creating,
                             }
                         }
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { {t("registration_tokens.expiry")} }
-                            input {
+                            crate::components::ui::input::Input {
                                 r#type: "date",
                                 class: "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                                 value: create_expiry_date.read().clone(),

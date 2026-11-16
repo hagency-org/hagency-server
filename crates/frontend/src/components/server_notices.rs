@@ -45,7 +45,7 @@ pub fn ServerNoticeDialog(open: bool, user_id: String, on_close: EventHandler<()
         Modal { open, on_close: move |_| on_close.call(()),
                 h2 { class: "text-lg font-semibold mb-2", "Send Server Notice" }
                 p { class: "text-sm text-muted-foreground mb-4", "Send a notice to {user_id}" }
-                textarea {
+                crate::components::ui::input::Textarea {
                     class: "flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm mb-4",
                     placeholder: "Type your message...",
                     value: message.read().clone(),

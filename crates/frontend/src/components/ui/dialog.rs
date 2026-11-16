@@ -1,4 +1,6 @@
 use dioxus::prelude::*;
+use std::{cell::RefCell, rc::Rc};
+use wasm_bindgen::JsCast;
 
 use super::button::{Button, ButtonVariant};
 
@@ -47,6 +49,7 @@ impl ModalSize {
 pub fn Modal(
     open: bool,
     on_close: EventHandler<()>,
+    #[props(default = "Dialog".to_string())] label: String,
     #[props(default = ModalSize::Lg)] size: ModalSize,
     #[props(default = "bg-background".to_string())] bg: String,
     #[props(default = String::new())] panel_class: String,
@@ -54,6 +57,20 @@ pub fn Modal(
     #[props(default = String::new())] container_class: String,
     children: Element,
 ) -> Element {
+    let dialog_id = super::input::use_dom_id("dialog");
+    let previous_focus = use_hook(|| Rc::new(RefCell::new(None::<web_sys::HtmlElement>)));
+    let restore = previous_focus.clone();
+    use_effect(use_reactive!(|open| {
+        if !open && let Some(element) = restore.borrow_mut().take() {
+            let _ = element.focus();
+        }
+    }));
+    let restore = previous_focus.clone();
+    use_drop(move || {
+        if let Some(element) = restore.borrow_mut().take() {
+            let _ = element.focus();
+        }
+    });
     if !open {
         return rsx! {};
     }
@@ -74,7 +91,18 @@ pub fn Modal(
     );
     let container_class = container_class.trim_end().to_string();
 
-    rsx! {
+    rsx! { dialog {
+        id: dialog_id.clone(),
+        aria_label: label,
+        style: "position:fixed;inset:0;width:100vw;height:100vh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;",
+        onmounted: move |_| {
+            if let Some(document)=web_sys::window().and_then(|w|w.document()) {
+                *previous_focus.borrow_mut()=document.active_element().and_then(|e|e.dyn_into().ok());
+                if let Some(dialog)=document.get_element_by_id(&dialog_id).and_then(|e|e.dyn_into::<web_sys::HtmlDialogElement>().ok())
+                    && dialog.show_modal().is_err() { on_close.call(()); }
+            }
+        },
+        onkeydown: move |event: KeyboardEvent| { if event.key()==Key::Escape { event.prevent_default(); on_close.call(()); } },
         div { class: "{container_class}",
             // Backdrop
             div {
@@ -88,7 +116,7 @@ pub fn Modal(
                 {children}
             }
         }
-    }
+    } }
 }
 
 #[component]
@@ -105,19 +133,10 @@ pub fn ConfirmDialog(
     rsx! {
         Modal {
             open,
+            label: title.clone(),
             on_close: move |_| on_cancel.call(()),
             bg: "glass-panel".to_string(),
             div {
-                role: "dialog",
-                aria_modal: "true",
-                aria_labelledby: "confirm-dialog-title",
-                aria_describedby: "confirm-dialog-description",
-                onkeydown: move |event: KeyboardEvent| {
-                    if event.key() == Key::Escape {
-                        event.prevent_default();
-                        on_cancel.call(());
-                    }
-                },
                 div { class: "flex flex-col space-y-2 text-center sm:text-left",
                     h2 { id: "confirm-dialog-title", class: "text-lg font-semibold", "{title}" }
                     p { id: "confirm-dialog-description", class: "text-sm text-muted-foreground", "{description}" }
