@@ -6042,7 +6042,7 @@ dependencies = [
 [[package]]
 name = "oauth2-types"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "base64ct",
  "chrono",
@@ -6608,7 +6608,7 @@ dependencies = [
 [[package]]
 name = "palpo"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=3201ce408020114db187bc6ac1a7e9b84599538f#3201ce408020114db187bc6ac1a7e9b84599538f"
+source = "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6704,7 +6704,7 @@ dependencies = [
 [[package]]
 name = "palpo-core"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=3201ce408020114db187bc6ac1a7e9b84599538f#3201ce408020114db187bc6ac1a7e9b84599538f"
+source = "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -6768,7 +6768,7 @@ dependencies = [
 [[package]]
 name = "palpo-core-macros"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=3201ce408020114db187bc6ac1a7e9b84599538f#3201ce408020114db187bc6ac1a7e9b84599538f"
+source = "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7"
 dependencies = [
  "as_variant",
  "palpo-identifiers-validation",
@@ -6783,7 +6783,7 @@ dependencies = [
 [[package]]
 name = "palpo-data"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=3201ce408020114db187bc6ac1a7e9b84599538f#3201ce408020114db187bc6ac1a7e9b84599538f"
+source = "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6853,7 +6853,7 @@ dependencies = [
 [[package]]
 name = "palpo-identifiers-validation"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=3201ce408020114db187bc6ac1a7e9b84599538f#3201ce408020114db187bc6ac1a7e9b84599538f"
+source = "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -6861,7 +6861,7 @@ dependencies = [
 [[package]]
 name = "palpo-server-macros"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=3201ce408020114db187bc6ac1a7e9b84599538f#3201ce408020114db187bc6ac1a7e9b84599538f"
+source = "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7"
 dependencies = [
  "palpo-identifiers-validation",
  "proc-macro-crate",
@@ -6904,7 +6904,7 @@ dependencies = [
 [[package]]
 name = "pasion-backend"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "anyhow",
  "argon2",
@@ -7013,7 +7013,7 @@ dependencies = [
 [[package]]
 name = "pasion-config"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "anyhow",
  "camino",
@@ -7045,7 +7045,7 @@ dependencies = [
 [[package]]
 name = "pasion-data"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7086,7 +7086,7 @@ dependencies = [
 [[package]]
 name = "pasion-i18n"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "camino",
  "fluent-bundle",
@@ -7106,7 +7106,7 @@ dependencies = [
 [[package]]
 name = "pasion-iana"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "schemars 1.2.2",
  "serde",
@@ -7115,7 +7115,7 @@ dependencies = [
 [[package]]
 name = "pasion-jose"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "base64ct",
  "chrono",
@@ -7146,7 +7146,7 @@ dependencies = [
 [[package]]
 name = "pasion-keystore"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "aead 0.5.2",
  "base64ct",
@@ -7174,7 +7174,7 @@ dependencies = [
 [[package]]
 name = "pasion-matrix"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7185,7 +7185,7 @@ dependencies = [
 [[package]]
 name = "pasion-matrix-palpo"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7202,7 +7202,7 @@ dependencies = [
 [[package]]
 name = "pasion-messaging"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7225,7 +7225,7 @@ dependencies = [
 [[package]]
 name = "pasion-policy"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7244,7 +7244,7 @@ dependencies = [
 [[package]]
 name = "pasion-tasks"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7277,7 +7277,7 @@ dependencies = [
 [[package]]
 name = "pasion-templates"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f"
+source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
 dependencies = [
  "anyhow",
  "arc-swap",
