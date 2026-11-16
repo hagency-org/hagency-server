@@ -26,8 +26,10 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 python3 scripts/audit-dependencies.py
 ```
 
-The script saves the full report to `.run/dependency-audit.json`. Every vulnerability and informational warning fails the strict policy. It rejects malformed or inconsistent reports, nonzero auditor exits, filtered targets or severities, advisory ignores, missing warning categories, future review dates and changes to reviewed Git sources. It never passes `--ignore` to the auditor. An intentional source update requires a fresh audit and compatibility review before updating `reviewed_sources`.
+The script saves the full report to `.run/dependency-audit.json`. Every vulnerability and informational warning fails the strict policy. It rejects malformed or inconsistent reports, nonzero auditor exits, filtered targets or severities, advisory ignores, missing warning categories, future review dates and changes to reviewed Git sources or new unreviewed Git packages. It never passes `--ignore` to the auditor. An intentional source update requires a fresh audit and compatibility review before updating `reviewed_sources`.
 
 `--no-fetch` uses a previously fetched advisory database; the default refreshes it. CI stores the full report as an artifact. A clean dependency audit does not establish absence of application bugs or prove side-channel resistance; cryptography, protocol, PostgreSQL and image regressions are separate checks.
 
 The real EXR-to-PNG regression also exposed an existing floating-point thumbnail failure. Palpo normalizes only float RGB/RGBA before sampling, preserving transparency and the existing integer 16-bit paths. Real EXR, nonfinite-channel, PNG color-depth and AVIF regressions cover the boundary. The Agent encrypted-ingress fixture now uses the actual host ingress clock; production future-timestamp rejection remains unchanged.
+
+Every Git package is recorded individually, including packages sharing a repository. Keeping one package at a reviewed revision cannot authorize a different package at another revision. All 23 Git packages currently resolve to five reviewed repository sources.

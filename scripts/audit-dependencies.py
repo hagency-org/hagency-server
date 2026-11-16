@@ -80,6 +80,10 @@ def check(report, policy, lock, today):
     for package, source in policy["reviewed_sources"].items():
         if sources.get(package) != {source}:
             errors.append("reviewed upstream source changed: " + package)
+    if policy["version"] == 3:
+        for package, package_sources in sources.items():
+            if any(source and source.startswith("git+") for source in package_sources) and package not in policy["reviewed_sources"]:
+                errors.append("unreviewed Git package: " + package)
     accepted = set()
     reviewed_details = {}
     for row in policy["findings"]:

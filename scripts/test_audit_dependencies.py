@@ -121,6 +121,20 @@ class DependencyPolicyTests(unittest.TestCase):
         self.assertTrue(self.check(report=clean, policy=self.clean_policy(), lock=self.lock.replace("#original", "#changed")))
         self.assertTrue(self.check(report=clean, policy=self.clean_policy(), today=date(2026, 10, 28)))
 
+    def test_clean_policy_requires_review_for_every_git_package(self):
+        for source in ("git+https://example.test/pasion#different", "git+https://example.test/other#revision"):
+            with self.subTest(source=source):
+                lock = self.lock + '\n[[package]]\nname = "another-package"\nversion = "1.0.0"\nsource = "' + source + '"\n'
+                policy = self.clean_policy()
+                self.assertTrue(self.check(report=self.clean_report(), policy=policy, lock=lock))
+                policy["reviewed_sources"]["another-package"] = source
+                self.assertEqual(self.check(report=self.clean_report(), policy=policy, lock=lock), [])
+                self.assertTrue(self.check(report=self.clean_report(), policy=policy, lock=lock.replace(source, source + "changed")))
+
+    def test_clean_policy_does_not_require_git_review_for_registry_or_workspace_packages(self):
+        lock = self.lock + '\n[[package]]\nname = "registry-package"\nversion = "1.0.0"\nsource = "registry+https://example.test/index"\n\n[[package]]\nname = "workspace-package"\nversion = "1.0.0"\n'
+        self.assertEqual(self.check(report=self.clean_report(), policy=self.clean_policy(), lock=lock), [])
+
     def test_malformed_empty_audit_cannot_pass_as_clean(self):
         for field, value in (("list", {}), ("list", ""), ("count", False), ("count", 0.0),
                              ("count", -1), ("found", True), ("found", 0)):
