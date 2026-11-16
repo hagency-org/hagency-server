@@ -2647,7 +2647,13 @@ async fn postgres_group_mentions_override_legacy_thread_auto_reply() {
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_failed_request_feedback_is_idempotent_and_next_request_runs() {
-    let f = fixture().await;
+    isolated_notice_fixture("failed_feedback", |url| async move {
+        failed_request_feedback_is_idempotent(&url).await;
+    })
+    .await;
+}
+async fn failed_request_feedback_is_idempotent(url: &str) {
+    let f = fixture_at(url).await;
     let now = crate::api::now_ms();
     let lease = LeaseRef {
         agent_id: f.agent.clone(),
@@ -2744,9 +2750,9 @@ async fn postgres_delivery_feedback_uses_reply_age_and_suppresses_sent_answers()
     .await;
 }
 
-/// Cases that move the rollout watermark or backdate queue rows own a database.
-/// This keeps bounded scheduler batches independent of unrelated test history,
-/// and the global watermark cannot change another case's feedback eligibility.
+/// Any scenario asserting a particular request-notice page owns a database.
+/// This keeps bounded scheduler batches independent of unrelated test history;
+/// watermark/backdated-row cases also cannot change another case's eligibility.
 async fn isolated_notice_fixture<F, Fut>(purpose: &str, run: F)
 where
     F: FnOnce(String) -> Fut,
@@ -3041,7 +3047,13 @@ async fn offline_feedback_keeps_request_queued(url: &str) {
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_lost_start_can_retire_unstarted_offer_without_poisoning_next_request() {
-    let f = fixture().await;
+    isolated_notice_fixture("lost_start", |url| async move {
+        lost_start_retires_unstarted_offer(&url).await;
+    })
+    .await;
+}
+async fn lost_start_retires_unstarted_offer(url: &str) {
+    let f = fixture_at(url).await;
     let now = crate::api::now_ms();
     let lease = LeaseRef {
         agent_id: f.agent.clone(),
@@ -3526,6 +3538,151 @@ async fn audit_notice_clock_deadline(url: &str) {
         );
         let mut db = f.transport.db.test_connection().await.unwrap();
         assert!(!sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.request_notice_candidates WHERE owner_event_id=$1) AS matched").bind::<Text,_>(&id).get_result::<Scheduled>(&mut *db).await.unwrap().matched,"terminal history must not be scheduled and evaluated again on every tick");
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_request_notice_backlog_makes_bounded_progress_without_duplicates_or_rearming() {
+    isolated_notice_fixture("backlog", |url| async move {
+        request_notice_backlog_progress(&url).await;
+    })
+    .await;
+}
+async fn request_notice_backlog_progress(url: &str) {
+    const REQUESTS: usize = 137; // More than two 64-row maintenance batches.
+    let mut f = fixture_at(url).await;
+    let lease = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: f
+            .transport
+            .acquire_for_test(&f.p, &f.agent, 60000, false, crate::api::now_ms())
+            .await
+            .unwrap()
+            .epoch,
+    };
+    let mut expected = BTreeSet::new();
+    // Build real failed dispatches through claim/ACK/start/finish, preserving
+    // normal identity, authorization and scheduler-trigger behavior.
+    for index in 0..REQUESTS {
+        let now = crate::api::now_ms();
+        f.facts.observed_at_ms = now;
+        if index % 16 == 0 {
+            f.transport
+                .renew_lease(&f.p, &lease, 60000, now)
+                .await
+                .unwrap();
+        }
+        let id = enqueue(&f, &format!("notice-backlog-{index:03}")).await;
+        let execution = format!("notice-backlog-execution-{index:03}");
+        running(&f, &lease, &id, &execution).await;
+        f.transport
+            .finish_without_reply(
+                &f.p,
+                &lease,
+                &id,
+                &execution,
+                "failed",
+                crate::api::now_ms(),
+            )
+            .await
+            .unwrap();
+        assert!(expected.insert(id));
+    }
+    #[derive(diesel::QueryableByName)]
+    struct Progress {
+        #[diesel(sql_type=BigInt)]
+        scheduled: i64,
+        #[diesel(sql_type=BigInt)]
+        outbox: i64,
+        #[diesel(sql_type=BigInt)]
+        sent: i64,
+    }
+    async fn progress(f: &Fixture) -> Progress {
+        let mut db = f.transport.db.test_connection().await.unwrap();
+        sql_query("SELECT (SELECT count(*) FROM hagency_agent_v1.request_notice_candidates) AS scheduled,(SELECT count(*) FROM hagency_agent_v1.request_notice_outbox) AS outbox,(SELECT count(*) FROM hagency_agent_v1.request_notice_outbox WHERE state='sent') AS sent").get_result::<Progress>(&mut *db).await.unwrap()
+    }
+    let initial = progress(&f).await;
+    assert_eq!(initial.scheduled, REQUESTS as i64);
+    assert_eq!((initial.outbox, initial.sent), (0, 0));
+    let mut delivered = BTreeSet::new();
+    let mut cursor = String::new();
+    let mut rounds = 0;
+    loop {
+        let before = progress(&f).await;
+        let page = f
+            .transport
+            .request_notice_candidates(&cursor, crate::api::now_ms())
+            .await
+            .unwrap();
+        let after = progress(&f).await;
+        assert!(
+            page.len() <= 20,
+            "the returned delivery window stays bounded"
+        );
+        assert_eq!(
+            before.scheduled - after.scheduled,
+            before.scheduled.min(64),
+            "one tick maintains at most 64 due requests"
+        );
+        assert_eq!(after.outbox - before.outbox, before.scheduled.min(64));
+        if rounds == 0 {
+            assert_eq!(after.scheduled, (REQUESTS - 64) as i64);
+            assert_eq!((after.outbox, page.len()), (64, 20));
+        }
+        if page.is_empty() {
+            break;
+        }
+        rounds += 1;
+        assert!(rounds <= REQUESTS, "a finite backlog must make progress");
+        for notice in page {
+            assert!(expected.contains(&notice.owner_event_id));
+            assert_eq!(notice.kind, "failed");
+            assert!(
+                delivered.insert(notice.owner_event_id.clone()),
+                "confirmed notifications must never appear in a later window"
+            );
+            f.facts.observed_at_ms = crate::api::now_ms();
+            let claimed = f
+                .transport
+                .claim_request_notice(&notice.id, &f.facts, crate::api::now_ms())
+                .await
+                .unwrap();
+            f.transport
+                .confirm_request_notice(
+                    &notice.id,
+                    claimed.worker_token.as_deref().unwrap(),
+                    &Ok(format!("$backlog-notice-{}:example.test", delivered.len())),
+                    crate::api::now_ms(),
+                )
+                .await
+                .unwrap();
+            cursor = notice.id;
+        }
+        assert_eq!(progress(&f).await.sent, delivered.len() as i64);
+    }
+    assert_eq!(
+        delivered, expected,
+        "all requests beyond the first maintenance batch must eventually be notified"
+    );
+    assert_eq!(rounds, REQUESTS.div_ceil(20));
+    for _ in 0..3 {
+        assert!(
+            f.transport
+                .request_notice_candidates(&cursor, crate::api::now_ms())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let state = progress(&f).await;
+        assert_eq!(
+            state.scheduled, 0,
+            "terminal notices must not be requeued for repeated historical evaluation"
+        );
+        assert_eq!(
+            (state.outbox, state.sent),
+            (REQUESTS as i64, REQUESTS as i64)
+        );
     }
 }
 
