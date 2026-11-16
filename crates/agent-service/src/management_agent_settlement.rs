@@ -228,6 +228,15 @@ async fn progress(
     )
     .await?
     {
+        // Replacement closes only native obligations that existed. An undecided
+        // request without any native intent or evidence remains unobserved.
+        let numeric = base.is_some()
+            || f.is_some()
+            || last.is_some()
+            || known > 0
+            || sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1) AS matched")
+                .bind::<Text,_>(&r.id).get_result::<Flag>(db).await?.matched;
+        let known = numeric.then_some(known);
         return Ok(AgentSettlementProgress {
             request_id: r.id.clone(),
             request_revision: r.revision,
@@ -237,8 +246,8 @@ async fn progress(
             settlement_current: false,
             can_request: false,
             blocking_reason: Some("executor_ledger_replaced".into()),
-            known_consumed_tokens: Some(known),
-            retained_tokens_floor: Some(known),
+            known_consumed_tokens: known,
+            retained_tokens_floor: known,
         });
     }
     let valid = match &last {

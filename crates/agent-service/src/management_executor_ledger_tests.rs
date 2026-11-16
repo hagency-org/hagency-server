@@ -1030,6 +1030,32 @@ async fn a_fresh_first_declaration_ends_what_the_earlier_database_held() {
     );
     let after = rows(&f).await;
 
+    let undecided = f
+        .domain
+        .managed_agent_settlement(applicant, &h.undecided.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            undecided.known_consumed_tokens,
+            undecided.retained_tokens_floor,
+            undecided.pending_command_id,
+            undecided.can_request,
+        ),
+        (None, None, None, false),
+        "replacement cannot fabricate a numeric observation for an undecided request"
+    );
+    let leased = f
+        .domain
+        .managed_agent_settlement(applicant, &h.leased.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (leased.known_consumed_tokens, leased.retained_tokens_floor),
+        (Some(0), Some(0)),
+        "replacement releases an issued native obligation even without its receipt"
+    );
+
     // Pools: every contribution of the device is withdrawn and marked.
     for contribution in [&h.pool, &pending, &draft] {
         assert_eq!(
