@@ -6215,6 +6215,110 @@
         }
       }
     },
+    "/hagency/api/v1/execution/replies/card": {
+      "post": {
+        "operationId": "recordCardReply",
+        "summary": "Record a plaintext reply the device put on its run card",
+        "description": "Device bearer with the live lease. In a plaintext Room the device already edited its run card into the answer; this records the card's Matrix event id and the answer for the exact running execution and completes the dispatch, so the server posts no second message.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CardReplyRequest"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/replies/card\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "reply": {
+                      "$ref": "#/components/schemas/ReplyIntent"
+                    }
+                  },
+                  "required": [
+                    "reply"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        }
+      }
+    },
     "/hagency/api/v1/execution/replies/encrypted": {
       "post": {
         "operationId": "recordEncryptedReply",
@@ -10419,6 +10523,43 @@
           "reply"
         ],
         "additionalProperties": false
+      },
+      "CardReplyRequest": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "reply": {
+            "type": "object",
+            "properties": {
+              "dispatchId": {
+                "type": "string"
+              },
+              "executionId": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              },
+              "matrixEventId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "dispatchId",
+              "executionId",
+              "body",
+              "matrixEventId"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "lease",
+          "reply"
+        ],
+        "additionalProperties": false
       }
     },
     "securitySchemes": {
@@ -10438,7 +10579,7 @@
   },
   "x-source-sha256": {
     "crates/agent-service/src/api.rs": "39b3361843c733ef4660c3a74f248463b5577ab1b61c01c4b4e28fe0a2a2a851",
-    "crates/agent-service/src/api_transport.rs": "44185b3a9199429a8e5ae2a7f04005c06c507fb7903ded69cf501b230f1372a6",
+    "crates/agent-service/src/api_transport.rs": "9ae87d89047b45cca5ea1438a7d86898367db111281d61ebe8ac2784bbcc84c8",
     "crates/agent-service/src/transport_history.rs": "a2d2aab590274a9cc3af73dde751544bcbc64f761693bbc3e1faa9c1b4fd6c92",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f"
   },

@@ -234,6 +234,17 @@ pub(crate) async fn call(
             let f = facts(t, g, p, &b.reply.dispatch_id).await?;
             Ok(json!({"reply":t.reconcile_known_reply(p,&b.lease,b.reply,&f,now_ms()).await?}))
         }
+        "/hagency/api/v1/execution/replies/card" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Card {
+                lease: LeaseRef,
+                reply: crate::transport::CardReply,
+            }
+            let b: Card = body(req).await?;
+            let f = facts(t, g, p, &b.reply.dispatch_id).await?;
+            Ok(json!({"reply":t.record_card_reply(p,&b.lease,b.reply,&f,now_ms()).await?}))
+        }
         "/hagency/api/v1/execution/replies/encrypted" => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]

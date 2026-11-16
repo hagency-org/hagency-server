@@ -16,6 +16,9 @@ mod history;
 mod e2ee;
 #[path = "pause_notices.rs"]
 pub(crate) mod pause_notices;
+#[path = "transport_card_reply.rs"]
+mod card_reply;
+pub use card_reply::CardReply;
 #[path = "processing.rs"]
 mod processing;
 // TODO(R4): transport.rs is over budget; live status messages live in their own module.
