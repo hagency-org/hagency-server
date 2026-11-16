@@ -22246,7 +22246,7 @@
     "crates/agent-service/src/api_project_board.rs": "315e3c9359438a28c04694b68d9619f281c1b3fcdabc557d4a6971373110cc47",
     "crates/agent-service/src/agent_crypto.rs": "2f74ef9465ac627a727d142e9ebffbe9af2ad39eef08117b97434bf7e11ad975",
     "crates/agent-service/src/matrix_crypto.rs": "daea874101980a7bea72d86d31bd59e101d9b0c1ce1079f449db19502c8ebadb",
-    "crates/agent-service/src/agent_crypto_receive.rs": "e8d23a5633b4f889160bdd788c5b5f08cfe0b53761211d0c8b2df83b3983e6da",
+    "crates/agent-service/src/agent_crypto_receive.rs": "3cc274036e5efdb36e5a2c99c9a434bf2570929538f88f5a78b1323138701ae3",
     "crates/agent-service/src/transport_ciphertexts.rs": "857b2110ed63e1854edfafa4abf1b0ec1adf2c18624b5fde313852bff2862b2e",
     "crates/agent-service/src/ciphertext_schema.sql": "ea43c360e60a316d3cd15e16494bee1b5c60f5482b4d0ad9bbe0883c2f07ad29",
     "crates/agent-service/src/workers.rs": "cc1c1f6c9484f0cb6e72f079fcaa8ab02c53d0fde9bf2b3e35a5e5605eff6582",
