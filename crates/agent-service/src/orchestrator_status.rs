@@ -202,6 +202,6 @@ mod tests {
     #[test]
     fn only_the_board_token_is_accepted() {
         assert!(same(b"abc", b"abc"));
-        assert!(!same(b"abc", b"abd") && !same(b"abc", b"ab") && !same(b"", b"abc"));
+        assert!(!same(b"abc", b"abx") && !same(b"abc", b"ab") && !same(b"", b"abc"));
     }
 }
