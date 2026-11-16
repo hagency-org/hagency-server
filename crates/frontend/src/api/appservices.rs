@@ -46,6 +46,24 @@ pub async fn update_appservice_url(
 fn url_update_body(url: &str, expected_url: Option<&str>) -> serde_json::Value {
     serde_json::json!({"url":url,"expected_url":expected_url})
 }
+pub async fn delete_appservice(id: &str) -> Result<(), HttpError> {
+    let path = format!("{BASE}/{}", urlencoding::encode(id));
+    let _: serde_json::Value = api_client(&path, "DELETE", None).await?;
+    Ok(())
+}
+
+pub async fn disable_appservice(id: &str) -> Result<(), HttpError> {
+    let path = format!("{BASE}/{}/disable", urlencoding::encode(id));
+    let _: serde_json::Value = api_client(&path, "POST", None).await?;
+    Ok(())
+}
+
+pub async fn enable_appservice(id: &str) -> Result<(), HttpError> {
+    let path = format!("{BASE}/{}/enable", urlencoding::encode(id));
+    let _: serde_json::Value = api_client(&path, "POST", None).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,22 +85,4 @@ mod tests {
             2
         );
     }
-}
-
-pub async fn delete_appservice(id: &str) -> Result<(), HttpError> {
-    let path = format!("{BASE}/{}", urlencoding::encode(id));
-    let _: serde_json::Value = api_client(&path, "DELETE", None).await?;
-    Ok(())
-}
-
-pub async fn disable_appservice(id: &str) -> Result<(), HttpError> {
-    let path = format!("{BASE}/{}/disable", urlencoding::encode(id));
-    let _: serde_json::Value = api_client(&path, "POST", None).await?;
-    Ok(())
-}
-
-pub async fn enable_appservice(id: &str) -> Result<(), HttpError> {
-    let path = format!("{BASE}/{}/enable", urlencoding::encode(id));
-    let _: serde_json::Value = api_client(&path, "POST", None).await?;
-    Ok(())
 }

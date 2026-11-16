@@ -420,6 +420,30 @@ pub async fn make_room_admin(room_id: &str, user_id: &str) -> Result<(), HttpErr
     Ok(())
 }
 
+pub async fn get_room_aliases(room_id: &str) -> Result<Vec<String>, HttpError> {
+    super::admin_capabilities::require("room_aliases").await?;
+    #[derive(serde::Deserialize)]
+    struct Response {
+        aliases: Vec<String>,
+    }
+    let encoded = urlencoding::encode(room_id);
+    let url = build_url(&format!("/_palpo/admin/v1/rooms/{encoded}/aliases"), &[])?;
+    let response: Response = api_client(&url, "GET", None).await?;
+    Ok(response.aliases)
+}
+pub async fn get_room_state_content(
+    room_id: &str,
+    event_type: &str,
+) -> Result<serde_json::Value, HttpError> {
+    let room = urlencoding::encode(room_id);
+    let event = urlencoding::encode(event_type);
+    let url = build_url(
+        &format!("/_matrix/client/v3/rooms/{room}/state/{event}/"),
+        &[],
+    )?;
+    api_client(&url, "GET", None).await
+}
+
 #[cfg(test)]
 mod room_filter_tests {
     use super::*;
@@ -473,28 +497,4 @@ mod room_filter_tests {
             assert!(key(filter).starts_with(ROOM_LIST_CACHE_PREFIX));
         }
     }
-}
-
-pub async fn get_room_aliases(room_id: &str) -> Result<Vec<String>, HttpError> {
-    super::admin_capabilities::require("room_aliases").await?;
-    #[derive(serde::Deserialize)]
-    struct Response {
-        aliases: Vec<String>,
-    }
-    let encoded = urlencoding::encode(room_id);
-    let url = build_url(&format!("/_palpo/admin/v1/rooms/{encoded}/aliases"), &[])?;
-    let response: Response = api_client(&url, "GET", None).await?;
-    Ok(response.aliases)
-}
-pub async fn get_room_state_content(
-    room_id: &str,
-    event_type: &str,
-) -> Result<serde_json::Value, HttpError> {
-    let room = urlencoding::encode(room_id);
-    let event = urlencoding::encode(event_type);
-    let url = build_url(
-        &format!("/_matrix/client/v3/rooms/{room}/state/{event}/"),
-        &[],
-    )?;
-    api_client(&url, "GET", None).await
 }

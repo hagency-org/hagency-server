@@ -205,9 +205,11 @@ mod tests {
     #[test]
     fn federation_and_job_preferences_are_applied_to_their_notification_types() {
         use crate::components::ui::notifications::NotificationType;
-        let mut prefs = NotificationPreferences::default();
-        prefs.federation_alert = false;
-        prefs.job_failure = false;
+        let prefs = NotificationPreferences {
+            federation_alert: false,
+            job_failure: false,
+            ..Default::default()
+        };
         assert!(!prefs.enabled(&NotificationType::FederationAlert));
         assert!(!prefs.enabled(&NotificationType::JobFailure));
         assert!(prefs.enabled(&NotificationType::ReportFiled));

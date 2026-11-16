@@ -34,7 +34,15 @@ pub fn KeyboardShortcuts(children: Element) -> Element {
             && let Some(active) = doc.active_element()
         {
             let tag = active.tag_name().to_uppercase();
-            if tag == "INPUT" || tag == "TEXTAREA" || tag == "SELECT" {
+            if tag == "INPUT"
+                || tag == "TEXTAREA"
+                || tag == "SELECT"
+                || active
+                    .closest("dialog, [role=dialog]")
+                    .ok()
+                    .flatten()
+                    .is_some()
+            {
                 return;
             }
             if active

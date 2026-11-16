@@ -111,7 +111,7 @@ pub fn use_resolved_dark_mode() -> Signal<bool> {
     }
     let mut dark = use_signal(|| get_resolved_theme() == "dark");
     use_hook(move || {
-        let listener = web_sys::window()
+        web_sys::window()
             .and_then(|w| w.match_media("(prefers-color-scheme: dark)").ok().flatten())
             .map(|media| {
                 let callback = Closure::wrap(Box::new(move || {
@@ -124,8 +124,7 @@ pub fn use_resolved_dark_mode() -> Signal<bool> {
                 let _ = media
                     .add_event_listener_with_callback("change", callback.as_ref().unchecked_ref());
                 std::rc::Rc::new(Listener { media, callback })
-            });
-        listener
+            })
     });
     dark
 }
