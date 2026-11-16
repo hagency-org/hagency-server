@@ -80,15 +80,21 @@ fi
 platform() {
     GITFAB_TOKEN_FILE=$token_file "$forge" --backend "$BACKEND" --api "$(backend_api "$BACKEND")" "$@"
 }
+# What the platform said is only the platform's word when it came from its public API; any other API
+# root (a local test stand-in, a proxy) is named in each platform result.
+case "$BACKEND:$(backend_api "$BACKEND")" in
+    github:https://api.github.com | gitcode:https://api.gitcode.com/api/v5) via="" ;;
+    *) via=" (via $(backend_api "$BACKEND"), not the public $BACKEND API)" ;;
+esac
 if platform release-info "$REPO" --tag "$tag" >"$RUN_DIR/release-platform.json" 2>"$RUN_DIR/.forge-err"; then
-    check release.platform ok "$BACKEND has Release $tag"
+    check release.platform ok "$BACKEND has Release $tag$via"
 else
     check release.platform fail "$BACKEND: $(cat "$RUN_DIR/release-platform.json" "$RUN_DIR/.forge-err" 2>/dev/null | tr -d '\n')"
 fi
 if platform checks "$REPO" "$number" >"$RUN_DIR/release-checks.json" 2>"$RUN_DIR/.forge-err"; then
-    check release.checks ok "Pull Request $number checks passed"
+    check release.checks ok "Pull Request $number checks passed$via"
 else
-    check release.checks fail "Pull Request $number: $(cat "$RUN_DIR/release-checks.json" "$RUN_DIR/.forge-err" 2>/dev/null | tr -d '\n')"
+    check release.checks fail "Pull Request $number$via: $(cat "$RUN_DIR/release-checks.json" "$RUN_DIR/.forge-err" 2>/dev/null | tr -d '\n')"
 fi
 rm -f "$RUN_DIR/.forge-err"
 FINAL_SHA=$(json_field headSha <"$RUN_DIR/release-checks.json")
