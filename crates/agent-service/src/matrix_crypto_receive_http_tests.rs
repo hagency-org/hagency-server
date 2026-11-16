@@ -1,5 +1,6 @@
-use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+use super::*;
 
 /// Stream the real response over HTTP; assertions exercise crypto_json's chunk
 /// bound as well as projection, not a preconstructed Value passed to a helper.
@@ -82,6 +83,54 @@ async fn receive_sync_delivers_a_single_large_message_with_its_original_cursor()
     assert_eq!(
         received, expected,
         "no message content or next_batch is truncated or rewritten"
+    );
+    assert_fixed_request(&server.await.unwrap());
+}
+#[tokio::test]
+async fn receive_sync_delivers_numeric_content_expanded_by_json_normalization() {
+    // Match the upstream's accepted sendToDevice body, then its Value roundtrip.
+    // These numbers are accepted by the reviewed Palpo handler; this is not a
+    // claim that canonical signing JSON requires support for float literals.
+    let numbers = "1e15,".repeat(599_999) + "1e15";
+    let compact = format!(
+        r#"{{"messages":{{"@_hagency_agent:example.test":{{"HAGE2EERECEIVE":{{"negative_zero":-0,"values":[{numbers}]}}}}}}}}"#
+    );
+    assert!(
+        compact.len() < 8 * 1024 * 1024,
+        "upstream ingress permits this body"
+    );
+    let mut accepted: Value = serde_json::from_str(&compact).unwrap();
+    let content = accepted["messages"]["@_hagency_agent:example.test"]["HAGE2EERECEIVE"].take();
+    let expected = json!({
+        "next_batch":"sync-after-large",
+        "to_device":{"events":[{
+            "sender":"@owner:example.test",
+            "type":"org.hagency.normalization_probe",
+            "content":content
+        }]},
+        "device_one_time_keys_count":{"signed_curve25519":3}
+    });
+    let normalized_len = serde_json::to_vec(&expected).unwrap().len();
+    assert!(
+        normalized_len > 9 * 1024 * 1024,
+        "the previous bound stalled this mailbox"
+    );
+    assert!(normalized_len <= crate::domain::agent_crypto::receive::MAX_RESPONSE_BYTES);
+    let (matrix, server) = response_server(expected.clone()).await;
+    let (status, received) = matrix
+        .crypto_identity_request(
+            "@_hagency_agent:example.test",
+            "HAGE2EERECEIVE",
+            Operation::ReceiveSync,
+            json!({"since":"sync-before-large"}),
+            crate::api::now_ms() + 10_000,
+        )
+        .await
+        .unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(
+        received, expected,
+        "normalized content and cursor must remain complete"
     );
     assert_fixed_request(&server.await.unwrap());
 }

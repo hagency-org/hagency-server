@@ -2,10 +2,15 @@
 use super::*;
 pub(crate) const CAPABILITY: &str = "agent-crypto-owner-receive-v1";
 // Local bounded-resource policy for the reviewed Palpo pin: its Matrix JSON
-// ingress accepts 8 MiB; leave another 1 MiB for sync framing and crypto metadata.
-// This is not a Matrix protocol maximum. Never trim messages or advance a cursor
-// when the streamed response exceeds this allowance.
-pub(crate) const MAX_RESPONSE_BYTES: usize = 9 * 1024 * 1024;
+// ingress accepts 8 MiB, but parsing and reserializing Value can expand numbers.
+// The locked serde_json/zmij finite-f64 formatter uses at most 24 bytes. Decimal
+// and exponent literals occupy at least 3 bytes; the shorter -0 becomes -0.0.
+// In-range integers and JSON strings do not grow; overflowing integers already
+// occupy more than 3 bytes. Allow 8x normalization plus 1 MiB for sync framing
+// and crypto metadata. This is a local resource policy,
+// not a Matrix protocol maximum or a guarantee for arbitrarily large batches.
+// Never trim messages or advance a cursor when the stream exceeds this bound.
+pub(crate) const MAX_RESPONSE_BYTES: usize = (8 * 8 + 1) * 1024 * 1024;
 pub(crate) const FILTER: &str =
     r#"{"room":{"rooms":[]},"presence":{"types":[]},"account_data":{"types":[]}}"#;
 pub(crate) fn route(method: &str, path: &str) -> Result<Operation> {
