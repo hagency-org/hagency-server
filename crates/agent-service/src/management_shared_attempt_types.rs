@@ -9,6 +9,16 @@ use serde::{Deserialize, Serialize};
 
 pub const SHARED_ATTEMPT_CAPABILITY: &str = "hagency.managed_agents.execution.v2";
 pub const MAX_ATTEMPT_BYTES: usize = 32 * 1024;
+/// Explicit evidence that an uncertain run was ended by the time bound, not
+/// observed to stop. It carries only the known process identity, never usage.
+pub const UNCERTAIN_TIMEOUT: &str = "uncertain_timeout";
+/// A stop receipt may name a reason only for a timed-out claimed process.
+pub fn valid_receipt_reason(state: &str, reason: Option<&str>) -> bool {
+    match reason {
+        None => true,
+        Some(r) => r == UNCERTAIN_TIMEOUT && state == "stopped",
+    }
+}
 fn invalid() -> Error {
     Error::Invalid("invalid_shared_attempt")
 }
@@ -58,16 +68,15 @@ pub struct SharedAttemptPredecessor {
     pub process_digest: String,
 }
 impl SharedAttemptPredecessor {
+    // An empty processDigest names a predecessor whose only evidence is a
+    // verified not_started receipt; the server checks that receipt on start.
     pub fn validate(&self) -> Result<()> {
         key(&self.command_id)?;
         if !positive(self.process_attempt)
-            || [
-                &self.command_digest,
-                &self.stopped_receipt_digest,
-                &self.process_digest,
-            ]
-            .iter()
-            .any(|v| !valid_digest(v))
+            || [&self.command_digest, &self.stopped_receipt_digest]
+                .iter()
+                .any(|v| !valid_digest(v))
+            || (!self.process_digest.is_empty() && !valid_digest(&self.process_digest))
         {
             return Err(invalid());
         }
@@ -154,7 +163,8 @@ impl SharedAttemptCommand {
             || self.command_id == original.command_id
             || self.process_attempt == 2
                 && (self.predecessor.command_id != original.command_id
-                    || self.predecessor.command_digest != self.original_runtime_digest)
+                    || self.predecessor.command_digest != self.original_runtime_digest
+                    || self.predecessor.process_digest.is_empty())
             || self.budget_observation.allocated_tokens != original.reserve_command.requested_tokens
             || self.budget_observation.remaining_tokens <= 0
             || !positive(self.issued_at_ms)
@@ -186,6 +196,9 @@ pub struct SharedAttemptProcessReceipt {
     pub process_digest: Option<String>,
     pub state: String,
     pub policy_digest: Option<String>,
+    /// Present only on a stop recorded by the uncertainty time bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 impl SharedAttemptProcessReceipt {
     pub fn validate_for(&self, c: &SharedAttemptCommand) -> Result<()> {
@@ -198,7 +211,10 @@ impl SharedAttemptProcessReceipt {
             || self.process_attempt != c.process_attempt
             || self.original_runtime_digest != c.original_runtime_digest
             || !positive(self.ledger_revision)
-            || !matches!(self.state.as_str(), "qualified" | "stopped" | "unknown")
+            || !matches!(
+                self.state.as_str(),
+                "qualified" | "stopped" | "unknown" | "not_started"
+            )
             || self
                 .process_digest
                 .as_deref()
@@ -210,7 +226,9 @@ impl SharedAttemptProcessReceipt {
             || self.state == "qualified"
                 && (self.process_digest.is_none() || self.policy_digest.is_none())
             || self.state == "stopped" && self.process_digest.is_none()
+            || self.state == "not_started" && self.process_digest.is_some()
             || self.state != "qualified" && self.policy_digest.is_some()
+            || !valid_receipt_reason(&self.state, self.reason.as_deref())
         {
             return Err(invalid());
         }

@@ -52,6 +52,12 @@ pub(super) async fn call(
                 .await?,
         )
         .map_err(|_| Error::Unavailable("encoding_failed"))?,
+        (&Method::POST, ["executor-ledger", "declare"]) => serde_json::to_value(
+            domain
+                .declare_executor_ledger(p, policy, body(req).await?)
+                .await?,
+        )
+        .map_err(|_| Error::Unavailable("encoding_failed"))?,
         (&Method::GET, ["agent-requests", id, "assignment"]) => {
             json!({"assignment":domain.managed_agent_assignment(p,policy,id).await?})
         }

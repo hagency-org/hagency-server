@@ -142,6 +142,18 @@ impl ManagementPolicy {
         self.project_reservations = enabled;
         self
     }
+    /// Every gate of the shared demand retry route (ADR-193 amendment): the
+    /// route and the advertised capability use this one predicate.
+    pub fn shared_demand_retries(&self) -> bool {
+        self.shared_execution()
+            && self.agent_matrix_provisioning()
+            && self.agent_executor()
+            && self.agent_admission()
+            && self.project_reservations()
+            && self.shared_successors()
+            && self.shared_durable_intake()
+            && self.shared_demands()
+    }
     pub fn project_reservations(&self) -> bool {
         self.project_reservations
     }

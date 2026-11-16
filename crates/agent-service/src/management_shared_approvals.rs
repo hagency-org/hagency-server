@@ -14,6 +14,11 @@ pub struct RegisterApproval {
     id: String,
     request: Value,
     remaining_ms: i64,
+    /// The person who sent the message answers this request. The resource
+    /// owner is neither asked nor shown it. Daemons that omit this keep the
+    /// owner's (and for delegable requests the manager's) decision.
+    #[serde(default)]
+    requester_decides: bool,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -93,6 +98,85 @@ fn encrypted_request(request: &Value) -> Result<EncryptedRequest> {
     let _ = (value.session_allowed, value.manager_can_decide);
     Ok(value)
 }
+// Claude and Octos permission callbacks have their own closed schema. They never use
+// question cards. The funding owner authorizes the native tool, unless the
+// owner's daemon asked that the person who sent the message decides a Claude
+// request. Octos requests stay owner-only.
+fn plain_request_runtime(request: &Value, requester_decides: bool) -> Result<&'static str> {
+    let invalid = || Error::Invalid("invalid_permission_request");
+    if matches!(
+        request["method"].as_str(),
+        Some(
+            "item/commandExecution/requestApproval"
+                | "item/fileChange/requestApproval"
+                | "item/permissions/requestApproval"
+        )
+    ) {
+        if !request["params"].is_object()
+            || !request["sessionAllowed"].is_boolean()
+            || !request["managerCanDecide"].is_boolean()
+            || ["threadId", "turnId", "itemId"].iter().any(|k| {
+                request["params"][k]
+                    .as_str()
+                    .is_none_or(|s| s.is_empty() || s.len() > 255)
+            })
+        {
+            return Err(invalid());
+        }
+        return Ok("codex");
+    }
+    let object = request.as_object().ok_or_else(invalid)?;
+    let params = request["params"].as_object().ok_or_else(invalid)?;
+    let runtime = match request["method"].as_str() {
+        Some("claude/can_use_tool") => "claude",
+        Some("octos/can_use_tool") => "octos",
+        _ => return Err(invalid()),
+    };
+    if requester_decides && runtime != "claude"
+        || request["sessionAllowed"] != false
+        || request["managerCanDecide"] != requester_decides
+        || object.len() != 5
+        || object.keys().any(|k| {
+            !matches!(
+                k.as_str(),
+                "id" | "method" | "params" | "sessionAllowed" | "managerCanDecide"
+            )
+        })
+        || params.len() != 3
+        || params
+            .keys()
+            .any(|k| !matches!(k.as_str(), "sessionId" | "toolName" | "input"))
+        || !params["input"].is_object()
+        || [&request["id"], &params["sessionId"], &params["toolName"]]
+            .iter()
+            .any(|v| {
+                v.as_str().is_none_or(|s| {
+                    s.is_empty() || s.len() > 255 || s.chars().any(char::is_control)
+                })
+            })
+    {
+        return Err(invalid());
+    }
+    Ok(runtime)
+}
+/// A request the sender answers names that person as `deciderMxid`. Only they
+/// see it and decide it; the owner's daemon still takes the decision.
+fn requester_decides(payload: &Value) -> bool {
+    payload.get("deciderMxid").is_some()
+}
+fn may_read(a: &Row, payload: &Value, p: &Principal) -> bool {
+    if requester_decides(payload) {
+        return a.requester_mxid == p.mxid && payload["deciderMxid"] == p.mxid.as_str();
+    }
+    a.owner_user_id == p.user_id || a.requester_mxid == p.mxid
+}
+fn may_decide(a: &Row, payload: &Value, p: &Principal) -> bool {
+    if requester_decides(payload) {
+        return may_read(a, payload, p) && payload["request"]["managerCanDecide"] == true;
+    }
+    a.owner_user_id == p.user_id
+        || (a.requester_mxid == p.mxid && payload["request"]["managerCanDecide"] == true)
+}
 async fn row(db: &mut AsyncPgConnection, id: &str) -> Result<Row> {
     sql_query("SELECT * FROM hagency_agent_v1.management_shared_approvals WHERE id=$1 FOR UPDATE")
         .bind::<Text, _>(id)
@@ -132,29 +216,23 @@ impl DomainStore {
         } else {
             None
         };
-        if encrypted.is_none()
-            && (!matches!(
-                request["method"].as_str(),
-                Some(
-                    "item/commandExecution/requestApproval"
-                        | "item/fileChange/requestApproval"
-                        | "item/permissions/requestApproval"
-                )
-            ) || !request["params"].is_object()
-                || !request["sessionAllowed"].is_boolean()
-                || !request["managerCanDecide"].is_boolean()
-                || ["threadId", "turnId", "itemId"].iter().any(|k| {
-                    request["params"][k]
-                        .as_str()
-                        .is_none_or(|s| s.is_empty() || s.len() > 255)
-                }))
-        {
-            return Err(Error::Invalid("invalid_permission_request"));
-        }
+        let request_runtime = if encrypted.is_none() {
+            Some(plain_request_runtime(request, input.requester_decides)?)
+        } else {
+            None
+        };
         let mut guard = self.db.lock().await?;
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
    let now=clock(db).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;
    let c=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
+   if request_runtime.is_some_and(|runtime| runtime!=c.runtime)
+    || c.runtime=="claude" && (request["sessionAllowed"]!=false || request["managerCanDecide"]!=input.requester_decides)
+    || c.runtime=="octos" && (input.requester_decides || request["sessionAllowed"]!=false || request["managerCanDecide"]!=false)
+    // The sender may only be given requests the daemon already limits to the
+    // Agent's own folder or the sandboxed native tool.
+    || input.requester_decides && request["managerCanDecide"]!=true {
+    return Err(Error::Invalid("invalid_permission_request"));
+   }
    let raw:Value=decode(&r.payload)?;
    if raw["toolPolicy"]["mode"]!="standard" {return Err(Error::Unauthorized("approval_mode_required"));}
    let w=work_row(db,&input.work_id).await?;let work=item(&w,&r)?;
@@ -165,14 +243,18 @@ impl DomainStore {
    }
    if w.state!="started" || w.digest!=input.work_digest {return Err(Error::Conflict("approval_work_changed"));}
    let old=sql_query("SELECT * FROM hagency_agent_v1.management_shared_approvals WHERE id=$1").bind::<Text,_>(&input.id).get_result::<Row>(db).await.optional()?;
-   if let Some(old)=old {let payload:Value=decode(&old.payload)?;if old.work_id!=w.id || old.owner_user_id!=p.user_id || payload["request"]!=input.request{return Err(Error::Conflict("approval_request_changed"));}return Ok(json!({"approval":payload,"digest":old.digest}));}
+   if let Some(old)=old {let payload:Value=decode(&old.payload)?;if old.work_id!=w.id || old.owner_user_id!=p.user_id || payload["request"]!=input.request || requester_decides(&payload)!=input.requester_decides{return Err(Error::Conflict("approval_request_changed"));}return Ok(json!({"approval":payload,"digest":old.digest}));}
    if sql_query("SELECT count(*)>=16 AS matched FROM hagency_agent_v1.management_shared_approvals WHERE runtime_id=$1 AND NOT consumed AND expires_at_ms>$2").bind::<Text,_>(&r.id).bind::<BigInt,_>(now).get_result::<Flag>(db).await?.matched {return Err(Error::Unavailable("approval_queue_full"));}
    let expires=(now+input.remaining_ms).min(reserve_lifetime(db,&c.reserve_command,now).await?);
-   let mut payload=json!({"id":input.id,"workId":w.id,"agentId":c.reserve_command.proposed_agent_id,"agentName":c.reserve_command.definition.name,"roomId":work.room_id,"eventId":work.event_id,"threadRoot":work.thread_root,"requesterMxid":work.requester_mxid,"ownerMxid":p.mxid,"request":input.request,"expiresAtMs":expires,"sessionScope":"current_codex_session"});
+   let mut payload=json!({"id":input.id,"workId":w.id,"agentId":c.reserve_command.proposed_agent_id,"agentName":c.reserve_command.definition.name,"roomId":work.room_id,"eventId":work.event_id,"threadRoot":work.thread_root,"requesterMxid":work.requester_mxid,"ownerMxid":p.mxid,"request":input.request,"expiresAtMs":expires,"sessionScope":match c.runtime {"claude"=>"current_claude_session","octos"=>"current_octos_session",_=>"current_codex_session"}});
    if encrypted.is_some(){let m=membership(db,&r).await?;payload["agentMxid"]=json!(m.puppet_mxid);payload["managerMxid"]=json!(c.reserve_command.manager_mxid);}
+   if input.requester_decides {payload["deciderMxid"]=json!(work.requester_mxid);}
    let digest=allocation_digest(&payload)?;
-   // Other Room members may send the work, but manager-delegable decisions stay with the manager.
-   sql_query("INSERT INTO hagency_agent_v1.management_shared_approvals(id,work_id,runtime_id,owner_user_id,requester_mxid,room_id,payload,digest,expires_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)").bind::<Text,_>(&input.id).bind::<Text,_>(&w.id).bind::<Text,_>(&r.id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&c.reserve_command.manager_mxid).bind::<Text,_>(&work.room_id).bind::<Text,_>(wire(&payload)?).bind::<Text,_>(&digest).bind::<BigInt,_>(expires).execute(db).await?;
+   // Other Room members may send the work. Without requester_decides,
+   // manager-delegable decisions stay with the manager; with it the sender
+   // decides. The column names whoever may read and decide besides the owner.
+   let decider=if input.requester_decides {&work.requester_mxid} else {&c.reserve_command.manager_mxid};
+   sql_query("INSERT INTO hagency_agent_v1.management_shared_approvals(id,work_id,runtime_id,owner_user_id,requester_mxid,room_id,payload,digest,expires_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)").bind::<Text,_>(&input.id).bind::<Text,_>(&w.id).bind::<Text,_>(&r.id).bind::<Text,_>(&p.user_id).bind::<Text,_>(decider).bind::<Text,_>(&work.room_id).bind::<Text,_>(wire(&payload)?).bind::<Text,_>(&digest).bind::<BigInt,_>(expires).execute(db).await?;
    Ok(json!({"approval":payload,"digest":digest}))
   }).await
     }
@@ -186,14 +268,16 @@ impl DomainStore {
         }
         let mut db = self.db.lock().await?;
         let now = clock(&mut db).await?;
-        let rows=sql_query("SELECT * FROM hagency_agent_v1.management_shared_approvals WHERE (owner_user_id=$1 OR requester_mxid=$2) AND ($3::text IS NULL OR room_id=$3) AND NOT consumed AND expires_at_ms>$4 ORDER BY expires_at_ms,id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Nullable<Text>,_>(&input.room_id).bind::<BigInt,_>(now).load::<Row>(&mut *db).await?;
+        // A request its sender decides is not listed for the owner.
+        let rows=sql_query("SELECT * FROM hagency_agent_v1.management_shared_approvals WHERE (requester_mxid=$2 OR (owner_user_id=$1 AND payload::jsonb->'deciderMxid' IS NULL)) AND ($3::text IS NULL OR room_id=$3) AND NOT consumed AND expires_at_ms>$4 ORDER BY expires_at_ms,id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Nullable<Text>,_>(&input.room_id).bind::<BigInt,_>(now).load::<Row>(&mut *db).await?;
         let mut result = Vec::new();
         for a in rows {
             if live_request(&mut db, &a, &self.server, now).await? {
                 let payload: Value = decode(&a.payload)?;
-                let can = a.owner_user_id == p.user_id
-                    || (a.requester_mxid == p.mxid
-                        && payload["request"]["managerCanDecide"] == true);
+                if !may_read(&a, &payload, p) {
+                    continue;
+                }
+                let can = may_decide(&a, &payload, p);
                 result.push(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}));
             }
         }
@@ -204,16 +288,15 @@ impl DomainStore {
         key(id)?;
         let mut db = self.db.lock().await?;
         let a = row(&mut db, id).await?;
-        if a.owner_user_id != p.user_id && a.requester_mxid != p.mxid {
+        let payload: Value = decode(&a.payload)?;
+        if !may_read(&a, &payload, p) {
             return Err(Error::Unauthorized("approval_reader_required"));
         }
         let now = clock(&mut db).await?;
         if !live_request(&mut db, &a, &self.server, now).await? {
             return Err(Error::Conflict("approval_expired"));
         }
-        let payload: Value = decode(&a.payload)?;
-        let can = a.owner_user_id == p.user_id
-            || (a.requester_mxid == p.mxid && payload["request"]["managerCanDecide"] == true);
+        let can = may_decide(&a, &payload, p);
         Ok(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}))
     }
     pub async fn decide_shared_approval(
@@ -232,7 +315,7 @@ impl DomainStore {
         (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
    let a=row(db,&input.id).await?;
    let reviewed:Value=decode(&a.payload)?;
-   if a.owner_user_id!=p.user_id && !(a.requester_mxid==p.mxid && reviewed["request"]["managerCanDecide"]==true) {return Err(Error::Unauthorized("resource_owner_required"));}
+   if !may_decide(&a,&reviewed,p) {return Err(Error::Unauthorized(if requester_decides(&reviewed) {"approval_requester_required"} else {"resource_owner_required"}));}
    if a.digest!=input.digest {return Err(Error::Conflict("approval_request_changed"));}
    let payload:Value=decode(&a.payload)?;
    if input.decision=="approve_session" && payload["request"]["sessionAllowed"]!=true {return Err(Error::Invalid("session_approval_unavailable"));}
@@ -253,5 +336,118 @@ impl DomainStore {
    if a.decision.is_some() {sql_query("UPDATE hagency_agent_v1.management_shared_approvals SET consumed=true WHERE id=$1 AND NOT consumed").bind::<Text,_>(&a.id).execute(db).await?;}
    Ok(json!({"id":a.id,"digest":a.digest,"decision":a.decision,"ownerApproved":a.decision_by_owner,"decidedByMxid":a.decided_by_mxid}))
   }).await
+    }
+}
+
+#[cfg(test)]
+mod claude_tests {
+    use super::*;
+    #[test]
+    fn shared_claude_permission_rejects_delegation_questions_and_open_schema() {
+        let request = json!({"id":"native-request","method":"claude/can_use_tool","params":{"sessionId":"native-session","toolName":"Bash","input":{"command":"ls"}},"sessionAllowed":false,"managerCanDecide":false});
+        assert_eq!(plain_request_runtime(&request, false).unwrap(), "claude");
+        // A request the sender decides says so, and only then.
+        assert!(plain_request_runtime(&request, true).is_err());
+        let mut delegated = request.clone();
+        delegated["managerCanDecide"] = json!(true);
+        assert_eq!(plain_request_runtime(&delegated, true).unwrap(), "claude");
+        assert!(plain_request_runtime(&delegated, false).is_err());
+        for (pointer, value) in [
+            ("/sessionAllowed", json!(true)),
+            ("/managerCanDecide", json!(true)),
+            ("/id", json!(7)),
+            ("/method", json!("request_user_input")),
+            ("/params/sessionId", json!("")),
+            ("/params/toolName", json!("bad\nname")),
+            ("/params/input", json!("ls")),
+        ] {
+            let mut wrong = request.clone();
+            *wrong.pointer_mut(pointer).unwrap() = value;
+            assert!(plain_request_runtime(&wrong, false).is_err(), "{pointer}");
+        }
+        let mut wrong = request.clone();
+        wrong["managerOverride"] = json!(true);
+        assert!(plain_request_runtime(&wrong, false).is_err());
+        let mut wrong = request;
+        wrong["params"]["threadId"] = json!("codex-thread");
+        assert!(plain_request_runtime(&wrong, false).is_err());
+    }
+    fn principal(user_id: &str, mxid: &str) -> Principal {
+        Principal {
+            user_id: user_id.into(),
+            mxid: mxid.into(),
+            subject: String::new(),
+            session_id: String::new(),
+            client_id: String::new(),
+            valid_until_ms: 0,
+            device_id: None,
+            device_generation: None,
+        }
+    }
+    fn approval(column: &str) -> Row {
+        Row {
+            id: "sap_1".into(),
+            work_id: "work".into(),
+            runtime_id: "runtime".into(),
+            owner_user_id: "owner".into(),
+            requester_mxid: column.into(),
+            payload: String::new(),
+            digest: String::new(),
+            expires_at_ms: 0,
+            decision: None,
+            decision_by_owner: None,
+            consumed: false,
+            decided_by_mxid: None,
+        }
+    }
+    #[test]
+    fn a_request_its_sender_decides_is_hidden_from_the_owner_and_the_manager() {
+        let owner = principal("owner", "@owner:test");
+        let manager = principal("manager", "@manager:test");
+        let sender = principal("sender", "@sender:test");
+        // The sender decides: only the sender reads or decides it.
+        let row = approval("@sender:test");
+        let payload = json!({"deciderMxid":"@sender:test","request":{"managerCanDecide":true}});
+        assert!(may_read(&row, &payload, &sender) && may_decide(&row, &payload, &sender));
+        for other in [&owner, &manager] {
+            assert!(!may_read(&row, &payload, other) && !may_decide(&row, &payload, other));
+        }
+        // A decider row that is not delegable is decided by nobody.
+        let closed = json!({"deciderMxid":"@sender:test","request":{"managerCanDecide":false}});
+        assert!(!may_decide(&row, &closed, &sender));
+        // The column and the payload must name the same person.
+        let moved = approval("@manager:test");
+        assert!(!may_read(&moved, &payload, &sender) && !may_read(&moved, &payload, &manager));
+        // Requests from older daemons keep the owner's and the manager's roles.
+        let old = approval("@manager:test");
+        let delegable = json!({"request":{"managerCanDecide":true}});
+        let owner_only = json!({"request":{"managerCanDecide":false}});
+        assert!(may_decide(&old, &delegable, &owner) && may_decide(&old, &delegable, &manager));
+        assert!(may_decide(&old, &owner_only, &owner) && !may_decide(&old, &owner_only, &manager));
+        assert!(may_read(&old, &owner_only, &manager) && !may_read(&old, &owner_only, &sender));
+    }
+    #[test]
+    fn shared_octos_permission_is_owner_only_and_uses_a_closed_schema() {
+        let request = json!({"id":"approval-1","method":"octos/can_use_tool",
+            "params":{"sessionId":"session-1","toolName":"shell","input":{"body":"synthetic command"}},
+            "sessionAllowed":false,"managerCanDecide":false});
+        assert_eq!(plain_request_runtime(&request, false).unwrap(), "octos");
+        // The sender never decides an Octos request.
+        let mut delegated = request.clone();
+        delegated["managerCanDecide"] = json!(true);
+        assert!(plain_request_runtime(&delegated, true).is_err());
+        for (pointer, value) in [
+            ("/sessionAllowed", json!(true)),
+            ("/managerCanDecide", json!(true)),
+            ("/params/input", json!("command")),
+            ("/params/toolName", json!("")),
+        ] {
+            let mut wrong = request.clone();
+            *wrong.pointer_mut(pointer).unwrap() = value;
+            assert!(plain_request_runtime(&wrong, false).is_err(), "{pointer}");
+        }
+        let mut wrong = request;
+        wrong["params"]["extra"] = json!(true);
+        assert!(plain_request_runtime(&wrong, false).is_err());
     }
 }

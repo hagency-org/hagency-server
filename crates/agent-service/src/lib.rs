@@ -39,6 +39,7 @@ pub mod management_shared_context_types;
 pub mod management_shared_demand_types;
 pub mod management_shared_execution_types;
 pub mod management_shared_intake_types;
+pub mod management_shared_session_types;
 pub mod management_shared_work_types;
 #[cfg(test)]
 mod management_tests;
@@ -50,6 +51,8 @@ pub mod orchestrator_git;
 pub mod orchestrator_modules;
 pub mod orchestrator_status;
 pub mod orchestrator_team;
+#[cfg(test)]
+mod project_folders_tests;
 pub mod recurring_quota;
 mod reply_format;
 pub mod store;

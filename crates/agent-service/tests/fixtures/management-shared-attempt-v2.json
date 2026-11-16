@@ -109,5 +109,36 @@
     "state": "qualified",
     "policyDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   },
-  "receiptDigest": "e2891dd8b86b463c5c343cc938a00bd659d615755c4b22f8c68341499edc630b"
+  "receiptDigest": "e2891dd8b86b463c5c343cc938a00bd659d615755c4b22f8c68341499edc630b",
+  "unstartedReceipt": {
+    "version": 2,
+    "observationId": "attempt_unstarted_fixture",
+    "commandId": "sat_fixture",
+    "commandDigest": "9d9f7477ccb8a267b63b741a944a17a924c789f95b0d896215d59d4e501a1286",
+    "assignmentId": "mas_fixture",
+    "agentReservationId": "native_agent_fixture",
+    "processAttempt": 2,
+    "originalRuntimeDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78",
+    "ledgerRevision": 212,
+    "processDigest": null,
+    "state": "not_started",
+    "policyDigest": null
+  },
+  "unstartedReceiptDigest": "c982fe0bb74d740f9773b458e3d91675102f33b60a5b20efc70fa88b583bf3e8",
+  "timeoutReceipt": {
+    "version": 2,
+    "observationId": "attempt_timeout_fixture",
+    "commandId": "sat_fixture",
+    "commandDigest": "9d9f7477ccb8a267b63b741a944a17a924c789f95b0d896215d59d4e501a1286",
+    "assignmentId": "mas_fixture",
+    "agentReservationId": "native_agent_fixture",
+    "processAttempt": 2,
+    "originalRuntimeDigest": "7f350c6917bedd18271dc8878522a68355602185de1634dee89999e752ad5e78",
+    "ledgerRevision": 213,
+    "processDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "state": "stopped",
+    "policyDigest": null,
+    "reason": "uncertain_timeout"
+  },
+  "timeoutReceiptDigest": "10f9c2a4240fe5dc15e06fee8de80ca7a145866503a5a58dc917b3cb75effc41"
 }

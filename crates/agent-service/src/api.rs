@@ -441,12 +441,20 @@ impl App {
                 "processing-reaction-v1",
                 "execution-configuration-v1",
                 "shared-durable-demand-v1",
-                "shared-thread-context-v1",
-                "shared-thread-context-v2",
+                "shared-native-context-v3",
                 "managed-agent-budget-delta-v1",
                 "shared-budget-execution-v1",
+                "shared-claude-execution-v1",
+                "shared-octos-execution-v1",
                 "agent-settlement-v1",
             ];
+            if self
+                .management
+                .as_ref()
+                .is_some_and(|p| p.shared_demand_retries())
+            {
+                capabilities.insert(13, "shared-demand-retry-v1");
+            }
             let transport = self.transport.is_some();
             let transport_matrix = transport && self.matrix_client.is_some();
             let domain_matrix = self.domain.is_some() && self.matrix_client.is_some();
@@ -477,6 +485,11 @@ impl App {
                     .chain(
                         (self.board_enabled && self.domain.is_some())
                             .then_some(crate::project_board::CAPABILITY),
+                    )
+                    .chain(
+                        self.domain
+                            .is_some()
+                            .then_some(crate::domain::PROJECT_FOLDER_CAPABILITY),
                     ),
             );
             return Ok(
@@ -680,6 +693,26 @@ impl App {
         {
             return Ok(value);
         }
+        if path == "/hagency/api/v1/room-project-folder"
+            && method == salvo::http::Method::GET
+            && let Some((domain, _)) = &self.domain
+        {
+            // A hosting daemon asks with its execution device bearer, the one it
+            // uses for shared execution; an owner may use the user session. The
+            // caller is that credential's user either way.
+            let principal = match self.store.authenticate(&credential, now_ms(), true).await {
+                Err(Error::Unauthorized(_)) => {
+                    self.store
+                        .authenticate(&credential, now_ms(), false)
+                        .await?
+                }
+                principal => principal?,
+            };
+            let room = room_query(req)?;
+            return Ok(
+                json!({"projectFolder":domain.room_project_folder(&principal,&room,now_ms()).await?}),
+            );
+        }
         let device_management = (path == "/hagency/api/v1/agents"
             && method == salvo::http::Method::POST)
             || (path.ends_with("/execution-device") && method == salvo::http::Method::PUT);
@@ -718,15 +751,31 @@ impl App {
                 #[serde(rename_all = "camelCase", deny_unknown_fields)]
                 struct Adopt {
                     space_id: String,
+                    #[serde(default)]
+                    project_folder: Option<String>,
                 }
                 let body: Adopt = req
                     .parse_json()
                     .await
                     .map_err(|_| Error::Invalid("invalid_arguments"))?;
+                if let Some(folder) = &body.project_folder {
+                    crate::domain::validate_project_folder(folder)?;
+                }
                 let facts = gateway.admin(&body.space_id, &principal.mxid, None).await?;
-                return Ok(
-                    json!({"project":domain.register_project(&principal,&body.space_id,&facts,now_ms()).await?}),
-                );
+                let (project, folder) = domain
+                    .adopt_project(
+                        &principal,
+                        &body.space_id,
+                        body.project_folder.as_deref(),
+                        &facts,
+                        now_ms(),
+                    )
+                    .await?;
+                // Without the opt-in field the reply keeps its original shape.
+                return Ok(match folder {
+                    Some(folder) => json!({"project":project,"projectFolder":folder}),
+                    None => json!({"project":project}),
+                });
             }
             if path == "/hagency/api/v1/devices" && method == salvo::http::Method::GET {
                 return Ok(json!({"devices":domain.owner_devices(&principal,now_ms()).await?}));
@@ -1262,6 +1311,16 @@ impl App {
         }
         Err(Error::Invalid("unsupported_operation"))
     }
+}
+/// The one `roomId` parameter of a Room lookup; any other query is malformed.
+fn room_query(req: &Request) -> Result<String> {
+    let mut room = None;
+    for (key, value) in url::form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes()) {
+        if key != "roomId" || room.replace(value.into_owned()).is_some() {
+            return Err(Error::Invalid("invalid_room_id"));
+        }
+    }
+    room.ok_or(Error::Invalid("invalid_room_id"))
 }
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()

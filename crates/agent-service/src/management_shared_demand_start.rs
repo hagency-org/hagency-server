@@ -23,8 +23,21 @@ async fn fresh(
     {
         return Err(Error::Conflict("shared_demand_not_current"));
     }
-    if status(db, d).await?.state != "offered" {
-        return Err(Error::Conflict("shared_demand_blocked"));
+    let state = status(db, d).await?.state;
+    match input.retry {
+        None if state != "offered" => return Err(Error::Conflict("shared_demand_blocked")),
+        None => {}
+        // A retry names the exact not_started attempt the executor proved.
+        Some(n) => {
+            let offered = retries::offered(db, &d.id).await?;
+            if state != "retry_offered"
+                || offered.is_none_or(|r| {
+                    r.retry != n || r.previous_runtime_id != input.start.predecessor.command_id
+                })
+            {
+                return Err(Error::Conflict("shared_demand_retry_changed"));
+            }
+        }
     }
     if attempts::prior_start(db, &input.start, &allocation_digest(&input.start)?, p)
         .await?
@@ -47,7 +60,11 @@ async fn saved(
     input.validate_for(&o)?;
     let w = intake::assignment(db, &q.assignment_id).await?;
     owner(&w, p)?;
-    let Some(s) = started(db, &d.id).await? else {
+    let s = match input.retry {
+        None => started(db, &d.id).await?,
+        Some(n) => retries::started(db, &d.id, n).await?,
+    };
+    let Some(s) = s else {
         return Ok(None);
     };
     if s.digest != allocation_digest(input)? || s.payload != wire(input)? {
@@ -100,7 +117,11 @@ impl DomainStore {
         let mut g = self.db.lock().await?;
         (*g).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,0).await?;let d=load(db,id).await?;let q=queued(db,&d.intake_id).await?;if let Some(v)=saved(db,p,policy,&d,&input,&self.server).await?{return Ok(v)}enabled_demand(policy)?;let now=clock(db).await?;let prepared=fresh(db,p,&d,&q,&input,&self.server,now).await?;facts(&membership(db,&prepared.0).await?,&observed)?;
  let delivery=attempts::commit_start(db,p,policy,&input.start,prepared,&self.server,now).await?;
- sql_query("INSERT INTO hagency_agent_v1.management_shared_demand_starts VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(id).bind::<Text,_>(&input.start.start_intent_id).bind::<Text,_>(&delivery.command.command_id).bind::<Text,_>(wire(&input)?).bind::<Text,_>(allocation_digest(&input)?).execute(db).await?;Ok(delivery)}).await
+ match input.retry {
+  None=>{sql_query("INSERT INTO hagency_agent_v1.management_shared_demand_starts VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(id).bind::<Text,_>(&input.start.start_intent_id).bind::<Text,_>(&delivery.command.command_id).bind::<Text,_>(wire(&input)?).bind::<Text,_>(allocation_digest(&input)?).execute(db).await?;}
+  Some(n)=>{sql_query("INSERT INTO hagency_agent_v1.management_shared_demand_retry_starts(demand_id,retry,start_intent_id,runtime_id,payload,digest) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(id).bind::<BigInt,_>(n).bind::<Text,_>(&input.start.start_intent_id).bind::<Text,_>(&delivery.command.command_id).bind::<Text,_>(wire(&input)?).bind::<Text,_>(allocation_digest(&input)?).execute(db).await?;}
+ }
+ Ok(delivery)}).await
     }
     pub async fn block_shared_demand(
         &self,
@@ -120,6 +141,7 @@ impl DomainStore {
             if d.digest != input.demand_digest
                 || o.control_revision != input.expected_control_revision
                 || started(db, id).await?.is_some()
+                    && status(db, &d).await?.state != "retry_offered"
                 || binding(db, id).await?.is_some()
             {
                 return Err(Error::Conflict("shared_demand_changed"));
@@ -142,7 +164,7 @@ impl DomainStore {
                 _ => return Err(Error::Invalid("invalid_shared_demand_block")),
             }
             block(db, &d, &q, &input.reason, &wire(&input)?).await?;
-            status(db, &d).await
+            visible(db, &d, input.retries).await
         })
         .await
     }

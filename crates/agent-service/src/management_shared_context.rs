@@ -44,13 +44,13 @@ struct Number {
 
 pub(in super::super) async fn register_mode(
     db: &mut AsyncPgConnection,
-    policy: &ManagementPolicy,
+    _policy: &ManagementPolicy,
     id: &str,
 ) -> Result<()> {
     let encrypted=sql_query("SELECT coalesce((payload::jsonb->>'encrypted')::boolean,false) AS matched FROM hagency_agent_v1.management_shared_work WHERE id=$1").bind::<Text,_>(id).get_result::<Flag>(db).await?.matched;
     sql_query("INSERT INTO hagency_agent_v1.management_shared_input_modes VALUES($1,$2)")
         .bind::<Text, _>(id)
-        .bind::<Text, _>(if policy.shared_thread_context() && !encrypted {
+        .bind::<Text, _>(if !encrypted {
             "thread_context_v1"
         } else {
             "plain_text_v1"
@@ -61,10 +61,12 @@ pub(in super::super) async fn register_mode(
 }
 async fn mode(db: &mut AsyncPgConnection, id: &str) -> Result<String> {
     Ok(sql_query("SELECT mode AS payload FROM hagency_agent_v1.management_shared_input_modes WHERE work_id=$1")
-        .bind::<Text,_>(id).get_result::<Json>(db).await.optional()?.map_or_else(||"plain_text_v1".into(),|r|r.payload))
+        .bind::<Text,_>(id).get_result::<Json>(db).await.optional()?.ok_or(Error::Conflict("shared_work_input_mode_missing"))?.payload)
 }
 pub(super) async fn require_plain(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
-    if mode(db, id).await? != "plain_text_v1" {
+    let encrypted = sql_query("SELECT coalesce((payload::jsonb->>'encrypted')::boolean,false) AS matched FROM hagency_agent_v1.management_shared_work WHERE id=$1")
+        .bind::<Text,_>(id).get_result::<Flag>(db).await?.matched;
+    if !encrypted || mode(db, id).await? != "plain_text_v1" {
         return Err(Error::Conflict("shared_work_context_required"));
     }
     Ok(())
@@ -113,6 +115,12 @@ async fn saved_context(
         input_digest: row.input_digest,
     }))
 }
+pub(super) async fn native_input(db: &mut AsyncPgConnection, w: &SharedWorkItem) -> Result<bool> {
+    Ok(mode(db, &w.id).await? == "thread_context_v1"
+        && saved_context(db, w)
+            .await?
+            .is_some_and(|c| c.context.version == 3))
+}
 pub(super) async fn saved_input_digest(
     db: &mut AsyncPgConnection,
     w: &SharedWorkItem,
@@ -146,52 +154,6 @@ fn delivery_matches(d: &SharedReplyDelivery, w: &SharedWorkItem, content: &str) 
     Ok(())
 }
 
-#[cfg(test)]
-mod delivery_format_tests {
-    use super::*;
-
-    #[test]
-    fn shared_context_delivery_preserves_legacy_markdown_and_exact_rich_evidence() {
-        let fixture: Value = serde_json::from_str(include_str!(
-            "../tests/fixtures/management-shared-thread-context-v1.json"
-        ))
-        .unwrap();
-        let w: SharedWorkItem = serde_json::from_value(fixture["previousWork"].clone()).unwrap();
-        let mut d: SharedReplyDelivery =
-            serde_json::from_value(fixture["delivery"].clone()).unwrap();
-        d.body = "## Older answer\n\n**Markdown** remains unchanged.".into();
-        d.body_digest = hash(&d.body);
-        let legacy = serde_json::to_string(&d.content()).unwrap();
-        d.matrix_content_digest = hash(&legacy);
-        assert_ne!(
-            d.content(),
-            crate::workers::reply_content(false, &w.room_id, &w.thread_root, &d.body)
-        );
-        delivery_matches(&d, &w, &legacy).unwrap();
-        assert!(
-            serde_json::to_value(&d)
-                .unwrap()
-                .get("formattedBody")
-                .is_none()
-        );
-        let rich = crate::workers::reply_content(false, &w.room_id, &w.thread_root, &d.body);
-        d.formatted_body = Some(rich["formatted_body"].as_str().unwrap().into());
-        let rich = serde_json::to_string(&rich).unwrap();
-        d.matrix_content_digest = hash(&rich);
-        delivery_matches(&d, &w, &rich).unwrap();
-        let mut changed = d.clone();
-        changed.formatted_body.as_mut().unwrap().push('!');
-        assert!(delivery_matches(&changed, &w, &rich).is_err());
-        for field in ["body", "msgtype", "format", "m.relates_to", "unexpected"] {
-            let mut content: Value = serde_json::from_str(&rich).unwrap();
-            content[field] = json!("changed");
-            let content = serde_json::to_string(&content).unwrap();
-            let mut changed = d.clone();
-            changed.matrix_content_digest = hash(&content);
-            assert!(delivery_matches(&changed, &w, &content).is_err(), "{field}");
-        }
-    }
-}
 async fn delivery(
     db: &mut AsyncPgConnection,
     w: &SharedWorkItem,
@@ -274,69 +236,7 @@ async fn delivery(
         }),
     })
 }
-#[derive(QueryableByName)]
-struct EditRow {
-    #[diesel(sql_type=Text)]
-    revision_event_id: String,
-    #[diesel(sql_type=Nullable<Text>)]
-    body: Option<String>,
-    #[diesel(sql_type=Nullable<Text>)]
-    body_digest: Option<String>,
-}
-const PRIOR_PAIRS: &str = "FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_replies x ON x.work_id=w.id WHERE x.state='sent' AND w.payload::jsonb->>'assignmentId'=$1 AND w.payload::jsonb->>'roomId'=$2 AND w.payload::jsonb->>'threadRoot'=$3 AND (w.created_at_ms,w.id)<($4,$5)";
-/// A redaction of either side of a delivered pair removes the whole pair:
-/// the answer may quote the redacted request.
-const PAIR_REDACTED: &str = "EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_event_revisions v WHERE v.kind='redaction' AND v.room_id=$2 AND (v.target_event_id=w.event_id OR v.target_event_id=x.matrix_event_id))";
-async fn prior_pairs(
-    db: &mut AsyncPgConnection,
-    w: &SharedWorkItem,
-    redacted: bool,
-) -> Result<i64> {
-    Ok(sql_query(format!(
-        "SELECT COUNT(*) AS count {PRIOR_PAIRS} AND {PAIR_REDACTED}=$6"
-    ))
-    .bind::<Text, _>(&w.assignment_id)
-    .bind::<Text, _>(&w.room_id)
-    .bind::<Text, _>(&w.thread_root)
-    .bind::<BigInt, _>(w.created_at_ms)
-    .bind::<Text, _>(&w.id)
-    .bind::<Bool, _>(redacted)
-    .get_result::<Number>(db)
-    .await?
-    .count)
-}
-/// The requester's latest edit of a quoted request. Edits by anyone else are
-/// not Matrix edits of that message and stay out of the record.
-async fn latest_edit(
-    db: &mut AsyncPgConnection,
-    old: &SharedWorkItem,
-) -> Result<Option<(String, String, String)>> {
-    let row = sql_query("SELECT revision_event_id,body,body_digest FROM hagency_agent_v1.management_shared_event_revisions WHERE kind='edit' AND room_id=$1 AND target_event_id=$2 AND sender_mxid=$3 ORDER BY received_at_ms DESC,revision_event_id DESC LIMIT 1")
-        .bind::<Text, _>(&old.room_id)
-        .bind::<Text, _>(&old.event_id)
-        .bind::<Text, _>(&old.requester_mxid)
-        .get_result::<EditRow>(db)
-        .await
-        .optional()?;
-    row.map(|r| {
-        let body = r
-            .body
-            .ok_or(Error::Conflict("shared_revision_body_missing"))?;
-        let digest = r
-            .body_digest
-            .ok_or(Error::Conflict("shared_revision_body_missing"))?;
-        if hash(&body) != digest {
-            return Err(Error::Conflict("shared_revision_changed"));
-        }
-        Ok((r.revision_event_id, body, digest))
-    })
-    .transpose()
-}
-async fn freeze(
-    db: &mut AsyncPgConnection,
-    w: &SharedWorkItem,
-    budget: Option<&SharedContextBudgetInput>,
-) -> Result<SharedContextRecord> {
+async fn freeze(db: &mut AsyncPgConnection, w: &SharedWorkItem) -> Result<SharedContextRecord> {
     if let Some(saved) = saved_context(db, w).await? {
         return Ok(saved);
     }
@@ -370,27 +270,9 @@ async fn freeze(
         (None, None)
     };
     // Version 1 pages one past its cap to learn whether anything was omitted.
-    // Version 2 counts the thread, excludes redacted pairs and pages its own cap.
-    let page = match budget {
-        None => format!(
-            "SELECT w.* {PRIOR_PAIRS} ORDER BY w.created_at_ms DESC,w.id DESC LIMIT {}",
-            MAX_HISTORY_PAIRS + 1
-        ),
-        Some(_) => format!(
-            "SELECT w.* {PRIOR_PAIRS} AND NOT {PAIR_REDACTED} ORDER BY w.created_at_ms DESC,w.id DESC LIMIT {MAX_HISTORY_PAIRS_V2}"
-        ),
-    };
-    let rows = sql_query(page)
-        .bind::<Text, _>(&w.assignment_id)
-        .bind::<Text, _>(&w.room_id)
-        .bind::<Text, _>(&w.thread_root)
-        .bind::<BigInt, _>(w.created_at_ms)
-        .bind::<Text, _>(&w.id)
-        .load::<WorkRow>(db)
-        .await?;
-    let mut c = SharedThreadContext {
-        version: 1,
-        input_profile: INPUT_PROFILE_V1.into(),
+    let c = SharedThreadContext {
+        version: 3,
+        input_profile: INPUT_PROFILE_V3.into(),
         work_id: w.id.clone(),
         work_digest: allocation_digest(w)?,
         assignment_id: w.assignment_id.clone(),
@@ -402,88 +284,10 @@ async fn freeze(
         event_id: w.event_id.clone(),
         received_at_ms: w.created_at_ms,
         context_ordinal: ordinal,
-        coverage: COVERAGE_PRIOR_DELIVERED_PAIRS.into(),
-        omitted_earlier: false,
-        budget: None,
+        coverage: COVERAGE_NATIVE_HISTORY.into(),
+        omitted_earlier: true,
         history: vec![],
     };
-    let (total, max_pairs, max_bytes) = match budget {
-        None => (rows.len() as i64, MAX_HISTORY_PAIRS, MAX_HISTORY_BYTES),
-        Some(b) => {
-            b.validate()?;
-            let (window, source) = budget_window(b.model_context_window);
-            let bytes = history_budget_bytes(window);
-            let total = prior_pairs(db, w, false).await?;
-            c.version = 2;
-            c.input_profile = INPUT_PROFILE_V2.into();
-            c.budget = Some(SharedContextBudget {
-                model_context_window: window,
-                window_source: source.into(),
-                history_budget_bytes: bytes,
-                prior_pairs_total: total,
-                prior_pairs_redacted: prior_pairs(db, w, true).await?,
-                included_pairs: 0,
-            });
-            (total, MAX_HISTORY_PAIRS_V2, bytes as usize)
-        }
-    };
-    fn settle(c: &mut SharedThreadContext, total: i64) {
-        let included = c.history.len() as i64;
-        c.omitted_earlier = total > included;
-        if let Some(b) = c.budget.as_mut() {
-            b.included_pairs = included;
-        }
-    }
-    for old in rows.into_iter().take(max_pairs) {
-        let r = runtime(db, &old.runtime_id).await?;
-        let old = item(&old, &r)?;
-        let sent = delivery(db, &old)
-            .await?
-            .delivery
-            .ok_or(Error::Conflict("shared_reply_delivery_missing"))?;
-        let edit = if c.version == 2 {
-            latest_edit(db, &old).await?
-        } else {
-            None
-        };
-        let (edited_event_id, edited_body, edited_body_digest) = match edit {
-            Some((id, body, digest)) => (Some(id), Some(body), Some(digest)),
-            None => (None, None, None),
-        };
-        c.history.insert(
-            0,
-            SharedContextPair {
-                work_id: old.id.clone(),
-                work_digest: allocation_digest(&old)?,
-                event_id: old.event_id,
-                requester_mxid: old.requester_mxid,
-                received_at_ms: old.created_at_ms,
-                user_body: old.body,
-                user_body_digest: old.body_digest,
-                delivery: sent.receipt,
-                delivery_digest: sent.receipt_digest,
-                edited_event_id,
-                edited_body,
-                edited_body_digest,
-            },
-        );
-        settle(&mut c, total);
-        if allocation_encoding(&c.history)?.len() > max_bytes {
-            c.history.remove(0);
-            settle(&mut c, total);
-            break;
-        }
-        match render_context(&c, w) {
-            Ok(_) => {}
-            Err(Error::Invalid("shared_context_input_too_large")) => {
-                c.history.remove(0);
-                settle(&mut c, total);
-                break;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    settle(&mut c, total);
     let input_digest = hash(&render_context(&c, w)?);
     let digest = allocation_digest(&c)?;
     sql_query(
@@ -513,7 +317,7 @@ impl DomainStore {
         id: &str,
         input: SharedWorkEvidenceInput,
     ) -> Result<SharedWorkInputMode> {
-        self.shared_work_input_mode_with_protocol(p, id, input, WorkProtocol::Legacy)
+        self.shared_work_input_mode_with_protocol(p, id, input, WorkProtocol::Assignment)
             .await
     }
     pub async fn shared_budget_work_input_mode(
@@ -607,7 +411,7 @@ impl DomainStore {
             id,
             input,
             gateway,
-            WorkProtocol::Legacy,
+            WorkProtocol::Assignment,
         )
         .await
     }
@@ -638,6 +442,9 @@ impl DomainStore {
         gateway: &Gateway,
         protocol: WorkProtocol,
     ) -> Result<SharedContextRecord> {
+        if input.version != 3 {
+            return Err(Error::Invalid("native_context_protocol_required"));
+        }
         key(id)?;
         fresh(policy)?;
         let observed = self
@@ -656,6 +463,7 @@ impl DomainStore {
                 if !runtime_issuing(db, policy, &r).await? {
                     return Err(Error::Unavailable("shared_execution_issuance_unavailable"));
                 }
+                worker_protocol::require(db, p, now).await?;
                 require_activity(db, p, &r, &input.authority, &self.server, now).await?;
                 let row = work_row(db, id).await?;
                 let w = item(&row, &r)?;
@@ -668,7 +476,7 @@ impl DomainStore {
                 {
                     return Err(Error::Conflict("shared_context_missing_before_start"));
                 }
-                freeze(db, &w, input.budget.as_ref()).await
+                freeze(db, &w).await
             })
             .await
     }
@@ -686,7 +494,7 @@ impl DomainStore {
             id,
             input,
             gateway,
-            WorkProtocol::Legacy,
+            WorkProtocol::Assignment,
         )
         .await
     }
@@ -727,7 +535,7 @@ impl DomainStore {
             db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;
             if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_execution_issuance_unavailable"));}
-            let original=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
+            worker_protocol::require(db,p,now).await?;let original=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
             let row=work_row(db,id).await?;let w=item(&row,&r)?;facts(&work_membership(db,&r,&w).await?,&observed)?;
             if row.digest!=input.work_digest || mode(db,id).await?!="thread_context_v1" {return Err(Error::Conflict("shared_context_binding_changed"));}
             refusals::ensure_unfenced(db,id).await?;let saved=saved_context(db,&w).await?.ok_or(Error::Conflict("shared_context_required"))?;
@@ -744,5 +552,132 @@ impl DomainStore {
             }else if row.started_at_ms.is_none(){return Err(Error::Conflict("shared_work_not_started"));}
             Ok(SharedContextStart{start:SharedWorkStart{work:w,work_digest:row.digest,activity_epoch:input.authority.epoch,newly_started:newly},context_digest:saved.context_digest,input_digest:saved.input_digest})
         }).await
+    }
+}
+
+// Exercise the same freeze/start pair as the current client. Direct plaintext
+// start refusal is separately pinned by the context protocol tests.
+#[cfg(test)]
+impl DomainStore {
+    pub(crate) async fn start_current_work(
+        &self,
+        p: &crate::store::Principal,
+        policy: &ManagementPolicy,
+        input: SharedWorkInput,
+        gateway: &crate::gateway::Gateway,
+    ) -> crate::Result<SharedWorkStart> {
+        self.start_current_test_work(p, policy, input, gateway, false)
+            .await
+    }
+    pub(crate) async fn start_current_budget_work(
+        &self,
+        p: &crate::store::Principal,
+        policy: &ManagementPolicy,
+        input: SharedWorkInput,
+        gateway: &crate::gateway::Gateway,
+    ) -> crate::Result<SharedWorkStart> {
+        self.start_current_test_work(p, policy, input, gateway, true)
+            .await
+    }
+    async fn start_current_test_work(
+        &self,
+        p: &crate::store::Principal,
+        policy: &ManagementPolicy,
+        input: SharedWorkInput,
+        gateway: &crate::gateway::Gateway,
+        budget: bool,
+    ) -> crate::Result<SharedWorkStart> {
+        use crate::management_shared_context_types::{SharedContextInput, SharedContextStartInput};
+        #[derive(QueryableByName)]
+        struct Encrypted {
+            #[diesel(sql_type=diesel::sql_types::Bool)]
+            value: bool,
+        }
+        let encrypted = {
+            let mut db = self.db.lock().await?;
+            sql_query("SELECT coalesce((payload::jsonb->>'encrypted')::boolean,false) AS value FROM hagency_agent_v1.management_shared_work WHERE id=$1")
+                .bind::<Text,_>(&input.work_id).get_result::<Encrypted>(&mut *db).await?.value
+        };
+        if encrypted {
+            return if budget {
+                self.start_shared_budget_work(p, policy, input, gateway)
+                    .await
+            } else {
+                self.start_shared_work(p, policy, input, gateway).await
+            };
+        }
+        let freeze = SharedContextInput {
+            authority: input.authority.clone(),
+            work_digest: input.work_digest.clone(),
+            version: 3,
+        };
+        let context = if budget {
+            self.freeze_shared_budget_context(p, policy, &input.work_id, freeze, gateway)
+                .await?
+        } else {
+            self.freeze_shared_context(p, policy, &input.work_id, freeze, gateway)
+                .await?
+        };
+        let start = SharedContextStartInput {
+            authority: input.authority,
+            work_digest: input.work_digest,
+            context_digest: context.context_digest,
+            input_digest: context.input_digest,
+        };
+        Ok(if budget {
+            self.start_shared_budget_context_work(p, policy, &input.work_id, start, gateway)
+                .await?
+        } else {
+            self.start_shared_context_work(p, policy, &input.work_id, start, gateway)
+                .await?
+        }
+        .start)
+    }
+}
+
+#[cfg(test)]
+mod delivery_format_tests {
+    use super::*;
+
+    #[test]
+    fn shared_context_delivery_preserves_legacy_markdown_and_exact_rich_evidence() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/management-shared-thread-context-v1.json"
+        ))
+        .unwrap();
+        let w: SharedWorkItem = serde_json::from_value(fixture["previousWork"].clone()).unwrap();
+        let mut d: SharedReplyDelivery =
+            serde_json::from_value(fixture["delivery"].clone()).unwrap();
+        d.body = "## Older answer\n\n**Markdown** remains unchanged.".into();
+        d.body_digest = hash(&d.body);
+        let legacy = serde_json::to_string(&d.content()).unwrap();
+        d.matrix_content_digest = hash(&legacy);
+        assert_ne!(
+            d.content(),
+            crate::workers::reply_content(false, &w.room_id, &w.thread_root, &d.body)
+        );
+        delivery_matches(&d, &w, &legacy).unwrap();
+        assert!(
+            serde_json::to_value(&d)
+                .unwrap()
+                .get("formattedBody")
+                .is_none()
+        );
+        let rich = crate::workers::reply_content(false, &w.room_id, &w.thread_root, &d.body);
+        d.formatted_body = Some(rich["formatted_body"].as_str().unwrap().into());
+        let rich = serde_json::to_string(&rich).unwrap();
+        d.matrix_content_digest = hash(&rich);
+        delivery_matches(&d, &w, &rich).unwrap();
+        let mut changed = d.clone();
+        changed.formatted_body.as_mut().unwrap().push('!');
+        assert!(delivery_matches(&changed, &w, &rich).is_err());
+        for field in ["body", "msgtype", "format", "m.relates_to", "unexpected"] {
+            let mut content: Value = serde_json::from_str(&rich).unwrap();
+            content[field] = json!("changed");
+            let content = serde_json::to_string(&content).unwrap();
+            let mut changed = d.clone();
+            changed.matrix_content_digest = hash(&content);
+            assert!(delivery_matches(&changed, &w, &content).is_err(), "{field}");
+        }
     }
 }

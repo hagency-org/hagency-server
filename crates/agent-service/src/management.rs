@@ -9,6 +9,8 @@ use serde::de::DeserializeOwned;
 mod agents;
 #[path = "management_allocations.rs"]
 mod allocations;
+#[path = "management_executor_ledgers.rs"]
+mod ledgers;
 #[path = "management_parents.rs"]
 mod parents;
 #[path = "management_projects.rs"]
@@ -380,7 +382,7 @@ impl DomainStore {
             if input.coordinator_mxid!=p.mxid{return Err(Error::Conflict("resource_owner_is_coordinator"));}
             let full=sql_query("SELECT count(*)>=1000 AS matched FROM hagency_agent_v1.management_contributions WHERE owner_user_id=$1").bind::<Text,_>(&p.user_id).get_result::<Flag>(db).await?.matched;
             if full { return Err(Error::Conflict("contribution_capacity")); }
-            let duplicate=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_contributions WHERE owner_user_id=$1 AND executor_device_id=$2 AND resource_id=$3) AS matched")
+            let duplicate=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_contributions WHERE owner_user_id=$1 AND executor_device_id=$2 AND resource_id=$3 AND ledger_replaced_epoch IS NULL) AS matched")
                 .bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<Text,_>(&input.resource_id).get_result::<Flag>(db).await?.matched;
             if duplicate { return Err(Error::Conflict("contribution_already_exists")); }
             let id=format!("con_{}",entity_id()?); let request_id=format!("req_{}",entity_id()?);

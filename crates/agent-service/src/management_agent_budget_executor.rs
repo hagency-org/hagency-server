@@ -115,6 +115,13 @@ async fn deliver(
     let c = checked(w, server)?;
     let now = clock(db).await?;
     let saved = result(db, &w.id).await?;
+    if saved.is_none() {
+        crate::domain::management::ledgers::refuse_replaced(
+            db,
+            crate::domain::management::ledgers::Subject::Request(&w.request_id),
+        )
+        .await?;
+    }
     let cancel = cancelled(db, &w.id).await?;
     let live = current(db, w, &c, now, server).await?;
     let application = !historical
@@ -177,24 +184,26 @@ async fn deliver(
         recorded: saved,
     })
 }
+/// Returns the ledger epoch the accepted receipt is numbered in.
 async fn validate_ledger(
     db: &mut AsyncPgConnection,
     w: &CommandRow,
     r: &AgentBudgetReceipt,
-) -> Result<()> {
-    super::super::executor::validate_external_ledger_receipt(
+) -> Result<i64> {
+    let epoch = super::super::executor::validate_external_ledger_receipt(
         db,
+        crate::domain::management::ledgers::Subject::Request(&w.request_id),
         &w.owner_user_id,
         &w.executor_device_id,
         r.ledger_revision,
         r.ledger_revision,
     )
     .await?;
-    let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3 UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND ((receipt::jsonb->>'ledgerRevision')::bigint=$3 OR (receipt::jsonb->>'fenceRevision')::bigint=$3) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&w.owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(r.ledger_revision).get_result::<Flag>(db).await?.matched;
+    let collision=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_executor_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3 UNION ALL SELECT 1 FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND receipt_ledger_epoch=$4 AND ((receipt::jsonb->>'ledgerRevision')::bigint=$3 OR (receipt::jsonb->>'fenceRevision')::bigint=$3) UNION ALL SELECT 1 FROM hagency_agent_v1.management_resource_grants WHERE owner_user_id=$1 AND executor_device_id=$2 AND ledger_epoch=$4 AND (receipt::jsonb->>'ledgerRevision')::bigint=$3) AS matched").bind::<Text,_>(&w.owner_user_id).bind::<Text,_>(&w.executor_device_id).bind::<BigInt,_>(r.ledger_revision).bind::<BigInt,_>(epoch).get_result::<Flag>(db).await?.matched;
     if collision {
         return Err(Error::Conflict("agent_budget_ledger_revision_changed"));
     }
-    Ok(())
+    Ok(epoch)
 }
 impl DomainStore {
     pub async fn poll_agent_budget(
@@ -209,7 +218,7 @@ impl DomainStore {
         }
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;
- let w=sql_query("SELECT c.* FROM hagency_agent_v1.management_agent_budget_commands c LEFT JOIN hagency_agent_v1.management_agent_budget_results r ON r.command_id=c.id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND r.command_id IS NULL ORDER BY (c.id<=$3),c.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<CommandRow>(db).await.optional()?;
+ let w=sql_query("SELECT c.* FROM hagency_agent_v1.management_agent_budget_commands c LEFT JOIN hagency_agent_v1.management_agent_budget_results r ON r.command_id=c.id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND r.command_id IS NULL AND NOT hagency_agent_v1.executor_ledger_replaced_request(c.request_id) ORDER BY (c.id<=$3),c.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<CommandRow>(db).await.optional()?;
  match w{Some(w)=>Ok(Some(deliver(db,p,policy,&w,&self.server,false).await?)),None=>Ok(None)}}).await
     }
     pub async fn recover_agent_budget(
@@ -249,8 +258,8 @@ impl DomainStore {
  if input.receipt.state=="applied"{let issued=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_budget_issuance WHERE command_id=$1) AS matched").bind::<Text,_>(id).get_result::<Flag>(db).await?.matched;if !issued{return Err(Error::Conflict("agent_budget_not_issued"))}}
  let (b,_,reserved)=base(db,&w.request_id,&self.server).await?;let h=head(db,&w.request_id,&b,&reserved,&self.server).await?;
  if c.expected_budget_revision!=h.revision||c.expected_budget_digest!=h.digest||c.expected_ceiling_tokens!=h.ceiling||input.receipt.ledger_revision<=h.ledger{return Err(Error::Conflict("agent_budget_changed"))}
- validate_ledger(db,&w,&input.receipt).await?;
- sql_query("INSERT INTO hagency_agent_v1.management_agent_budget_results VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(id).bind::<Text,_>(wire(&input.receipt)?).bind::<Text,_>(allocation_digest(&input.receipt)?).bind::<BigInt,_>(input.receipt.ledger_revision).bind::<Text,_>(&input.receipt.state).bind::<BigInt,_>(input.receipt.budget_revision).execute(db).await?;
+ let epoch=validate_ledger(db,&w,&input.receipt).await?;
+ sql_query("INSERT INTO hagency_agent_v1.management_agent_budget_results(command_id,payload,digest,ledger_revision,state,budget_revision,ledger_epoch) VALUES($1,$2,$3,$4,$5,$6,$7)").bind::<Text,_>(id).bind::<Text,_>(wire(&input.receipt)?).bind::<Text,_>(allocation_digest(&input.receipt)?).bind::<BigInt,_>(input.receipt.ledger_revision).bind::<Text,_>(&input.receipt.state).bind::<BigInt,_>(input.receipt.budget_revision).bind::<BigInt,_>(epoch).execute(db).await?;
  Self::audit(db,p,"agent.budget.result",id,now).await?;Ok(input.receipt)}).await
     }
 }
