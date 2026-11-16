@@ -35,8 +35,8 @@ hex = "0.4"
 js-sys = "0.3.95"
 libc = "0.2"
 log = "0.4.29"
-palpo = { git = "https://github.com/palpo-im/palpo.git", rev = "791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7" }
-palpo-core = { git = "https://github.com/palpo-im/palpo.git", rev = "791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7", features = ["markdown", "html"] }
+palpo = { git = "https://github.com/palpo-im/palpo.git", rev = "25888d76df7eef50c697f0fc82a241de4de6560d" }
+palpo-core = { git = "https://github.com/palpo-im/palpo.git", rev = "25888d76df7eef50c697f0fc82a241de4de6560d", features = ["markdown", "html"] }
 pasion-backend = { git = "https://github.com/meldry-com/pasion.git", rev = "badd27d5cec1e9f4dbc0bc2eaa74dce480f83844", features = ["cedar"] }
 pasion-config = { git = "https://github.com/meldry-com/pasion.git", rev = "badd27d5cec1e9f4dbc0bc2eaa74dce480f83844" }
 pasion-data = { git = "https://github.com/meldry-com/pasion.git", rev = "badd27d5cec1e9f4dbc0bc2eaa74dce480f83844" }
@@ -77,4 +77,4 @@ opt-level = 1
 codegen-units = 256
 
 [patch.crates-io]
-rav1e = { git = "https://github.com/chrislearn/rav1e", rev = "b1af6dfed0c7d413700cc81eb7d194b764295451" }
+rav1e = { git = "https://github.com/chrislearn/rav1e", rev = "d2deddc58fdbbb30aafbc550836454910de91af9" }

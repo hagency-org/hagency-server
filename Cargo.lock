@@ -6608,7 +6608,7 @@ dependencies = [
 [[package]]
 name = "palpo"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7"
+source = "git+https://github.com/palpo-im/palpo.git?rev=25888d76df7eef50c697f0fc82a241de4de6560d#25888d76df7eef50c697f0fc82a241de4de6560d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6704,7 +6704,7 @@ dependencies = [
 [[package]]
 name = "palpo-core"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7"
+source = "git+https://github.com/palpo-im/palpo.git?rev=25888d76df7eef50c697f0fc82a241de4de6560d#25888d76df7eef50c697f0fc82a241de4de6560d"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -6768,7 +6768,7 @@ dependencies = [
 [[package]]
 name = "palpo-core-macros"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7"
+source = "git+https://github.com/palpo-im/palpo.git?rev=25888d76df7eef50c697f0fc82a241de4de6560d#25888d76df7eef50c697f0fc82a241de4de6560d"
 dependencies = [
  "as_variant",
  "palpo-identifiers-validation",
@@ -6783,7 +6783,7 @@ dependencies = [
 [[package]]
 name = "palpo-data"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7"
+source = "git+https://github.com/palpo-im/palpo.git?rev=25888d76df7eef50c697f0fc82a241de4de6560d#25888d76df7eef50c697f0fc82a241de4de6560d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6853,7 +6853,7 @@ dependencies = [
 [[package]]
 name = "palpo-identifiers-validation"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7"
+source = "git+https://github.com/palpo-im/palpo.git?rev=25888d76df7eef50c697f0fc82a241de4de6560d#25888d76df7eef50c697f0fc82a241de4de6560d"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -6861,7 +6861,7 @@ dependencies = [
 [[package]]
 name = "palpo-server-macros"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7#791cdb8cfa146ea77055e49fa731cb3b3dbf2cd7"
+source = "git+https://github.com/palpo-im/palpo.git?rev=25888d76df7eef50c697f0fc82a241de4de6560d#25888d76df7eef50c697f0fc82a241de4de6560d"
 dependencies = [
  "palpo-identifiers-validation",
  "proc-macro-crate",
@@ -8204,7 +8204,7 @@ dependencies = [
 [[package]]
 name = "rav1e"
 version = "0.8.1"
-source = "git+https://github.com/chrislearn/rav1e?rev=b1af6dfed0c7d413700cc81eb7d194b764295451#b1af6dfed0c7d413700cc81eb7d194b764295451"
+source = "git+https://github.com/chrislearn/rav1e?rev=d2deddc58fdbbb30aafbc550836454910de91af9#d2deddc58fdbbb30aafbc550836454910de91af9"
 dependencies = [
  "aligned-vec",
  "arbitrary",
