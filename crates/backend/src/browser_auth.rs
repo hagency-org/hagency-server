@@ -1,11 +1,16 @@
 //! Browser-only authentication bridge; no Hagency domain storage or enrollment.
-use crate::config::Config;
-use salvo::{http::header, prelude::*};
+use std::collections::HashMap;
+use std::sync::{Arc, Weak};
+use std::time::Duration;
+
+use salvo::http::header;
+use salvo::prelude::*;
 use serde_json::{Value, json};
-use std::{collections::HashMap, sync::Arc, time::Duration};
 use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, Semaphore};
 use url::Url;
+
+use crate::config::Config;
 
 #[path = "../../login_readiness.rs"]
 mod login_readiness;
@@ -49,7 +54,7 @@ pub struct BrowserAuth {
     server_name: String,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
     rates: Arc<Mutex<HashMap<String, (u32, i64)>>>,
-    handover: Arc<Mutex<()>>,
+    handover: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
     login_admission: Arc<Semaphore>,
     session_ttl: i64,
     read_timeout: Duration,
@@ -61,11 +66,7 @@ impl BrowserAuth {
             conf.pasion.as_ref().is_some_and(|p| p.delegate_matrix_auth),
             "Pasion authorization is required"
         );
-        let ttl = conf.session_ttl_ms.unwrap_or(1_800_000);
-        anyhow::ensure!(
-            (1_000..=86_400_000).contains(&ttl),
-            "browser session TTL must be between one second and one day"
-        );
+        let ttl = conf.browser_session_ttl_ms()?;
         Ok(Self {
             client: reqwest::Client::builder()
                 .no_proxy()
@@ -215,6 +216,44 @@ impl BrowserAuth {
             self.session_ttl / 1000
         )
     }
+    async fn lock_handover(
+        &self,
+        token: &str,
+        previous: Option<&str>,
+    ) -> Vec<tokio::sync::OwnedMutexGuard<()>> {
+        use sha2::{Digest, Sha256};
+        let key = |token: &str| hex::encode(Sha256::digest(token.as_bytes()));
+        let mut keys = vec![key(token)];
+        if let Some(previous) = previous
+            && let Some(session) = self.sessions.lock().await.get(previous)
+        {
+            keys.push(key(&session.token));
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        let locks = {
+            let mut active = self.handover.lock().await;
+            active.retain(|_, lock| lock.strong_count() > 0);
+            keys.into_iter()
+                .map(|key| {
+                    if let Some(lock) = active.get(&key).and_then(Weak::upgrade) {
+                        lock
+                    } else {
+                        let lock = Arc::new(Mutex::new(()));
+                        active.insert(key, Arc::downgrade(&lock));
+                        lock
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        // Serialize the current and replaced grants in stable order. Readiness
+        // for one unverified token cannot stall unrelated login/logout calls.
+        let mut guards = Vec::with_capacity(locks.len());
+        for lock in locks {
+            guards.push(lock.lock_owned().await);
+        }
+        guards
+    }
     async fn browser_session(
         &self,
         req: &Request,
@@ -349,9 +388,7 @@ impl BrowserAuth {
             .path()
             .strip_prefix("/hagency/api/browser/v1/")
             .ok_or_else(|| err(404, "not_found", "Unknown browser operation."))?;
-        if !allowed_operation(req.method().as_str(), relative) || req.uri().query().is_some() {
-            return Err(err(404, "not_found", "Unknown browser operation."));
-        }
+        let path = browser_operation_path(req.method().as_str(), relative, req.uri().query())?;
         // The per-tab CSRF value also pins reads to their original session.
         // Another tab can replace the shared cookie with a different account.
         if !same(
@@ -363,7 +400,6 @@ impl BrowserAuth {
         ) {
             return Err(err(403, "csrf_forbidden", "Refresh your browser session."));
         }
-        let path = format!("/hagency/api/v1/{relative}");
         let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
             .map_err(|_| err(400, "invalid_method", "Unsupported operation."))?;
         let body = if req.method() == salvo::http::Method::GET
@@ -561,8 +597,8 @@ impl BrowserAuth {
                 .map(|ip| ip.to_canonical().to_string())
                 .unwrap_or_else(|| "non-ip".into());
             self.rate(format!("login:{peer}"), 120, 900_000).await?;
-            // Bound waiters before reading bodies or taking the handover lock.
-            // Keep that lock through validation/replacement/logout so a token
+            // Bound waiters before reading bodies or taking per-grant locks.
+            // Keep each lock through validation/replacement/logout so a token
             // cannot be accepted after a competing logout has revoked it.
             let _admission = self.login_admission.try_acquire().map_err(|_| {
                 err(
@@ -577,7 +613,11 @@ impl BrowserAuth {
                 .get(header::AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.strip_prefix("Bearer "))
-                .filter(|s| !s.is_empty() && s.len() <= 16_384)
+                .filter(|s| {
+                    !s.is_empty()
+                        && s.len() <= 16_384
+                        && !s.chars().any(|c| c.is_control() || c.is_whitespace())
+                })
                 .ok_or_else(|| {
                     err(
                         401,
@@ -598,7 +638,16 @@ impl BrowserAuth {
                     .headers()
                     .get("x-hagency-fresh-oauth")
                     .is_some_and(|value| value == "1");
-            let _guard = self.handover.lock().await;
+            let previous = req
+                .headers()
+                .get(header::COOKIE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|cookies| {
+                    cookies
+                        .split(';')
+                        .find_map(|p| p.trim().strip_prefix("palpo_admin="))
+                });
+            let _guards = self.lock_handover(&token, previous).await;
             let (user, admin) = if fresh_oauth {
                 self.login_identity(&token).await?
             } else {
@@ -624,7 +673,6 @@ impl BrowserAuth {
                 .ok_or_else(|| err(401, "sign_in_required", "Sign in again."))?
         };
         if path == "/hagency/api/logout" && req.method() == salvo::http::Method::POST {
-            let _guard = self.handover.lock().await;
             if !same(
                 req.headers()
                     .get("x-csrf-token")
@@ -635,6 +683,7 @@ impl BrowserAuth {
                 return Err(err(403, "csrf_forbidden", "Refresh your browser session."));
             }
             Self::body(req).await?;
+            let _guards = self.lock_handover(&session.token, None).await;
             // A revoked Matrix token must not keep the browser cookie alive.
             let result = self
                 .matrix("/_matrix/client/v3/logout", &session.token, true)
@@ -745,6 +794,45 @@ impl Handler for BrowserAuth {
 }
 
 /// A fixed capability list; never a generic authenticated HTTP proxy.
+fn browser_operation_path(method: &str, relative: &str, query: Option<&str>) -> Result<String> {
+    if !allowed_operation(method, relative) {
+        return Err(err(404, "not_found", "Unknown browser operation."));
+    }
+    let mut path = format!("/hagency/api/v1/{relative}");
+    if let Some(query) = query {
+        if method != "GET" || relative != "agents/discover" {
+            return Err(err(404, "not_found", "Unknown browser operation."));
+        }
+        let mut pairs = url::form_urlencoded::parse(query.as_bytes());
+        let Some((key, after)) = pairs.next() else {
+            return Err(err(
+                400,
+                "invalid_arguments",
+                "An after cursor is required.",
+            ));
+        };
+        // Match the domain identifier contract. Parse once and then encode the
+        // value as query data; never forward arbitrary browser query strings.
+        if key != "after"
+            || pairs.next().is_some()
+            || after.is_empty()
+            || after.len() > 128
+            || !after
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            return Err(err(400, "invalid_arguments", "Invalid discovery cursor."));
+        }
+        path.push('?');
+        path.push_str(
+            &url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("after", &after)
+                .finish(),
+        );
+    }
+    Ok(path)
+}
+
 fn allowed_operation(method: &str, path: &str) -> bool {
     let parts = path.split('/').collect::<Vec<_>>();
     for (index, part) in parts.iter().enumerate() {
@@ -752,12 +840,10 @@ fn allowed_operation(method: &str, path: &str) -> bool {
             let Ok(room) = percent_encoding::percent_decode_str(part).decode_utf8() else {
                 return false;
             };
-            if !room.starts_with('!')
-                || !room.contains(':')
-                || room.len() > 512
-                || room.chars().any(|c| {
-                    c.is_control() || c.is_whitespace() || matches!(c, '/' | '\\' | '?' | '#' | '%')
-                })
+            if hagency_agent_service::domain::validate_room_id(&room).is_err()
+                || room
+                    .chars()
+                    .any(|c| matches!(c, '/' | '\\' | '?' | '#' | '%'))
             {
                 return false;
             }
@@ -788,6 +874,8 @@ fn allowed_operation(method: &str, path: &str) -> bool {
         ] => method == "POST",
         ["projects", _, "rooms", "adopt"] => method == "POST",
         ["devices"] => method == "GET",
+        ["agents", "discover"] => method == "GET",
+        ["agents", _, "visibility"] => method == "PUT",
         ["agents", _, "execution-device"] => method == "PUT",
         ["agents", _, "owner-direct"] => method == "GET" || method == "POST",
         ["agents"] => method == "GET" || method == "POST",
@@ -809,6 +897,24 @@ mod tests {
     }
     #[test]
     fn closed_browser_capabilities() {
+        let v12_room = format!("%21{}", "A".repeat(43));
+        assert!(allowed_operation(
+            "GET",
+            &format!("projects/p_1/rooms/{v12_room}/agents")
+        ));
+        assert!(allowed_operation(
+            "PUT",
+            &format!("projects/p_1/rooms/{v12_room}/creation-policy")
+        ));
+        for invalid in [
+            "%21short",
+            "%21AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%2B",
+        ] {
+            assert!(!allowed_operation(
+                "GET",
+                &format!("projects/p_1/rooms/{invalid}/agents")
+            ));
+        }
         for (method, path) in [
             ("GET", "projects/p_1/rooms"),
             ("GET", "projects/p_1/rooms/%21r%3Aserver/agents"),
@@ -824,6 +930,8 @@ mod tests {
             ),
             ("GET", "devices"),
             ("PUT", "agents/a_1/execution-device"),
+            ("PUT", "agents/a_1/visibility"),
+            ("GET", "agents/discover"),
             ("GET", "agents/a_1/owner-direct"),
             ("POST", "agents/a_1/owner-direct"),
             ("GET", "agents"),
@@ -851,6 +959,8 @@ mod tests {
             assert!(!allowed_operation("POST", path));
         }
         assert!(!allowed_operation("POST", "agents/a_1"));
+        assert!(!allowed_operation("POST", "agents/a_1/visibility"));
+        assert!(!allowed_operation("DELETE", "agents/discover"));
         assert!(!allowed_operation("POST", "agents/a_1/execution-device"));
         assert!(!allowed_operation("PUT", "agents/a_1/owner-direct"));
         assert!(!allowed_operation("GET", "devices/d_1/token"));
@@ -858,6 +968,92 @@ mod tests {
             "POST",
             "agents/a_1/execution-device/extra"
         ));
+    }
+    #[test]
+    fn discovery_query_is_a_single_validated_cursor() {
+        assert_eq!(
+            browser_operation_path("GET", "agents/discover", Some("after=%61_1")).unwrap(),
+            "/hagency/api/v1/agents/discover?after=a_1"
+        );
+        for query in [
+            "",
+            "after=",
+            "after=a&after=b",
+            "after=a&extra=b",
+            "limit=20",
+            "after=a%2Fb",
+            "after=%FF",
+            "after=a%252Fb",
+        ] {
+            assert!(
+                browser_operation_path("GET", "agents/discover", Some(query)).is_err(),
+                "{query}"
+            );
+        }
+        assert!(
+            browser_operation_path(
+                "GET",
+                "agents/discover",
+                Some(&format!("after={}", "a".repeat(129)))
+            )
+            .is_err()
+        );
+        assert!(browser_operation_path("GET", "agents", Some("after=a_1")).is_err());
+        assert!(browser_operation_path("PUT", "agents/a_1/visibility", Some("after=a_1")).is_err());
+    }
+
+    #[tokio::test]
+    async fn browser_forwards_visibility_and_discovery_cursor_with_session_authority() {
+        use salvo::test::{ResponseExt, TestClient};
+        let readiness = Arc::new(Readiness::default());
+        let (auth, _, worker) = fixture_with_readiness(readiness.clone()).await;
+        let service = Service::new(auth.router());
+        let mut reply = login().send(&service).await;
+        assert_eq!(reply.status_code, Some(StatusCode::OK));
+        let cookie = reply.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let session: Value = reply.take_json().await.unwrap();
+        let reply =
+            TestClient::get("http://example.test/hagency/api/browser/v1/agents/discover?after=a_2")
+                .add_header("host", "example.test", true)
+                .add_header("cookie", &cookie, true)
+                .add_header("x-csrf-token", session["csrf"].as_str().unwrap(), true)
+                .send(&service)
+                .await;
+        assert_eq!(reply.status_code, Some(StatusCode::OK));
+        let reply =
+            TestClient::put("http://example.test/hagency/api/browser/v1/agents/a_1/visibility")
+                .add_header("host", "example.test", true)
+                .add_header("cookie", &cookie, true)
+                .add_header("x-csrf-token", session["csrf"].as_str().unwrap(), true)
+                .json(&json!({"visibility":"public"}))
+                .send(&service)
+                .await;
+        assert_eq!(reply.status_code, Some(StatusCode::OK));
+        let requests = readiness.requests.lock().unwrap();
+        assert!(requests.iter().any(|(route, token)| route
+            == "GET /hagency/api/v1/agents/discover?after=a_2 HTTP/1.1"
+            && token == &format!("Bearer {}", "a".repeat(64))));
+        assert!(
+            requests
+                .iter()
+                .any(|(route, _)| route == "PUT /hagency/api/v1/agents/a_1/visibility HTTP/1.1")
+        );
+        drop(requests);
+        let reply =
+            TestClient::put("http://example.test/hagency/api/browser/v1/agents/a_1/visibility")
+                .add_header("host", "example.test", true)
+                .add_header("cookie", &cookie, true)
+                .json(&json!({"visibility":"public"}))
+                .send(&service)
+                .await;
+        assert_eq!(reply.status_code, Some(StatusCode::FORBIDDEN));
+        worker.abort();
     }
     async fn fixture() -> (
         BrowserAuth,
@@ -918,19 +1114,27 @@ mod tests {
                         })
                         .unwrap_or_default()
                         .to_owned();
-                    readiness.requests.lock().unwrap().push((route, token));
+                    readiness
+                        .requests
+                        .lock()
+                        .unwrap()
+                        .push((route, token.clone()));
                     let mxid = if request.contains("other-personal-token") {
                         "@other:example.test"
                     } else {
                         "@owner:example.test"
                     };
                     let (status, body) = if request.contains("/_matrix/client/v3/account/whoami") {
-                        let status = readiness
-                            .statuses
-                            .lock()
-                            .unwrap()
-                            .pop_front()
-                            .unwrap_or(200);
+                        let status = if token == "Bearer unready-token" {
+                            401
+                        } else {
+                            readiness
+                                .statuses
+                                .lock()
+                                .unwrap()
+                                .pop_front()
+                                .unwrap_or(200)
+                        };
                         (status, json!({"user_id":mxid,"is_guest":false}))
                     } else if request.contains("/_palpo/admin/v1/appservices") {
                         if admin.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1048,7 +1252,13 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(readiness.requests.lock().unwrap().len(), calls);
         assert!(auth.sessions.lock().await.is_empty());
-        assert!(auth.handover.try_lock().is_ok());
+        assert!(
+            auth.handover
+                .lock()
+                .await
+                .values()
+                .all(|lock| lock.strong_count() == 0)
+        );
         worker.abort();
     }
     #[tokio::test]
@@ -1065,7 +1275,68 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(readiness.requests.lock().unwrap().len(), calls);
         assert!(auth.sessions.lock().await.is_empty());
-        assert!(auth.handover.try_lock().is_ok());
+        assert!(
+            auth.handover
+                .lock()
+                .await
+                .values()
+                .all(|lock| lock.strong_count() == 0)
+        );
+        worker.abort();
+    }
+    #[tokio::test]
+    async fn unverified_login_does_not_block_another_login_or_logout() {
+        use salvo::test::{ResponseExt, TestClient};
+        let readiness = Arc::new(Readiness::default());
+        let (auth, _, worker) = fixture_with_readiness(readiness.clone()).await;
+        let service = Service::new(auth.router());
+        let mut initial = login().send(&service).await;
+        let cookie = initial.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let session: Value = initial.take_json().await.unwrap();
+        let mut pending = Box::pin(
+            TestClient::post("http://example.test/hagency/api/login/token")
+                .add_header("host", "example.test", true)
+                .add_header("x-hagency-fresh-oauth", "1", true)
+                .bearer_auth("unready-token")
+                .json(&json!({}))
+                .send(&service),
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::select! {
+                _ = &mut pending => panic!("readiness must still be pending"),
+                _ = async {
+                    while !readiness.requests.lock().unwrap().iter().any(|(_, token)| token == "Bearer unready-token") {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                } => {}
+            }
+        }).await.unwrap();
+        let (signed_in, logged_out) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                TestClient::post("http://example.test/hagency/api/login/token")
+                    .add_header("host", "example.test", true)
+                    .bearer_auth("other-personal-token")
+                    .json(&json!({}))
+                    .send(&service),
+                TestClient::post("http://example.test/hagency/api/logout")
+                    .add_header("host", "example.test", true)
+                    .add_header("cookie", &cookie, true)
+                    .add_header("x-csrf-token", session["csrf"].as_str().unwrap(), true)
+                    .json(&json!({}))
+                    .send(&service),
+            )
+        })
+        .await
+        .expect("an unrelated grant must not wait for unverified readiness");
+        assert_eq!(signed_in.status_code, Some(StatusCode::OK));
+        assert_eq!(logged_out.status_code, Some(StatusCode::OK));
+        drop(pending);
         worker.abort();
     }
     #[tokio::test]

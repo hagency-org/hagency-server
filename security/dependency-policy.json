@@ -1,9 +1,9 @@
 {
-  "version": 1,
-  "reviewed_on": "2026-10-30",
+  "version": 2,
+  "reviewed_on": "2026-11-16",
   "expires_on": "2026-11-29",
   "reviewed_sources": {
-    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?branch=main#37d6e30ceecb9c0aee3da3c6990298c13760f4bc"
+    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?rev=716abc5e684be44e7b2883c38f328fdae500f769#716abc5e684be44e7b2883c38f328fdae500f769"
   },
   "findings": [
     {
@@ -13,7 +13,8 @@
       "version": "0.5.5",
       "status": "unresolved_upstream",
       "reason": "Pasion JOSE uses elliptic-curve 0.13 and crypto-bigint 0.5.5. The fixed 0.7.6 API is incompatible. A coordinated upstream cryptography migration is required; this is an open side-channel risk, not a non-applicability claim.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0387.html"
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0387.html",
+      "advisory_fingerprint": "d6428ce23dcc57d1c3ef56daf3b1ef285fde0d3ba240c87b95f5e6f5460654de"
     },
     {
       "advisory": "RUSTSEC-2023-0071",
@@ -21,8 +22,9 @@
       "package": "rsa",
       "version": "0.9.10",
       "status": "unresolved_upstream",
-      "reason": "No patched rsa release exists. The reviewed Pasion JOSE path signs and verifies JWTs; no PKCS#1 v1.5 decryption call was found. Retain the upstream side-channel risk explicitly; re-review on any JOSE/dependency change.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2023-0071.html"
+      "reason": "RustSec now lists patched rsa >=0.10.0. The locked 0.9.10 remains vulnerable pending a coordinated RSA/hash/key-format trait migration and JOSE/keystore round-trip validation. Reviewed JOSE signs/verifies JWTs; no RSA padding decryption call was found. This is not a non-applicability claim: broader private-key timing risk remains unresolved.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2023-0071.html",
+      "advisory_fingerprint": "19552aa4a82e472271a62109e46898d9580e3585a4677f5202290acea209a6a6"
     },
     {
       "advisory": "RUSTSEC-2026-0441",
@@ -31,7 +33,8 @@
       "version": "0.1.1",
       "status": "reviewed_warning",
       "reason": "Reviewed 2026-11-13: pin-utils is unmaintained with no patched release. The locked path is reqwest-retry's wasm32-only wasmtimer dependency; keep the warning visible and re-review or replace the upstream dependency before this policy expires.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0441.html"
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0441.html",
+      "advisory_fingerprint": "83d4147e0bb949d49bd9ce245a4b6f2fd82d1d52bfbc94a02d74d3d73612ae61"
     },
     {
       "advisory": "RUSTSEC-2025-0052",
@@ -40,7 +43,8 @@
       "version": "1.13.2",
       "status": "reviewed_warning",
       "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2025-0052.html"
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2025-0052.html",
+      "advisory_fingerprint": "6f88a311a3c794daeec6de01f43ed312aae7428d2ce99b146fa53ca2b6c03b05"
     },
     {
       "advisory": "RUSTSEC-2024-0436",
@@ -49,7 +53,8 @@
       "version": "1.0.15",
       "status": "reviewed_warning",
       "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2024-0436.html"
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2024-0436.html",
+      "advisory_fingerprint": "b0ecb2e148b7788aa275afa1af7fc4b6ebbc5025e2a662d5ab3d8cf229d3ce57"
     },
     {
       "advisory": "RUSTSEC-2026-0249",
@@ -58,7 +63,8 @@
       "version": "1.0.1",
       "status": "reviewed_warning",
       "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0249.html"
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0249.html",
+      "advisory_fingerprint": "e4721119859b2e486796f1a91172205ae9e6c0b4932d2ad1f4d420008b73abcc"
     },
     {
       "advisory": "RUSTSEC-2024-0449",
@@ -67,16 +73,8 @@
       "version": "0.2.11",
       "status": "reviewed_warning",
       "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2024-0449.html"
-    },
-    {
-      "advisory": "RUSTSEC-2026-0097",
-      "kind": "unsound",
-      "package": "rand",
-      "version": "0.7.3",
-      "status": "reviewed_warning",
-      "reason": "Legacy rand 0.7.3 is transitive. Its custom-logger/reentrant RNG trigger was not demonstrated; retain the unsoundness warning until the dependency is replaced.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0097.html"
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2024-0449.html",
+      "advisory_fingerprint": "0749dbd462a61a0e2685da943dcf2512001f46101b341fd690e59f594875c3f5"
     }
   ],
   "timezone": "Asia/Shanghai"

@@ -5,6 +5,7 @@ Reviewed unresolved findings stay visible. A successful policy check is not
 a clean cargo-audit result. No RustSec advisory is hidden with --ignore.
 """
 import argparse
+import hashlib
 from datetime import date, datetime, timedelta
 import json
 from pathlib import Path
@@ -28,18 +29,21 @@ def findings(report):
     records = [("vulnerability", entry) for entry in vulnerabilities]
     for kind, entries in report["warnings"].items():
         records.extend((kind, entry) for entry in entries)
-    result = set()
+    result = {}
     for kind, entry in records:
         key = (entry["advisory"]["id"], kind, entry["package"]["name"], entry["package"]["version"])
         if key in result:
             raise ValueError("duplicate audit finding")
-        result.add(key)
+        # An unchanged ID/version does not imply unchanged risk. RustSec can
+        # publish fixes or revise impact text without adding a new finding.
+        semantic = {"advisory": entry["advisory"], "versions": entry.get("versions"), "affected": entry.get("affected")}
+        result[key] = hashlib.sha256(json.dumps(semantic, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return result
 
 
 def check(report, policy, lock, today):
     errors = []
-    if policy["version"] != 1:
+    if policy["version"] != 2:
         raise ValueError("unsupported dependency policy")
     reviewed = date.fromisoformat(policy["reviewed_on"])
     expires = date.fromisoformat(policy["expires_on"])
@@ -54,16 +58,23 @@ def check(report, policy, lock, today):
         if sources.get(package) != {source}:
             errors.append("reviewed upstream source changed: " + package)
     accepted = set()
+    reviewed_details = {}
     for row in policy["findings"]:
         key = (row["advisory"], row["kind"], row["package"], row["version"])
         if key in accepted or not row["reason"].strip() or not row["reference"].startswith("https://"):
             raise ValueError("invalid or duplicate dependency disposition")
         if row["kind"] == "vulnerability" and row["status"] != "unresolved_upstream":
             raise ValueError("a vulnerable version cannot be described as resolved")
+        fingerprint = row.get("advisory_fingerprint", "")
+        if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+            raise ValueError("dependency disposition needs reviewed advisory details")
         accepted.add(key)
+        reviewed_details[key] = fingerprint
     actual = findings(report)
-    errors.extend("unreviewed finding: " + " / ".join(row) for row in sorted(actual - accepted))
-    errors.extend("remove stale disposition: " + " / ".join(row) for row in sorted(accepted - actual))
+    errors.extend("unreviewed finding: " + " / ".join(row) for row in sorted(set(actual) - accepted))
+    errors.extend("remove stale disposition: " + " / ".join(row) for row in sorted(accepted - set(actual)))
+    errors.extend("advisory details or affected/fixed ranges changed: " + " / ".join(row)
+                  for row in sorted(accepted & set(actual)) if reviewed_details[row] != actual[row])
     return errors
 
 
