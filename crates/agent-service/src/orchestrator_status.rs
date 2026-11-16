@@ -21,10 +21,16 @@ const ROLES: [(Role, &str); 3] = [
 /// How busy a role's Agent is in one run. Order matters: the busiest state across runs wins.
 fn role_state(state: &State, role: Role) -> (&'static str, Option<&'static str>) {
     match state {
-        State::Running { slot, .. } if slot.stage.role() == role => ("running", Some(slot.stage.phase())),
+        State::Running { slot, .. } if slot.stage.role() == role => {
+            ("running", Some(slot.stage.phase()))
+        }
         // A Human holds the run: the Agent whose stage it is waits.
-        State::ManualIntervention { slot, .. } if slot.stage.role() == role => ("pending", Some(slot.stage.phase())),
-        State::AwaitingSpecApproval { .. } if role == Role::Coordinator => ("pending", Some("spec")),
+        State::ManualIntervention { slot, .. } if slot.stage.role() == role => {
+            ("pending", Some(slot.stage.phase()))
+        }
+        State::AwaitingSpecApproval { .. } if role == Role::Coordinator => {
+            ("pending", Some("spec"))
+        }
         State::NotStarted => ("pending", None),
         _ => ("active", None),
     }
@@ -43,7 +49,9 @@ pub(crate) fn agents(runs: &[OrchestratorRun]) -> Value {
     let mut by_binding: BTreeMap<String, Value> = BTreeMap::new();
     for run in runs {
         for (role, key) in ROLES {
-            let Some(binding) = run.init.bindings[key].as_str() else { continue };
+            let Some(binding) = run.init.bindings[key].as_str() else {
+                continue;
+            };
             let (status, stage) = role_state(&run.state, role);
             let entry = by_binding.entry(binding.to_owned()).or_insert_with(|| {
                 json!({"binding": binding, "pool": binding.starts_with("mas_"), "status": "active", "roles": [], "runs": []})
@@ -111,32 +119,83 @@ mod tests {
         OrchestratorRun {
             id: id.into(),
             init: OrchestratorRunInit {
-                project_id: "prj".into(), task_id: format!("task-{id}"), room_id: "!r:s".into(), thread_root: "$t".into(),
+                project_id: "prj".into(),
+                task_id: format!("task-{id}"),
+                room_id: "!r:s".into(),
+                thread_root: "$t".into(),
                 requester_mxid: "@h:s".into(),
                 bindings: json!({"coordinator": "bnd_coord", "implementer": "mas_impl", "reviewer": reviewer}),
                 context: json!({"projectId": "DEMO-02"}),
             },
-            state, revision: 1, dispatch_id: None, handoff: None, pending_events: json!([]), updated_at_ms: 0,
+            state,
+            revision: 1,
+            dispatch_id: None,
+            handoff: None,
+            pending_events: json!([]),
+            updated_at_ms: 0,
         }
     }
 
     #[test]
     fn the_busiest_state_across_runs_wins_and_humans_hold_as_pending() {
-        let execute = Slot { stage: Stage::Execute, round: 1, attempt: 1 };
-        let review = Slot { stage: Stage::Review, round: 1, attempt: 1 };
+        let execute = Slot {
+            stage: Stage::Execute,
+            round: 1,
+            attempt: 1,
+        };
+        let review = Slot {
+            stage: Stage::Review,
+            round: 1,
+            attempt: 1,
+        };
         let runs = [
-            run("a", State::Running { slot: execute, spec_revision: 1 }, "bnd_rev"),
-            run("b", State::AwaitingSpecApproval { spec_revision: 1 }, "bnd_rev"),
-            run("c", State::ManualIntervention { slot: review, spec_revision: 1, reason: "stage_timeout" }, "bnd_rev2"),
+            run(
+                "a",
+                State::Running {
+                    slot: execute,
+                    spec_revision: 1,
+                },
+                "bnd_rev",
+            ),
+            run(
+                "b",
+                State::AwaitingSpecApproval { spec_revision: 1 },
+                "bnd_rev",
+            ),
+            run(
+                "c",
+                State::ManualIntervention {
+                    slot: review,
+                    spec_revision: 1,
+                    reason: "stage_timeout",
+                },
+                "bnd_rev2",
+            ),
         ];
         let out = agents(&runs);
-        let get = |b: &str| out["agents"].as_array().unwrap().iter().find(|a| a["binding"] == b).cloned().unwrap();
+        let get = |b: &str| {
+            out["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["binding"] == b)
+                .cloned()
+                .unwrap()
+        };
         assert_eq!(get("mas_impl")["status"], "running");
         assert_eq!(get("mas_impl")["pool"], true);
         assert_eq!(get("mas_impl")["runs"][0]["stage"], "execute");
-        assert_eq!(get("bnd_coord")["status"], "pending", "the Spec waits for a Human in run b");
+        assert_eq!(
+            get("bnd_coord")["status"],
+            "pending",
+            "the Spec waits for a Human in run b"
+        );
         assert_eq!(get("bnd_rev")["status"], "active");
-        assert_eq!(get("bnd_rev2")["status"], "pending", "manual intervention on its review");
+        assert_eq!(
+            get("bnd_rev2")["status"],
+            "pending",
+            "manual intervention on its review"
+        );
         assert_eq!(out["open_runs"], 3);
     }
 

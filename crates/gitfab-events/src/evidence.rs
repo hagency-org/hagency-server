@@ -64,7 +64,10 @@ pub fn export(
             let (event, version, content) = match checked {
                 Ok(ok) => ok,
                 Err(e) => {
-                    failures.push(merge(at, json!({"code": e.code(), "message": e.to_string()})));
+                    failures.push(merge(
+                        at,
+                        json!({"code": e.code(), "message": e.to_string()}),
+                    ));
                     continue;
                 }
             };
@@ -76,7 +79,10 @@ pub fn export(
                 Some(prior) if *prior == content => continue,
                 Some(_) => {
                     let e = Error::Conflict(key);
-                    failures.push(merge(at, json!({"code": e.code(), "message": e.to_string()})));
+                    failures.push(merge(
+                        at,
+                        json!({"code": e.code(), "message": e.to_string()}),
+                    ));
                     continue;
                 }
                 None => {
@@ -93,7 +99,8 @@ pub fn export(
     if !failures.is_empty() {
         return Err(failures);
     }
-    std::fs::create_dir_all(out).map_err(|e| vec![json!({"code": "io", "message": e.to_string()})])?;
+    std::fs::create_dir_all(out)
+        .map_err(|e| vec![json!({"code": "io", "message": e.to_string()})])?;
     for (name, text) in &files {
         std::fs::write(out.join(name), text)
             .map_err(|e| vec![json!({"code": "io", "message": e.to_string()})])?;
@@ -151,7 +158,11 @@ pub fn manifest(dir: &Path, generated_at: &str) -> Result<Value, Vec<Value>> {
             .expect("walked under dir")
             .to_string_lossy()
             .replace('\\', "/");
-        if std::fs::symlink_metadata(&path).map_err(io)?.file_type().is_symlink() {
+        if std::fs::symlink_metadata(&path)
+            .map_err(io)?
+            .file_type()
+            .is_symlink()
+        {
             failures.push(json!({"file": relative, "code": "symlink"}));
             continue;
         }
@@ -208,14 +219,19 @@ pub fn check_manifest(dir: &Path) -> Vec<Value> {
             continue;
         };
         listed.insert(relative.to_owned());
-        if relative.split('/').any(|part| part == ".." || part.is_empty()) {
+        if relative
+            .split('/')
+            .any(|part| part == ".." || part.is_empty())
+        {
             failures.push(json!({"file": relative, "code": "invalid_path"}));
             continue;
         }
         match std::fs::read(dir.join(relative)) {
             Ok(bytes) => {
                 let digest = hex::encode(Sha256::digest(&bytes));
-                if Some(bytes.len() as u64) != entry["size"].as_u64() || Some(digest.as_str()) != entry["sha256"].as_str() {
+                if Some(bytes.len() as u64) != entry["size"].as_u64()
+                    || Some(digest.as_str()) != entry["sha256"].as_str()
+                {
                     failures.push(json!({"file": relative, "code": "changed"}));
                 }
             }
@@ -225,7 +241,11 @@ pub fn check_manifest(dir: &Path) -> Vec<Value> {
     let mut paths = Vec::new();
     if walk(dir, dir, &mut paths).is_ok() {
         for path in paths {
-            let relative = path.strip_prefix(dir).expect("walked under dir").to_string_lossy().replace('\\', "/");
+            let relative = path
+                .strip_prefix(dir)
+                .expect("walked under dir")
+                .to_string_lossy()
+                .replace('\\', "/");
             if !listed.contains(&relative) {
                 failures.push(json!({"file": relative, "code": "unlisted"}));
             }
@@ -254,7 +274,10 @@ mod tests {
         std::fs::create_dir_all(bundle.join("sub")).unwrap();
         std::fs::write(bundle.join("a-report.json"), "{}").unwrap();
         std::fs::write(bundle.join("sub/b.jsonl"), "x\n").unwrap();
-        assert_eq!(check_manifest(&bundle), vec![json!({"file": "manifest.json", "code": "missing_manifest"})]);
+        assert_eq!(
+            check_manifest(&bundle),
+            vec![json!({"file": "manifest.json", "code": "missing_manifest"})]
+        );
         manifest(&bundle, "2026-11-13T00:00:00Z").unwrap();
         assert!(check_manifest(&bundle).is_empty());
 
@@ -263,11 +286,14 @@ mod tests {
         std::fs::remove_file(bundle.join("a-report.json")).unwrap();
         let mut found = check_manifest(&bundle);
         found.sort_by_key(|f| f["file"].as_str().unwrap().to_owned());
-        assert_eq!(found, vec![
-            json!({"file": "a-report.json", "code": "missing"}),
-            json!({"file": "late.json", "code": "unlisted"}),
-            json!({"file": "sub/b.jsonl", "code": "changed"}),
-        ]);
+        assert_eq!(
+            found,
+            vec![
+                json!({"file": "a-report.json", "code": "missing"}),
+                json!({"file": "late.json", "code": "unlisted"}),
+                json!({"file": "sub/b.jsonl", "code": "changed"}),
+            ]
+        );
     }
 
     fn signed_memory(key: &Key, id: &str, project: &str) -> String {
@@ -286,8 +312,14 @@ mod tests {
         let other = signed_memory(&key, "m2", "DEMO-01");
         let text = format!("{running}\n{mine}\n{other}\n{mine}\n");
         let counts = export("DEMO-05", &[("events.jsonl".into(), text)], dir.path()).unwrap();
-        assert_eq!(counts["memory-events.jsonl"], 1, "same content twice is one event");
-        assert_eq!(counts["task-events.jsonl"], 0, "the task fixture is DEMO-01");
+        assert_eq!(
+            counts["memory-events.jsonl"], 1,
+            "same content twice is one event"
+        );
+        assert_eq!(
+            counts["task-events.jsonl"], 0,
+            "the task fixture is DEMO-01"
+        );
         let written = std::fs::read_to_string(dir.path().join("memory-events.jsonl")).unwrap();
         assert_eq!(written, format!("{mine}\n"));
         assert!(dir.path().join("token-events.jsonl").exists());
@@ -303,7 +335,10 @@ mod tests {
         changed["token_delta"] = json!(9);
         let text = format!("{mine}\n{changed}\nnot json\n");
         let failures = export("DEMO-05", &[("e.jsonl".into(), text)], &out).unwrap_err();
-        let codes: Vec<&str> = failures.iter().map(|f| f["code"].as_str().unwrap()).collect();
+        let codes: Vec<&str> = failures
+            .iter()
+            .map(|f| f["code"].as_str().unwrap())
+            .collect();
         assert_eq!(codes, ["conflict", "invalid_json"]);
         assert!(!out.exists());
     }

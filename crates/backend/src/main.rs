@@ -260,9 +260,7 @@ async fn run() -> anyhow::Result<()> {
             tracing::info!(journal = %journal.display(), "GitFab orchestrator enabled");
             app = app.with_gitfab_orchestrator(
                 recorder,
-                gitfab
-                    .stage_timeout_minutes
-                    .map(|m| i64::from(m) * 60_000),
+                gitfab.stage_timeout_minutes.map(|m| i64::from(m) * 60_000),
             );
             if gitfab.github_token_file.is_some() || gitfab.gitcode_token_file.is_some() {
                 let hosts = hagency_agent_service::orchestrator_git::GitHosts::load(

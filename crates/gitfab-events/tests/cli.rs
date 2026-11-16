@@ -230,17 +230,27 @@ fn a_signed_key_event_needs_its_identity_event() {
 fn the_report_uses_verified_records_and_names_the_rest() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
-    assert_eq!(gitfab(&["keygen", "--key-id", "k1", "--dir", "keys"], dir).0, 0);
-    let task = |phase: &str, status: &str, n: u32, refs: Value| json!({
-        "schema_version": "gitfab.task.v1", "event_id": format!("run-1.{n}.0"), "timestamp": format!("2026-11-12T03:0{n}:00Z"),
-        "project_id": "DEMO-01", "task_id": "task-1", "run_id": "run-1", "matrix_room_id": "!room:example.org",
-        "matrix_thread_event_id": "$root", "git_backend": "gitcode", "repo_ref": "https://gitcode.com/org/demo-01",
-        "baseline_sha": "a".repeat(40), "spec_ref": "spec/DEMO-01.md@v1", "phase": phase, "status": status,
-        "actor_id": "@agent:example.org", "input_digest": format!("sha256:{}", "a".repeat(64)),
-        "output_digest": null, "artifact_refs": refs, "request_id": "req-1", "signature": null, "round": 1
-    });
+    assert_eq!(
+        gitfab(&["keygen", "--key-id", "k1", "--dir", "keys"], dir).0,
+        0
+    );
+    let task = |phase: &str, status: &str, n: u32, refs: Value| {
+        json!({
+            "schema_version": "gitfab.task.v1", "event_id": format!("run-1.{n}.0"), "timestamp": format!("2026-11-12T03:0{n}:00Z"),
+            "project_id": "DEMO-01", "task_id": "task-1", "run_id": "run-1", "matrix_room_id": "!room:example.org",
+            "matrix_thread_event_id": "$root", "git_backend": "gitcode", "repo_ref": "https://gitcode.com/org/demo-01",
+            "baseline_sha": "a".repeat(40), "spec_ref": "spec/DEMO-01.md@v1", "phase": phase, "status": status,
+            "actor_id": "@agent:example.org", "input_digest": format!("sha256:{}", "a".repeat(64)),
+            "output_digest": null, "artifact_refs": refs, "request_id": "req-1", "signature": null, "round": 1
+        })
+    };
     let intake = sign(dir, &task("intake", "succeeded", 1, json!([])));
-    let mut released = task("release", "succeeded", 2, json!(["https://gitcode.com/org/demo-01/releases/v1"]));
+    let mut released = task(
+        "release",
+        "succeeded",
+        2,
+        json!(["https://gitcode.com/org/demo-01/releases/v1"]),
+    );
     released["commit_sha"] = json!("b".repeat(40));
     let release = sign(dir, &released);
     let mut refused = task("execute", "succeeded", 4, json!([]));
@@ -248,46 +258,114 @@ fn the_report_uses_verified_records_and_names_the_rest() {
     let refused = sign(dir, &refused);
     let mut forged = sign(dir, &task("review", "succeeded", 3, json!([])));
     forged["status"] = json!("failed");
-    let lines = [intake, release, forged, refused].iter().map(|e| e.to_string() + "\n").collect::<String>();
+    let lines = [intake, release, forged, refused]
+        .iter()
+        .map(|e| e.to_string() + "\n")
+        .collect::<String>();
     std::fs::write(dir.join("events.jsonl"), lines).unwrap();
-    let (code, out) = gitfab(&["report", "--keys", "keys", "--project", "DEMO-01", "events.jsonl"], dir);
+    let (code, out) = gitfab(
+        &[
+            "report",
+            "--keys",
+            "keys",
+            "--project",
+            "DEMO-01",
+            "events.jsonl",
+        ],
+        dir,
+    );
     let text = out.as_str().unwrap();
     assert_eq!(code, 0);
     assert!(text.contains("验签通过的签名记录：3 条"), "{text}");
-    assert!(text.contains("1 行未通过校验") && text.contains("events.jsonl:3"), "{text}");
+    assert!(
+        text.contains("1 行未通过校验") && text.contains("events.jsonl:3"),
+        "{text}"
+    );
     assert!(text.contains("https://gitcode.com/org/demo-01/releases/v1"));
     assert!(text.contains("提交 bbbbbbbbbbbb"), "{text}");
-    assert!(text.contains("| 平台未完成 | GitCode answered 403 to POST"), "{text}");
-    let (code, out) = gitfab(&["trace", "--keys", "keys", "--id", &"b".repeat(40), "events.jsonl"], dir);
-    assert_eq!((code, out["matches"][0]["phase"].as_str()), (0, Some("release")), "{out}");
-    assert!(!text.contains("review"), "the forged review is not reported");
+    assert!(
+        text.contains("| 平台未完成 | GitCode answered 403 to POST"),
+        "{text}"
+    );
+    let (code, out) = gitfab(
+        &[
+            "trace",
+            "--keys",
+            "keys",
+            "--id",
+            &"b".repeat(40),
+            "events.jsonl",
+        ],
+        dir,
+    );
+    assert_eq!(
+        (code, out["matches"][0]["phase"].as_str()),
+        (0, Some("release")),
+        "{out}"
+    );
+    assert!(
+        !text.contains("review"),
+        "the forged review is not reported"
+    );
 }
 
 #[test]
 fn trace_follows_a_release_through_task_events_and_ignores_forged_lines() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
-    assert_eq!(gitfab(&["keygen", "--key-id", "k1", "--dir", "keys"], dir).0, 0);
-    let event = |phase: &str, n: u32, refs: Value| json!({
-        "schema_version": "gitfab.task.v1", "event_id": format!("run-9.{n}.0"), "timestamp": "2026-11-12T03:00:00Z",
-        "project_id": "DEMO-04", "task_id": "task-9", "run_id": "run-9", "matrix_room_id": "!room:example.org",
-        "matrix_thread_event_id": "$root", "git_backend": "github", "repo_ref": "https://github.com/org/demo-04",
-        "baseline_sha": "a".repeat(40), "spec_ref": "spec/DEMO-04.md@v1", "phase": phase, "status": "succeeded",
-        "actor_id": "@agent:example.org", "input_digest": format!("sha256:{}", "a".repeat(64)),
-        "output_digest": null, "artifact_refs": refs, "request_id": "req-9", "signature": null, "round": 1
-    });
-    let release = sign(dir, &event("release", 2, json!(["https://github.com/org/demo-04/releases/tag/v4"])));
+    assert_eq!(
+        gitfab(&["keygen", "--key-id", "k1", "--dir", "keys"], dir).0,
+        0
+    );
+    let event = |phase: &str, n: u32, refs: Value| {
+        json!({
+            "schema_version": "gitfab.task.v1", "event_id": format!("run-9.{n}.0"), "timestamp": "2026-11-12T03:00:00Z",
+            "project_id": "DEMO-04", "task_id": "task-9", "run_id": "run-9", "matrix_room_id": "!room:example.org",
+            "matrix_thread_event_id": "$root", "git_backend": "github", "repo_ref": "https://github.com/org/demo-04",
+            "baseline_sha": "a".repeat(40), "spec_ref": "spec/DEMO-04.md@v1", "phase": phase, "status": "succeeded",
+            "actor_id": "@agent:example.org", "input_digest": format!("sha256:{}", "a".repeat(64)),
+            "output_digest": null, "artifact_refs": refs, "request_id": "req-9", "signature": null, "round": 1
+        })
+    };
+    let release = sign(
+        dir,
+        &event(
+            "release",
+            2,
+            json!(["https://github.com/org/demo-04/releases/tag/v4"]),
+        ),
+    );
     let mut forged = sign(dir, &event("release", 3, json!([])));
     forged["artifact_refs"] = json!(["https://github.com/org/demo-04/releases/tag/v4"]);
-    let lines = [sign(dir, &event("intake", 1, json!([]))), release, forged].iter().map(|e| e.to_string() + "\n").collect::<String>();
+    let lines = [sign(dir, &event("intake", 1, json!([]))), release, forged]
+        .iter()
+        .map(|e| e.to_string() + "\n")
+        .collect::<String>();
     std::fs::write(dir.join("events.jsonl"), lines).unwrap();
-    let (code, out) = gitfab(&["trace", "--keys", "keys", "--id", "v4", "events.jsonl"], dir);
+    let (code, out) = gitfab(
+        &["trace", "--keys", "keys", "--id", "v4", "events.jsonl"],
+        dir,
+    );
     assert_eq!(code, 0);
-    assert_eq!(out["matches"].as_array().unwrap().len(), 1, "only the signed Release, not the forged copy: {out}");
+    assert_eq!(
+        out["matches"].as_array().unwrap().len(),
+        1,
+        "only the signed Release, not the forged copy: {out}"
+    );
     assert_eq!(out["matches"][0]["line"], 2);
-    let (code, out) = gitfab(&["trace", "--keys", "keys", "--id", "task-9", "events.jsonl"], dir);
+    let (code, out) = gitfab(
+        &["trace", "--keys", "keys", "--id", "task-9", "events.jsonl"],
+        dir,
+    );
     assert_eq!((code, out["matches"].as_array().unwrap().len()), (0, 2));
-    assert_eq!(gitfab(&["trace", "--keys", "keys", "--id", "nothing", "events.jsonl"], dir).0, 1);
+    assert_eq!(
+        gitfab(
+            &["trace", "--keys", "keys", "--id", "nothing", "events.jsonl"],
+            dir
+        )
+        .0,
+        1
+    );
 }
 
 #[test]
@@ -295,9 +373,15 @@ fn trace_by_text_finds_the_signed_spec_and_not_an_edited_copy() {
     use sha2::Digest;
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
-    assert_eq!(gitfab(&["keygen", "--key-id", "k1", "--dir", "keys"], dir).0, 0);
+    assert_eq!(
+        gitfab(&["keygen", "--key-id", "k1", "--dir", "keys"], dir).0,
+        0
+    );
     let spec = "# Spec v2\n\n验收标准：标题 1 到 120 个字符。\n";
-    let digest = format!("sha256:{}", hex::encode(sha2::Sha256::digest(spec.as_bytes())));
+    let digest = format!(
+        "sha256:{}",
+        hex::encode(sha2::Sha256::digest(spec.as_bytes()))
+    );
     let event = json!({
         "schema_version": "gitfab.task.v1", "event_id": "run-3.2.0", "timestamp": "2026-11-12T03:00:00Z",
         "project_id": "DEMO-02", "task_id": "task-3", "run_id": "run-3", "matrix_room_id": "!room:example.org",
@@ -306,19 +390,63 @@ fn trace_by_text_finds_the_signed_spec_and_not_an_edited_copy() {
         "actor_id": "@agent:example.org", "input_digest": format!("sha256:{}", "a".repeat(64)),
         "output_digest": digest, "artifact_refs": [], "request_id": "req-3", "signature": null, "round": 0
     });
-    std::fs::write(dir.join("events.jsonl"), sign(dir, &event).to_string() + "\n").unwrap();
+    std::fs::write(
+        dir.join("events.jsonl"),
+        sign(dir, &event).to_string() + "\n",
+    )
+    .unwrap();
     std::fs::write(dir.join("spec.md"), spec).unwrap();
     std::fs::write(dir.join("edited.md"), spec.replace("120", "200")).unwrap();
 
-    let (code, out) = gitfab(&["trace", "--keys", "keys", "--text", "spec.md", "events.jsonl"], dir);
+    let (code, out) = gitfab(
+        &[
+            "trace",
+            "--keys",
+            "keys",
+            "--text",
+            "spec.md",
+            "events.jsonl",
+        ],
+        dir,
+    );
     assert_eq!(code, 0, "{out}");
     assert_eq!(out["id"], digest);
     assert_eq!(out["matches"][0]["phase"], "spec");
-    let (code, out) = gitfab(&["trace", "--keys", "keys", "--text", "edited.md", "events.jsonl"], dir);
-    assert_eq!((code, out["matches"].as_array().map(Vec::len)), (1, Some(0)), "{out}");
+    let (code, out) = gitfab(
+        &[
+            "trace",
+            "--keys",
+            "keys",
+            "--text",
+            "edited.md",
+            "events.jsonl",
+        ],
+        dir,
+    );
+    assert_eq!(
+        (code, out["matches"].as_array().map(Vec::len)),
+        (1, Some(0)),
+        "{out}"
+    );
 
-    let (_, report) = gitfab(&["report", "--keys", "keys", "--project", "DEMO-02", "events.jsonl"], dir);
-    assert!(report.as_str().unwrap().contains(&format!("输出 {}", &digest[..19])), "{report}");
+    let (_, report) = gitfab(
+        &[
+            "report",
+            "--keys",
+            "keys",
+            "--project",
+            "DEMO-02",
+            "events.jsonl",
+        ],
+        dir,
+    );
+    assert!(
+        report
+            .as_str()
+            .unwrap()
+            .contains(&format!("输出 {}", &digest[..19])),
+        "{report}"
+    );
 }
 
 #[test]

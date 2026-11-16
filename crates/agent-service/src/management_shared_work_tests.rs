@@ -1833,9 +1833,11 @@ async fn shared_work_reads_back_for_the_gitfab_orchestrator() {
     // The pool Agent is listed for its Room, so `/gitfab start` can name it.
     let agents = t.shared_room_agents(&mx.room_id).await.unwrap();
     assert!(
-        agents.iter().any(|(assignment, agent, puppet)| *assignment == mx.assignment_id
-            && *agent == mx.agent_id
-            && *puppet == mx.puppet_mxid),
+        agents.iter().any(
+            |(assignment, agent, puppet)| *assignment == mx.assignment_id
+                && *agent == mx.agent_id
+                && *puppet == mx.puppet_mxid
+        ),
         "{agents:?}"
     );
     // A pool Agent's records name its owner and the owner whose resource runs it.
@@ -1845,7 +1847,10 @@ async fn shared_work_reads_back_for_the_gitfab_orchestrator() {
     );
     assert_eq!(t.agent_owners("mas_missing").await.unwrap(), None);
     let stage = "$gitfab_pool_stage";
-    assert_eq!(t.shared_dispatch(&mx.assignment_id, stage).await.unwrap(), None);
+    assert_eq!(
+        t.shared_dispatch(&mx.assignment_id, stage).await.unwrap(),
+        None
+    );
     let seen = |row: Option<DispatchRow>| row.and_then(|r| observed(&r, Stage::Review));
 
     // The orchestrator admits its stage message through ordinary shared routing.
@@ -1861,11 +1866,19 @@ async fn shared_work_reads_back_for_the_gitfab_orchestrator() {
         .start_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
         .await
         .unwrap();
-    assert_eq!(seen(t.shared_dispatch(&mx.assignment_id, stage).await.unwrap()), None);
+    assert_eq!(
+        seen(t.shared_dispatch(&mx.assignment_id, stage).await.unwrap()),
+        None
+    );
 
     let tk = ticket(&f, &d, &w).await;
     f.domain
-        .record_shared_work_result(&f.owner.p, &f.policy, &w.id, outcome(&d, &w, &tk, 201, "completed"))
+        .record_shared_work_result(
+            &f.owner.p,
+            &f.policy,
+            &w.id,
+            outcome(&d, &w, &tk, 201, "completed"),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -1878,7 +1891,15 @@ async fn shared_work_reads_back_for_the_gitfab_orchestrator() {
         .send_shared_replies(&f.policy, &m.gateway, &s.matrix, &mut String::new())
         .await
         .unwrap();
-    let done = t.shared_dispatch(&mx.assignment_id, stage).await.unwrap().unwrap();
+    let done = t
+        .shared_dispatch(&mx.assignment_id, stage)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(done.reply_body.as_deref(), Some("Hello."));
-    assert_eq!(seen(Some(done)), Some(Outcome::Replied(None)), "a Reviewer reply without a verdict");
+    assert_eq!(
+        seen(Some(done)),
+        Some(Outcome::Replied(None)),
+        "a Reviewer reply without a verdict"
+    );
 }

@@ -63,7 +63,11 @@ fn handle(mut stream: TcpStream, sources: &Sources) {
     let mut words = head.split_whitespace();
     let (method, path) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
     let (status, kind, body) = respond(method, path, sources);
-    let reason = match status { 200 => "OK", 404 => "Not Found", _ => "Method Not Allowed" };
+    let reason = match status {
+        200 => "OK",
+        404 => "Not Found",
+        _ => "Method Not Allowed",
+    };
     let _ = write!(
         stream,
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAllow: GET\r\nConnection: close\r\n\r\n{body}",
@@ -86,10 +90,21 @@ fn main() -> std::process::ExitCode {
             eprintln!("--probe must be PROJECT=PORT or PROJECT=PORT:/health-path: {p}");
             return std::process::ExitCode::from(2);
         };
-        probes.push(Probe { project: project.into(), port, health_path: health.into(), version_path: "/version".into() });
+        probes.push(Probe {
+            project: project.into(),
+            port,
+            health_path: health.into(),
+            version_path: "/version".into(),
+        });
     }
     let server = cli.server.zip(cli.server_token_file);
-    let sources = Sources { journals: cli.journals, receipts: cli.receipts, keys, probes, server };
+    let sources = Sources {
+        journals: cli.journals,
+        receipts: cli.receipts,
+        keys,
+        probes,
+        server,
+    };
     let listener = match TcpListener::bind(&cli.listen) {
         Ok(l) => l,
         Err(e) => {
@@ -110,11 +125,21 @@ mod tests {
 
     #[test]
     fn only_reads_are_served() {
-        let sources = Sources { journals: vec![], receipts: vec![], keys: Keyring::default(), probes: vec![], server: None };
+        let sources = Sources {
+            journals: vec![],
+            receipts: vec![],
+            keys: Keyring::default(),
+            probes: vec![],
+            server: None,
+        };
         assert_eq!(respond("GET", "/", &sources).0, 200);
         assert_eq!(respond("GET", "/api/snapshot", &sources).0, 200);
         for method in ["POST", "PUT", "PATCH", "DELETE"] {
-            assert_eq!(respond(method, "/api/snapshot", &sources).0, 405, "{method}");
+            assert_eq!(
+                respond(method, "/api/snapshot", &sources).0,
+                405,
+                "{method}"
+            );
         }
         assert_eq!(respond("GET", "/api/runs", &sources).0, 404);
     }
@@ -136,9 +161,21 @@ fn parse_probe(text: &str) -> Option<(&str, u16, &str)> {
 mod probe_tests {
     #[test]
     fn a_probe_names_its_health_path_or_takes_healthz() {
-        assert_eq!(super::parse_probe("DEMO-02=18080"), Some(("DEMO-02", 18080, "/healthz")));
-        assert_eq!(super::parse_probe("DEMO-01=18095:/health"), Some(("DEMO-01", 18095, "/health")));
-        for bad in ["DEMO-01", "=1", "DEMO-01=x", "DEMO-01=1:health", "DEMO-01=70000"] {
+        assert_eq!(
+            super::parse_probe("DEMO-02=18080"),
+            Some(("DEMO-02", 18080, "/healthz"))
+        );
+        assert_eq!(
+            super::parse_probe("DEMO-01=18095:/health"),
+            Some(("DEMO-01", 18095, "/health"))
+        );
+        for bad in [
+            "DEMO-01",
+            "=1",
+            "DEMO-01=x",
+            "DEMO-01=1:health",
+            "DEMO-01=70000",
+        ] {
             assert_eq!(super::parse_probe(bad), None, "{bad}");
         }
     }

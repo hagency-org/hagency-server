@@ -24,12 +24,24 @@ mod tests;
 pub trait Engine {
     /// Builds `context` as `tag`, passing `args` as build arguments; returns the immutable image ID
     /// (`sha256:…`).
-    fn build(&self, context: &Path, tag: &str, labels: &[(&str, &str)], args: &[(&str, &str)]) -> Result<String, String>;
+    fn build(
+        &self,
+        context: &Path,
+        tag: &str,
+        labels: &[(&str, &str)],
+        args: &[(&str, &str)],
+    ) -> Result<String, String>;
     /// SPDX JSON of an image.
     fn sbom(&self, image: &str) -> Result<Vec<u8>, String>;
     /// Replaces the container `name` with one running `image`, publishing `host_port` to
     /// `container_port` on 127.0.0.1.
-    fn replace(&self, name: &str, image: &str, host_port: u16, container_port: u16) -> Result<(), String>;
+    fn replace(
+        &self,
+        name: &str,
+        image: &str,
+        host_port: u16,
+        container_port: u16,
+    ) -> Result<(), String>;
     fn running(&self, name: &str) -> bool;
     /// Whether the image is still present locally.
     fn has_image(&self, image: &str) -> bool;
@@ -45,7 +57,8 @@ pub trait Engine {
 
 /// The cosign image the Runner and verify-release use (`GITFAB_COSIGN_IMAGE` overrides it).
 pub fn cosign_image() -> String {
-    std::env::var("GITFAB_COSIGN_IMAGE").unwrap_or_else(|_| "gcr.io/projectsigstore/cosign:v2.4.1".into())
+    std::env::var("GITFAB_COSIGN_IMAGE")
+        .unwrap_or_else(|_| "gcr.io/projectsigstore/cosign:v2.4.1".into())
 }
 
 /// A registry on this machine is reached over plain HTTP; any other must use HTTPS.
@@ -72,7 +85,10 @@ pub fn from_lines(dockerfile: &str) -> Vec<String> {
             stages.push(alias.to_ascii_lowercase());
         }
         let lower = image.to_ascii_lowercase();
-        if lower != "scratch" && !stages[..stages.len().saturating_sub(1)].contains(&lower) && !bases.contains(&image.to_string()) {
+        if lower != "scratch"
+            && !stages[..stages.len().saturating_sub(1)].contains(&lower)
+            && !bases.contains(&image.to_string())
+        {
             bases.push(image.to_string());
         }
     }
@@ -89,13 +105,23 @@ fn docker(args: &[&str]) -> Result<String, String> {
         .map_err(|e| format!("docker: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("docker {}: {}", args[0], err.lines().last().unwrap_or("failed")));
+        return Err(format!(
+            "docker {}: {}",
+            args[0],
+            err.lines().last().unwrap_or("failed")
+        ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
 impl Engine for Docker {
-    fn build(&self, context: &Path, tag: &str, labels: &[(&str, &str)], build_args: &[(&str, &str)]) -> Result<String, String> {
+    fn build(
+        &self,
+        context: &Path,
+        tag: &str,
+        labels: &[(&str, &str)],
+        build_args: &[(&str, &str)],
+    ) -> Result<String, String> {
         let context = context.to_str().ok_or("context path is not UTF-8")?;
         let mut args = vec!["build", "-q", "-t", tag];
         let pairs: Vec<String> = labels.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -111,14 +137,28 @@ impl Engine for Docker {
         docker(&["image", "inspect", "-f", "{{.Id}}", tag])
     }
     fn sbom(&self, image: &str) -> Result<Vec<u8>, String> {
-        let syft = std::env::var("GITFAB_SYFT_IMAGE").unwrap_or_else(|_| "anchore/syft:v1.18.1".into());
+        let syft =
+            std::env::var("GITFAB_SYFT_IMAGE").unwrap_or_else(|_| "anchore/syft:v1.18.1".into());
         let source = format!("docker:{image}");
         docker(&[
-            "run", "--rm", "-v", "/var/run/docker.sock:/var/run/docker.sock", &syft, &source, "-o", "spdx-json",
+            "run",
+            "--rm",
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            &syft,
+            &source,
+            "-o",
+            "spdx-json",
         ])
         .map(String::into_bytes)
     }
-    fn replace(&self, name: &str, image: &str, host_port: u16, container_port: u16) -> Result<(), String> {
+    fn replace(
+        &self,
+        name: &str,
+        image: &str,
+        host_port: u16,
+        container_port: u16,
+    ) -> Result<(), String> {
         let _ = docker(&["rm", "-f", name]);
         let publish = format!("127.0.0.1:{host_port}:{container_port}");
         docker(&["run", "-d", "--name", name, "-p", &publish, image]).map(|_| ())
@@ -131,23 +171,50 @@ impl Engine for Docker {
     }
     fn cosign_sign(&self, image_ref: &str, key: &Path) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(key).map_err(|e| format!("cosign key: {e}"))?.permissions().mode();
+        let mode = std::fs::metadata(key)
+            .map_err(|e| format!("cosign key: {e}"))?
+            .permissions()
+            .mode();
         if mode & 0o077 != 0 {
             return Err("cosign key: must be mode 0600".into());
         }
-        let dir = key.parent().and_then(Path::to_str).ok_or("cosign key: no directory")?;
-        let file = key.file_name().and_then(|f| f.to_str()).ok_or("cosign key: no file name")?;
+        let dir = key
+            .parent()
+            .and_then(Path::to_str)
+            .ok_or("cosign key: no directory")?;
+        let file = key
+            .file_name()
+            .and_then(|f| f.to_str())
+            .ok_or("cosign key: no file name")?;
         let mount = format!("{dir}:/k:ro");
         let key_arg = format!("/k/{file}");
         let image = cosign_image();
         // The key password comes from COSIGN_PASSWORD in the Runner's environment, never an argument.
-        let mut args = vec!["run", "--rm", "--network", "host", "-e", "COSIGN_PASSWORD", "-v", &mount];
-        let config = std::env::var("HOME").map(|h| format!("{h}/.docker/config.json")).unwrap_or_default();
+        let mut args = vec![
+            "run",
+            "--rm",
+            "--network",
+            "host",
+            "-e",
+            "COSIGN_PASSWORD",
+            "-v",
+            &mount,
+        ];
+        let config = std::env::var("HOME")
+            .map(|h| format!("{h}/.docker/config.json"))
+            .unwrap_or_default();
         let auth = format!("{config}:/root/.docker/config.json:ro");
         if Path::new(&config).is_file() {
             args.extend(["-v", &auth]);
         }
-        args.extend([image.as_str(), "sign", "--yes", "--key", &key_arg, "--tlog-upload=false"]);
+        args.extend([
+            image.as_str(),
+            "sign",
+            "--yes",
+            "--key",
+            &key_arg,
+            "--tlog-upload=false",
+        ]);
         if local_registry(image_ref) {
             args.push("--allow-insecure-registry");
         }
@@ -158,7 +225,13 @@ impl Engine for Docker {
         docker(&["tag", tag, remote])?;
         docker(&["push", "-q", remote])?;
         let repository = remote.rsplit_once(':').map_or(remote, |(r, _)| r);
-        let digests = docker(&["image", "inspect", "-f", "{{range .RepoDigests}}{{println .}}{{end}}", remote])?;
+        let digests = docker(&[
+            "image",
+            "inspect",
+            "-f",
+            "{{range .RepoDigests}}{{println .}}{{end}}",
+            remote,
+        ])?;
         digests
             .lines()
             .map(str::trim)
@@ -167,12 +240,17 @@ impl Engine for Docker {
             .ok_or_else(|| format!("{remote}: the registry returned no manifest digest"))
     }
     fn base_images(&self, context: &Path) -> Result<Vec<Value>, String> {
-        let file = std::fs::read_to_string(context.join("Dockerfile")).map_err(|e| format!("Dockerfile: {e}"))?;
+        let file = std::fs::read_to_string(context.join("Dockerfile"))
+            .map_err(|e| format!("Dockerfile: {e}"))?;
         from_lines(&file)
             .into_iter()
             .map(|name| {
-                let repo = docker(&["image", "inspect", "-f", "{{index .RepoDigests 0}}", &name]).ok();
-                let digest = repo.as_deref().and_then(|r| r.split_once('@')).map(|(_, d)| d.to_owned());
+                let repo =
+                    docker(&["image", "inspect", "-f", "{{index .RepoDigests 0}}", &name]).ok();
+                let digest = repo
+                    .as_deref()
+                    .and_then(|r| r.split_once('@'))
+                    .map(|(_, d)| d.to_owned());
                 Ok(json!({"name": name, "digest": digest}))
             })
             .collect()
@@ -181,10 +259,15 @@ impl Engine for Docker {
 
 /// One HTTP GET on 127.0.0.1; returns status and body.
 pub fn http_get(port: u16, path: &str, timeout: Duration) -> Result<(u16, String), String> {
-    let mut stream = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), timeout).map_err(|e| e.to_string())?;
-    stream.set_read_timeout(Some(timeout)).map_err(|e| e.to_string())?;
+    let mut stream = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), timeout)
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
     let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-    stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| e.to_string())?;
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&raw);
@@ -217,8 +300,10 @@ pub fn check(probe: &Probe, tag: &str) -> Result<Value, Value> {
             Err(e) => last = e,
         }
         if started.elapsed() >= probe.wait {
-            return Err(json!({"command": format!("GET {}", probe.health_path), "exit_code": 1,
-                "result": "failed", "detail": last}));
+            return Err(
+                json!({"command": format!("GET {}", probe.health_path), "exit_code": 1,
+                "result": "failed", "detail": last}),
+            );
         }
         std::thread::sleep(Duration::from_millis(300));
     }
@@ -229,10 +314,14 @@ pub fn check(probe: &Probe, tag: &str) -> Result<Value, Value> {
             "exit_code": 0, "result": "passed", "version": tag,
             "elapsed_ms": started.elapsed().as_millis() as u64,
         })),
-        Ok((status, body)) => Err(json!({"command": format!("GET {}", probe.version_path), "exit_code": 1,
-            "result": "failed", "detail": format!("HTTP {status}, version is not {tag}: {}", body.trim().chars().take(120).collect::<String>())})),
-        Err(e) => Err(json!({"command": format!("GET {}", probe.version_path), "exit_code": 1,
-            "result": "failed", "detail": e})),
+        Ok((status, body)) => Err(
+            json!({"command": format!("GET {}", probe.version_path), "exit_code": 1,
+            "result": "failed", "detail": format!("HTTP {status}, version is not {tag}: {}", body.trim().chars().take(120).collect::<String>())}),
+        ),
+        Err(e) => Err(
+            json!({"command": format!("GET {}", probe.version_path), "exit_code": 1,
+            "result": "failed", "detail": e}),
+        ),
     }
 }
 
@@ -247,8 +336,14 @@ pub struct Receipts {
 impl Receipts {
     fn append(&self, record: &Value) -> Result<(), String> {
         let mut journal = Journal::open(&self.journal).map_err(|e| e.to_string())?;
-        let signer = Signer { key: &self.key, public_key_ref: &self.public_key_ref };
-        journal.append(record, Some(&signer), "system").map(|_| ()).map_err(|e| e.to_string())
+        let signer = Signer {
+            key: &self.key,
+            public_key_ref: &self.public_key_ref,
+        };
+        journal
+            .append(record, Some(&signer), "system")
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
     /// Receipts of a project in order, newest last.
     pub fn of(&self, project: &str) -> Result<Vec<Value>, String> {
@@ -270,7 +365,10 @@ pub fn receipts(journal: &Path, project: &str) -> Result<Vec<Value>, String> {
 
 /// The last receipt of a project whose deployment passed.
 pub fn last_good(receipts: &[Value]) -> Option<&Value> {
-    receipts.iter().rev().find(|r| r["healthcheck"]["result"] == "passed")
+    receipts
+        .iter()
+        .rev()
+        .find(|r| r["healthcheck"]["result"] == "passed")
 }
 
 pub struct Release {
@@ -316,7 +414,11 @@ fn write_sbom(
     let digest = sha256(sbom);
     std::fs::write(dir.join(name), sbom).map_err(|e| e.to_string())?;
     let hex = digest.trim_start_matches("sha256:");
-    std::fs::write(dir.join(format!("{name}.sha256")), format!("{hex}  {name}\n")).map_err(|e| e.to_string())?;
+    std::fs::write(
+        dir.join(format!("{name}.sha256")),
+        format!("{hex}  {name}\n"),
+    )
+    .map_err(|e| e.to_string())?;
     let attestation = json!({
         "schema_version": SBOM_ATTESTATION,
         "project_id": release.project,
@@ -329,8 +431,12 @@ fn write_sbom(
         "runner_id": out.runner_id,
         "signature": null,
     });
-    let signed = out.key.sign(&attestation, &out.public_key_ref).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(format!("{name}.sig")), format!("{signed}\n")).map_err(|e| e.to_string())
+    let signed = out
+        .key
+        .sign(&attestation, &out.public_key_ref)
+        .map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(format!("{name}.sig")), format!("{signed}\n"))
+        .map_err(|e| e.to_string())
 }
 
 /// Outcome of a deployment, for the command's report.
@@ -354,7 +460,11 @@ pub fn deploy(
 ) -> Result<Deployed, String> {
     let history = out.of(&release.project)?;
     let previous = last_good(&history).cloned();
-    let image_tag = format!("gitfab/{}:{}", release.project.to_ascii_lowercase(), release.tag);
+    let image_tag = format!(
+        "gitfab/{}:{}",
+        release.project.to_ascii_lowercase(),
+        release.tag
+    );
     // GITFAB_RELEASE and GITFAB_COMMIT let the Dockerfile put the Release into the image (an `ARG`
     // for each); a Dockerfile that declares neither builds the same.
     let image = engine.build(
@@ -365,7 +475,10 @@ pub fn deploy(
             ("org.hagency.gitfab.commit", &release.commit),
             ("org.hagency.gitfab.tag", &release.tag),
         ],
-        &[("GITFAB_RELEASE", &release.tag), ("GITFAB_COMMIT", &release.commit)],
+        &[
+            ("GITFAB_RELEASE", &release.tag),
+            ("GITFAB_COMMIT", &release.commit),
+        ],
     )?;
     // A Release deployed again (after a restart, say) gets its own receipt and SBOM files; nothing
     // recorded earlier is overwritten.
@@ -379,7 +492,11 @@ pub fn deploy(
     let image_ref = match &release.registry {
         Some(registry) => engine.push(
             &image_tag,
-            &format!("{}/{}", registry.trim_end_matches('/'), image_tag.trim_start_matches("gitfab/")),
+            &format!(
+                "{}/{}",
+                registry.trim_end_matches('/'),
+                image_tag.trim_start_matches("gitfab/")
+            ),
         )?,
         None => format!("{image_tag}@{image}"),
     };
@@ -402,16 +519,24 @@ pub fn deploy(
         Ok(_) => None,
         Err(_) => previous.as_ref().and_then(|p| {
             let image = p["image_digest"].as_str()?.to_owned();
-            engine.replace(&name, &image, probe.port, probe.container_port).ok()?;
+            engine
+                .replace(&name, &image, probe.port, probe.container_port)
+                .ok()?;
             check(probe, p["tag"].as_str()?).ok()?;
             p["release_id"].as_str().map(str::to_owned)
         }),
     };
     let rollback = match (&result, &previous) {
-        (Ok(_), Some(p)) => json!({"target_release_id": p["release_id"], "command": format!("gitfab-runner rollback --project {}", release.project), "exit_code": null, "result": "available"}),
-        (Ok(_), None) => json!({"target_release_id": null, "command": null, "exit_code": null, "result": "no_previous_release"}),
-        (Err(_), _) => json!({"target_release_id": previous.as_ref().map(|p| p["release_id"].clone()), "command": "automatic restore",
-            "exit_code": if restored.is_some() { 0 } else { 1 }, "result": if restored.is_some() { "restored" } else { "not_restored" }}),
+        (Ok(_), Some(p)) => {
+            json!({"target_release_id": p["release_id"], "command": format!("gitfab-runner rollback --project {}", release.project), "exit_code": null, "result": "available"})
+        }
+        (Ok(_), None) => {
+            json!({"target_release_id": null, "command": null, "exit_code": null, "result": "no_previous_release"})
+        }
+        (Err(_), _) => {
+            json!({"target_release_id": previous.as_ref().map(|p| p["release_id"].clone()), "command": "automatic restore",
+            "exit_code": if restored.is_some() { 0 } else { 1 }, "result": if restored.is_some() { "restored" } else { "not_restored" }})
+        }
     };
     let healthcheck = match &result {
         Ok(h) | Err(h) => h.clone(),
@@ -437,25 +562,54 @@ pub fn deploy(
         "signature": null,
     });
     out.append(&record)?;
-    Ok(Deployed { release_id, image, passed: result.is_ok(), restored })
+    Ok(Deployed {
+        release_id,
+        image,
+        passed: result.is_ok(),
+        restored,
+    })
 }
 
 /// Redeploys the good Release before the current one and records it.
-pub fn rollback(engine: &dyn Engine, project: &str, probe: &Probe, out: &Receipts) -> Result<Deployed, String> {
+pub fn rollback(
+    engine: &dyn Engine,
+    project: &str,
+    probe: &Probe,
+    out: &Receipts,
+) -> Result<Deployed, String> {
     let history = out.of(project)?;
-    let good: Vec<&Value> = history.iter().filter(|r| r["healthcheck"]["result"] == "passed").collect();
+    let good: Vec<&Value> = history
+        .iter()
+        .filter(|r| r["healthcheck"]["result"] == "passed")
+        .collect();
     let (Some(current), Some(target)) = (good.last(), good.iter().rev().nth(1)) else {
-        return Err(format!("{project} has no earlier good Release to roll back to"));
+        return Err(format!(
+            "{project} has no earlier good Release to roll back to"
+        ));
     };
-    let image = target["image_digest"].as_str().ok_or("receipt without image")?.to_owned();
+    let image = target["image_digest"]
+        .as_str()
+        .ok_or("receipt without image")?
+        .to_owned();
     if !engine.has_image(&image) {
-        return Err(format!("image {image} of {} is no longer present", target["release_id"]));
+        return Err(format!(
+            "image {image} of {} is no longer present",
+            target["release_id"]
+        ));
     }
     let tag = target["tag"].as_str().ok_or("receipt without tag")?;
-    engine.replace(&container(project), &image, probe.port, probe.container_port)?;
+    engine.replace(
+        &container(project),
+        &image,
+        probe.port,
+        probe.container_port,
+    )?;
     let result = check(probe, tag);
     let n = history.len();
-    let release_id = format!("{}-rollback-{n}", target["release_id"].as_str().unwrap_or(project));
+    let release_id = format!(
+        "{}-rollback-{n}",
+        target["release_id"].as_str().unwrap_or(project)
+    );
     let mut record = (*target).clone();
     record["release_id"] = json!(release_id);
     record["deployed_at"] = json!(now());
@@ -468,5 +622,10 @@ pub fn rollback(engine: &dyn Engine, project: &str, probe: &Probe, out: &Receipt
         "command": format!("gitfab-runner rollback --project {project}"),
         "exit_code": if result.is_ok() { 0 } else { 1 }, "result": if result.is_ok() { "passed" } else { "failed" }});
     out.append(&record)?;
-    Ok(Deployed { release_id, image, passed: result.is_ok(), restored: None })
+    Ok(Deployed {
+        release_id,
+        image,
+        passed: result.is_ok(),
+        restored: None,
+    })
 }

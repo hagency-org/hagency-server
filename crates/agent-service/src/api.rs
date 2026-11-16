@@ -133,10 +133,12 @@ impl App {
     }
     /// `GET /hagency/gitfab/v1/agents`, when the orchestrator and a board token are configured.
     pub fn gitfab_board_router(&self) -> Option<Router> {
-        Some(Router::with_path("hagency/gitfab/v1/agents").get(crate::orchestrator_status::BoardStatus {
-            transport: self.transport.clone()?,
-            token: self.gitfab_board.clone()?,
-        }))
+        Some(Router::with_path("hagency/gitfab/v1/agents").get(
+            crate::orchestrator_status::BoardStatus {
+                transport: self.transport.clone()?,
+                token: self.gitfab_board.clone()?,
+            },
+        ))
     }
     pub fn start_orchestrator(&self) -> Option<tokio::task::JoinHandle<()>> {
         let (recorder, timeout) = self.gitfab.clone()?;

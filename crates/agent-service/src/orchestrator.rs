@@ -195,7 +195,9 @@ fn instruction(stage: Stage) -> &'static str {
         Stage::Execute => {
             "按计划在仓库中实现，提交到任务分支。回复中列出提交 SHA、改动文件和自测结果。若上一轮评审驳回，逐条处理其中的问题。"
         }
-        Stage::Test => "运行 PRD 冻结的测试命令，逐条回复：命令原文、退出码、通过与失败数、失败原因、日志摘要（末尾若干行）和日志位置、产出的工件。",
+        Stage::Test => {
+            "运行 PRD 冻结的测试命令，逐条回复：命令原文、退出码、通过与失败数、失败原因、日志摘要（末尾若干行）和日志位置、产出的工件。"
+        }
         Stage::Review => {
             "评审本轮实现和测试结果是否满足 Spec。逐条对照 Spec 的验收标准，写明是否满足以及证据（测试输出、提交 SHA 或改动位置）；再逐条列出问题；最后单独一行写结论：VERDICT: approve、VERDICT: reject 或 VERDICT: blocked。"
         }
@@ -424,15 +426,27 @@ impl<R: StageRoom> Orchestrator<'_, R> {
     }
 
     /// `/gitfab reassign <Agent>`: the stage a Human holds goes to another Agent of the Room.
-    async fn reassign_to(&self, command: &OrchestratorCommand, run: OrchestratorRun, who: &str, now: i64) -> Result<(String, String)> {
+    async fn reassign_to(
+        &self,
+        command: &OrchestratorCommand,
+        run: OrchestratorRun,
+        who: &str,
+        now: i64,
+    ) -> Result<(String, String)> {
         let State::ManualIntervention { slot, .. } = run.state else {
             return Ok((
                 "refused:not_applicable".into(),
-                format!("GitFab：流程当前状态为「{}」，只有人工介入时才能改派。", state_text(&run.state)),
+                format!(
+                    "GitFab：流程当前状态为「{}」，只有人工介入时才能改派。",
+                    state_text(&run.state)
+                ),
             ));
         };
         let agents = self.room_agents(&command.room_id).await?;
-        let Some((binding, ..)) = agents.iter().find(|(id, puppet, agent)| puppet == who || id == who || agent == who) else {
+        let Some((binding, ..)) = agents
+            .iter()
+            .find(|(id, puppet, agent)| puppet == who || id == who || agent == who)
+        else {
             return Ok((
                 "refused:unknown_agent".into(),
                 format!("GitFab：{who} 不是本房间里正在服务的 Agent。"),
@@ -444,10 +458,16 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                 .rebind_orchestrator_role(&run.id, run.revision, role, binding, now)
                 .await?;
         }
-        let state = self.decide(&run.id, Input::Human(HumanDecision::Reassign), now).await?;
+        let state = self
+            .decide(&run.id, Input::Human(HumanDecision::Reassign), now)
+            .await?;
         Ok((
             "applied".into(),
-            format!("GitFab：已改派，{role} 由 {who} 接手。流程 {} 当前状态：{}。", run.id, state_text(&state)),
+            format!(
+                "GitFab：已改派，{role} 由 {who} 接手。流程 {} 当前状态：{}。",
+                run.id,
+                state_text(&state)
+            ),
         ))
     }
 
@@ -1171,7 +1191,6 @@ pub(crate) enum Command {
     Help,
 }
 
-
 /// Reads a `/gitfab` message. Errors are shown to the Human as they are.
 pub(crate) fn parse_command(body: &str) -> std::result::Result<Command, &'static str> {
     let mut lines = body.trim().lines();
@@ -1442,7 +1461,10 @@ mod tests {
 
     #[test]
     fn a_long_review_keeps_its_verdict_line_in_the_findings() {
-        assert_eq!(findings("ok\nVERDICT: approve"), json!(["ok\nVERDICT: approve"]));
+        assert_eq!(
+            findings("ok\nVERDICT: approve"),
+            json!(["ok\nVERDICT: approve"])
+        );
         assert_eq!(findings("no verdict"), json!(["no verdict"]));
         let long = format!("{}\nVERDICT: reject\n", "标准 1：未满足。\n".repeat(400));
         let kept = findings(&long);
@@ -1462,13 +1484,19 @@ mod tests {
     #[test]
     fn reassign_takes_at_most_one_agent() {
         let input = Input::Human(HumanDecision::Reassign);
-        assert_eq!(parse_command("/gitfab reassign").unwrap(), Command::Decide(input));
+        assert_eq!(
+            parse_command("/gitfab reassign").unwrap(),
+            Command::Decide(input)
+        );
         assert_eq!(
             parse_command("/gitfab reassign @_hagency_agt_b:example.test").unwrap(),
             Command::Reassign("@_hagency_agt_b:example.test".into(), input)
         );
         assert!(parse_command("/gitfab reassign @a:s @b:s").is_err());
-        assert!(parse_command("/gitfab continue @a:s").is_err(), "only reassign names an Agent");
+        assert!(
+            parse_command("/gitfab continue @a:s").is_err(),
+            "only reassign names an Agent"
+        );
     }
 
     #[test]

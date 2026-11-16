@@ -31,7 +31,11 @@ fn serve_once_per_request(body: &'static str) -> u16 {
                     Ok(n) => raw.extend_from_slice(&buf[..n]),
                 }
             }
-            let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+            let _ = write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
         }
     });
     port
@@ -43,11 +47,24 @@ fn the_board_shows_runs_tokens_deployments_and_flags_tampering() {
     let key = Key::generate("gitfab-1").unwrap();
     let mut keys = Keyring::default();
     keys.insert("gitfab-1", &key.public_base64()).unwrap();
-    let signer = Signer { key: &key, public_key_ref: "keys/gitfab-1.pub" };
+    let signer = Signer {
+        key: &key,
+        public_key_ref: "keys/gitfab-1.pub",
+    };
     let journal = dir.path().join("events.jsonl");
     let mut j = Journal::open(&journal).unwrap();
-    j.append(&task("intake", "succeeded", 1, json!([])), Some(&signer), "human").unwrap();
-    let mut executed = task("execute", "succeeded", 2, json!(["https://github.com/o/demo-02/pull/7"]));
+    j.append(
+        &task("intake", "succeeded", 1, json!([])),
+        Some(&signer),
+        "human",
+    )
+    .unwrap();
+    let mut executed = task(
+        "execute",
+        "succeeded",
+        2,
+        json!(["https://github.com/o/demo-02/pull/7"]),
+    );
     executed["commit_sha"] = json!("c".repeat(40));
     j.append(&executed, Some(&signer), "agent").unwrap();
     j.append(&json!({"schema_version": schema::MEMORY, "event_id": "m1", "timestamp": "2026-11-13T01:03:00Z",
@@ -76,18 +93,32 @@ fn the_board_shows_runs_tokens_deployments_and_flags_tampering() {
         journals: vec![journal],
         receipts: vec![receipts],
         keys,
-        probes: vec![Probe { project: "DEMO-02".into(), port, health_path: "/healthz".into(), version_path: "/version".into() }],
+        probes: vec![Probe {
+            project: "DEMO-02".into(),
+            port,
+            health_path: "/healthz".into(),
+            version_path: "/version".into(),
+        }],
         server: None,
     });
 
     let run = &board["runs"][0];
     assert_eq!(run["run"], "run-1");
-    assert_eq!(run["current"], json!({"phase": "review", "status": "failed"}));
-    assert_eq!(run["steps"][1]["links"][0], "https://github.com/o/demo-02/pull/7");
+    assert_eq!(
+        run["current"],
+        json!({"phase": "review", "status": "failed"})
+    );
+    assert_eq!(
+        run["steps"][1]["links"][0],
+        "https://github.com/o/demo-02/pull/7"
+    );
     assert_eq!(run["steps"][1]["commit"], "c".repeat(40));
     assert_eq!(run["steps"][0]["commit"], Value::Null);
     assert_eq!(run["steps"][1]["check"], "verified");
-    assert_eq!(run["steps"][2]["check"], "bad_signature", "the forged review is flagged");
+    assert_eq!(
+        run["steps"][2]["check"], "bad_signature",
+        "the forged review is flagged"
+    );
     assert_eq!(board["counts"]["bad_signature"], 1);
     // intake, execute and the receipt are key events with identity records; the memory event is not.
     assert_eq!(board["counts"]["identity"], 3);

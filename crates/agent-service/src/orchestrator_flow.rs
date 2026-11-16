@@ -540,18 +540,21 @@ pub fn shared_row(
     reply_body: Option<String>,
     intake_state: Option<&str>,
 ) -> Option<DispatchRow> {
-    let row = |state: &str, outcome: Option<&str>, reply: Option<&str>, blocked: bool| DispatchRow {
-        state: state.into(),
-        outcome: outcome.map(Into::into),
-        reply_state: reply.map(Into::into),
-        reply_blocked: blocked,
-        reply_body: reply_body.clone(),
-    };
+    let row =
+        |state: &str, outcome: Option<&str>, reply: Option<&str>, blocked: bool| DispatchRow {
+            state: state.into(),
+            outcome: outcome.map(Into::into),
+            reply_state: reply.map(Into::into),
+            reply_blocked: blocked,
+            reply_body: reply_body.clone(),
+        };
     Some(match work_state {
         Some("queued" | "acknowledged" | "started") => row("running", None, None, false),
         Some("completed") => match reply_state {
             // The reply is written with the completion; until it is sent the stage is not done.
-            None | Some("pending" | "issued") => row("completed", Some("replied"), Some("sending"), false),
+            None | Some("pending" | "issued") => {
+                row("completed", Some("replied"), Some("sending"), false)
+            }
             Some("sent") => row("completed", Some("replied"), Some("sent"), false),
             Some("blocked") => row("completed", Some("replied"), Some("blocked"), true),
             Some(_) => row("completed", Some("replied"), Some("unknown"), false),
@@ -560,7 +563,9 @@ pub fn shared_row(
         Some("cancelled") => row("cancelled", None, None, false),
         Some(_) => row("completed", Some("unknown"), None, false),
         None => match intake_state? {
-            "pending" | "paused" | "bound" | "legacy_delivered" => row("running", None, None, false),
+            "pending" | "paused" | "bound" | "legacy_delivered" => {
+                row("running", None, None, false)
+            }
             _ => row("cancelled", None, None, false),
         },
     })
@@ -1022,19 +1027,43 @@ mod tests {
 
     #[test]
     fn pool_work_maps_to_the_same_outcomes() {
-        let seen = |w, r, i| shared_row(w, r, Some("Looks good.\nVERDICT: approve".into()), i)
-            .and_then(|row| observed(&row, Stage::Review));
-        assert_eq!(seen(None, None, None), None.or(None), "nothing recorded yet");
+        let seen = |w, r, i| {
+            shared_row(w, r, Some("Looks good.\nVERDICT: approve".into()), i)
+                .and_then(|row| observed(&row, Stage::Review))
+        };
+        assert_eq!(
+            seen(None, None, None),
+            None.or(None),
+            "nothing recorded yet"
+        );
         assert!(shared_row(None, None, None, None).is_none());
-        assert_eq!(seen(None, None, Some("pending")), None, "waiting in durable intake");
+        assert_eq!(
+            seen(None, None, Some("pending")),
+            None,
+            "waiting in durable intake"
+        );
         assert_eq!(seen(None, None, Some("expired")), Some(Outcome::Expired));
         assert_eq!(seen(Some("started"), None, None), None);
-        assert_eq!(seen(Some("completed"), Some("issued"), None), None, "reply still being sent");
-        assert_eq!(seen(Some("completed"), Some("sent"), None), Some(Outcome::Replied(Some(Verdict::Approve))));
-        assert_eq!(seen(Some("completed"), Some("blocked"), None), Some(Outcome::Unknown));
+        assert_eq!(
+            seen(Some("completed"), Some("issued"), None),
+            None,
+            "reply still being sent"
+        );
+        assert_eq!(
+            seen(Some("completed"), Some("sent"), None),
+            Some(Outcome::Replied(Some(Verdict::Approve)))
+        );
+        assert_eq!(
+            seen(Some("completed"), Some("blocked"), None),
+            Some(Outcome::Unknown)
+        );
         assert_eq!(seen(Some("failed"), None, None), Some(Outcome::Failed));
         assert_eq!(seen(Some("cancelled"), None, None), Some(Outcome::Expired));
-        assert_eq!(seen(Some("unknown"), None, None), Some(Outcome::Unknown), "never re-run");
+        assert_eq!(
+            seen(Some("unknown"), None, None),
+            Some(Outcome::Unknown),
+            "never re-run"
+        );
     }
 
     #[test]

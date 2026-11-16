@@ -252,7 +252,12 @@ impl Transport for Http {
             let now_s = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
-            match rate_limit_wait(response.status().as_u16(), response.headers(), attempt, now_s) {
+            match rate_limit_wait(
+                response.status().as_u16(),
+                response.headers(),
+                attempt,
+                now_s,
+            ) {
                 Some(wait) if attempt < RATE_LIMIT_RETRIES && wait <= self.max_wait => {
                     attempt += 1;
                     tokio::time::sleep(wait).await;
@@ -673,9 +678,14 @@ impl<T: Transport> Forge<T> {
     /// `None` while the platform has not worked it out. Merging stays with people, one Pull Request
     /// at a time; GitFab only reports it.
     pub async fn conflict(&self, repo: &Repo, pull: &PullRequest) -> Result<Option<bool>> {
-        let value = self.get(format!("{}/pulls/{}", repo.path(), pull.number)).await?;
+        let value = self
+            .get(format!("{}/pulls/{}", repo.path(), pull.number))
+            .await?;
         Ok(match self.backend {
-            Backend::GitHub => value.get("mergeable").and_then(Value::as_bool).map(|ok| !ok),
+            Backend::GitHub => value
+                .get("mergeable")
+                .and_then(Value::as_bool)
+                .map(|ok| !ok),
             Backend::GitCode => value
                 .pointer("/mergeable_state/conflict_passed")
                 .and_then(Value::as_bool)
@@ -692,7 +702,10 @@ impl<T: Transport> Forge<T> {
         match self.backend {
             Backend::GitHub => {
                 let reviews = self
-                    .get(format!("{}/pulls/{number}/reviews?per_page=100", repo.path()))
+                    .get(format!(
+                        "{}/pulls/{number}/reviews?per_page=100",
+                        repo.path()
+                    ))
                     .await?;
                 let mut latest: std::collections::BTreeMap<String, String> = Default::default();
                 for review in reviews.as_array().into_iter().flatten() {

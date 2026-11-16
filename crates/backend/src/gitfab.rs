@@ -133,8 +133,13 @@ palpo_config = "palpo.toml"
         let host: crate::config::HostConfig = toml::from_str(&with).unwrap();
         let gitfab = host.gitfab.unwrap();
         assert_eq!(gitfab.signing_key_id, "gitfab-1");
-        assert_eq!((gitfab.journal_file, gitfab.stage_timeout_minutes), (None, None));
-        let orchestrated = format!("{with}journal_file = \"data/gitfab/events.jsonl\"\nstage_timeout_minutes = 30\n");
+        assert_eq!(
+            (gitfab.journal_file, gitfab.stage_timeout_minutes),
+            (None, None)
+        );
+        let orchestrated = format!(
+            "{with}journal_file = \"data/gitfab/events.jsonl\"\nstage_timeout_minutes = 30\n"
+        );
         let host: crate::config::HostConfig = toml::from_str(&orchestrated).unwrap();
         assert_eq!(host.gitfab.unwrap().stage_timeout_minutes, Some(30));
         assert!(

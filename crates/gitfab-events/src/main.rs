@@ -265,14 +265,34 @@ fn run(command: Command) -> Result<bool, String> {
                 }
             }
             let Some(event) = found else {
-                print(&json!({"found": false, "project": project, "phase": phase, "status": status}));
+                print(
+                    &json!({"found": false, "project": project, "phase": phase, "status": status}),
+                );
                 return Ok(false);
             };
             let mut flat = json!({"found": true});
-            for key in ["event_id", "run_id", "task_id", "timestamp", "round", "git_backend", "repo_ref", "commit_sha", "platform_error", "spec_ref", "spec_revision", "spec_blob"] {
+            for key in [
+                "event_id",
+                "run_id",
+                "task_id",
+                "timestamp",
+                "round",
+                "git_backend",
+                "repo_ref",
+                "commit_sha",
+                "platform_error",
+                "spec_ref",
+                "spec_revision",
+                "spec_blob",
+            ] {
                 flat[key] = event[key].clone();
             }
-            for (i, link) in event["artifact_refs"].as_array().into_iter().flatten().enumerate() {
+            for (i, link) in event["artifact_refs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
                 flat[format!("artifact_ref_{i}")] = link.clone();
             }
             print(&flat);
@@ -303,8 +323,15 @@ fn run(command: Command) -> Result<bool, String> {
             };
             let mut flat = json!({"found": true});
             for key in [
-                "release_id", "tag", "commit_sha", "image_ref", "image_digest", "sbom_ref", "sbom_digest",
-                "deployed_at", "runner_id",
+                "release_id",
+                "tag",
+                "commit_sha",
+                "image_ref",
+                "image_digest",
+                "sbom_ref",
+                "sbom_digest",
+                "deployed_at",
+                "runner_id",
             ] {
                 flat[key] = event[key].clone();
             }
@@ -330,7 +357,10 @@ fn run(command: Command) -> Result<bool, String> {
                 failures.push(format!("attestation signature: {e}"));
             }
             if attestation["sbom_digest"] != digest.as_str() {
-                failures.push(format!("SBOM is {digest}, attested {}", attestation["sbom_digest"]));
+                failures.push(format!(
+                    "SBOM is {digest}, attested {}",
+                    attestation["sbom_digest"]
+                ));
             }
             if let Ok(line) = std::fs::read_to_string(with("sha256"))
                 && line.split_whitespace().next() != digest.strip_prefix("sha256:")
@@ -361,7 +391,8 @@ fn run(command: Command) -> Result<bool, String> {
             let id = match (id, text) {
                 (Some(id), _) => id,
                 (None, Some(file)) => {
-                    let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", display(&file)))?;
+                    let bytes =
+                        std::fs::read(&file).map_err(|e| format!("{}: {e}", display(&file)))?;
                     format!("sha256:{}", hex::encode(sha2::Sha256::digest(&bytes)))
                 }
                 (None, None) => unreachable!("clap requires --id or --text"),
@@ -421,7 +452,9 @@ fn run(command: Command) -> Result<bool, String> {
             match evidence::manifest(&dir, &now) {
                 Ok(manifest) => {
                     let files = manifest["files"].as_array().map_or(0, Vec::len);
-                    print(&json!({"ok": true, "acceptance_run_id": manifest["acceptance_run_id"], "files": files}));
+                    print(
+                        &json!({"ok": true, "acceptance_run_id": manifest["acceptance_run_id"], "files": files}),
+                    );
                     Ok(true)
                 }
                 Err(failures) => {
@@ -435,29 +468,60 @@ fn run(command: Command) -> Result<bool, String> {
 
 /// A file name for reports: never the local absolute path.
 fn display(path: &Path) -> String {
-    path.file_name()
-        .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 /// Fields an identifier is looked up in, and the fields shown for each match.
 const TRACE_FIELDS: &[&str] = &[
-    "project_id", "project", "task_id", "run_id", "event_id", "release_id", "tag", "commit_sha",
-    "baseline_sha", "image_digest", "artifact_digest", "input_digest", "output_digest",
+    "project_id",
+    "project",
+    "task_id",
+    "run_id",
+    "event_id",
+    "release_id",
+    "tag",
+    "commit_sha",
+    "baseline_sha",
+    "image_digest",
+    "artifact_digest",
+    "input_digest",
+    "output_digest",
 ];
 
 /// Records naming `id` (Annex 2 §5: project, task, commit and Release ids lead to one another).
 fn trace(ring: &Keyring, id: &str, files: &[PathBuf]) -> Result<Vec<Value>, String> {
     let mut found = Vec::new();
     for file in files {
-        for (n, raw) in read(file)?.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
-            let Ok((event, Some(_))) = verify_line(ring, raw) else { continue };
-            let refs: Vec<&str> = event["artifact_refs"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-            let named = TRACE_FIELDS.iter().any(|f| event[*f] == id) || refs.iter().any(|r| *r == id || r.ends_with(&format!("/{id}")));
+        for (n, raw) in read(file)?
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| !l.trim().is_empty())
+        {
+            let Ok((event, Some(_))) = verify_line(ring, raw) else {
+                continue;
+            };
+            let refs: Vec<&str> = event["artifact_refs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            let named = TRACE_FIELDS.iter().any(|f| event[*f] == id)
+                || refs
+                    .iter()
+                    .any(|r| *r == id || r.ends_with(&format!("/{id}")));
             if !named {
                 continue;
             }
-            let mut hit = json!({"file": display(file), "line": n + 1, "schema": event["schema_version"]});
-            for f in TRACE_FIELDS.iter().chain(&["phase", "status", "timestamp", "deployed_at"]) {
+            let mut hit =
+                json!({"file": display(file), "line": n + 1, "schema": event["schema_version"]});
+            for f in TRACE_FIELDS
+                .iter()
+                .chain(&["phase", "status", "timestamp", "deployed_at"])
+            {
                 if !event[*f].is_null() {
                     hit[*f] = event[*f].clone();
                 }
@@ -480,7 +544,11 @@ fn report(ring: &Keyring, project: &str, files: &[PathBuf]) -> Result<String, St
     let mut ledger = Ledger::default();
     let mut tokens = String::new();
     for file in files {
-        for (n, raw) in read(file)?.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        for (n, raw) in read(file)?
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| !l.trim().is_empty())
+        {
             let Ok((event, digest)) = verify_line(ring, raw) else {
                 refused.push(format!("{}:{}", display(file), n + 1));
                 continue;
@@ -491,7 +559,10 @@ fn report(ring: &Keyring, project: &str, files: &[PathBuf]) -> Result<String, St
             }
             verified += 1;
             match event["schema_version"].as_str() {
-                Some(schema::TASK) => runs.entry(event["run_id"].as_str().unwrap_or("").to_owned()).or_default().push(event),
+                Some(schema::TASK) => runs
+                    .entry(event["run_id"].as_str().unwrap_or("").to_owned())
+                    .or_default()
+                    .push(event),
                 Some(schema::RELEASE) => receipts.push(event),
                 Some(schema::MEMORY | schema::TOKEN) => {
                     tokens.push_str(&event.to_string());
@@ -503,7 +574,11 @@ fn report(ring: &Keyring, project: &str, files: &[PathBuf]) -> Result<String, St
     }
     let mut out = format!("# {project} 工作报告\n\n只采用验签通过的签名记录：{verified} 条");
     if !refused.is_empty() {
-        out += &format!("；另有 {} 行未通过校验，未采用（{}）", refused.len(), refused.join("、"));
+        out += &format!(
+            "；另有 {} 行未通过校验，未采用（{}）",
+            refused.len(),
+            refused.join("、")
+        );
     }
     out += "。\n";
     for (run, mut events) in runs {
@@ -512,12 +587,22 @@ fn report(ring: &Keyring, project: &str, files: &[PathBuf]) -> Result<String, St
         let last = &events[events.len() - 1];
         out += &format!(
             "\n## 运行 {run}\n\n任务 {}，仓库 {}（{}，基线 {}），Spec {}。当前：{} {}。\n\n| 时间 | 阶段 | 状态 | 轮次 | 执行者 | 链接 |\n|---|---|---|---|---|---|\n",
-            first["task_id"].as_str().unwrap_or(""), first["repo_ref"].as_str().unwrap_or(""),
-            first["git_backend"].as_str().unwrap_or(""), first["baseline_sha"].as_str().unwrap_or(""),
-            first["spec_ref"].as_str().unwrap_or(""), last["phase"].as_str().unwrap_or(""), last["status"].as_str().unwrap_or(""),
+            first["task_id"].as_str().unwrap_or(""),
+            first["repo_ref"].as_str().unwrap_or(""),
+            first["git_backend"].as_str().unwrap_or(""),
+            first["baseline_sha"].as_str().unwrap_or(""),
+            first["spec_ref"].as_str().unwrap_or(""),
+            last["phase"].as_str().unwrap_or(""),
+            last["status"].as_str().unwrap_or(""),
         );
         for e in &events {
-            let mut links: Vec<String> = e["artifact_refs"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+            let mut links: Vec<String> = e["artifact_refs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect();
             if let Some(sha) = e["commit_sha"].as_str() {
                 links.push(format!("提交 {}", &sha[..sha.len().min(12)]));
             }
@@ -529,16 +614,30 @@ fn report(ring: &Keyring, project: &str, files: &[PathBuf]) -> Result<String, St
             }
             out += &format!(
                 "| {} | {} | {} | {} | {} | {} |\n",
-                e["timestamp"].as_str().unwrap_or(""), e["phase"].as_str().unwrap_or(""), e["status"].as_str().unwrap_or(""),
-                e["round"].as_i64().map_or(String::new(), |r| r.to_string()), e["actor_id"].as_str().unwrap_or(""),
+                e["timestamp"].as_str().unwrap_or(""),
+                e["phase"].as_str().unwrap_or(""),
+                e["status"].as_str().unwrap_or(""),
+                e["round"].as_i64().map_or(String::new(), |r| r.to_string()),
+                e["actor_id"].as_str().unwrap_or(""),
                 links.join(" "),
             );
             if let Some(error) = e["platform_error"].as_str() {
-                out += &format!("|  | 平台未完成 | {} |  |  |  |\n", error.replace('|', "/").replace('\n', " "));
+                out += &format!(
+                    "|  | 平台未完成 | {} |  |  |  |\n",
+                    error.replace('|', "/").replace('\n', " ")
+                );
             }
             // A long Reviewer reply keeps its verdict line as a second entry; the last one counts.
-            let findings = e["findings"].as_array().into_iter().flatten().filter_map(Value::as_str);
-            if let Some(line) = findings.flat_map(str::lines).map(str::trim).rfind(|l| l.starts_with("VERDICT:")) {
+            let findings = e["findings"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            if let Some(line) = findings
+                .flat_map(str::lines)
+                .map(str::trim)
+                .rfind(|l| l.starts_with("VERDICT:"))
+            {
                 out += &format!("|  | 评审结论 | {line} |  |  |  |\n");
             }
         }
@@ -548,10 +647,22 @@ fn report(ring: &Keyring, project: &str, files: &[PathBuf]) -> Result<String, St
         for r in &receipts {
             out += &format!(
                 "| {} | {} | {} | {} | {} | {} | {} |\n",
-                r["deployed_at"].as_str().unwrap_or(""), r["release_id"].as_str().unwrap_or(""),
-                r["commit_sha"].as_str().unwrap_or("").chars().take(12).collect::<String>(),
-                r["image_digest"].as_str().unwrap_or("").chars().take(19).collect::<String>(),
-                r["healthcheck"]["result"].as_str().unwrap_or(""), r["rollback"]["result"].as_str().unwrap_or(""),
+                r["deployed_at"].as_str().unwrap_or(""),
+                r["release_id"].as_str().unwrap_or(""),
+                r["commit_sha"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(12)
+                    .collect::<String>(),
+                r["image_digest"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(19)
+                    .collect::<String>(),
+                r["healthcheck"]["result"].as_str().unwrap_or(""),
+                r["rollback"]["result"].as_str().unwrap_or(""),
                 r["runner_id"].as_str().unwrap_or(""),
             );
         }
@@ -560,9 +671,14 @@ fn report(ring: &Keyring, project: &str, files: &[PathBuf]) -> Result<String, St
         let errors = ledger.read(&tokens, 1);
         out += "\n## Token\n\n";
         out += &match (errors.is_empty(), ledger.summary()) {
-            (true, Ok(summary)) => format!("合计 {}，去重后 {} 条，忽略重复 {} 条，更正 {} 条（账本摘要 {}）。\n",
-                summary["token_total"], summary["unique_events"], summary["duplicates_ignored"], summary["corrections"],
-                summary["ledger_digest"].as_str().unwrap_or("")),
+            (true, Ok(summary)) => format!(
+                "合计 {}，去重后 {} 条，忽略重复 {} 条，更正 {} 条（账本摘要 {}）。\n",
+                summary["token_total"],
+                summary["unique_events"],
+                summary["duplicates_ignored"],
+                summary["corrections"],
+                summary["ledger_digest"].as_str().unwrap_or("")
+            ),
             _ => "账本复算未通过，请运行 gitfab ledger 查看原因。\n".to_owned(),
         };
     }

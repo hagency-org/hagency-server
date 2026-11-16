@@ -13,7 +13,10 @@ use hagency_gitfab_runner::{Docker, Probe, Receipts, Release, deploy, rollback};
 use serde_json::json;
 
 #[derive(Parser)]
-#[command(name = "gitfab-runner", about = "Deploy GitFab Releases and record signed receipts")]
+#[command(
+    name = "gitfab-runner",
+    about = "Deploy GitFab Releases and record signed receipts"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -114,11 +117,31 @@ fn setup(common: &Common) -> Result<(Probe, Receipts), String> {
 
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
-        Command::Deploy { common, project, task, backend, repo, commit, tag, context, sbom_dir, registry, cosign_key } => setup(&common)
-            .and_then(|(probe, out)| {
-                let release = Release { project, task, backend, repo, commit, tag, registry, cosign_key };
-                deploy(&Docker, &release, &context, &sbom_dir, &probe, &out)
-            }),
+        Command::Deploy {
+            common,
+            project,
+            task,
+            backend,
+            repo,
+            commit,
+            tag,
+            context,
+            sbom_dir,
+            registry,
+            cosign_key,
+        } => setup(&common).and_then(|(probe, out)| {
+            let release = Release {
+                project,
+                task,
+                backend,
+                repo,
+                commit,
+                tag,
+                registry,
+                cosign_key,
+            };
+            deploy(&Docker, &release, &context, &sbom_dir, &probe, &out)
+        }),
         Command::Rollback { common, project } => {
             setup(&common).and_then(|(probe, out)| rollback(&Docker, &project, &probe, &out))
         }
@@ -129,7 +152,11 @@ fn main() -> ExitCode {
                 "{}",
                 json!({"releaseId": done.release_id, "image": done.image, "passed": done.passed, "restored": done.restored})
             );
-            if done.passed { ExitCode::SUCCESS } else { ExitCode::from(1) }
+            if done.passed {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            }
         }
         Err(message) => {
             eprintln!("{}", json!({"error": message}));

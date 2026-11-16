@@ -42,7 +42,16 @@ pub fn server_agents(server: &str, token_file: &std::path::Path) -> Value {
     };
     let url = format!("{}/hagency/gitfab/v1/agents", server.trim_end_matches('/'));
     let child = std::process::Command::new("curl")
-        .args(["-sS", "--max-time", "8", "-K", "-", "-w", "\\n%{http_code}", &url])
+        .args([
+            "-sS",
+            "--max-time",
+            "8",
+            "-K",
+            "-",
+            "-w",
+            "\\n%{http_code}",
+            &url,
+        ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -76,13 +85,20 @@ fn verdict(keys: &Keyring, event: &Value) -> &'static str {
     if event.get("signature").is_none_or(Value::is_null) {
         return "unsigned";
     }
-    if keys.verify(event).is_ok() { "verified" } else { "bad_signature" }
+    if keys.verify(event).is_ok() {
+        "verified"
+    } else {
+        "bad_signature"
+    }
 }
 
 fn lines(files: &[PathBuf]) -> Vec<(String, Value)> {
     let mut out = Vec::new();
     for file in files {
-        let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let Ok(text) = std::fs::read_to_string(file) else {
             continue;
         };
@@ -95,7 +111,10 @@ fn lines(files: &[PathBuf]) -> Vec<(String, Value)> {
 }
 
 fn short(digest: &Value) -> String {
-    digest.as_str().map(|d| d.trim_start_matches("sha256:").chars().take(12).collect()).unwrap_or_default()
+    digest
+        .as_str()
+        .map(|d| d.trim_start_matches("sha256:").chars().take(12).collect())
+        .unwrap_or_default()
 }
 
 /// One stream entry. Only public fields: identifiers, phase, status, key id and digest prefix.
@@ -157,7 +176,9 @@ pub fn snapshot(sources: &Sources) -> Value {
         if errors.is_empty() {
             match ledger.summary() {
                 Ok(summary) => json!({"ok": true, "summary": summary}),
-                Err(errors) => json!({"ok": false, "errors": errors.iter().map(|e| e.to_json()).collect::<Vec<_>>()}),
+                Err(errors) => {
+                    json!({"ok": false, "errors": errors.iter().map(|e| e.to_json()).collect::<Vec<_>>()})
+                }
             }
         } else {
             json!({"ok": false, "errors": errors.iter().map(|e| e.to_json()).collect::<Vec<_>>()})
@@ -206,7 +227,8 @@ pub fn snapshot(sources: &Sources) -> Value {
 }
 
 fn probe_live(probe: &Probe) -> Value {
-    let get = |path: &str| hagency_gitfab_runner::http_get(probe.port, path, Duration::from_secs(2));
+    let get =
+        |path: &str| hagency_gitfab_runner::http_get(probe.port, path, Duration::from_secs(2));
     let health = get(&probe.health_path);
     let version = get(&probe.version_path);
     json!({

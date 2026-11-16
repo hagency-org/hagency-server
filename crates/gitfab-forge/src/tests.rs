@@ -318,12 +318,37 @@ fn repository_references_accept_web_and_clone_addresses() {
 
 #[tokio::test]
 async fn without_checks_access_actions_runs_decide() {
-    let pull = PullRequest { number: 1, url: String::new(), head_sha: "abc".into() };
+    let pull = PullRequest {
+        number: 1,
+        url: String::new(),
+        head_sha: "abc".into(),
+    };
     let fake = Fake::default()
-        .on("GET", "/repos/octo/demo/commits/abc/status", 200, json!({"total_count": 0}))
-        .on("GET", "/repos/octo/demo/commits/abc/check-runs?per_page=100", 403, json!({"message": "Resource not accessible by personal access token"}))
-        .on("GET", "/repos/octo/demo/actions/runs?head_sha=abc&per_page=100", 200, json!({"workflow_runs": [{"status": "completed", "conclusion": "failure"}]}));
-    assert_eq!(Forge::new(Backend::GitHub, &fake).checks(&repo(), &pull).await.unwrap(), Checks::Failure);
+        .on(
+            "GET",
+            "/repos/octo/demo/commits/abc/status",
+            200,
+            json!({"total_count": 0}),
+        )
+        .on(
+            "GET",
+            "/repos/octo/demo/commits/abc/check-runs?per_page=100",
+            403,
+            json!({"message": "Resource not accessible by personal access token"}),
+        )
+        .on(
+            "GET",
+            "/repos/octo/demo/actions/runs?head_sha=abc&per_page=100",
+            200,
+            json!({"workflow_runs": [{"status": "completed", "conclusion": "failure"}]}),
+        );
+    assert_eq!(
+        Forge::new(Backend::GitHub, &fake)
+            .checks(&repo(), &pull)
+            .await
+            .unwrap(),
+        Checks::Failure
+    );
 }
 
 #[tokio::test]
@@ -331,7 +356,10 @@ async fn a_gitcode_pull_request_created_with_only_web_url_is_read() {
     let fake = Fake::default()
         .on("GET", "/repos/octo/demo/pulls?state=open&base=main&per_page=100", 200, json!([]))
         .on("POST", "/repos/octo/demo/pulls", 200, json!({"number": 1, "web_url": "https://gitcode.com/octo/demo/merge_requests/1", "head": {"sha": "c"}}));
-    let pull = Forge::new(Backend::GitCode, &fake).upsert_pull(&repo(), "b", "main", "t", "").await.unwrap();
+    let pull = Forge::new(Backend::GitCode, &fake)
+        .upsert_pull(&repo(), "b", "main", "t", "")
+        .await
+        .unwrap();
     assert_eq!(pull.url, "https://gitcode.com/octo/demo/merge_requests/1");
 }
 
@@ -341,15 +369,34 @@ async fn a_pull_request_created_without_its_head_commit_is_read_back() {
         .on("GET", "/repos/octo/demo/pulls?state=open&base=main&per_page=100", 200, json!([]))
         .on("POST", "/repos/octo/demo/pulls", 200, json!({"number": 2, "web_url": "https://gitcode.com/octo/demo/merge_requests/2"}))
         .on("GET", "/repos/octo/demo/pulls/2", 200, json!({"number": 2, "html_url": "https://gitcode.com/octo/demo/merge_requests/2", "head": {"sha": "93d7"}}));
-    let pull = Forge::new(Backend::GitCode, &fake).upsert_pull(&repo(), "b", "main", "t", "").await.unwrap();
+    let pull = Forge::new(Backend::GitCode, &fake)
+        .upsert_pull(&repo(), "b", "main", "t", "")
+        .await
+        .unwrap();
     assert_eq!((pull.number, pull.head_sha.as_str()), (2, "93d7"));
     // A read that fails keeps the created Pull Request, without a commit.
     let fake = Fake::default()
-        .on("GET", "/repos/octo/demo/pulls?state=open&base=main&per_page=100", 200, json!([]))
-        .on("POST", "/repos/octo/demo/pulls", 200, json!({"number": 2, "web_url": "https://gitcode.com/octo/demo/merge_requests/2"}))
+        .on(
+            "GET",
+            "/repos/octo/demo/pulls?state=open&base=main&per_page=100",
+            200,
+            json!([]),
+        )
+        .on(
+            "POST",
+            "/repos/octo/demo/pulls",
+            200,
+            json!({"number": 2, "web_url": "https://gitcode.com/octo/demo/merge_requests/2"}),
+        )
         .on("GET", "/repos/octo/demo/pulls/2", 500, json!({}));
-    let pull = Forge::new(Backend::GitCode, &fake).upsert_pull(&repo(), "b", "main", "t", "").await.unwrap();
-    assert_eq!((pull.url.as_str(), pull.head_sha.as_str()), ("https://gitcode.com/octo/demo/merge_requests/2", ""));
+    let pull = Forge::new(Backend::GitCode, &fake)
+        .upsert_pull(&repo(), "b", "main", "t", "")
+        .await
+        .unwrap();
+    assert_eq!(
+        (pull.url.as_str(), pull.head_sha.as_str()),
+        ("https://gitcode.com/octo/demo/merge_requests/2", "")
+    );
 }
 
 #[tokio::test]
@@ -363,12 +410,29 @@ async fn github_review_takes_each_reviewers_latest_verdict() {
     for (reviews, want) in [
         (json!([]), Review::None),
         (json!([review("a", "COMMENTED")]), Review::None),
-        (json!([review("a", "CHANGES_REQUESTED"), review("a", "APPROVED")]), Review::Approved),
-        (json!([review("a", "APPROVED"), review("b", "CHANGES_REQUESTED")]), Review::ChangesRequested),
-        (json!([review("a", "CHANGES_REQUESTED"), review("a", "DISMISSED")]), Review::None),
+        (
+            json!([review("a", "CHANGES_REQUESTED"), review("a", "APPROVED")]),
+            Review::Approved,
+        ),
+        (
+            json!([review("a", "APPROVED"), review("b", "CHANGES_REQUESTED")]),
+            Review::ChangesRequested,
+        ),
+        (
+            json!([review("a", "CHANGES_REQUESTED"), review("a", "DISMISSED")]),
+            Review::None,
+        ),
     ] {
-        let fake = Fake::default().on("GET", "/repos/octo/demo/pulls/4/reviews?per_page=100", 200, reviews);
-        let got = Forge::new(Backend::GitHub, &fake).review(&repo(), &pull).await.unwrap();
+        let fake = Fake::default().on(
+            "GET",
+            "/repos/octo/demo/pulls/4/reviews?per_page=100",
+            200,
+            reviews,
+        );
+        let got = Forge::new(Backend::GitHub, &fake)
+            .review(&repo(), &pull)
+            .await
+            .unwrap();
         assert_eq!(got, want);
     }
 }
@@ -392,7 +456,10 @@ async fn gitcode_review_is_approved_when_every_assigned_reviewer_accepted() {
             200,
             json!({"number": 9, "assignees": assignees}),
         );
-        let got = Forge::new(Backend::GitCode, &fake).review(&repo(), &pull).await.unwrap();
+        let got = Forge::new(Backend::GitCode, &fake)
+            .review(&repo(), &pull)
+            .await
+            .unwrap();
         assert_eq!(got, want);
     }
 }
@@ -417,7 +484,11 @@ fn canned(answers: Vec<&'static str>) -> (String, std::sync::Arc<std::sync::atom
             }
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let body = "{\"full_name\":\"octo/demo\",\"default_branch\":\"main\",\"html_url\":\"https://github.com/octo/demo\"}";
-            let _ = write!(s, "{head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            let _ = write!(
+                s,
+                "{head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
         }
     });
     (api, seen)
@@ -426,8 +497,14 @@ fn canned(answers: Vec<&'static str>) -> (String, std::sync::Arc<std::sync::atom
 #[tokio::test]
 async fn a_rate_limited_call_waits_as_asked_and_retries() {
     use std::sync::atomic::Ordering::SeqCst;
-    let (api, seen) = canned(vec!["HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0", "HTTP/1.1 200 OK"]);
-    let forge = Forge::new(Backend::GitHub, Http::new(Backend::GitHub, Some(&api), "t".into()));
+    let (api, seen) = canned(vec![
+        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0",
+        "HTTP/1.1 200 OK",
+    ]);
+    let forge = Forge::new(
+        Backend::GitHub,
+        Http::new(Backend::GitHub, Some(&api), "t".into()),
+    );
     assert_eq!(forge.repo(&repo()).await.unwrap().default_branch, "main");
     assert_eq!(seen.load(SeqCst), 2);
 
@@ -436,7 +513,10 @@ async fn a_rate_limited_call_waits_as_asked_and_retries() {
         "HTTP/1.1 403 Forbidden\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: 0",
         "HTTP/1.1 200 OK",
     ]);
-    let forge = Forge::new(Backend::GitHub, Http::new(Backend::GitHub, Some(&api), "t".into()));
+    let forge = Forge::new(
+        Backend::GitHub,
+        Http::new(Backend::GitHub, Some(&api), "t".into()),
+    );
     assert!(forge.repo(&repo()).await.is_ok());
     assert_eq!(seen.load(SeqCst), 2);
 }
@@ -446,47 +526,94 @@ async fn a_refusal_or_a_long_rate_limit_is_returned_not_waited_for() {
     use std::sync::atomic::Ordering::SeqCst;
     // A plain 403 is a refusal: no retry.
     let (api, seen) = canned(vec!["HTTP/1.1 403 Forbidden", "HTTP/1.1 200 OK"]);
-    let forge = Forge::new(Backend::GitHub, Http::new(Backend::GitHub, Some(&api), "t".into()));
+    let forge = Forge::new(
+        Backend::GitHub,
+        Http::new(Backend::GitHub, Some(&api), "t".into()),
+    );
     let error = forge.repo(&repo()).await.unwrap_err();
-    assert!(matches!(error, Error::Status { status: 403, .. }), "{error}");
+    assert!(
+        matches!(error, Error::Status { status: 403, .. }),
+        "{error}"
+    );
     assert_eq!(seen.load(SeqCst), 1);
 
     // A wait beyond the limit becomes the error at once.
-    let (api, seen) = canned(vec!["HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3600", "HTTP/1.1 200 OK"]);
-    let http = Http::new(Backend::GitCode, Some(&api), "t".into()).with_max_wait(std::time::Duration::from_secs(5));
+    let (api, seen) = canned(vec![
+        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3600",
+        "HTTP/1.1 200 OK",
+    ]);
+    let http = Http::new(Backend::GitCode, Some(&api), "t".into())
+        .with_max_wait(std::time::Duration::from_secs(5));
     let started = std::time::Instant::now();
-    let error = Forge::new(Backend::GitCode, http).repo(&repo()).await.unwrap_err();
-    assert!(matches!(error, Error::Status { status: 429, .. }), "{error}");
+    let error = Forge::new(Backend::GitCode, http)
+        .repo(&repo())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, Error::Status { status: 429, .. }),
+        "{error}"
+    );
     assert_eq!(seen.load(SeqCst), 1);
     assert!(started.elapsed() < std::time::Duration::from_secs(2));
 
     // Retries stop after three.
     let limited = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0";
     let (api, seen) = canned(vec![limited; 5]);
-    let forge = Forge::new(Backend::GitHub, Http::new(Backend::GitHub, Some(&api), "t".into()));
+    let forge = Forge::new(
+        Backend::GitHub,
+        Http::new(Backend::GitHub, Some(&api), "t".into()),
+    );
     assert!(forge.repo(&repo()).await.is_err());
     assert_eq!(seen.load(SeqCst), 4);
 }
 
 #[tokio::test]
 async fn conflicts_are_read_from_each_platform() {
-    let pull = PullRequest { number: 5, url: String::new(), head_sha: String::new() };
+    let pull = PullRequest {
+        number: 5,
+        url: String::new(),
+        head_sha: String::new(),
+    };
     for (body, want) in [
-        (json!({"mergeable": true, "mergeable_state": "clean"}), Some(false)),
-        (json!({"mergeable": false, "mergeable_state": "dirty"}), Some(true)),
+        (
+            json!({"mergeable": true, "mergeable_state": "clean"}),
+            Some(false),
+        ),
+        (
+            json!({"mergeable": false, "mergeable_state": "dirty"}),
+            Some(true),
+        ),
         (json!({"mergeable": null}), None),
     ] {
         let fake = Fake::default().on("GET", "/repos/octo/demo/pulls/5", 200, body);
-        assert_eq!(Forge::new(Backend::GitHub, &fake).conflict(&repo(), &pull).await.unwrap(), want);
+        assert_eq!(
+            Forge::new(Backend::GitHub, &fake)
+                .conflict(&repo(), &pull)
+                .await
+                .unwrap(),
+            want
+        );
     }
     for (body, want) in [
-        (json!({"mergeable": true, "mergeable_state": {"conflict_passed": true}}), Some(false)),
-        (json!({"mergeable": true, "mergeable_state": {"conflict_passed": false}}), Some(true)),
+        (
+            json!({"mergeable": true, "mergeable_state": {"conflict_passed": true}}),
+            Some(false),
+        ),
+        (
+            json!({"mergeable": true, "mergeable_state": {"conflict_passed": false}}),
+            Some(true),
+        ),
         (json!({"mergeable": false}), Some(true)),
         (json!({}), None),
     ] {
         let fake = Fake::default().on("GET", "/repos/octo/demo/pulls/5", 200, body);
-        assert_eq!(Forge::new(Backend::GitCode, &fake).conflict(&repo(), &pull).await.unwrap(), want);
+        assert_eq!(
+            Forge::new(Backend::GitCode, &fake)
+                .conflict(&repo(), &pull)
+                .await
+                .unwrap(),
+            want
+        );
     }
 }
 

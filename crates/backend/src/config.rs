@@ -287,7 +287,9 @@ impl Config {
             crate::gitfab::Signer::load(gitfab)?;
             let agent_service = self.pasion.as_ref().is_some_and(|p| p.delegate_matrix_auth);
             if gitfab.journal_file.is_some() && !agent_service {
-                anyhow::bail!("gitfab.journal_file needs pasion.delegate_matrix_auth (the agent service)");
+                anyhow::bail!(
+                    "gitfab.journal_file needs pasion.delegate_matrix_auth (the agent service)"
+                );
             }
             if gitfab.stage_timeout_minutes == Some(0) {
                 anyhow::bail!("gitfab.stage_timeout_minutes must be at least 1");
