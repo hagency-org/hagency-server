@@ -273,9 +273,42 @@ async fn pool_agent_http_is_closed_and_retries_do_not_duplicate_requests() {
     let mut f = isolated_fixture().await;
     f.policy = f.policy.with_agent_admission(true);
     let a = pool(&f, &f.outsider.p).await;
-    let service = service(&f, true);
+    let denied = service(&f, true);
+    let owner = f.outsider.p.mxid.clone();
+    let gateway = Gateway::new(
+        Arc::new(move |_| {
+            let owner = owner.clone();
+            Box::pin(async move {
+                Ok(vec![
+                    json!({"type":"m.room.create","state_key":"","sender":owner,"content":{}}),
+                    json!({"type":"m.room.join_rules","state_key":"","content":{"join_rule":"invite"}}),
+                    json!({"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"joined"}}),
+                    json!({"type":"m.room.member","state_key":owner,"content":{"membership":"join"}}),
+                    json!({"type":"m.room.member","state_key":"@_hagency_service:example.test","content":{"membership":"invite"}}),
+                ])
+            })
+        }),
+        "@_hagency_service:example.test".into(),
+    );
+    let service = service_with_gateway(&f, true, gateway);
     let path = format!("pools/{}/agents", a.contribution.id);
     let body = serde_json::to_value(input(&a, "http_pool_agent")).unwrap();
+    post(
+        &denied,
+        &path,
+        &f.outsider.token,
+        body.clone(),
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    assert!(
+        f.domain
+            .pool_agent_requests(&f.outsider.p, PoolAgentQuery::default())
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
     let mut injected = body.clone();
     injected["administratorMxid"] = json!(f.outsider.p.mxid);
     post(
@@ -318,3 +351,61 @@ async fn pool_agent_http_is_closed_and_retries_do_not_duplicate_requests() {
 
 #[path = "management_pool_succession_tests.rs"]
 pub(in crate::management_tests::allocations) mod succession;
+
+#[test]
+fn pool_room_identifiers_accept_legacy_and_v12_and_reject_malformed_hashes() {
+    for room in [
+        "!room:example.test",
+        "!Nhcu5BS-UMnFX7hBVfVSoXiD7OgH6iRT-xyIuqDnpYQ",
+    ] {
+        assert!(crate::domain::matrix_id(room, '!').is_ok());
+    }
+    for room in [
+        "!",
+        "!room",
+        "!:example.test",
+        "!room:",
+        "!bad room:example.test",
+        "!Nhcu5BS+UMnFX7hBVfVSoXiD7OgH6iRT-xyIuqDnpYQ",
+    ] {
+        assert!(crate::domain::matrix_id(room, '!').is_err(), "{room}");
+    }
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn cancelled_unreserved_pool_request_does_not_claim_room_identity() {
+    let mut f = isolated_fixture().await;
+    f.policy = f.policy.with_agent_admission(true);
+    let pool = pool(&f, &f.outsider.p).await;
+    let first = input(&pool, "provisional_room");
+    let r = f
+        .domain
+        .request_pool_agent(
+            &f.outsider.p,
+            &f.policy,
+            &pool.contribution.id,
+            first.clone(),
+        )
+        .await
+        .unwrap();
+    f.domain
+        .stop_pool_agent(
+            &f.outsider.p,
+            &r.id,
+            RevokeInput {
+                command_id: "cancel_provisional_room".into(),
+                expected_revision: r.revision,
+            },
+        )
+        .await
+        .unwrap();
+    let mut next = first;
+    next.command_id = "reuse_provisional_room".into();
+    let next = f
+        .domain
+        .request_pool_agent(&f.outsider.p, &f.policy, &pool.contribution.id, next)
+        .await
+        .unwrap();
+    assert_ne!(next.agent_id, r.agent_id);
+    assert_eq!(next.room_id, r.room_id);
+}

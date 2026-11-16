@@ -6,11 +6,9 @@ mod matrix;
 mod runtime;
 #[path = "management_shared_execution.rs"]
 mod shared;
-use crate::{
-    management_agent_executor_types::*,
-    management_allocation_types::{ExecutorPollInput, ExecutorRecoverInput, MAX_EXACT},
-    secret_token,
-};
+use crate::management_agent_executor_types::*;
+use crate::management_allocation_types::{ExecutorPollInput, ExecutorRecoverInput, MAX_EXACT};
+use crate::secret_token;
 
 const WORK: &str = "SELECT w.*,i.request_id,i.executor_owner_user_id,i.executor_device_id,i.executor_generation,i.payload,i.digest,i.state AS intent_state FROM hagency_agent_v1.management_agent_executor_commands w JOIN hagency_agent_v1.management_agent_intents i ON i.id=w.intent_id";
 #[derive(QueryableByName)]
@@ -213,6 +211,9 @@ async fn identity_retained(
         || r.revision != c.request_revision
         || r.authority_revision != c.authority_revision
     {
+        return Ok(false);
+    }
+    if c.pool_grant.is_some() && sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_requests q ON q.id=a.request_id WHERE q.room_id=$1 AND q.pool_contribution_id IS NOT NULL AND q.proposed_agent_id<>$2) AS matched").bind::<Text,_>(&r.room_id).bind::<Text,_>(&r.proposed_agent_id).get_result::<Flag>(db).await?.matched {
         return Ok(false);
     }
     if c.pool_grant.is_some()

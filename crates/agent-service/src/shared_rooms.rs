@@ -1,8 +1,10 @@
 //! Owner-authorized additional rooms for pool Agents. The reservation and original
 //! conversation remain immutable; every extra room has its own revocable generation.
-use super::*;
-use crate::{gateway::Gateway, matrix_client::MatrixClient};
 use diesel::QueryableByName;
+
+use super::*;
+use crate::gateway::Gateway;
+use crate::matrix_client::MatrixClient;
 #[derive(QueryableByName)]
 struct SharedRoom {
     #[diesel(sql_type=Text)]
@@ -230,6 +232,7 @@ impl DomainStore {
                 let current=row(db,id).await?;
                 if current.generation!=b.generation||current.state!=b.state{return Ok(None);}
                 let fresh=meta(db,&current).await?;
+                super::fresh(f.observed_at_ms, crate::api::now_ms())?;
                 let invalid=!fresh.live||fresh.owner!=scope.owner||fresh.space!=scope.space
                     ||!f.owner_in_room||!f.owner_in_space||!f.room_in_space
                     ||(current.state=="active"&&!f.puppet_in_room)
@@ -241,6 +244,7 @@ impl DomainStore {
                     sql_query("UPDATE hagency_agent_v1.shared_agent_rooms SET state='leaving',generation=generation+1,departure_reason=$2 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(reason).execute(db).await?;
                 }
                 let current=row(db,id).await?;
+                super::fresh(f.observed_at_ms, crate::api::now_ms())?;
                 if matches!(current.state.as_str(),"leaving"|"left") {
                     if f.puppet_in_room||invited {return Ok(Some((current.generation,"leave")));}
                     sql_query("UPDATE hagency_agent_v1.shared_agent_rooms SET state='left' WHERE id=$1 AND state='leaving'").bind::<Text,_>(id).execute(db).await?;
@@ -258,15 +262,18 @@ impl DomainStore {
             let valid = {
                 let mut db = self.db.lock().await?;
                 let current = row(&mut db, id).await?;
-                current.generation == generation
+                let valid = current.generation == generation
                     && if effect == "leave" {
                         let replacement=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.shared_agent_rooms b JOIN hagency_agent_v1.management_shared_assignments a ON a.id=b.assignment_id WHERE b.agent_id=$1 AND b.room_id=$2 AND b.assignment_id<>$3 AND b.state IN ('joining','active') AND a.state='pending_native') AS matched").bind::<Text,_>(&current.agent_id).bind::<Text,_>(&current.room_id).bind::<Text,_>(&current.assignment_id).get_result::<Flag>(&mut *db).await?.matched;
                         matches!(current.state.as_str(), "leaving" | "left") && !replacement
                     } else {
                         current.state == "joining" && meta(&mut db, &current).await?.live
-                    }
+                    };
+                super::fresh(f.observed_at_ms, crate::api::now_ms())?;
+                valid
             };
             if valid {
+                super::fresh(f.observed_at_ms, crate::api::now_ms())?;
                 match effect {
                     "leave" => m.leave(&a.puppet_mxid, &b.room_id).await?,
                     "join" => m.managed_join(&a, &b.room_id).await?,

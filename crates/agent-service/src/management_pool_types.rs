@@ -1,7 +1,9 @@
 //! Direct resource-pool requests. No project, project administrator or setup
 //! identity is accepted from the caller.
-use crate::{Error, Result, key, management_agent_types::AgentDefinition};
 use serde::{Deserialize, Serialize};
+
+use crate::management_agent_types::AgentDefinition;
+use crate::{Error, Result, key};
 
 pub const POOL_AGENTS_FEATURE: &str = "resource-pool-agents-v1";
 
@@ -20,13 +22,8 @@ pub struct RequestPoolAgent {
 impl RequestPoolAgent {
     pub(crate) fn validate(&self) -> Result<()> {
         key(&self.command_id)?;
-        if !self.room_id.starts_with('!')
-            || !self.room_id.contains(':')
-            || self.room_id.len() > 255
-            || self.room_id.chars().any(char::is_whitespace)
-        {
-            return Err(Error::Invalid("invalid_pool_agent_room"));
-        }
+        crate::domain::matrix_id(&self.room_id, '!')
+            .map_err(|_| Error::Invalid("invalid_pool_agent_room"))?;
         self.definition.validate()?;
         for n in [
             self.expected_pool_revision,

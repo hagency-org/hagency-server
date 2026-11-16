@@ -1,5 +1,7 @@
-use super::*;
 use diesel::OptionalExtension;
+
+use super::*;
+use crate::Error;
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
@@ -560,11 +562,27 @@ async fn encrypted_ingress_uses_its_source_clock_without_rewriting_received_time
         event_id: "$future-ciphertext".into(),
         ..event
     };
+    let future_received = now_ms() + 2000;
+    assert!(matches!(
+        f.domain
+            .route_shared_event(&f.policy, &future, future_received, &matrix.gateway)
+            .await,
+        Err(Error::Unavailable("shared_intake_clock_changed"))
+    ));
+    assert!(sql_query("SELECT received_at_ms FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&assignment.id).bind::<Text,_>(&future.event_id).get_result::<Received>(&mut db).await.optional().unwrap().is_none(),"future ingress stays retryable without inserting or restamping it");
+    tokio::time::sleep(std::time::Duration::from_millis(
+        (future_received - now_ms()).max(0) as u64 + 1,
+    ))
+    .await;
     f.domain
-        .route_shared_event(&f.policy, &future, now_ms() + 60_000, &matrix.gateway)
+        .route_shared_event(&f.policy, &future, future_received, &matrix.gateway)
         .await
         .unwrap();
-    assert!(sql_query("SELECT received_at_ms FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&assignment.id).bind::<Text,_>(&future.event_id).get_result::<Received>(&mut db).await.optional().unwrap().is_none(),"genuinely future ingress is still rejected");
+    let retried=sql_query("SELECT received_at_ms FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&assignment.id).bind::<Text,_>(&future.event_id).get_result::<Received>(&mut db).await.unwrap();
+    assert_eq!(
+        retried.received_at_ms, future_received,
+        "same source receipt is admitted when the host catches up"
+    );
 }
 
 /// A database from before the audience rule gains the audience column while
@@ -930,4 +948,141 @@ async fn pool_agent_room_project_folder_reaches_its_executor_only() {
     assert!(matches!(state(&mut db).await.as_str(), "leaving" | "left"));
     assert_eq!(ask(&f.owner.token, room).await, hidden);
     assert_eq!(ask(&f.owner.token, &request.room_id).await, shown);
+}
+
+/// Run alone: this deliberately holds the global authorization lock for 31s,
+/// so running other authority tests against the same database would age their facts.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database; run alone, holds authorization lock for 31s"]
+async fn shared_room_reconcile_rejects_observation_aged_by_a_database_lock_wait() {
+    let (f, request, assignment, matrix) = prepared_pool(true).await;
+    let space = "!agent-space:example.test";
+    let room = "!team-room:example.test";
+    let owner = &f.outsider.p;
+    let puppet = f
+        .domain
+        .managed_agent_matrix(owner, &f.policy, &request.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .puppet_mxid;
+    {
+        let mut states = matrix.states.lock().unwrap();
+        states.insert(space.into(),vec![
+        json!({"type":"m.room.create","state_key":"","content":{"type":"m.space"}}),
+        json!({"type":"m.room.member","state_key":owner.mxid,"content":{"membership":"join"}}),
+        json!({"type":"m.room.power_levels","state_key":"","content":{"users":{owner.mxid.clone():100}}}),
+        json!({"type":"m.space.child","state_key":room,"content":{"via":["example.test"]}}),
+    ]);
+        let mut events = states[&request.room_id].clone();
+        events.retain(|e| e["state_key"] != puppet);
+        events.push(json!({"type":"m.room.power_levels","state_key":"","content":{"users":{owner.mxid.clone():100,SERVICE:100}}}));
+        events.push(json!({"type":"m.room.member","state_key":"@member:example.test","content":{"membership":"join"}}));
+        states.insert(room.into(), events);
+    }
+    let sf = matrix
+        .gateway
+        .admin(space, &owner.mxid, None)
+        .await
+        .unwrap();
+    let project = f
+        .domain
+        .register_project(owner, space, &sf, crate::api::now_ms())
+        .await
+        .unwrap();
+    let rf = matrix
+        .gateway
+        .admin(room, &owner.mxid, Some(space))
+        .await
+        .unwrap();
+    f.domain
+        .register_room(owner, &project.id, room, &sf, &rf, crate::api::now_ms())
+        .await
+        .unwrap();
+    let input = crate::domain::BindRoom {
+        project_id: project.id.clone(),
+        room_id: room.into(),
+        idempotency_key: "add-team".into(),
+    };
+    let added = f
+        .domain
+        .try_bind_shared_room(
+            owner,
+            &assignment.agent_id,
+            &input,
+            &matrix.gateway,
+            &matrix.matrix,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let old = added.binding;
+    let read_done = Arc::new(tokio::sync::Notify::new());
+    let states = matrix.states.clone();
+    let seen = read_done.clone();
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gateway = Gateway::new(
+        Arc::new(move |room| {
+            let states = states.clone();
+            let seen = seen.clone();
+            let reads = reads.clone();
+            Box::pin(async move {
+                let state = states.lock().unwrap().get(&room).cloned().unwrap();
+                if reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                    seen.notify_one();
+                }
+                Ok(state)
+            })
+        }),
+        SERVICE.into(),
+    );
+    let mut blocker = AsyncPgConnection::establish(&f.url).await.unwrap();
+    blocker
+        .batch_execute("SELECT pg_advisory_lock(5210750088328904)")
+        .await
+        .unwrap();
+    let domain = f.domain.clone();
+    let binding = old.id.clone();
+    let client = matrix.matrix.clone();
+    let task = tokio::spawn(async move {
+        domain
+            .reconcile_shared_room(&binding, &gateway, &client)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(3), read_done.notified())
+        .await
+        .expect("facts read before waiting on DB authorization");
+    let calls = matrix.calls.lock().unwrap().len();
+    tokio::time::sleep(std::time::Duration::from_millis(31_050)).await;
+    blocker
+        .batch_execute("SELECT pg_advisory_unlock(5210750088328904)")
+        .await
+        .unwrap();
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(Error::Unavailable("matrix_state_unavailable"))
+    ));
+    assert_eq!(
+        matrix.calls.lock().unwrap().len(),
+        calls,
+        "stale observations cannot authorize a Matrix mutation"
+    );
+    #[derive(QueryableByName)]
+    struct Saved {
+        #[diesel(sql_type=Text)]
+        state: String,
+        #[diesel(sql_type=BigInt)]
+        generation: i64,
+    }
+    let saved =
+        sql_query("SELECT state,generation FROM hagency_agent_v1.shared_agent_rooms WHERE id=$1")
+            .bind::<Text, _>(&old.id)
+            .get_result::<Saved>(&mut blocker)
+            .await
+            .unwrap();
+    assert_eq!(
+        (saved.state, saved.generation),
+        (old.state, old.generation),
+        "stale facts cannot advance the binding state either"
+    );
 }

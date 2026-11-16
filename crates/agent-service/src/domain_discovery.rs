@@ -1,7 +1,8 @@
 //! Registered scope discovery is an internal input; the API must apply live
 //! Matrix membership/link checks before returning any row to a caller.
-use super::*;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl, SelectableHelper};
+
+use super::*;
 
 #[derive(Debug, Serialize, diesel::Queryable, diesel::QueryableByName)]
 #[serde(rename_all = "camelCase")]
@@ -96,13 +97,31 @@ pub struct DiscoverableAgent {
     pub is_mine: bool,
 }
 impl DomainStore {
-    pub async fn discover_agents(&self, p: &Principal, now: i64) -> Result<Vec<DiscoverableAgent>> {
+    #[cfg(test)]
+    pub(crate) async fn discover_agents(
+        &self,
+        p: &Principal,
+        now: i64,
+    ) -> Result<Vec<DiscoverableAgent>> {
+        Ok(self.discover_agents_page(p, None, now).await?.0)
+    }
+    pub async fn discover_agents_page(
+        &self,
+        p: &Principal,
+        after: Option<&str>,
+        now: i64,
+    ) -> Result<(Vec<DiscoverableAgent>, Option<String>)> {
+        if let Some(after) = after {
+            key(after)?;
+        }
         self.db.with_connection(async |db| {
-
-        db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-            Self::authorize(db, p, now).await?;
-            Ok(sql_query("SELECT a.id,a.puppet_mxid,a.display_name,u.mxid AS owner_mxid,a.visibility,a.state,(a.owner_user_id=$1) AS is_mine FROM hagency_agent_v1.agents a JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id WHERE u.active AND a.execution_kind='personal' AND a.state IN ('active','suspended') AND a.visibility='public' ORDER BY a.id LIMIT 256").bind::<Text,_>(&p.user_id).load(db).await?)
+            db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+                Self::authorize(db,p,now).await?;
+                let mut agents=sql_query("SELECT a.id,a.puppet_mxid,a.display_name,u.mxid AS owner_mxid,a.visibility,a.state,(a.owner_user_id=$1) AS is_mine FROM hagency_agent_v1.agents a JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id WHERE u.active AND a.execution_kind='personal' AND a.state IN ('active','suspended') AND a.visibility='public' AND a.id>$2 ORDER BY a.id LIMIT 257").bind::<Text,_>(&p.user_id).bind::<Text,_>(after.unwrap_or("")).load::<DiscoverableAgent>(db).await?;
+                let more=agents.len()>256;agents.truncate(256);
+                let next=if more {agents.last().map(|a|a.id.clone())} else {None};
+                Ok((agents,next))
+            }).await
         }).await
-    }).await
     }
 }

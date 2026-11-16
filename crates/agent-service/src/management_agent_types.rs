@@ -1,9 +1,8 @@
 //! Disabled managed-agent admission contract. A decision is not a native hold.
-use crate::{
-    Error, Result, key,
-    management_allocation_types::{MAX_EXACT, allocation_digest, valid_digest},
-};
 use serde::{Deserialize, Serialize};
+
+use crate::management_allocation_types::{MAX_EXACT, allocation_digest, valid_digest};
+use crate::{Error, Result, key};
 
 pub const AGENT_CAPABILITY: &str = "hagency.managed_agents.v1";
 /// Human admission discovery only, independent of native execution protocols.
@@ -299,14 +298,7 @@ impl ManagedAgentReserveCommand {
                 .is_some_and(|g| !(1..=MAX_EXACT).contains(&g))
             || (self.version != 2
                 && (self.renewal_mode.is_some() || self.allocation_generation.is_some()))
-            || (!self.room_id.is_empty()
-                && (!self.room_id.starts_with('!')
-                    || self.room_id.len() > 255
-                    || !self.room_id.contains(':')
-                    || self
-                        .room_id
-                        .chars()
-                        .any(|c| c.is_control() || c.is_whitespace())))
+            || (!self.room_id.is_empty() && crate::domain::matrix_id(&self.room_id, '!').is_err())
             || [
                 &self.definition_digest,
                 &self.decision_digest,
@@ -414,6 +406,18 @@ fn period(p: &str) -> bool {
 #[cfg(test)]
 mod pool_contract_tests {
     use super::*;
+    #[test]
+    fn pool_reserve_accepts_standard_v12_room_ids_and_rejects_bad_hashes() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/pool-agent-v1.json")).unwrap();
+        let mut c: ManagedAgentReserveCommand =
+            serde_json::from_value(fixture["command"].clone()).unwrap();
+        c.room_id = "!Nhcu5BS-UMnFX7hBVfVSoXiD7OgH6iRT-xyIuqDnpYQ".into();
+        c.validate("example.test").unwrap();
+        assert_ne!(allocation_digest(&c).unwrap(), fixture["commandDigest"]);
+        c.room_id = "!broken_hash".into();
+        assert!(c.validate("example.test").is_err());
+    }
     #[test]
     fn direct_pool_agent_command_has_owner_approval_without_project_authority() {
         let fixture: serde_json::Value =

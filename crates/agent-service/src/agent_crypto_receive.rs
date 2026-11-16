@@ -1,7 +1,11 @@
 //! Owner-scoped crypto receive operations. No room, message or media authority.
 use super::*;
 pub(crate) const CAPABILITY: &str = "agent-crypto-owner-receive-v1";
-pub(crate) const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+// Local bounded-resource policy for the reviewed Palpo pin: its Matrix JSON
+// ingress accepts 8 MiB; leave another 1 MiB for sync framing and crypto metadata.
+// This is not a Matrix protocol maximum. Never trim messages or advance a cursor
+// when the streamed response exceeds this allowance.
+pub(crate) const MAX_RESPONSE_BYTES: usize = 9 * 1024 * 1024;
 pub(crate) const FILTER: &str =
     r#"{"room":{"rooms":[]},"presence":{"types":[]},"account_data":{"types":[]}}"#;
 pub(crate) fn route(method: &str, path: &str) -> Result<Operation> {

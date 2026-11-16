@@ -1,6 +1,7 @@
 //! Closed shared message transport; result recovery never grants another turn.
-use crate::management_shared_execution_types::*;
 use serde::{Deserialize, Serialize};
+
+use crate::management_shared_execution_types::*;
 /// Read/history protocol only; individual live authority gates all effects.
 pub const SHARED_WORK_HISTORY_FEATURE: &str = "shared-work-history-v1";
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -87,8 +88,8 @@ pub struct SharedWorkIndexQuery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SharedWorkIndexItem {
     pub request_id: String,
-    pub project_id: String,
-    pub project_name: String,
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
     pub agent_name: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]

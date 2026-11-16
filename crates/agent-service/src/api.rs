@@ -1,16 +1,14 @@
-use crate::{
-    Error, Result,
-    identity::Verifier,
-    store::{RegisterDevice, Store},
-};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use salvo::prelude::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
 use url::Url;
+
+use crate::identity::Verifier;
+use crate::store::{RegisterDevice, Store};
+use crate::{Error, Result};
 
 #[derive(Clone)]
 pub struct App {
@@ -707,7 +705,18 @@ impl App {
                 );
             }
             if path == "/hagency/api/v1/agents/discover" && method == salvo::http::Method::GET {
-                return Ok(json!({"agents":domain.discover_agents(&principal,now_ms()).await?}));
+                let mut after = None;
+                for (key, value) in
+                    url::form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes())
+                {
+                    if key != "after" || after.replace(value.into_owned()).is_some() {
+                        return Err(Error::Invalid("invalid_discovery_query"));
+                    }
+                }
+                let (agents, next_after) = domain
+                    .discover_agents_page(&principal, after.as_deref(), now_ms())
+                    .await?;
+                return Ok(json!({"agents":agents,"nextAfter":next_after}));
             }
             let parts = path.split('/').collect::<Vec<_>>();
             if parts.len() == 7
@@ -1317,11 +1326,10 @@ impl WorkerHealth {
 
 #[cfg(test)]
 mod worker_health_tests {
+    use salvo::Service;
+    use salvo::test::{ResponseExt, TestClient};
+
     use super::*;
-    use salvo::{
-        Service,
-        test::{ResponseExt, TestClient},
-    };
     #[tokio::test]
     async fn runtime_health_http_preserves_startup_latch_and_rejects_failed_or_stopping_workers() {
         let startup = Arc::new(AtomicBool::new(false));
