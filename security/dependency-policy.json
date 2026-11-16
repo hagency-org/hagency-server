@@ -1,81 +1,14 @@
 {
-  "version": 2,
+  "version": 3,
+  "mode": "strict-clean",
   "reviewed_on": "2026-11-16",
-  "expires_on": "2026-11-29",
   "reviewed_sources": {
-    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?rev=716abc5e684be44e7b2883c38f328fdae500f769#716abc5e684be44e7b2883c38f328fdae500f769"
+    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?rev=edbab1647f2e37e3231f57efcc7816e586238e6f#edbab1647f2e37e3231f57efcc7816e586238e6f",
+    "palpo": "git+https://github.com/palpo-im/palpo.git?rev=de99cfe944ef64d10eaa8162f3fecaca26fa08df#de99cfe944ef64d10eaa8162f3fecaca26fa08df",
+    "lettre": "git+https://github.com/chrislearn/lettre.git?rev=388699bd167493a1fe88d51fd0a28e17ab1a6596#388699bd167493a1fe88d51fd0a28e17ab1a6596",
+    "opentelemetry-prometheus-text-exporter": "git+https://github.com/chrislearn/opentelemetry-prometheus-text-exporter.git?rev=b996a07c91ad7fad9ccbdb24076e818d4864dd30#b996a07c91ad7fad9ccbdb24076e818d4864dd30",
+    "rav1e": "git+https://github.com/chrislearn/rav1e?rev=b1af6dfed0c7d413700cc81eb7d194b764295451#b1af6dfed0c7d413700cc81eb7d194b764295451"
   },
-  "findings": [
-    {
-      "advisory": "RUSTSEC-2026-0387",
-      "kind": "vulnerability",
-      "package": "crypto-bigint",
-      "version": "0.5.5",
-      "status": "unresolved_upstream",
-      "reason": "Pasion JOSE uses elliptic-curve 0.13 and crypto-bigint 0.5.5. The fixed 0.7.6 API is incompatible. A coordinated upstream cryptography migration is required; this is an open side-channel risk, not a non-applicability claim.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0387.html",
-      "advisory_fingerprint": "d6428ce23dcc57d1c3ef56daf3b1ef285fde0d3ba240c87b95f5e6f5460654de"
-    },
-    {
-      "advisory": "RUSTSEC-2023-0071",
-      "kind": "vulnerability",
-      "package": "rsa",
-      "version": "0.9.10",
-      "status": "unresolved_upstream",
-      "reason": "RustSec now lists patched rsa >=0.10.0. The locked 0.9.10 remains vulnerable pending a coordinated RSA/hash/key-format trait migration and JOSE/keystore round-trip validation. Reviewed JOSE signs/verifies JWTs; no RSA padding decryption call was found. This is not a non-applicability claim: broader private-key timing risk remains unresolved.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2023-0071.html",
-      "advisory_fingerprint": "19552aa4a82e472271a62109e46898d9580e3585a4677f5202290acea209a6a6"
-    },
-    {
-      "advisory": "RUSTSEC-2026-0441",
-      "kind": "unmaintained",
-      "package": "pin-utils",
-      "version": "0.1.1",
-      "status": "reviewed_warning",
-      "reason": "Reviewed 2026-11-13: pin-utils is unmaintained with no patched release. The locked path is reqwest-retry's wasm32-only wasmtimer dependency; keep the warning visible and re-review or replace the upstream dependency before this policy expires.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0441.html",
-      "advisory_fingerprint": "83d4147e0bb949d49bd9ce245a4b6f2fd82d1d52bfbc94a02d74d3d73612ae61"
-    },
-    {
-      "advisory": "RUSTSEC-2025-0052",
-      "kind": "unmaintained",
-      "package": "async-std",
-      "version": "1.13.2",
-      "status": "reviewed_warning",
-      "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2025-0052.html",
-      "advisory_fingerprint": "6f88a311a3c794daeec6de01f43ed312aae7428d2ce99b146fa53ca2b6c03b05"
-    },
-    {
-      "advisory": "RUSTSEC-2024-0436",
-      "kind": "unmaintained",
-      "package": "paste",
-      "version": "1.0.15",
-      "status": "reviewed_warning",
-      "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2024-0436.html",
-      "advisory_fingerprint": "b0ecb2e148b7788aa275afa1af7fc4b6ebbc5025e2a662d5ab3d8cf229d3ce57"
-    },
-    {
-      "advisory": "RUSTSEC-2026-0249",
-      "kind": "unmaintained",
-      "package": "smartstring",
-      "version": "1.0.1",
-      "status": "reviewed_warning",
-      "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0249.html",
-      "advisory_fingerprint": "e4721119859b2e486796f1a91172205ae9e6c0b4932d2ad1f4d420008b73abcc"
-    },
-    {
-      "advisory": "RUSTSEC-2024-0449",
-      "kind": "unmaintained",
-      "package": "unsafe-libyaml",
-      "version": "0.2.11",
-      "status": "reviewed_warning",
-      "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2024-0449.html",
-      "advisory_fingerprint": "0749dbd462a61a0e2685da943dcf2512001f46101b341fd690e59f594875c3f5"
-    }
-  ],
+  "findings": [],
   "timezone": "Asia/Shanghai"
 }
