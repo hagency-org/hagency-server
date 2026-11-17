@@ -100,8 +100,7 @@ fn encrypted_request(request: &Value) -> Result<EncryptedRequest> {
 }
 // Claude and Octos permission callbacks have their own closed schema. They never use
 // question cards. The funding owner authorizes the native tool, unless the
-// owner's daemon asked that the person who sent the message decides a Claude
-// request. Octos requests stay owner-only.
+// owner's daemon asked that the person who sent the message decides it.
 fn plain_request_runtime(request: &Value, requester_decides: bool) -> Result<&'static str> {
     let invalid = || Error::Invalid("invalid_permission_request");
     if matches!(
@@ -132,8 +131,7 @@ fn plain_request_runtime(request: &Value, requester_decides: bool) -> Result<&'s
         Some("octos/can_use_tool") => "octos",
         _ => return Err(invalid()),
     };
-    if requester_decides && runtime != "claude"
-        || request["sessionAllowed"] != false
+    if request["sessionAllowed"] != false
         || request["managerCanDecide"] != requester_decides
         || object.len() != 5
         || object.keys().any(|k| {
@@ -226,8 +224,7 @@ impl DomainStore {
    let now=clock(db).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;
    let c=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
    if request_runtime.is_some_and(|runtime| runtime!=c.runtime)
-    || c.runtime=="claude" && (request["sessionAllowed"]!=false || request["managerCanDecide"]!=input.requester_decides)
-    || c.runtime=="octos" && (input.requester_decides || request["sessionAllowed"]!=false || request["managerCanDecide"]!=false)
+    || (c.runtime=="claude" || c.runtime=="octos") && (request["sessionAllowed"]!=false || request["managerCanDecide"]!=input.requester_decides)
     // The sender may only be given requests the daemon already limits to the
     // Agent's own folder or the sandboxed native tool.
     || input.requester_decides && request["managerCanDecide"]!=true {
@@ -427,15 +424,20 @@ mod claude_tests {
         assert!(may_read(&old, &owner_only, &manager) && !may_read(&old, &owner_only, &sender));
     }
     #[test]
-    fn shared_octos_permission_is_owner_only_and_uses_a_closed_schema() {
+    fn shared_octos_permission_uses_a_closed_schema_the_sender_may_decide() {
         let request = json!({"id":"approval-1","method":"octos/can_use_tool",
             "params":{"sessionId":"session-1","toolName":"shell","input":{"body":"synthetic command"}},
             "sessionAllowed":false,"managerCanDecide":false});
         assert_eq!(plain_request_runtime(&request, false).unwrap(), "octos");
-        // The sender never decides an Octos request.
+        // As for Claude, a request the sender decides says so, and only then.
+        assert!(plain_request_runtime(&request, true).is_err());
         let mut delegated = request.clone();
         delegated["managerCanDecide"] = json!(true);
-        assert!(plain_request_runtime(&delegated, true).is_err());
+        assert_eq!(plain_request_runtime(&delegated, true).unwrap(), "octos");
+        assert!(plain_request_runtime(&delegated, false).is_err());
+        let mut session = delegated.clone();
+        session["sessionAllowed"] = json!(true);
+        assert!(plain_request_runtime(&session, true).is_err());
         for (pointer, value) in [
             ("/sessionAllowed", json!(true)),
             ("/managerCanDecide", json!(true)),
