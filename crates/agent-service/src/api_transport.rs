@@ -146,11 +146,28 @@ pub(crate) async fn call(
     match path.as_str() {
         "/hagency/api/v1/execution/messages/authorize" => {
             let b: AgentMessage = body(req).await?;
-            let scope = t.agent_message_scope(p, &b.lease, &b.binding_id, b.binding_generation, now_ms()).await?;
-            let f = g.delivery(&scope.room_id, &scope.space_id, &scope.owner_mxid,
-                &scope.owner_mxid, &scope.puppet_mxid).await?;
-            let authorization = t.authorize_agent_message(p, &b.lease, &b.binding_id,
-                b.binding_generation, &f, now_ms()).await?;
+            let scope = t
+                .agent_message_scope(p, &b.lease, &b.binding_id, b.binding_generation, now_ms())
+                .await?;
+            let f = g
+                .delivery(
+                    &scope.room_id,
+                    &scope.space_id,
+                    &scope.owner_mxid,
+                    &scope.owner_mxid,
+                    &scope.puppet_mxid,
+                )
+                .await?;
+            let authorization = t
+                .authorize_agent_message(
+                    p,
+                    &b.lease,
+                    &b.binding_id,
+                    b.binding_generation,
+                    &f,
+                    now_ms(),
+                )
+                .await?;
             Ok(json!({"authorization":authorization}))
         }
         "/hagency/api/v1/execution/ciphertexts/prepare" => {

@@ -22412,7 +22412,7 @@
   },
   "x-source-sha256": {
     "crates/agent-service/src/api.rs": "beca231723aab7f8702c0ec4f3b3f7fd1cfc969ba4f9549a419a77b0ba4d739d",
-    "crates/agent-service/src/api_transport.rs": "a3470d882e69cad1d219ba499d237a97d4e279e0e20775b0d401aa2116c2e375",
+    "crates/agent-service/src/api_transport.rs": "6ae8f015419f7d02db2e1dc252e27c24659beab94658264195cff8046c84ddf7",
     "crates/agent-service/src/transport_history.rs": "839283ce0e2dde651652cce7239099069b008fd63ed12aa1febde66c8068ba4d",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
     "crates/agent-service/src/api_project_board.rs": "315e3c9359438a28c04694b68d9619f281c1b3fcdabc557d4a6971373110cc47",
@@ -22424,7 +22424,7 @@
     "crates/agent-service/src/workers.rs": "1fd0bee02edab8f716424c49ca157303d949e10ae25b4e7710ba78555132eb37",
     "crates/agent-service/src/encrypted_dispatches.rs": "2fc78608661e2d4729c578546fbbf2c831dde442b7d5bbd39a4039be844d0b5e",
     "crates/agent-service/src/encrypted_dispatches_schema.sql": "73c338d99a17eb64e2173c6fdb7246962039d5e7229e03345bad14237852427d",
-    "crates/agent-service/src/transport.rs": "5cc62c65d940d9953f9b1392392548c28d0c58316a655cf65967a3f76e556068",
+    "crates/agent-service/src/transport.rs": "2135184b0906c3a94be0a59ad57c8470b7f33433bcf2716bb124249c86f94b6d",
     "crates/agent-service/src/encrypted_execution.rs": "404f3bffd0a202fdaefb0aff4c80201806673bf019babbecfad287eafbce63cc",
     "crates/agent-service/src/encrypted_execution_schema.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "dc6cd49f41d5cab901249a217704e6b0afd6f5186f7cc1b3c1eb64e8ec1d3218",

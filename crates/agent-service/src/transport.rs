@@ -671,8 +671,10 @@ impl TransportStore {
         Self::agent_active(db, p, &reference.agent_id).await?;
         let lease = Self::lease(db, p, reference, now).await?;
         let scope = Self::scope(db, binding).await?;
-        if !scope.active || scope.owner_user_id != p.user_id
-            || scope.agent_id != reference.agent_id || scope.binding_generation != generation
+        if !scope.active
+            || scope.owner_user_id != p.user_id
+            || scope.agent_id != reference.agent_id
+            || scope.binding_generation != generation
         {
             return Err(Error::Unauthorized("agent_message_scope_revoked"));
         }
@@ -700,11 +702,18 @@ impl TransportStore {
         generation: i64,
         now: i64,
     ) -> Result<RoutingScope> {
-        self.db.with_connection(async |db| {
-            db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                Ok(Self::message_scope(db, p, reference, binding, generation, now).await?.0)
-            }).await
-        }).await
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Ok(
+                        Self::message_scope(db, p, reference, binding, generation, now)
+                            .await?
+                            .0,
+                    )
+                })
+                .await
+            })
+            .await
     }
 
     /// Check fresh gateway-observed Matrix facts and recheck the current lease
@@ -718,31 +727,36 @@ impl TransportStore {
         facts: &DeliveryFacts,
         now: i64,
     ) -> Result<AgentMessageAuthorization> {
-        self.db.with_connection(async |db| {
-            db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                let (scope, lease, now, session_until) =
-                    Self::message_scope(db, p, reference, binding, generation, now).await?;
-                facts_in_room(&scope, &scope.owner_mxid, facts, now)?;
-                let current = Self::clock(db, now).await?;
-                Self::lease(db, p, reference, current).await?;
-                let valid_until_ms = lease.expires_at_ms.min(session_until)
-                    .min(facts.observed_at_ms.saturating_add(30_000));
-                if valid_until_ms <= current {
-                    return Err(Error::Unauthorized("agent_message_authorization_expired"));
-                }
-                Ok(AgentMessageAuthorization {
-                    agent_id: scope.agent_id,
-                    binding_id: scope.binding_id,
-                    binding_generation: scope.binding_generation,
-                    room_id: scope.room_id,
-                    puppet_mxid: scope.puppet_mxid,
-                    encrypted: facts.encrypted,
-                    lease_epoch: lease.epoch,
-                    device_generation: lease.device_generation,
-                    valid_until_ms,
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    let (scope, lease, now, session_until) =
+                        Self::message_scope(db, p, reference, binding, generation, now).await?;
+                    facts_in_room(&scope, &scope.owner_mxid, facts, now)?;
+                    let current = Self::clock(db, now).await?;
+                    Self::lease(db, p, reference, current).await?;
+                    let valid_until_ms = lease
+                        .expires_at_ms
+                        .min(session_until)
+                        .min(facts.observed_at_ms.saturating_add(30_000));
+                    if valid_until_ms <= current {
+                        return Err(Error::Unauthorized("agent_message_authorization_expired"));
+                    }
+                    Ok(AgentMessageAuthorization {
+                        agent_id: scope.agent_id,
+                        binding_id: scope.binding_id,
+                        binding_generation: scope.binding_generation,
+                        room_id: scope.room_id,
+                        puppet_mxid: scope.puppet_mxid,
+                        encrypted: facts.encrypted,
+                        lease_epoch: lease.epoch,
+                        device_generation: lease.device_generation,
+                        valid_until_ms,
+                    })
                 })
-            }).await
-        }).await
+                .await
+            })
+            .await
     }
     pub async fn renew_lease(
         &self,

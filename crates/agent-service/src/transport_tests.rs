@@ -236,8 +236,15 @@ async fn running(f: &Fixture, lease: &LeaseRef, id: &str, execution: &str) {
 async fn postgres_agent_message_authorization_is_delivery_only_and_fenced() {
     let f = fixture().await;
     let now = crate::api::now_ms();
-    let grant = f.transport.acquire_for_test(&f.p, &f.agent, 60_000, false, now).await.unwrap();
-    let lease = LeaseRef { agent_id: f.agent.clone(), epoch: grant.epoch };
+    let grant = f
+        .transport
+        .acquire_for_test(&f.p, &f.agent, 60_000, false, now)
+        .await
+        .unwrap();
+    let lease = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: grant.epoch,
+    };
     let scope = f.transport.binding_scope(&f.binding).await.unwrap();
     let generation = scope.binding_generation;
     let mut facts = f.facts.clone();
@@ -245,30 +252,71 @@ async fn postgres_agent_message_authorization_is_delivery_only_and_fenced() {
     facts.encrypted = true;
 
     // No dispatch or execution exists: this authorizes delivery only.
-    let discovered = f.transport.agent_message_scope(&f.p, &lease, &f.binding, generation, now).await.unwrap();
+    let discovered = f
+        .transport
+        .agent_message_scope(&f.p, &lease, &f.binding, generation, now)
+        .await
+        .unwrap();
     assert_eq!(discovered.room_id, facts.room_id);
-    let authorization = f.transport.authorize_agent_message(&f.p, &lease, &f.binding, generation, &facts, now).await.unwrap();
+    let authorization = f
+        .transport
+        .authorize_agent_message(&f.p, &lease, &f.binding, generation, &facts, now)
+        .await
+        .unwrap();
     assert_eq!(authorization.room_id, facts.room_id);
     assert_eq!(authorization.puppet_mxid, facts.puppet_mxid);
     assert_eq!(authorization.binding_generation, generation);
     assert_eq!(authorization.lease_epoch, lease.epoch);
     assert!(authorization.encrypted);
 
-    assert!(f.transport.agent_message_scope(&f.second, &lease, &f.binding, generation, now).await.is_err());
-    assert!(f.transport.agent_message_scope(&f.p, &lease, &f.binding, generation + 1, now).await.is_err());
+    assert!(
+        f.transport
+            .agent_message_scope(&f.second, &lease, &f.binding, generation, now)
+            .await
+            .is_err()
+    );
+    assert!(
+        f.transport
+            .agent_message_scope(&f.p, &lease, &f.binding, generation + 1, now)
+            .await
+            .is_err()
+    );
     let mut wrong_room = facts.clone();
     wrong_room.room_id = "!different:example.test".into();
-    assert!(f.transport.authorize_agent_message(&f.p, &lease, &f.binding, generation, &wrong_room, now).await.is_err());
+    assert!(
+        f.transport
+            .authorize_agent_message(&f.p, &lease, &f.binding, generation, &wrong_room, now)
+            .await
+            .is_err()
+    );
     let mut cannot_send = facts.clone();
     cannot_send.puppet_can_send_message = false;
-    assert!(f.transport.authorize_agent_message(&f.p, &lease, &f.binding, generation, &cannot_send, now).await.is_err());
+    assert!(
+        f.transport
+            .authorize_agent_message(&f.p, &lease, &f.binding, generation, &cannot_send, now)
+            .await
+            .is_err()
+    );
     let mut stale = facts.clone();
     stale.observed_at_ms = now - 31_000;
-    assert!(f.transport.authorize_agent_message(&f.p, &lease, &f.binding, generation, &stale, now).await.is_err());
+    assert!(
+        f.transport
+            .authorize_agent_message(&f.p, &lease, &f.binding, generation, &stale, now)
+            .await
+            .is_err()
+    );
 
     // A binding revoked after preflight cannot use previously fetched facts.
-    f.domain.suspend_binding(&f.p, &f.binding, now).await.unwrap();
-    assert!(f.transport.authorize_agent_message(&f.p, &lease, &f.binding, generation, &facts, now).await.is_err());
+    f.domain
+        .suspend_binding(&f.p, &f.binding, now)
+        .await
+        .unwrap();
+    assert!(
+        f.transport
+            .authorize_agent_message(&f.p, &lease, &f.binding, generation, &facts, now)
+            .await
+            .is_err()
+    );
 }
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
