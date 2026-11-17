@@ -4133,6 +4133,110 @@
         }
       }
     },
+    "/hagency/api/v1/execution/messages/authorize": {
+      "post": {
+        "operationId": "authorizeAgentMessageDelivery",
+        "summary": "authorizeAgentMessageDelivery",
+        "description": "Revalidate the current personal Agent device lease, active binding generation, and fresh Matrix membership and send power for one message. The server derives the destination from the binding and rechecks authority after observing Matrix. This short-lived proof grants delivery only, never starting or continuing work. Pool Agents require a separate authorization contract.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "authorization": {
+                      "$ref": "#/components/schemas/AgentMessageAuthorization"
+                    }
+                  },
+                  "required": [
+                    "authorization"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentMessage"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/messages/authorize\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        }
+      }
+    },
     "/hagency/api/v1/execution/events/finish": {
       "post": {
         "operationId": "finishExecution",
@@ -22197,6 +22301,98 @@
           ],
           "strictInput": true
         }
+      },
+      "AgentMessage": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "bindingId": {
+            "type": "string"
+          },
+          "bindingGeneration": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "lease",
+          "bindingId",
+          "bindingGeneration"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "name": "AgentMessage",
+          "serializedFields": [
+            "lease",
+            "binding_id",
+            "binding_generation"
+          ],
+          "strictInput": true
+        }
+      },
+      "AgentMessageAuthorization": {
+        "type": "object",
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "bindingId": {
+            "type": "string"
+          },
+          "bindingGeneration": {
+            "type": "integer"
+          },
+          "roomId": {
+            "type": "string"
+          },
+          "puppetMxid": {
+            "type": "string"
+          },
+          "encrypted": {
+            "type": "boolean"
+          },
+          "leaseEpoch": {
+            "type": "integer"
+          },
+          "deviceGeneration": {
+            "type": "integer"
+          },
+          "validUntilMs": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agentId",
+          "bindingId",
+          "bindingGeneration",
+          "roomId",
+          "puppetMxid",
+          "encrypted",
+          "leaseEpoch",
+          "deviceGeneration",
+          "validUntilMs"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/transport.rs",
+          "name": "AgentMessageAuthorization",
+          "serializedFields": [
+            "agent_id",
+            "binding_id",
+            "binding_generation",
+            "room_id",
+            "puppet_mxid",
+            "encrypted",
+            "lease_epoch",
+            "device_generation",
+            "valid_until_ms"
+          ],
+          "strictInput": false
+        }
       }
     },
     "securitySchemes": {
@@ -22216,7 +22412,7 @@
   },
   "x-source-sha256": {
     "crates/agent-service/src/api.rs": "beca231723aab7f8702c0ec4f3b3f7fd1cfc969ba4f9549a419a77b0ba4d739d",
-    "crates/agent-service/src/api_transport.rs": "f1edd833398d6d3e2c1d72f9618faea40d789e6d408896580a3c7a34be4e7b02",
+    "crates/agent-service/src/api_transport.rs": "a3470d882e69cad1d219ba499d237a97d4e279e0e20775b0d401aa2116c2e375",
     "crates/agent-service/src/transport_history.rs": "839283ce0e2dde651652cce7239099069b008fd63ed12aa1febde66c8068ba4d",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
     "crates/agent-service/src/api_project_board.rs": "315e3c9359438a28c04694b68d9619f281c1b3fcdabc557d4a6971373110cc47",
@@ -22228,7 +22424,7 @@
     "crates/agent-service/src/workers.rs": "1fd0bee02edab8f716424c49ca157303d949e10ae25b4e7710ba78555132eb37",
     "crates/agent-service/src/encrypted_dispatches.rs": "2fc78608661e2d4729c578546fbbf2c831dde442b7d5bbd39a4039be844d0b5e",
     "crates/agent-service/src/encrypted_dispatches_schema.sql": "73c338d99a17eb64e2173c6fdb7246962039d5e7229e03345bad14237852427d",
-    "crates/agent-service/src/transport.rs": "684f89bbec3debbd5dc1e508032dede5fa9f0ffdde0f9580709d66cfe94b7e67",
+    "crates/agent-service/src/transport.rs": "5cc62c65d940d9953f9b1392392548c28d0c58316a655cf65967a3f76e556068",
     "crates/agent-service/src/encrypted_execution.rs": "404f3bffd0a202fdaefb0aff4c80201806673bf019babbecfad287eafbce63cc",
     "crates/agent-service/src/encrypted_execution_schema.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "dc6cd49f41d5cab901249a217704e6b0afd6f5186f7cc1b3c1eb64e8ec1d3218",
