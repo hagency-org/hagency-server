@@ -4137,7 +4137,7 @@
       "post": {
         "operationId": "authorizeAgentMessageDelivery",
         "summary": "authorizeAgentMessageDelivery",
-        "description": "Revalidate the current personal Agent device lease, active binding generation, and fresh Matrix membership and send power for one message. The server derives the destination from the binding and rechecks authority after observing Matrix. This short-lived proof grants delivery only, never starting or continuing work. Pool Agents require a separate authorization contract.",
+        "description": "Revalidate the current personal Agent device lease, active binding generation, and fresh Matrix membership and send power for one message. The server derives the destination from the binding and rechecks authority after observing Matrix. This short-lived proof grants delivery only, never starting or continuing work. Pool Agents require a separate authorization contract. A definitive owner or puppet membership loss commits a binding-generation fence before denial; restored membership cannot revive the old binding.",
         "security": [
           {
             "deviceBearer": []
@@ -22424,7 +22424,7 @@
     "crates/agent-service/src/workers.rs": "1fd0bee02edab8f716424c49ca157303d949e10ae25b4e7710ba78555132eb37",
     "crates/agent-service/src/encrypted_dispatches.rs": "2fc78608661e2d4729c578546fbbf2c831dde442b7d5bbd39a4039be844d0b5e",
     "crates/agent-service/src/encrypted_dispatches_schema.sql": "73c338d99a17eb64e2173c6fdb7246962039d5e7229e03345bad14237852427d",
-    "crates/agent-service/src/transport.rs": "2135184b0906c3a94be0a59ad57c8470b7f33433bcf2716bb124249c86f94b6d",
+    "crates/agent-service/src/transport.rs": "63327845cadd0246cefcd195fd3cc82d84f7b3f927b4b1f0c205a2e0fd47b73c",
     "crates/agent-service/src/encrypted_execution.rs": "404f3bffd0a202fdaefb0aff4c80201806673bf019babbecfad287eafbce63cc",
     "crates/agent-service/src/encrypted_execution_schema.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "dc6cd49f41d5cab901249a217704e6b0afd6f5186f7cc1b3c1eb64e8ec1d3218",

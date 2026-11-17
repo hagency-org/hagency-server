@@ -318,6 +318,50 @@ async fn postgres_agent_message_authorization_is_delivery_only_and_fenced() {
             .is_err()
     );
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_agent_message_membership_loss_commits_a_binding_fence() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    let grant = f
+        .transport
+        .acquire_for_test(&f.p, &f.agent, 60_000, false, now)
+        .await
+        .unwrap();
+    let lease = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: grant.epoch,
+    };
+    let generation = f
+        .transport
+        .binding_scope(&f.binding)
+        .await
+        .unwrap()
+        .binding_generation;
+    let mut removed = f.facts.clone();
+    removed.requester_mxid = removed.owner_mxid.clone();
+    removed.owner_in_room = false;
+    removed.requester_in_room = false;
+    assert!(
+        f.transport
+            .authorize_agent_message(&f.p, &lease, &f.binding, generation, &removed, now)
+            .await
+            .is_err()
+    );
+    let binding = f.domain.binding(&f.p, &f.binding, now).await.unwrap();
+    assert!(binding.generation > generation);
+    assert_eq!(binding.state, "leaving");
+    let mut restored = removed;
+    restored.owner_in_room = true;
+    restored.requester_in_room = true;
+    assert!(
+        f.transport
+            .authorize_agent_message(&f.p, &lease, &f.binding, generation, &restored, now)
+            .await
+            .is_err()
+    );
+}
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_queue_ack_execution_reply_and_unknown_retry_are_distinct() {

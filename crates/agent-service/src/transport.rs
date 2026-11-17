@@ -727,6 +727,14 @@ impl TransportStore {
         facts: &DeliveryFacts,
         now: i64,
     ) -> Result<AgentMessageAuthorization> {
+        let scope = self
+            .agent_message_scope(p, reference, binding, generation, now)
+            .await?;
+        // Commit a trusted membership/power denial independently of the
+        // authorization transaction. A later denial must not roll its fence
+        // back and revive messages captured under the old binding.
+        self.observe_delivery_authority(Some(p), binding, &scope.owner_mxid, None, facts, now)
+            .await?;
         self.db
             .with_connection(async |db| {
                 db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
