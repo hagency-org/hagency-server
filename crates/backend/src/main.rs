@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use clap::Parser;
 use hagency_server::{MatrixServer, browser_auth::BrowserAuth, config::Config, frontend::Frontend};
 use salvo::prelude::*;
