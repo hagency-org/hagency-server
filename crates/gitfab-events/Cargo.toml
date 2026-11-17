@@ -1,0 +1,25 @@
+[package]
+name = "hagency-gitfab-events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "gitfab"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+clap.workspace = true
+ed25519-dalek = "3.0.0"
+getrandom = "0.4"
+hex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true

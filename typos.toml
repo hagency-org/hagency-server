@@ -12,6 +12,8 @@ extend-glob = ["*.md"]
 [type.markdown.extend-words]
 # Name of the CI service used in deployment records.
 Gitar = "Gitar"
+# Crate name in the GitFab third-party component list (the `writeable` crate).
+writeable = "writeable"
 
 [files]
 # Include workflow/config files and authored web assets, but not Git internals.

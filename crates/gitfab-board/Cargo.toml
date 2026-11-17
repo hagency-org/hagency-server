@@ -1,0 +1,19 @@
+[package]
+name = "hagency-gitfab-board"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "gitfab-board"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+hagency-gitfab-events = { path = "../gitfab-events" }
+hagency-gitfab-runner = { path = "../gitfab-runner" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

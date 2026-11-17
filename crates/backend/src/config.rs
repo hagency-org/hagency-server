@@ -34,6 +34,47 @@ pub struct HostConfig {
     pub palpo_config: PathBuf,
     #[serde(default)]
     pub management: Option<ManagementConfig>,
+    /// GitFab acceptance event signing. Absent leaves it off; existing hosts need no new input.
+    #[serde(default)]
+    pub gitfab: Option<GitfabConfig>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitfabConfig {
+    /// Base64 Ed25519 seed, mode 0600, outside the image and Git. Not the Palpo server key.
+    pub signing_key_file: PathBuf,
+    /// Published with the public key and recorded in every signature.
+    pub signing_key_id: String,
+    /// Append-only GitFab event journal. Setting it runs the workflow orchestrator.
+    #[serde(default)]
+    pub journal_file: Option<PathBuf>,
+    /// A stage without a result after this long stops for a Human. Default 120.
+    #[serde(default)]
+    pub stage_timeout_minutes: Option<u32>,
+    /// Token files (mode 0600) that let the orchestrator open Pull Requests and publish Releases.
+    /// A backend without one is left alone.
+    #[serde(default)]
+    pub github_token_file: Option<PathBuf>,
+    #[serde(default)]
+    pub gitcode_token_file: Option<PathBuf>,
+    /// API roots for self-hosted instances; the public ones by default.
+    #[serde(default)]
+    pub github_api: Option<String>,
+    #[serde(default)]
+    pub gitcode_api: Option<String>,
+    /// Read-only token (mode 0600) the GitFab board presents to read Agent status.
+    #[serde(default)]
+    pub board_token_file: Option<PathBuf>,
+    /// The fixed Agent team: `[gitfab.team.coordinator|implementer|reviewer]` each with
+    /// `capabilities`. Every role a stage routes to must be declared; Plans may then give Modules
+    /// only capabilities the implementer declares. Absent leaves Plans unchecked against a team.
+    #[serde(default)]
+    pub team: Option<std::collections::BTreeMap<String, GitfabTeamRole>>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitfabTeamRole {
+    pub capabilities: Vec<String>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -152,6 +193,14 @@ impl Config {
             *p = resolve(base, p);
         }
         host.data_dir = resolve(base, &host.data_dir);
+        if let Some(gitfab) = &mut host.gitfab {
+            gitfab.signing_key_file = resolve(base, &gitfab.signing_key_file);
+            gitfab.journal_file = gitfab.journal_file.as_ref().map(|p| resolve(base, p));
+            gitfab.github_token_file = gitfab.github_token_file.as_ref().map(|p| resolve(base, p));
+            gitfab.gitcode_token_file =
+                gitfab.gitcode_token_file.as_ref().map(|p| resolve(base, p));
+            gitfab.board_token_file = gitfab.board_token_file.as_ref().map(|p| resolve(base, p));
+        }
         host.palpo_config = resolve(base, &host.palpo_config)
             .canonicalize()
             .context("cannot open palpo_config")?;
@@ -234,6 +283,18 @@ impl Config {
         Ok(())
     }
     pub fn validate(&self) -> anyhow::Result<()> {
+        if let Some(gitfab) = &self.gitfab {
+            crate::gitfab::Signer::load(gitfab)?;
+            let agent_service = self.pasion.as_ref().is_some_and(|p| p.delegate_matrix_auth);
+            if gitfab.journal_file.is_some() && !agent_service {
+                anyhow::bail!(
+                    "gitfab.journal_file needs pasion.delegate_matrix_auth (the agent service)"
+                );
+            }
+            if gitfab.stage_timeout_minutes == Some(0) {
+                anyhow::bail!("gitfab.stage_timeout_minutes must be at least 1");
+            }
+        }
         if let Some(management) = &self.management {
             hagency_agent_service::management_types::ManagementPolicy::new(
                 management.administrator.clone(),

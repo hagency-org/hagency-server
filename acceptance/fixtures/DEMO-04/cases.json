@@ -1,0 +1,33 @@
+{
+  "project": "DEMO-04",
+  "comment": "Black-box cases for PRD-DEMO-04-v1: the frozen input renders byte for byte to expected.md, and --digest prints expected.digest.",
+  "cli": [
+    {
+      "name": "release notes",
+      "command": "relnotes",
+      "args": [
+        "--version",
+        "v1.0.0",
+        "--date",
+        "2026-11-12",
+        "${fixtures}/input.json"
+      ],
+      "exit_code": 0,
+      "stdout_file": "expected.md"
+    },
+    {
+      "name": "digest",
+      "command": "relnotes",
+      "args": [
+        "--version",
+        "v1.0.0",
+        "--date",
+        "2026-11-12",
+        "--digest",
+        "${fixtures}/input.json"
+      ],
+      "exit_code": 0,
+      "stdout_trimmed_file": "expected.digest"
+    }
+  ]
+}

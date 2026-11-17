@@ -251,6 +251,21 @@ pub(crate) async fn route_controlled(
             // design; for personal Agents the transport says which design
             // takes the event, and the ciphertext inbox is the other one.
             let event = parse_event(raw);
+            // A Human's `/gitfab` message is a command for the orchestrator, never a prompt for an Agent.
+            if t.gitfab_commands()
+                && let Some(command) = &event
+                && !command.encrypted
+                && crate::orchestrator::is_command(&command.body)
+            {
+                if t.record_orchestrator_command(command, transaction.received_at_ms)
+                    .await
+                    .is_err()
+                {
+                    ctx.failure("routing_unavailable");
+                    retry = true;
+                }
+                continue;
+            }
             let cipher = if raw["type"] == "m.room.encrypted"
                 && t.encrypted_delivery() == crate::transport::EncryptedDelivery::CiphertextInbox
             {

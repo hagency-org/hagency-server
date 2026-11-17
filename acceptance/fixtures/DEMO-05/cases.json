@@ -1,0 +1,61 @@
+{
+  "project": "DEMO-05",
+  "comment": "Black-box cases for PRD-DEMO-05-v1 with the frozen keys/: totals of valid and duplicate match their expected files; conflict, tampered and float exit 1 with the conflicts and errors of failures.expected.json.",
+  "cli": [
+    {
+      "name": "valid",
+      "command": "ledger",
+      "args": [
+        "--keys",
+        "${fixtures}/keys",
+        "${fixtures}/valid.jsonl"
+      ],
+      "exit_code": 0,
+      "stdout_json_file": "valid.expected.json"
+    },
+    {
+      "name": "duplicate",
+      "command": "ledger",
+      "args": [
+        "--keys",
+        "${fixtures}/keys",
+        "${fixtures}/duplicate.jsonl"
+      ],
+      "exit_code": 0,
+      "stdout_json_file": "duplicate.expected.json"
+    },
+    {
+      "name": "conflict",
+      "command": "ledger",
+      "args": [
+        "--keys",
+        "${fixtures}/keys",
+        "${fixtures}/conflict.jsonl"
+      ],
+      "exit_code_from": "failures.expected.json#conflict.jsonl",
+      "stdout_json_file": "failures.expected.json#conflict.jsonl"
+    },
+    {
+      "name": "tampered",
+      "command": "ledger",
+      "args": [
+        "--keys",
+        "${fixtures}/keys",
+        "${fixtures}/tampered.jsonl"
+      ],
+      "exit_code_from": "failures.expected.json#tampered.jsonl",
+      "stdout_json_file": "failures.expected.json#tampered.jsonl"
+    },
+    {
+      "name": "float",
+      "command": "ledger",
+      "args": [
+        "--keys",
+        "${fixtures}/keys",
+        "${fixtures}/float.jsonl"
+      ],
+      "exit_code_from": "failures.expected.json#float.jsonl",
+      "stdout_json_file": "failures.expected.json#float.jsonl"
+    }
+  ]
+}

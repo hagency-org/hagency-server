@@ -246,6 +246,59 @@ async fn run() -> anyhow::Result<()> {
                 .with_pool_grant_succession(management.enable_pool_grant_succession),
             );
         }
+        if let Some(gitfab) = &conf.gitfab
+            && let Some(journal) = &gitfab.journal_file
+        {
+            let signer = hagency_server::gitfab::Signer::load(gitfab)?;
+            if let Some(dir) = journal.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let recorder = hagency_agent_service::orchestrator::Recorder::open(
+                journal,
+                signer.shared_key(),
+                signer.public_key_ref(),
+            )
+            .map_err(|e| anyhow::anyhow!("gitfab.journal_file: {e}"))?;
+            tracing::info!(journal = %journal.display(), "GitFab orchestrator enabled");
+            app = app.with_gitfab_orchestrator(
+                recorder,
+                gitfab.stage_timeout_minutes.map(|m| i64::from(m) * 60_000),
+            );
+            if gitfab.github_token_file.is_some() || gitfab.gitcode_token_file.is_some() {
+                let hosts = hagency_agent_service::orchestrator_git::GitHosts::load(
+                    gitfab
+                        .github_token_file
+                        .as_deref()
+                        .map(|f| (f, gitfab.github_api.as_deref())),
+                    gitfab
+                        .gitcode_token_file
+                        .as_deref()
+                        .map(|f| (f, gitfab.gitcode_api.as_deref())),
+                )
+                .map_err(|e| anyhow::anyhow!("gitfab token file {e}"))?;
+                tracing::info!(
+                    github = hosts.github.is_some(),
+                    gitcode = hosts.gitcode.is_some(),
+                    "GitFab Pull Requests and Releases enabled"
+                );
+                app = app.with_gitfab_git(hosts);
+            }
+            if let Some(file) = &gitfab.board_token_file {
+                let token = hagency_agent_service::orchestrator_git::read_token(file)
+                    .map_err(|e| anyhow::anyhow!("gitfab.board_token_file {e}"))?;
+                app = app.with_gitfab_board_token(token);
+                tracing::info!("GitFab board Agent status enabled");
+            }
+            if let Some(team) = &gitfab.team {
+                let team = hagency_agent_service::orchestrator_team::Team::new(
+                    team.iter()
+                        .map(|(role, r)| (role.as_str(), r.capabilities.clone())),
+                )
+                .map_err(|e| anyhow::anyhow!("gitfab.team: {e}"))?;
+                tracing::info!("GitFab fixed Agent team declared");
+                app = app.with_gitfab_team(team);
+            }
+        }
         agent_service = Some(app);
     }
     let browser_auth = BrowserAuth::new(&conf).await?;
@@ -258,6 +311,9 @@ async fn run() -> anyhow::Result<()> {
     let mut router = Router::new();
     if let Some(service) = &agent_service {
         router = router.push(service.router());
+        if let Some(board) = service.gitfab_board_router() {
+            router = router.push(board);
+        }
     }
     if let Some(inbox) = &agent_inbox {
         router = router.push(inbox.router());
@@ -266,6 +322,11 @@ async fn run() -> anyhow::Result<()> {
         router = router
             .push(app.readiness_router())
             .push(app.worker_health_router());
+    }
+    if let Some(gitfab) = &conf.gitfab {
+        let signer = hagency_server::gitfab::Signer::load(gitfab)?;
+        tracing::info!(key_id = %signer.key().id, "GitFab event signing key loaded");
+        router = router.push(signer.router());
     }
     let frontend = Frontend::new(&conf);
     frontend.preserve_assets().await?;
@@ -303,6 +364,9 @@ async fn run() -> anyhow::Result<()> {
         .zip(agent_inbox.as_ref())
         .and_then(|(app, inbox)| app.start_delivery(inbox.clone()));
     let cleanup_worker = agent_service.as_ref().and_then(|app| app.start_cleanup());
+    let orchestrator_worker = agent_service
+        .as_ref()
+        .and_then(|app| app.start_orchestrator());
     let acceptor = TcpListener::new(conf.listen).try_bind().await?;
     let server = Server::new(acceptor);
     let handle = server.handle();
@@ -310,6 +374,7 @@ async fn run() -> anyhow::Result<()> {
     let mut workers = delivery_worker
         .into_iter()
         .chain(cleanup_worker)
+        .chain(orchestrator_worker)
         .collect::<Vec<_>>();
     tracing::info!(listen=%conf.listen,public_origin=%conf.public_origin,"hagency-server started");
     let serving = server.serve(service);

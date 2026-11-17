@@ -1,0 +1,17 @@
+{
+  "project": "DEMO-01",
+  "comment": "Black-box cases for PRD-DEMO-01-v1. ${release} and ${sha} are the values the run started the service with. A json expectation is a subset match: listed fields must be equal, extra fields are allowed.",
+  "service": {"env": {"DEMO_RELEASE_VERSION": "${release}", "DEMO_GIT_SHA": "${sha}", "PORT": "8080"}, "ready": "/health"},
+  "startup": [
+    {"name": "missing release version", "env": {"DEMO_GIT_SHA": "${sha}"}, "exit_code": 2, "stderr_contains": ["DEMO_RELEASE_VERSION"]},
+    {"name": "malformed commit SHA", "env": {"DEMO_RELEASE_VERSION": "${release}", "DEMO_GIT_SHA": "not-a-sha-value-x9"}, "exit_code": 2, "stderr_contains": ["DEMO_GIT_SHA"], "stderr_excludes": ["not-a-sha-value-x9"]},
+    {"name": "short admin token is refused without echoing it", "env": {"DEMO_RELEASE_VERSION": "${release}", "DEMO_GIT_SHA": "${sha}", "DEMO_ADMIN_TOKEN": "tok-7Q2x"}, "exit_code": 2, "stderr_contains": ["DEMO_ADMIN_TOKEN"], "stderr_excludes": ["tok-7Q2x"]}
+  ],
+  "http": [
+    {"name": "health", "method": "GET", "path": "/health", "status": 200, "content_type": "application/json", "json": {"status": "ok", "checks": {"config": "ok"}}},
+    {"name": "version", "method": "GET", "path": "/version", "status": 200, "json": {"version": "${release}", "git_sha": "${sha}"}},
+    {"name": "unknown path", "method": "GET", "path": "/does-not-exist", "status": 404, "json": {"error": "not_found"}},
+    {"name": "wrong method", "method": "POST", "path": "/health", "status": 405, "json": {"error": "method_not_allowed"}}
+  ],
+  "container": {"healthcheck": "/health", "non_root": true}
+}

@@ -3867,6 +3867,8 @@ dependencies = [
  "diesel",
  "diesel-async",
  "hagency-db-runtime",
+ "hagency-gitfab-events",
+ "hagency-gitfab-forge",
  "hex",
  "palpo-core",
  "percent-encoding",
@@ -3921,6 +3923,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "hagency-gitfab-board"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "hagency-gitfab-events",
+ "hagency-gitfab-runner",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "hagency-gitfab-events"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "clap",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "hex",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "hagency-gitfab-forge"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "percent-encoding",
+ "reqwest 0.13.5",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "hagency-gitfab-runner"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "hagency-gitfab-events",
+ "hex",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+]
+
+[[package]]
 name = "hagency-server"
 version = "0.1.0"
 dependencies = [
@@ -3934,6 +3988,7 @@ dependencies = [
  "diesel-async",
  "figment",
  "hagency-agent-service",
+ "hagency-gitfab-events",
  "hex",
  "libc",
  "palpo",
