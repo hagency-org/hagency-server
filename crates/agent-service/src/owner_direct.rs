@@ -14,9 +14,12 @@ impl DomainStore {
         self.db.with_connection(async |db| {
 
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::authorize(db,p,now).await?;let a=Self::agent_db(db,p,agent).await?;
+            Self::authorize(db,p,now).await?;
+            Self::require_unmanaged_binding(db,None,room).await?;
+            let a=Self::agent_db(db,p,agent).await?;
             if a.state!="active" {return Err(Error::Conflict("agent_identity_not_active"));}
             membership(p,f,room,"",now)?;
+            // An encrypted owner DM is allowed under either encrypted delivery mode.
             if f.puppet_mxid.as_deref()!=Some(a.puppet_mxid.as_str())||!f.owner_direct_valid {return Err(Error::Unauthorized("owner_direct_room_required"));}
             if let Some(existing)=&a.owner_direct_room_id && existing!=room {return Err(Error::Conflict("owner_direct_room_already_assigned"));}
             if let Some(binding)={

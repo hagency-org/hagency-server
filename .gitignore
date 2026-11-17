@@ -17,3 +17,8 @@
 /config/docker/
 
 /resources/frontend/
+
+# Agent working logs stay on the operator's machine: they record local
+# paths, hosts and conversations.
+/docs/progress.md
+/docs/agent-knowledge.md

@@ -5,6 +5,8 @@ Never uses the application databases. Secrets stay in private fixture files and
 memory. Does not invoke a model or tool runner, and does not modify Palpo source.
 HAGENCY_TEST_BACKUP_RESTORE=1 enables the full native PKCE flow plus stopped
 three-database restoration into separate disposable databases.
+HAGENCY_TEST_MANAGEMENT=1 enables pooled execution only in the generated
+loopback fixture, with its fresh bootstrap owner as management administrator.
 """
 import json
 import contextlib
@@ -165,7 +167,7 @@ def browser_api_paths(origin, password):
             return payload
 
     session = call("/hagency/api/login/token", "POST", {},
-                   extra={"Authorization": "Bearer " + token})
+                   extra={"Authorization": "Bearer " + token, "X-Hagency-Fresh-OAuth": "1"})
     csrf = session["csrf"]
     assert session["userId"].startswith("@agent_smoke_owner:")
     assert any(cookie.name == "palpo_admin" and "HttpOnly" in cookie._rest for cookie in cookies)
@@ -215,6 +217,14 @@ try:
             'data_dir = ' + json.dumps(str(folder / "data")),
             'palpo_config = "palpo.toml"', 'pasion_config = "pasion.toml"',
             'public_dir = ' + json.dumps(os.environ.get("HAGENCY_TEST_FRONTEND_RESOURCES", str(ROOT / "resources/frontend/public"))), ""])
+        if os.environ.get("HAGENCY_TEST_MANAGEMENT") == "1":
+            host += '\n[management]\nadministrator = ' + json.dumps("@agent_smoke_owner:" + server_name) + '\n'
+            for capability in ["project_reservations", "parent_settlement", "project_setup",
+                               "agent_admission", "agent_executor", "agent_matrix_provisioning",
+                               "agent_runtime_provisioning", "shared_execution", "shared_successors",
+                               "shared_durable_intake", "shared_demands", "shared_thread_context",
+                               "agent_budget_deltas", "shared_budget_execution", "pool_grant_succession"]:
+                host += "enable_" + capability + " = true\n"
         private(folder / "palpo.toml", palpo)
         private(folder / "pasion.toml", pasion)
         private(folder / "hagency.toml", host)

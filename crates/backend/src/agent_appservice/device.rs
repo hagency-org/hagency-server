@@ -1,6 +1,6 @@
 //! Upgrade only the built-in service's device capability, retaining its identity.
 use diesel::prelude::*;
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use diesel_async::RunQueryDsl;
 use palpo::core::appservice::Registration;
 use palpo::data::appservice::DbRegistration;
 use palpo::data::schema::appservice_registrations as table;
@@ -23,7 +23,7 @@ fn upgrade_needed(expected: &Registration, stored: &DbRegistration) -> anyhow::R
 
 pub(super) async fn prepare(expected: &Registration) -> anyhow::Result<()> {
     let candidate = DbRegistration::from(expected.clone());
-    let mut conn = palpo::data::connect().await?;
+    let mut conn = palpo::data::connect();
     conn.transaction::<_, anyhow::Error, _>(async |conn| {
         // An insert race must converge on the same identity, not replace tokens.
         diesel::insert_into(table::table)
@@ -123,7 +123,7 @@ mod tests {
                 .unwrap()
         };
         let initial = serde_json::to_value(read().await).unwrap();
-        let mut conn = palpo::data::connect().await.unwrap();
+        let mut conn = palpo::data::checkout().await.unwrap();
         diesel::update(table::table.find(super::super::ID))
             .set(table::device_management.eq(false))
             .execute(&mut conn)

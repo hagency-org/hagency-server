@@ -1,0 +1,141 @@
+{
+  "command": {
+    "version": 1,
+    "capability": "hagency.agent_periods.v1",
+    "operation": "agent.period.renew",
+    "commandId": "period_vector_renew",
+    "reserveCommand": {
+      "version": 2,
+      "capability": "hagency.pool_agents.v1",
+      "operation": "agent.reserve",
+      "commandId": "period_vector_reserve",
+      "requestId": "period_vector_request",
+      "requestRevision": 2,
+      "proposedAgentId": "period_vector_agent",
+      "managerMxid": "@manager:example.test",
+      "roomId": "!pool_agent:example.test",
+      "authorityRevision": 1,
+      "decisionActorMxid": "@owner:example.test",
+      "decisionDigest": "a10244cdd6ee0d2bb23d606f6384ef2bd74eb057d9badb5c6a61ac4839af4609",
+      "allocationId": "period_vector_request",
+      "grantReceiptDigest": "069ad0291a6026a81a29d17ab54a8a798c6ab6ee3797f82841c2c4ee04353df7",
+      "enrollmentId": "men_pool_enrollment_1",
+      "executorDeviceId": "DEVICE1",
+      "executorGeneration": 1,
+      "resourceId": "resource_pool_1",
+      "resourceRevision": "c5315a239be32f7d5e62583a7bf855c6faaeeafd507bf4f6349751fe0ee977af",
+      "definition": {
+        "name": "Documentation helper",
+        "capability": "documentation",
+        "description": "Text-only first execution",
+        "toolMode": "none"
+      },
+      "definitionDigest": "58c55f506c67aa484d45918774cd28fa56f9d7cbb4b7204d158a1cb967b0005d",
+      "requestedTokens": 200,
+      "periodKey": "2026-11-01",
+      "issuedAtMs": 1793516400001,
+      "expiresAtMs": 1793606400000,
+      "poolGrant": {
+        "version": 4,
+        "capability": "hagency.project_reservations.v1",
+        "admissionRequestId": "mrq_pool_admission_1",
+        "enrollmentId": "men_pool_enrollment_1",
+        "grantId": "calendar_daily",
+        "grantRevision": 1,
+        "contributionId": "mco_pool_1",
+        "resourceId": "resource_pool_1",
+        "resourceRevision": "c5315a239be32f7d5e62583a7bf855c6faaeeafd507bf4f6349751fe0ee977af",
+        "executorDeviceId": "DEVICE1",
+        "executorGeneration": 1,
+        "ownerMxid": "@owner:example.test",
+        "coordinatorMxid": "@owner:example.test",
+        "delegationRevision": 1,
+        "delegationExpiresAtMs": 1793779200000,
+        "allowSelfApproval": false,
+        "eligibleManagers": [
+          "@manager:example.test"
+        ],
+        "allocatedTokens": 1000000,
+        "periodKey": "2026-11-01",
+        "periodStartMs": 1793516400000,
+        "periodEndMs": 1793606400000,
+        "ledgerRevision": 40,
+        "calendar": {
+          "cadence": "daily",
+          "timeZone": "America/Los_Angeles"
+        }
+      },
+      "renewalMode": "automatic"
+    },
+    "reserveCommandDigest": "42a4af2e846ef67194b6a42a7fea8ae88913be91d98b38639bf11a8cdab14c4e",
+    "agentReservationId": "mar_42a4af2e846ef67194b6a42a7fea8ae88913be91",
+    "assignmentId": "period_vector_assignment",
+    "assignmentGeneration": 1,
+    "currentGrant": {
+      "version": 4,
+      "capability": "hagency.project_reservations.v1",
+      "admissionRequestId": "mrq_pool_admission_1",
+      "enrollmentId": "men_pool_enrollment_1",
+      "grantId": "period_vector_next",
+      "grantRevision": 2,
+      "contributionId": "mco_pool_1",
+      "resourceId": "resource_pool_1",
+      "resourceRevision": "c5315a239be32f7d5e62583a7bf855c6faaeeafd507bf4f6349751fe0ee977af",
+      "executorDeviceId": "DEVICE1",
+      "executorGeneration": 1,
+      "ownerMxid": "@owner:example.test",
+      "coordinatorMxid": "@owner:example.test",
+      "delegationRevision": 1,
+      "delegationExpiresAtMs": 1793779200000,
+      "allowSelfApproval": false,
+      "eligibleManagers": [
+        "@manager:example.test"
+      ],
+      "allocatedTokens": 1000000,
+      "periodKey": "2026-11-02",
+      "periodStartMs": 1793606400000,
+      "periodEndMs": 1793692800000,
+      "ledgerRevision": 42,
+      "calendar": {
+        "cadence": "daily",
+        "timeZone": "America/Los_Angeles"
+      },
+      "succession": {
+        "kind": "renewal",
+        "predecessorGrantId": "calendar_daily",
+        "predecessorReceiptDigest": "069ad0291a6026a81a29d17ab54a8a798c6ab6ee3797f82841c2c4ee04353df7",
+        "carriedChildren": 0,
+        "carriedRetainedTokens": 0
+      }
+    },
+    "currentGrantDigest": "6984b86f5b8f467b638549cd0847638a2be0bbad4f3f3f77d5db0ecf38a0185b",
+    "period": {
+      "key": "2026-11-02",
+      "startMs": 1793606400000,
+      "endMs": 1793692800000
+    },
+    "decisionActorMxid": "@owner:example.test",
+    "renewalMode": "automatic",
+    "issuedAtMs": 1793606400001,
+    "expiresAtMs": 1793692800000
+  },
+  "commandDigest": "46081a4ff11d6b6df574d3212e8ec9bef0012842461ccdaf21bab998760c9f5e",
+  "receipt": {
+    "version": 1,
+    "commandId": "period_vector_renew",
+    "commandDigest": "46081a4ff11d6b6df574d3212e8ec9bef0012842461ccdaf21bab998760c9f5e",
+    "requestId": "period_vector_request",
+    "agentId": "period_vector_agent",
+    "agentReservationId": "mar_42a4af2e846ef67194b6a42a7fea8ae88913be91",
+    "period": {
+      "key": "2026-11-02",
+      "startMs": 1793606400000,
+      "endMs": 1793692800000
+    },
+    "allocatedTokens": 200,
+    "ledgerRevision": 43,
+    "state": "authorized",
+    "reason": null
+  },
+  "receiptDigest": "6c2ae9b21c4e617cc2d8adeb2600750d35ccdb4e27e35bb51d8331228f04bc2a"
+}
