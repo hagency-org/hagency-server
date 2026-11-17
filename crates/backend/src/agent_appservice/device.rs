@@ -123,43 +123,34 @@ mod tests {
                 .unwrap()
         };
         let initial = serde_json::to_value(read().await).unwrap();
-        let mut conn = palpo::data::connect();
-        conn.transaction::<_, anyhow::Error, _>(async |conn| {
-            Ok(diesel::update(table::table.find(super::super::ID))
-                .set(table::device_management.eq(false))
-                .execute(conn)
-                .await?)
-        })
-        .await
-        .unwrap();
+        let mut conn = palpo::data::checkout().await.unwrap();
+        diesel::update(table::table.find(super::super::ID))
+            .set(table::device_management.eq(false))
+            .execute(&mut conn)
+            .await
+            .unwrap();
         let (one, two) = tokio::join!(prepare(&expected), prepare(&expected));
         one.unwrap();
         two.unwrap();
         assert_eq!(serde_json::to_value(read().await).unwrap(), initial);
 
-        conn.transaction::<_, anyhow::Error, _>(async |conn| {
-            Ok(diesel::update(table::table.find(super::super::ID))
-                .set((table::disabled.eq(true), table::device_management.eq(false)))
-                .execute(conn)
-                .await?)
-        })
-        .await
-        .unwrap();
+        diesel::update(table::table.find(super::super::ID))
+            .set((table::disabled.eq(true), table::device_management.eq(false)))
+            .execute(&mut conn)
+            .await
+            .unwrap();
         let disabled = serde_json::to_value(read().await).unwrap();
         assert!(prepare(&expected).await.is_err());
         assert_eq!(serde_json::to_value(read().await).unwrap(), disabled);
 
-        conn.transaction::<_, anyhow::Error, _>(async |conn| {
-            Ok(diesel::update(table::table.find(super::super::ID))
-                .set((
-                    table::disabled.eq(false),
-                    table::as_token.eq("different-fixture-token"),
-                ))
-                .execute(conn)
-                .await?)
-        })
-        .await
-        .unwrap();
+        diesel::update(table::table.find(super::super::ID))
+            .set((
+                table::disabled.eq(false),
+                table::as_token.eq("different-fixture-token"),
+            ))
+            .execute(&mut conn)
+            .await
+            .unwrap();
         let different = serde_json::to_value(read().await).unwrap();
         let error = prepare(&expected).await.unwrap_err().to_string();
         assert!(!error.contains("fixture-token"));

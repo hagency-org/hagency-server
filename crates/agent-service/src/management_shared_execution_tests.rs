@@ -710,6 +710,120 @@ async fn pool_agent_reaches_private_room_and_runtime_without_any_project() {
             .unwrap()
             .work_available
     );
+    // Discover a completed pool call from the global Work page, then read it
+    // through the same bounded history endpoint used for project Agents.
+    use crate::management_shared_work_types::{SharedWorkIndexQuery, SharedWorkQuery};
+    assert!(
+        f.domain
+            .shared_work_index(&f.outsider.p, &f.policy, SharedWorkIndexQuery::default())
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    for reader in [&f.outsider.p, &f.owner.p, &f.coordinator.p] {
+        let page = f
+            .domain
+            .shared_work_index(
+                reader,
+                &f.policy,
+                SharedWorkIndexQuery {
+                    include_pool_agents: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        let entry = &page.items[0];
+        assert_eq!(entry.request_id, request.id);
+        assert_eq!(entry.project_id, None);
+        assert_eq!(entry.project_name, None);
+        assert_eq!(entry.pool_id.as_deref(), Some(request.pool_id.as_str()));
+        assert!(
+            entry
+                .pool_name
+                .as_ref()
+                .is_some_and(|name| !name.is_empty())
+        );
+        let history = f
+            .domain
+            .shared_work_history(
+                reader,
+                &f.policy,
+                &entry.request_id,
+                SharedWorkQuery::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(history.items.len(), 1);
+        assert_eq!(history.items[0].state, "completed");
+        assert_eq!(
+            history.items[0]
+                .usage
+                .as_ref()
+                .unwrap()
+                .known_consumed_tokens,
+            17
+        );
+        assert!(
+            f.domain
+                .shared_work_index(
+                    reader,
+                    &f.policy,
+                    SharedWorkIndexQuery {
+                        include_pool_agents: true,
+                        after: Some(request.id.clone()),
+                        ..Default::default()
+                    }
+                )
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        assert!(
+            f.domain
+                .shared_work_index(
+                    reader,
+                    &f.policy,
+                    SharedWorkIndexQuery {
+                        include_pool_agents: true,
+                        project_id: Some("unrelated_project".into()),
+                        ..Default::default()
+                    }
+                )
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+    }
+    let unrelated = actor(&f.auth, "unrelated_pool_history_reader").await;
+    for reader in [&f.admin.p, &unrelated.p] {
+        assert!(
+            f.domain
+                .shared_work_index(
+                    reader,
+                    &f.policy,
+                    SharedWorkIndexQuery {
+                        include_pool_agents: true,
+                        ..Default::default()
+                    }
+                )
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        assert!(
+            f.domain
+                .shared_work_history(reader, &f.policy, &request.id, SharedWorkQuery::default())
+                .await
+                .is_err()
+        );
+    }
+
     let stopped = attempts::stop(&f, &runtime, 103).await;
     let next = f
         .domain
@@ -1137,7 +1251,10 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
             .shared_work_index(
                 who,
                 &f.policy,
-                crate::management_shared_work_types::SharedWorkIndexQuery::default(),
+                crate::management_shared_work_types::SharedWorkIndexQuery {
+                    include_pool_agents: true,
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
@@ -1153,7 +1270,10 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
             .shared_work_index(
                 &f.admin.p,
                 &f.policy,
-                crate::management_shared_work_types::SharedWorkIndexQuery::default()
+                crate::management_shared_work_types::SharedWorkIndexQuery {
+                    include_pool_agents: true,
+                    ..Default::default()
+                }
             )
             .await
             .unwrap()
@@ -2772,12 +2892,9 @@ async fn encrypted_pool_intake_requires_assigned_executor_before_any_model_work(
     let (f, request, assignment, matrix) = Box::pin(prepared_pool(true)).await;
     matrix.states.lock().unwrap().get_mut(&request.room_id).unwrap().push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
-    let received =
-        sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS count")
-            .get_result::<Count>(&mut db)
-            .await
-            .unwrap()
-            .count;
+    // Encrypted ingress is stamped by the host clock, not PostgreSQL's rounded
+    // millisecond clock, which can be one millisecond ahead of the source clock.
+    let received = crate::api::now_ms();
     let event = crate::transport::RoutedEvent {
         event_id: "$encrypted_pool".into(),
         room_id: request.room_id.clone(),
