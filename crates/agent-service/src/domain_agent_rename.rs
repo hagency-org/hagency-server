@@ -3,6 +3,16 @@
 //! worker sets the profile from a snapshot that a rename would not fence.
 use super::*;
 
+/// Orders every display-name write to Matrix in this process: a writer takes
+/// it, reads the stored name, then PUTs, so no stale snapshot lands last.
+pub(crate) static PROFILE_WRITES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[derive(diesel::QueryableByName)]
+struct StoredName {
+    #[diesel(sql_type = Text)]
+    display_name: String,
+}
+
 /// Shared by create and rename so both enforce one name policy.
 pub(crate) fn agent_name(name: &str) -> Result<()> {
     if name.trim().is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
@@ -30,5 +40,12 @@ impl DomainStore {
             Self::audit(db, p, "agent.rename", id, now).await?;
             Self::agent_db(db, p, id).await
         }).await
+    }
+    /// `agent` with its currently stored name; call under PROFILE_WRITES.
+    pub(crate) async fn with_stored_name(&self, mut agent: Agent) -> Result<Agent> {
+        let mut db = self.db.lock().await?;
+        let stored: StoredName = sql_query("SELECT display_name FROM hagency_agent_v1.agents WHERE id=$1").bind::<Text,_>(&agent.id).get_result(&mut *db).await.map_err(hidden)?;
+        agent.display_name = stored.display_name;
+        Ok(agent)
     }
 }

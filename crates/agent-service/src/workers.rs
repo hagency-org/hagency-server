@@ -801,6 +801,12 @@ pub(crate) fn start_cleanup(
                         let Ok(invited) = g.puppet_invited(room, &scope.puppet_mxid).await else {
                             continue;
                         };
+                        // TODO(R4): workers.rs is over budget; split the binding pass into worker_bindings.rs.
+                        // A rename may have landed since the snapshot: PUT the stored name.
+                        let _profile = crate::domain::PROFILE_WRITES.lock().await;
+                        let Ok(agent) = domain.with_stored_name(agent).await else {
+                            continue;
+                        };
                         if m.provision(&agent, room, !invited).await.is_err() {
                             continue;
                         }

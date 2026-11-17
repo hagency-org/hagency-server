@@ -15,6 +15,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 #[path = "domain_agent_rename.rs"]
 mod agent_rename;
+pub(crate) use agent_rename::PROFILE_WRITES;
 #[path = "domain_discovery.rs"]
 mod discovery;
 #[path = "management.rs"]

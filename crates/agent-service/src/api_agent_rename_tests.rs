@@ -179,3 +179,22 @@ async fn postgres_a_rename_landing_during_the_profile_put_converges_on_the_lates
     assert_eq!(requests.len(), 2);
     assert!(profile_put(&requests[0], "First") && profile_put(&requests[1], "Second"));
 }
+
+/// The binding worker's snapshot predates a rename; it PUTs the stored name.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_worker_snapshot_takes_the_stored_name_under_the_profile_lock() {
+    let f = fixture("worker", true).await;
+    let snapshot = f.domain.agent(&f.owner, &f.agent.id, now_ms()).await.unwrap();
+    let held = crate::domain::PROFILE_WRITES.lock().await;
+    let (matrix, _seen) = fake_matrix(200, None).await;
+    let service = service(&f.store, &f.domain, matrix);
+    let rename = patch(&service, &f.path, &f.owner_token, json!({"displayName":"Renamed"}));
+    let waited = tokio::time::timeout(std::time::Duration::from_millis(200), rename).await;
+    assert!(waited.is_err(), "a rename waits while a worker holds the profile lock");
+    drop(held);
+    let (status, _) = patch(&service, &f.path, &f.owner_token, json!({"displayName":"Renamed"})).await;
+    assert_eq!(status, StatusCode::OK);
+    let _profile = crate::domain::PROFILE_WRITES.lock().await;
+    assert_eq!(f.domain.with_stored_name(snapshot).await.unwrap().display_name, "Renamed");
+}
