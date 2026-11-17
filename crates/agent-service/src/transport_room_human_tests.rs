@@ -74,6 +74,9 @@ async fn postgres_puppet_invite_from_room_human_is_listed_for_owner_only() {
     assert!(f.transport.record_puppet_invite(&invite(HUMAN, &bound), now).await.unwrap());
     let rooms: Vec<String> = f.transport.puppet_invites(&f.p, &f.agent, now).await.unwrap().into_iter().map(|i| i.room_id).collect();
     assert_eq!(rooms, vec![room]);
+    // Replacing the Room human withdraws the old human's invites.
+    record_human(&f, "@successor:example.test").await;
+    assert!(f.transport.puppet_invites(&f.p, &f.agent, now).await.unwrap().is_empty());
 }
 
 #[test]

@@ -56,10 +56,10 @@ impl TransportStore {
                 .bind::<Text, _>(&invite.puppet_mxid).bind::<Text, _>(&invite.inviter_mxid)
                 .get_result::<AgentId>(db).await.optional()?;
             let Some(agent) = agent else { return Ok(false) };
-            sql_query("DELETE FROM hagency_agent_v1.puppet_invites WHERE agent_id=$1 AND received_at_ms<$2")
+            sql_query("DELETE FROM hagency_agent_v1.puppet_invites i WHERE agent_id=$1 AND (received_at_ms<$2 OR EXISTS(SELECT 1 FROM hagency_agent_v1.bindings b WHERE b.agent_id=i.agent_id AND b.room_id=i.room_id AND b.state<>'left'))")
                 .bind::<Text, _>(&agent.id).bind::<BigInt, _>(received_at_ms - PUPPET_INVITE_TTL_MS).execute(db).await?;
-            let open = sql_query("SELECT count(*) AS total FROM hagency_agent_v1.puppet_invites WHERE agent_id=$1")
-                .bind::<Text, _>(&agent.id).get_result::<Count>(db).await?;
+            let open = sql_query("SELECT count(*) AS total FROM hagency_agent_v1.puppet_invites WHERE agent_id=$1 AND room_id<>$2")
+                .bind::<Text, _>(&agent.id).bind::<Text, _>(&invite.room_id).get_result::<Count>(db).await?;
             if open.total >= MAX_PUPPET_INVITES {
                 return Ok(false);
             }
@@ -78,7 +78,7 @@ impl TransportStore {
             Self::authenticate(db, p, now).await?;
             sql_query("SELECT true AS matched FROM hagency_agent_v1.agents WHERE id=$1 AND owner_user_id=$2")
                 .bind::<Text, _>(agent_id).bind::<Text, _>(&p.user_id).get_result::<Flag>(db).await.map_err(unauthorized)?;
-            Ok(sql_query("SELECT i.room_id,i.inviter_mxid,i.received_at_ms FROM hagency_agent_v1.puppet_invites i WHERE i.agent_id=$1 AND i.received_at_ms>=$2 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.bindings b WHERE b.agent_id=i.agent_id AND b.room_id=i.room_id AND b.state<>'left') ORDER BY i.received_at_ms,i.room_id")
+            Ok(sql_query("SELECT i.room_id,i.inviter_mxid,i.received_at_ms FROM hagency_agent_v1.puppet_invites i WHERE i.agent_id=$1 AND i.received_at_ms>=$2 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.bindings b WHERE b.agent_id=i.agent_id AND b.room_id=i.room_id AND b.state<>'left') AND EXISTS(SELECT 1 FROM hagency_agent_v1.bindings h WHERE h.agent_id=i.agent_id AND h.state<>'left' AND h.room_human_mxid=i.inviter_mxid) ORDER BY i.received_at_ms,i.room_id")
                 .bind::<Text, _>(agent_id).bind::<BigInt, _>(now - PUPPET_INVITE_TTL_MS).load(db).await?)
         }).await
     }

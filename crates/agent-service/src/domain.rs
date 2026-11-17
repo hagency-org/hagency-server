@@ -1072,10 +1072,10 @@ impl DomainStore {
                 &binding.id,
             )
             .await?;
-            if let Some(human) = &request.room_human_mxid {
-                if human == &agent.puppet_mxid { return Err(Error::Invalid("room_human_is_agent")); }
-                sql_query("UPDATE hagency_agent_v1.bindings SET room_human_mxid=$2 WHERE id=$1").bind::<Text,_>(&binding.id).bind::<Text,_>(human).execute(db).await?;
-            }
+            // Each bind states the Room human; omitting it revokes the old one.
+            let human = request.room_human_mxid.as_deref().unwrap_or("");
+            if human == agent.puppet_mxid { return Err(Error::Invalid("room_human_is_agent")); }
+            sql_query("UPDATE hagency_agent_v1.bindings SET room_human_mxid=$2 WHERE id=$1").bind::<Text,_>(&binding.id).bind::<Text,_>(human).execute(db).await?;
             Self::audit(db, p, "agent.bind", &binding.id, now).await?;
             Ok(AgentBinding { agent, binding })
         }
