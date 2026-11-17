@@ -1,25 +1,21 @@
-use crate::{
-    api::{App, now_ms},
-    domain::DomainStore,
-    gateway::Gateway,
-    identity::{Identity, Verifier},
-    management_types::*,
-    secret_token,
-    store::{Principal, RegisterDevice, Store},
-};
-use diesel::{
-    sql_query,
-    sql_types::{BigInt, Text},
-};
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
-use salvo::{
-    Service,
-    http::StatusCode,
-    test::{ResponseExt, TestClient},
-};
-use serde_json::{Value, json};
 use std::sync::Arc;
+
+use diesel::sql_query;
+use diesel::sql_types::{BigInt, Text};
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
+use salvo::Service;
+use salvo::http::StatusCode;
+use salvo::test::{ResponseExt, TestClient};
+use serde_json::{Value, json};
 use url::Url;
+
+use crate::api::{App, now_ms};
+use crate::domain::DomainStore;
+use crate::gateway::Gateway;
+use crate::identity::{Identity, Verifier};
+use crate::management_types::*;
+use crate::secret_token;
+use crate::store::{Principal, RegisterDevice, Store};
 #[path = "management_allocation_tests.rs"]
 mod allocations;
 #[path = "management_project_tests.rs"]
@@ -682,6 +678,13 @@ async fn failed_outbox_write_rolls_back_resource_request_and_receipt_together() 
     assert_eq!(outbox(&f, &a.request.id, "pending").await, 1);
 }
 fn service(f: &Fixture, enabled: bool) -> Service {
+    let gateway = Gateway::new(
+        Arc::new(|_| Box::pin(async { Ok(vec![]) })),
+        "@_hagency_service:example.test".into(),
+    );
+    service_with_gateway(f, enabled, gateway)
+}
+fn service_with_gateway(f: &Fixture, enabled: bool, gateway: Gateway) -> Service {
     let issuer = Url::parse("https://example.test/auth/").unwrap();
     let origin = Url::parse("https://example.test/").unwrap();
     let verifier = Verifier::new(
@@ -692,10 +695,6 @@ fn service(f: &Fixture, enabled: bool) -> Service {
         "example.test".into(),
     )
     .unwrap();
-    let gateway = Gateway::new(
-        Arc::new(|_| Box::pin(async { Ok(vec![]) })),
-        "@_hagency_service:example.test".into(),
-    );
     let app = App::new(
         f.auth.clone(),
         verifier,

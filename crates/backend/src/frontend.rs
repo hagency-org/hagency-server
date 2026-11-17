@@ -1,16 +1,17 @@
 //! Same-origin Dioxus SPA hosting, separated from the Hagency API.
-use crate::{
-    config::Config,
-    pasion::{ADMIN_CLIENT_ID, MOUNT},
-};
-use salvo::{
-    http::{Method, header},
-    prelude::*,
-};
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use salvo::http::{Method, header};
+use salvo::prelude::*;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::path::{Component, PathBuf};
 use url::Url;
+
+use crate::config::Config;
+use crate::pasion::{ADMIN_CLIENT_ID, MOUNT};
 
 #[derive(Clone)]
 pub struct Frontend {
@@ -18,12 +19,42 @@ pub struct Frontend {
     archive: PathBuf,
     origin: Url,
     runtime: Value,
+    validations: Arc<tokio::sync::Mutex<HashMap<PathBuf, AssetValidation>>>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct AssetStamp {
+    len: u64,
+    modified: SystemTime,
+    created: Option<SystemTime>,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+}
+impl AssetStamp {
+    fn from_metadata(meta: &std::fs::Metadata) -> Option<Self> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Some(Self {
+            len: meta.len(),
+            modified: meta.modified().ok()?,
+            created: meta.created().ok(),
+            #[cfg(unix)]
+            identity: (meta.dev(), meta.ino(), meta.ctime(), meta.ctime_nsec()),
+        })
+    }
+}
+#[derive(Clone)]
+struct AssetValidation {
+    stamp: Option<AssetStamp>,
+    len: u64,
+    etag: String,
 }
 
 impl Frontend {
     pub fn new(conf: &Config) -> Self {
         let pasion = conf.pasion.as_ref();
         Self {
+            validations: Default::default(),
             archive: conf.data_dir.join("frontend-assets"),
             directory: conf
                 .public_dir
@@ -59,6 +90,42 @@ impl Frontend {
             router = router.push(Router::with_path(path).get(self.clone()).head(self.clone()));
         }
         router
+    }
+    async fn asset_validation(
+        &self,
+        path: &Path,
+    ) -> std::io::Result<(AssetValidation, Option<Vec<u8>>)> {
+        let stamp = AssetStamp::from_metadata(&tokio::fs::metadata(path).await?);
+        if stamp.is_some()
+            && let Some(cached) = self
+                .validations
+                .lock()
+                .await
+                .get(path)
+                .filter(|entry| entry.stamp == stamp)
+                .cloned()
+        {
+            return Ok((cached, None));
+        }
+        let body = tokio::fs::read(path).await?;
+        let etag = format!("W/\"{}\"", hex::encode(Sha256::digest(&body)));
+        let after = AssetStamp::from_metadata(&tokio::fs::metadata(path).await?);
+        let stable = stamp.is_some() && stamp == after;
+        let validation = AssetValidation {
+            stamp: stable.then_some(stamp).flatten(),
+            len: body.len() as u64,
+            etag,
+        };
+        if stable {
+            let mut cache = self.validations.lock().await;
+            // Cache only small validators, never response bodies. Bound retained
+            // archive paths so old immutable bundles cannot grow process memory.
+            if cache.len() >= 256 && !cache.contains_key(path) {
+                cache.clear();
+            }
+            cache.insert(path.to_owned(), validation.clone());
+        }
+        Ok((validation, Some(body)))
     }
 
     /// Keep immutable public bundles across container replacements. Only generated
@@ -289,8 +356,8 @@ impl Handler for Frontend {
             res.status_code(StatusCode::NOT_ACCEPTABLE);
             return;
         }
-        match tokio::fs::read(selected.2).await {
-            Ok(body) => {
+        match self.asset_validation(&selected.2).await {
+            Ok((validation, loaded_body)) => {
                 depot.insert("hagency.frontend.file", true);
                 salvo::http::append_vary_header(res.headers_mut(), "Accept-Encoding");
                 let policy = if asset
@@ -304,7 +371,7 @@ impl Handler for Frontend {
                 };
                 let _ = res.add_header(header::CACHE_CONTROL, policy, true);
                 // Weak validation survives optional outer compression of archived files.
-                let etag = format!("W/\"{}\"", hex::encode(Sha256::digest(&body)));
+                let etag = validation.etag;
                 let _ = res.add_header(header::ETAG, &etag, true);
                 if let Some(encoding) = selected.1 {
                     let _ = res.add_header(header::CONTENT_ENCODING, encoding, true);
@@ -328,10 +395,37 @@ impl Handler for Frontend {
                     res.status_code(StatusCode::NOT_MODIFIED);
                 } else {
                     res.status_code(StatusCode::OK);
-                    let _ = res.add_header(header::CONTENT_LENGTH, body.len().to_string(), true);
-                    if req.method() != Method::HEAD {
-                        let _ = res.write_body(body);
+                    if req.method() == Method::HEAD {
+                        let _ = res.add_header(
+                            header::CONTENT_LENGTH,
+                            validation.len.to_string(),
+                            true,
+                        );
+                        return;
                     }
+                    let body = match loaded_body {
+                        Some(body) => body,
+                        None => match tokio::fs::read(&selected.2).await {
+                            Ok(body) => body,
+                            Err(_) => {
+                                res.status_code(StatusCode::NOT_FOUND);
+                                return;
+                            }
+                        },
+                    };
+                    // A deployment/editor may replace a file while a GET is
+                    // reading it. Never pair the new bytes with an old validator.
+                    let after = tokio::fs::metadata(&selected.2)
+                        .await
+                        .ok()
+                        .and_then(|meta| AssetStamp::from_metadata(&meta));
+                    if validation.stamp != after {
+                        self.validations.lock().await.remove(&selected.2);
+                        let actual = format!("W/\"{}\"", hex::encode(Sha256::digest(&body)));
+                        let _ = res.add_header(header::ETAG, actual, true);
+                    }
+                    let _ = res.add_header(header::CONTENT_LENGTH, body.len().to_string(), true);
+                    let _ = res.write_body(body);
                 }
             }
             Err(_) => {
@@ -343,8 +437,49 @@ impl Handler for Frontend {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use salvo::test::{ResponseExt, TestClient};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn validators_avoid_reloading_stable_files_and_detect_same_size_rewrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("asset.bin");
+        tokio::fs::write(&file, "old").await.unwrap();
+        let modified = tokio::fs::metadata(&file)
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
+        let frontend = Frontend {
+            directory: dir.path().to_owned(),
+            archive: dir.path().join("archive"),
+            origin: Url::parse("http://example.test").unwrap(),
+            runtime: json!({}),
+            validations: Default::default(),
+        };
+        let (initial, bytes) = frontend.asset_validation(&file).await.unwrap();
+        assert_eq!(bytes.unwrap(), b"old");
+        let (cached, bytes) = frontend.asset_validation(&file).await.unwrap();
+        assert!(
+            bytes.is_none(),
+            "warm HEAD/304 validation must not reload bytes"
+        );
+        assert_eq!(cached.etag, initial.etag);
+        tokio::fs::write(&file, "new").await.unwrap();
+        #[cfg(unix)]
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        #[cfg(not(unix))]
+        let _ = modified;
+        let (changed, bytes) = frontend.asset_validation(&file).await.unwrap();
+        assert_eq!(bytes.unwrap(), b"new");
+        assert_ne!(changed.etag, initial.etag);
+    }
 
     #[test]
     fn encoding_exclusions_and_immutable_names_are_strict() {
@@ -384,6 +519,7 @@ mod tests {
             .await
             .unwrap();
         let frontend = Frontend {
+            validations: Default::default(),
             directory: public.clone(),
             archive: archive.clone(),
             origin: Url::parse("http://example.test").unwrap(),

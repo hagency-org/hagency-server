@@ -420,12 +420,66 @@ impl DomainStore {
         }).await
     }
 
-    pub async fn request_pool_agent(
+    pub async fn request_pool_agent_with_gateway(
         &self,
         p: &Principal,
         policy: &ManagementPolicy,
         pool: &str,
         input: RequestPoolAgent,
+        gateway: &crate::gateway::Gateway,
+    ) -> Result<PoolAgentRequest> {
+        enabled_pool(policy)?;
+        key(pool)?;
+        input.validate()?;
+        device(p)?;
+        // Replays are read-only and must survive a later room departure.
+        let payload = digest(pool, &input)?;
+        {
+            let mut db = self.db.lock().await?;
+            let saved = (*db)
+                .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Self::authorize(db, p, crate::api::now_ms()).await?;
+                    if let Some(saved) = replay::<PoolAgentRequest>(
+                        db,
+                        p,
+                        &input.command_id,
+                        "pool_agent.request",
+                        &payload,
+                    )
+                    .await?
+                    {
+                        let now = clock(db).await?;
+                        return Ok(Some(view_pool(db, &saved.id, p, now).await?));
+                    }
+                    Ok(None)
+                })
+                .await?;
+            if let Some(saved) = saved {
+                return Ok(saved);
+            }
+        }
+        let observed = gateway.pool_request(&input.room_id, &p.mxid).await?;
+        self.request_pool_agent_inner(p, policy, pool, input, Some(observed))
+            .await
+    }
+    #[cfg(test)]
+    pub(crate) async fn request_pool_agent(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        pool: &str,
+        input: RequestPoolAgent,
+    ) -> Result<PoolAgentRequest> {
+        self.request_pool_agent_inner(p, policy, pool, input, None)
+            .await
+    }
+    async fn request_pool_agent_inner(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        pool: &str,
+        input: RequestPoolAgent,
+        observed: Option<i64>,
     ) -> Result<PoolAgentRequest> {
         enabled_pool(policy)?;
         key(pool)?;
@@ -438,6 +492,9 @@ impl DomainStore {
             if let Some(saved)=replay::<PoolAgentRequest>(db,p,&input.command_id,"pool_agent.request",&payload).await? {
                 return view_pool(db,&saved.id,p,now).await;
             }
+            if let Some(observed)=observed {crate::domain::fresh(observed,now)?;}
+            let used=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests r JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=r.id WHERE r.room_id=$1 AND r.pool_contribution_id IS NOT NULL) AS matched").bind::<Text,_>(&input.room_id).get_result::<Flag>(db).await?.matched;
+            if used {return Err(Error::Conflict("pool_agent_room_used"));}
             let (owner,c)=contribution(db,pool).await?;
             if c.state!="admitted" {return Err(Error::Conflict("pool_capacity_unavailable"));}
             if c.revision!=input.expected_pool_revision {return Err(Error::Conflict("management_revision_changed"));}

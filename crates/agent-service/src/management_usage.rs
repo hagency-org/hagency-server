@@ -16,10 +16,10 @@ pub(super) async fn known(db: &mut AsyncPgConnection, scope: Scope<'_>) -> Resul
     let (column, id) = match scope {
         Scope::Agent(id) => ("q.id", id),
         Scope::Allocation(id) => ("q.allocation_id", id),
-        Scope::Grant(id) => ("p.grant_id", id),
+        Scope::Grant(id) => ("COALESCE(p.grant_id,q.pool_grant_id)", id),
     };
-    // Pool Agents have no Project allocation. Keep them for Agent scope;
-    // Allocation/Grant scopes still filter through their exact bound columns.
+    // Pool Agents charge their directly bound grant without a Project allocation.
+    // Allocation scope remains restricted to its exact Project allocation.
     // SUM(bigint) is numeric in PostgreSQL. Cap before narrowing; overflow must
     // retain uncertainty rather than wrap a real liability into a lower value.
     // Per-agent MAX avoids adding a later native settlement on top of the same

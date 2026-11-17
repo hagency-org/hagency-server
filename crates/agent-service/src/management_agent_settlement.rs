@@ -1,13 +1,11 @@
 //! Separate immutable post-fence observations; no new resource or work authority.
 use super::*;
-use crate::{
-    management_agent_executor_types::{
-        AGENT_FENCE_CAPABILITY, ManagedAgentFenceCommand, ManagedAgentFenceReceipt,
-    },
-    management_agent_settlement_types::*,
-    management_allocation_types::{ExecutorPollInput, ExecutorRecoverInput, valid_digest},
-    secret_token,
+use crate::management_agent_executor_types::{
+    AGENT_FENCE_CAPABILITY, ManagedAgentFenceCommand, ManagedAgentFenceReceipt,
 };
+use crate::management_agent_settlement_types::*;
+use crate::management_allocation_types::{ExecutorPollInput, ExecutorRecoverInput, valid_digest};
+use crate::secret_token;
 
 #[derive(QueryableByName)]
 struct FenceRow {
@@ -224,6 +222,34 @@ async fn progress(
     let known = known
         .max(prior)
         .max(f.as_ref().map_or(0, |(_, _, r)| r.known_consumed_tokens));
+    if crate::domain::management::ledgers::replaced(
+        db,
+        crate::domain::management::ledgers::Subject::Request(&r.id),
+    )
+    .await?
+    {
+        // Replacement closes only native obligations that existed. An undecided
+        // request without any native intent or evidence remains unobserved.
+        let numeric = base.is_some()
+            || f.is_some()
+            || last.is_some()
+            || known > 0
+            || sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1) AS matched")
+                .bind::<Text,_>(&r.id).get_result::<Flag>(db).await?.matched;
+        let known = numeric.then_some(known);
+        return Ok(AgentSettlementProgress {
+            request_id: r.id.clone(),
+            request_revision: r.revision,
+            fence_receipt_digest: f.map(|(f, ..)| f.receipt_digest),
+            pending_command_id: None,
+            latest_receipt: last,
+            settlement_current: false,
+            can_request: false,
+            blocking_reason: Some("executor_ledger_replaced".into()),
+            known_consumed_tokens: known,
+            retained_tokens_floor: known,
+        });
+    }
     let valid = match &last {
         Some(v) => current(db, &r.id, v, known, server).await?,
         None => false,
@@ -264,7 +290,7 @@ async fn progress(
     Ok(AgentSettlementProgress {
         request_id: r.id.clone(),
         request_revision: r.revision,
-        fence_receipt_digest: f.map(|(f, _, _)| f.receipt_digest),
+        fence_receipt_digest: f.map(|(f, ..)| f.receipt_digest),
         pending_command_id: waiting,
         latest_receipt: last,
         settlement_current: valid,

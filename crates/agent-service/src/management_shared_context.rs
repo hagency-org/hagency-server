@@ -310,7 +310,8 @@ async fn freeze(db: &mut AsyncPgConnection, w: &SharedWorkItem) -> Result<Shared
     })
 }
 impl DomainStore {
-    /// Descriptive preflight, before a native call hold or start. Policy-off reads remain available.
+    /// Descriptive preflight, before a native call hold or start. Policy-off reads remain
+    /// available.
     pub async fn shared_work_input_mode(
         &self,
         p: &Principal,
@@ -545,7 +546,11 @@ impl DomainStore {
             if newly {
                 let busy=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work WHERE runtime_id=$1 AND (state IN('started','unknown') OR (started_at_ms IS NOT NULL AND NOT usage_complete))) AS matched").bind::<Text,_>(&r.id).get_result::<Flag>(db).await?.matched;
                 if busy{return Err(Error::Conflict("shared_work_unsettled"));}
-                let exhausted=sql_query("SELECT coalesce(sum(w.known_consumed_tokens),0)>=$2 AS matched FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1").bind::<Text,_>(&w.assignment_id).bind::<BigInt,_>(original.execution_budget.as_ref().map_or(original.reserve_command.requested_tokens,|b|b.effective_ceiling_tokens)).get_result::<Flag>(db).await?.matched;
+                let known=match Box::pin(super::super::periods::current_known(db,&original.reserve_command.request_id,now)).await? {
+                    Some(known)=>known,
+                    None=>sql_query("SELECT LEAST(coalesce(sum(w.known_consumed_tokens),0),9007199254740992)::bigint AS now FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1").bind::<Text,_>(&w.assignment_id).get_result::<Clock>(db).await?.now,
+                };
+                let exhausted=known>=original.execution_budget.as_ref().map_or(original.reserve_command.requested_tokens,|b|b.effective_ceiling_tokens);
                 if exhausted{return Err(Error::Conflict("shared_budget_exhausted"));}
                 sql_query("INSERT INTO hagency_agent_v1.management_shared_context_starts VALUES($1,$2,$3,$4)").bind::<Text,_>(id).bind::<Text,_>(&saved.context_digest).bind::<Text,_>(&saved.input_digest).bind::<BigInt,_>(input.authority.epoch).execute(db).await?;
                 sql_query("UPDATE hagency_agent_v1.management_shared_work SET state='started',started_at_ms=$2,start_epoch=$3 WHERE id=$1").bind::<Text,_>(id).bind::<BigInt,_>(now).bind::<BigInt,_>(input.authority.epoch).execute(db).await?;

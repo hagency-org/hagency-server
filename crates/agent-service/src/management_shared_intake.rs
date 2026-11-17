@@ -1,7 +1,9 @@
 //! Assignment-scoped evidence intake. There is deliberately no demand consumer.
-use super::*;
-use crate::{management_shared_intake_types::*, transport::RoutedEvent};
 use diesel::sql_types::Array;
+
+use super::*;
+use crate::management_shared_intake_types::*;
+use crate::transport::RoutedEvent;
 const TTL: i64 = 86_400_000;
 #[derive(QueryableByName)]
 struct Control {
@@ -279,7 +281,7 @@ impl DomainStore {
                     .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
                         Self::authorize(db, p, 0).await?;
                         let w = assignment(db, id).await?;
-                        let (start, _, _) = rights(db, p, &w).await?;
+                        let (start, ..) = rights(db, p, &w).await?;
                         if let Some(saved) = replay(db, p, id, &input, &digest).await? {
                             return Ok(Err(saved));
                         }
@@ -443,7 +445,7 @@ impl DomainStore {
                 };
                 let mut guard = self.db.lock().await?;
                 let result=(*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
-    db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;let now=clock(db).await?;if received>now{return Err(Error::Invalid("invalid_shared_intake_event"));}
+    db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;let now=clock(db).await?;if received>now{return Err(Error::Unavailable("shared_intake_clock_changed"));}
     if expired_before_observation && received>now-TTL { return Err(Error::Unavailable("shared_intake_clock_changed")); }
     if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake WHERE event_id=$1 AND event_digest<>$2 AND ($3::text IS NULL OR assignment_id=$3)) AS matched").bind::<Text,_>(&event.event_id).bind::<Text,_>(&digest).bind::<Nullable<Text>,_>(target).get_result::<Flag>(db).await?.matched { return Err(Error::Conflict("shared_event_changed")); }
     let old=sql_query("SELECT * FROM hagency_agent_v1.management_shared_intake WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&id.id).bind::<Text,_>(&event.event_id).get_result::<Intake>(db).await.optional()?;

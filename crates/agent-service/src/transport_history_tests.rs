@@ -1,4 +1,13 @@
 use super::*;
+#[derive(diesel::QueryableByName)]
+struct HistoryCacheVersion {
+    #[diesel(sql_type=Text)]
+    version: String,
+}
+async fn cache_version(f: &Fixture) -> Option<String> {
+    let mut db = f.transport.db.test_connection().await.unwrap();
+    sql_query("SELECT xmin::text AS version FROM hagency_agent_v1.execution_history_snapshots WHERE agent_id=$1").bind::<Text,_>(&f.agent).get_result::<HistoryCacheVersion>(&mut *db).await.optional().unwrap().map(|row|row.version)
+}
 trait HistoryLeaseReference {
     fn reference(self) -> LeaseRef;
 }
@@ -50,6 +59,9 @@ async fn postgres_started_history_pages_are_permanent_owner_scoped_and_body_free
         .unwrap();
     assert_eq!(first.executions.len(), 128);
     assert_eq!(first.snapshot.count, 129);
+    let first_cache = cache_version(&f)
+        .await
+        .expect("snapshot is persisted for subsequent pages");
     assert!(
         first
             .executions
@@ -69,6 +81,11 @@ async fn postgres_started_history_pages_are_permanent_owner_scoped_and_body_free
         .await
         .unwrap();
     assert_eq!(second.snapshot, first.snapshot);
+    assert_eq!(
+        cache_version(&f).await.as_deref(),
+        Some(first_cache.as_str()),
+        "page two must reuse the cached digest rather than refilling a scan of all history"
+    );
     assert_eq!(second.executions.len(), 1);
     assert!(second.next_cursor.is_none());
     assert!(second.executions[0].dispatch_id.as_str() > cursor);
@@ -133,7 +150,16 @@ async fn postgres_started_history_pages_are_permanent_owner_scoped_and_body_free
     // A new start changes the snapshot, while changing lease/state does not.
     f.facts.observed_at_ms = crate::api::now_ms();
     let id = enqueue(&f, "after-page-one").await;
+    assert_eq!(
+        cache_version(&f).await.as_deref(),
+        Some(first_cache.as_str()),
+        "unstarted requests do not change permanent started history"
+    );
     running(&f, &reference, &id, "after-page-execution").await;
+    assert!(
+        cache_version(&f).await.is_none(),
+        "starting an execution invalidates the old snapshot in the same transaction"
+    );
     assert!(matches!(
         f.transport
             .execution_history(
@@ -303,14 +329,15 @@ async fn postgres_history_acquire_and_old_execution_start_are_atomic() {
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_execution_history_real_routes_require_device_and_atomic_witness() {
-    use crate::{api::App, gateway::Gateway, identity::Verifier};
-    use salvo::{
-        Service,
-        http::StatusCode,
-        test::{ResponseExt, TestClient},
-    };
+    use salvo::Service;
+    use salvo::http::StatusCode;
+    use salvo::test::{ResponseExt, TestClient};
     use serde_json::{Value, json};
     use url::Url;
+
+    use crate::api::App;
+    use crate::gateway::Gateway;
+    use crate::identity::Verifier;
     let mut f = fixture().await;
     let issuer = Url::parse("https://example.test/auth/").unwrap();
     let origin = Url::parse("https://example.test/").unwrap();

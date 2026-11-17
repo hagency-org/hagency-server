@@ -1,15 +1,15 @@
-use crate::management_shared_context_types::{RevisionKind, RoutedRevision};
-use crate::worker_runtime::{QueueContext, WorkerRuntime};
-use crate::{
-    Error, Result,
-    api::now_ms,
-    appservice::Inbox,
-    gateway::Gateway,
-    matrix_client::MatrixClient,
-    transport::{RoutedEvent, TransportStore},
-};
-use serde_json::{Value, json};
 use std::collections::BTreeSet;
+
+use serde_json::{Value, json};
+
+use crate::api::now_ms;
+use crate::appservice::Inbox;
+use crate::gateway::Gateway;
+use crate::management_shared_context_types::{RevisionKind, RoutedRevision};
+use crate::matrix_client::MatrixClient;
+use crate::transport::{RoutedEvent, TransportStore};
+use crate::worker_runtime::{QueueContext, WorkerRuntime};
+use crate::{Error, Result};
 
 /// The durable context root fixes reply shape for the lifetime of the intent.
 /// Only newly routed top-level owner DMs store their exact Room ID here; old
@@ -36,7 +36,7 @@ fn pause_notice_content(owner_direct: bool, room: &str, root: &str) -> Value {
     content
 }
 
-fn request_notice_content(
+pub(crate) fn request_notice_content(
     owner_direct: bool,
     room: &str,
     root: &str,
@@ -457,7 +457,12 @@ async fn send_controlled(
         {
             ctx.failure("matrix_send_unavailable");
         }
-        if matches!(outcome, Err(Error::Conflict("matrix_permission_missing"))) {
+        if matches!(
+            outcome,
+            Err(Error::Conflict(
+                "matrix_permission_missing" | "matrix_event_too_large"
+            ))
+        ) {
             t.confirm_reply_permission_denied(&intent.id, worker, now_ms())
                 .await?;
         } else {
@@ -608,16 +613,13 @@ async fn send_request_notices_controlled(
             .worker_token
             .as_deref()
             .ok_or(Error::Unavailable("missing_sender_claim"))?;
-        let mut content = request_notice_content(
-            scope.space_id.is_empty(),
-            &scope.room_id,
-            &notice.thread_root,
-            &notice.event_id,
-            crate::transport::request_notices::body_for(&notice.kind, &notice.device_state),
-        );
-        content["org.hagency.request_notice"] = json!({"version":1,"kind":notice.kind,
-            "requestEventId":notice.event_id,"deviceState":notice.device_state,"deviceName":notice.device_name,
-            "observedAtMs":now_ms()});
+        let content = serde_json::from_str(
+            notice
+                .content
+                .as_deref()
+                .ok_or(Error::Unavailable("request_notice_payload_missing"))?,
+        )
+        .map_err(|_| Error::Unavailable("request_notice_payload_invalid"))?;
         let outcome = m
             .send(
                 &scope.puppet_mxid,

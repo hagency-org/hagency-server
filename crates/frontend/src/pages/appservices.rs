@@ -1300,3 +1300,58 @@ fn TokenField(
         }
     }
 }
+
+#[cfg(test)]
+mod registration_tests {
+    use super::{parse_registration, registration_to_yaml};
+    use serde_json::json;
+
+    #[test]
+    fn bridge_yaml_import_and_export_preserve_credentials_and_namespaces() {
+        let input = r#"
+id: example-bridge
+url: http://bridge:29317
+as_token: "001234"
+hs_token: "false"
+sender_localpart: bridgebot
+namespaces:
+  users:
+    - exclusive: true
+      regex: '@bridge_.*:example\.org'
+  aliases: []
+  rooms: []
+rate_limited: false
+protocols: [irc, telegram]
+receive_ephemeral: true
+io.element.msc4190: true
+"#;
+        let imported = parse_registration(input).unwrap();
+        assert_eq!(imported.as_token, "001234");
+        assert_eq!(imported.hs_token, "false");
+        assert_eq!(imported.rate_limited, Some(false));
+        assert!(imported.device_management);
+        assert_eq!(
+            imported.namespaces["users"],
+            json!([{ "exclusive": true, "regex": r"@bridge_.*:example\.org" }])
+        );
+        let exported = registration_to_yaml(&imported);
+        let reimported = parse_registration(&exported).unwrap();
+        assert_eq!(
+            serde_json::to_value(reimported).unwrap(),
+            serde_json::to_value(imported).unwrap()
+        );
+    }
+
+    #[test]
+    fn minimal_json_registration_keeps_defaults_and_malformed_yaml_is_rejected() {
+        let registration = parse_registration(r#"{"id":"minimal","url":null}"#).unwrap();
+        assert_eq!(registration.id, "minimal");
+        assert_eq!(registration.url, None);
+        assert_eq!(registration.rate_limited, None);
+        assert!(!registration.receive_ephemeral);
+        assert!(!registration.device_management);
+        assert!(!registration.disabled);
+        assert!(parse_registration("namespaces: [unterminated").is_err());
+        assert!(parse_registration("  ").is_err());
+    }
+}

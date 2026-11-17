@@ -1,17 +1,16 @@
-use crate::{assets, command, frontend};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use std::{fs, thread};
+
 use anyhow::{Context, Result, ensure};
 use clap::Args;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::{Path, PathBuf},
-    process::{Child, Command},
-    sync::atomic::{AtomicBool, Ordering},
-    thread,
-    time::Duration,
-};
+
+use crate::{assets, command, frontend};
 
 #[derive(Args)]
 pub struct Options {
@@ -32,14 +31,7 @@ pub fn watch(root: &Path, options: &Options, stopping: &AtomicBool) -> Result<()
         "Create a development configuration with: just init-dev"
     );
     let config = config.canonicalize()?;
-    let mut roots = vec![
-        root.join("crates/backend"),
-        root.join("crates/agent-service"),
-        root.join("Cargo.toml"),
-        root.join("Cargo.lock"),
-        config.clone(),
-        config.parent().unwrap().into(),
-    ];
+    let mut roots = server_source_roots(root, &config);
     let mut patches = toml::Table::new();
     if let Some(source) = &options.palpo_source {
         let source = source.canonicalize()?;
@@ -230,6 +222,18 @@ fn component_files(config: &Path) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
+fn server_source_roots(root: &Path, config: &Path) -> Vec<PathBuf> {
+    vec![
+        root.join("crates/backend"),
+        root.join("crates/agent-service"),
+        root.join("crates/db-runtime"),
+        root.join("Cargo.toml"),
+        root.join("Cargo.lock"),
+        config.to_owned(),
+        config.parent().unwrap().into(),
+    ]
+}
+
 fn snapshot<'a>(roots: impl Iterator<Item = &'a PathBuf>) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
     let mut files = BTreeMap::new();
     for root in roots {
@@ -247,7 +251,7 @@ fn visit(path: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>, explicit: bool) ->
                 .is_some_and(|ext| {
                     matches!(
                         ext,
-                        "rs" | "toml" | "js" | "css" | "html" | "json" | "cedar" | "ftl"
+                        "rs" | "sql" | "toml" | "js" | "css" | "html" | "json" | "cedar" | "ftl"
                     )
                 })
         {
@@ -262,4 +266,32 @@ fn visit(path: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>, explicit: bool) ->
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_watch_observes_database_runtime_and_migration_sql() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config/dev/hagency.toml");
+        let migration = root
+            .path()
+            .join("crates/agent-service/migrations/example/up.sql");
+        let runtime = root.path().join("crates/db-runtime/src/lib.rs");
+        for file in [&config, &migration, &runtime] {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "initial").unwrap();
+        }
+        let roots = server_source_roots(root.path(), &config);
+        let initial = snapshot(roots.iter()).unwrap();
+        fs::write(&migration, "changed migration").unwrap();
+        let sql = snapshot(roots.iter()).unwrap();
+        assert_ne!(initial, sql);
+        assert_ne!(initial.get(&migration), sql.get(&migration));
+        fs::write(&runtime, "changed runtime").unwrap();
+        let changed = snapshot(roots.iter()).unwrap();
+        assert_ne!(sql.get(&runtime), changed.get(&runtime));
+    }
 }

@@ -1,18 +1,17 @@
 //! New user-owned Agent domain. Matrix observations are produced only by the trusted
 //! homeserver gateway; request bodies cannot supply authorization facts.
-use crate::{Error, Result, entity_id, hash, key, store::Principal};
-use diesel::{BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl, SelectableHelper};
+use std::collections::BTreeSet;
+use std::sync::Arc;
 
+use diesel::sql_types::{BigInt, Bool, Nullable, Text};
 use diesel::{
-    sql_query,
-    sql_types::{BigInt, Bool, Nullable, Text},
+    BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl, SelectableHelper, sql_query,
 };
-
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
-
 use serde::{Deserialize, Serialize};
 
-use std::{collections::BTreeSet, sync::Arc};
+use crate::store::Principal;
+use crate::{Error, Result, entity_id, hash, key};
 
 #[path = "domain_discovery.rs"]
 mod discovery;
@@ -128,7 +127,7 @@ fn members(values: &BTreeSet<String>) -> Result<()> {
     Ok(())
 }
 
-fn matrix_id(value: &str, sigil: char) -> Result<()> {
+pub(crate) fn matrix_id(value: &str, sigil: char) -> Result<()> {
     if value.len() > 255
         || !value.starts_with(sigil)
         || value.chars().any(|c| c.is_whitespace() || c.is_control())
@@ -145,6 +144,11 @@ fn matrix_id(value: &str, sigil: char) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Validate a Matrix room ID's format; this does not check existence or authority.
+pub fn validate_room_id(value: &str) -> Result<()> {
+    matrix_id(value, '!')
 }
 
 fn fresh(observed: i64, now: i64) -> Result<()> {
@@ -597,6 +601,7 @@ impl DomainStore {
             if !management.matched { return Err(Error::Conflict("management_schema_incompatible")); }
             db.batch_execute(include_str!("management_pool_limits_validation.sql")).await?;
             db.batch_execute(include_str!("management_agent_periods_recovery.sql")).await?;
+            db.batch_execute(include_str!("audit_recovery_schema.sql")).await?;
             db.batch_execute(include_str!("management_shared_e2ee_schema.sql")).await?;
             db.batch_execute(include_str!("management_shared_native_context_schema.sql")).await?;
             db.batch_execute(include_str!("shared_rooms_schema.sql")).await?;
@@ -2071,7 +2076,7 @@ impl DomainStore {
                         return Err(Error::Unauthorized("agent_not_running"));
                     }
 
-                    let (space, _, _) = Self::binding_policies(db, &b).await?;
+                    let (space, ..) = Self::binding_policies(db, &b).await?;
 
                     membership(p, f, &b.room_id, &space, now)?;
 
@@ -2486,7 +2491,7 @@ impl DomainStore {
                         return Err(Error::Unauthorized("administrator_pause_active"));
                     }
 
-                    let (space, _, _) = Self::binding_policies(db, &b).await?;
+                    let (space, ..) = Self::binding_policies(db, &b).await?;
                     membership(p, f, &b.room_id, &space, now)?;
 
                     if !f.puppet_in_room || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid) {
