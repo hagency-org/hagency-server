@@ -2970,7 +2970,7 @@
       "patch": {
         "operationId": "renameOwnedAgent",
         "summary": "renameOwnedAgent",
-        "description": "Permanent owner only. Sets displayName (1-64 characters, not blank, no control characters) and the puppet Matrix profile name. Retiring or retired Agents return 409; a Matrix profile failure returns 503 after the stored name is saved, so retrying is safe.",
+        "description": "Permanent owner only. Sets displayName (1-64 characters, not blank, no control characters) and the puppet Matrix profile name. Creating (agent_provisioning), retiring or retired Agents return 409. After saving, the server sets the Matrix profile and re-reads the stored name until both agree, so concurrent renames converge on the last saved name; a Matrix failure returns 503 with the name already saved, so retrying is safe.",
         "security": [
           {
             "userBearer": []

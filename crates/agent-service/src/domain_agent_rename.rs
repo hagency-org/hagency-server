@@ -1,5 +1,6 @@
 //! Owner rename of a personal Agent. The Matrix profile is pushed by the API
-//! layer after commit; a `creating` identity picks the name up on provisioning.
+//! layer after commit. A `creating` identity is refused: the provisioning
+//! worker sets the profile from a snapshot that a rename would not fence.
 use super::*;
 
 /// Shared by create and rename so both enforce one name policy.
@@ -20,8 +21,10 @@ impl DomainStore {
             Self::authorize(db, p, now).await?;
             sql_query("SELECT true AS matched FROM hagency_agent_v1.agents WHERE id=$1 AND owner_user_id=$2 FOR UPDATE").bind::<Text,_>(id).bind::<Text,_>(&p.user_id).get_result::<Flag>(db).await.map_err(hidden)?;
             let agent = Self::agent_db(db, p, id).await?;
-            if matches!(agent.state.as_str(), "retiring" | "retired") {
-                return Err(Error::Conflict("agent_retired"));
+            match agent.state.as_str() {
+                "retiring" | "retired" => return Err(Error::Conflict("agent_retired")),
+                "creating" => return Err(Error::Conflict("agent_provisioning")),
+                _ => {}
             }
             sql_query("UPDATE hagency_agent_v1.agents SET display_name=$1 WHERE id=$2").bind::<Text,_>(name).bind::<Text,_>(id).execute(db).await?;
             Self::audit(db, p, "agent.rename", id, now).await?;

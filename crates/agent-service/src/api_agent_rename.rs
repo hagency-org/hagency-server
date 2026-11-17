@@ -7,6 +7,9 @@ use salvo::prelude::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+/// Bounds the re-check loop when renames keep landing concurrently.
+const PROFILE_SYNC_ATTEMPTS: usize = 3;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Rename {
@@ -25,12 +28,30 @@ pub(crate) async fn call(
         .await
         .map_err(|_| Error::Invalid("invalid_arguments"))?;
     let agent = domain.rename_agent(p, id, &body.display_name, now_ms()).await?;
-    // A `creating` puppet is not registered yet; provision_identity sets the
-    // stored name. No client means no appservice, so there is no profile to set.
-    if let Some(m) = matrix.filter(|_| agent.state != "creating") {
+    match matrix {
+        Some(m) => sync_profile(domain, m, p, agent).await.map(|agent| json!({"agent":agent})),
+        // No client means no appservice, so there is no Matrix profile to set.
+        None => Ok(json!({"agent":agent})),
+    }
+}
+
+/// Renames race each other after commit, so every request re-reads the stored
+/// name after its PUT and repeats until Matrix holds the latest one.
+async fn sync_profile(
+    domain: &DomainStore,
+    m: &MatrixClient,
+    p: &Principal,
+    mut agent: crate::domain::Agent,
+) -> Result<crate::domain::Agent> {
+    for _ in 0..PROFILE_SYNC_ATTEMPTS {
         m.managed_set_display_name(&agent)
             .await
             .map_err(|_| Error::Unavailable("matrix_display_name_unavailable"))?;
+        let stored = domain.agent(p, &agent.id, now_ms()).await?;
+        if stored.display_name == agent.display_name {
+            return Ok(stored);
+        }
+        agent = stored;
     }
-    Ok(json!({"agent":agent}))
+    Err(Error::Unavailable("matrix_display_name_contended"))
 }
