@@ -90,3 +90,24 @@ palpo-core-macros = { path = ".run/palpo-8c1759f/crates/core-macros" }
 palpo-data = { path = ".run/palpo-8c1759f/crates/data" }
 palpo-identifiers-validation = { path = ".run/palpo-8c1759f/crates/identifiers-validation" }
 palpo-server-macros = { path = ".run/palpo-8c1759f/crates/server-macros" }
+
+# Demo build: Pasion feat/native-auth-api (native JSON auth API, lowercased
+# usernames, consent hoop) instead of meldry-com/pasion main. .run/pasion-native-auth
+# is a local symlink to the Pasion worktree (gitignored, like palpo above).
+# TODO(deferred): replace with a git dependency on the pushed branch, or drop
+# once feat/native-auth-api lands on pasion main.
+[patch."https://github.com/meldry-com/pasion.git"]
+pasion-backend = { path = ".run/pasion-native-auth/crates/backend" }
+pasion-config = { path = ".run/pasion-native-auth/crates/config" }
+pasion-data = { path = ".run/pasion-native-auth/crates/data" }
+pasion-i18n = { path = ".run/pasion-native-auth/crates/i18n" }
+pasion-iana = { path = ".run/pasion-native-auth/crates/iana" }
+pasion-jose = { path = ".run/pasion-native-auth/crates/jose" }
+pasion-keystore = { path = ".run/pasion-native-auth/crates/keystore" }
+pasion-matrix = { path = ".run/pasion-native-auth/crates/matrix" }
+pasion-matrix-palpo = { path = ".run/pasion-native-auth/crates/matrix-palpo" }
+pasion-messaging = { path = ".run/pasion-native-auth/crates/messaging" }
+pasion-policy = { path = ".run/pasion-native-auth/crates/policy" }
+pasion-tasks = { path = ".run/pasion-native-auth/crates/tasks" }
+pasion-templates = { path = ".run/pasion-native-auth/crates/templates" }
+oauth2-types = { path = ".run/pasion-native-auth/crates/oauth2-types" }

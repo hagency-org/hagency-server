@@ -6216,7 +6216,6 @@ dependencies = [
 [[package]]
 name = "oauth2-types"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "base64ct",
  "chrono",
@@ -7194,7 +7193,6 @@ dependencies = [
 [[package]]
 name = "pasion-backend"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "anyhow",
  "argon2",
@@ -7303,7 +7301,6 @@ dependencies = [
 [[package]]
 name = "pasion-config"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "anyhow",
  "camino",
@@ -7335,7 +7332,6 @@ dependencies = [
 [[package]]
 name = "pasion-data"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7376,7 +7372,6 @@ dependencies = [
 [[package]]
 name = "pasion-i18n"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "camino",
  "fluent-bundle",
@@ -7396,7 +7391,6 @@ dependencies = [
 [[package]]
 name = "pasion-iana"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "schemars 1.2.2",
  "serde",
@@ -7405,7 +7399,6 @@ dependencies = [
 [[package]]
 name = "pasion-jose"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "base64ct",
  "chrono",
@@ -7435,7 +7428,6 @@ dependencies = [
 [[package]]
 name = "pasion-keystore"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "aead",
  "base64ct",
@@ -7465,7 +7457,6 @@ dependencies = [
 [[package]]
 name = "pasion-matrix"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7476,7 +7467,6 @@ dependencies = [
 [[package]]
 name = "pasion-matrix-palpo"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7493,7 +7483,6 @@ dependencies = [
 [[package]]
 name = "pasion-messaging"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -7516,7 +7505,6 @@ dependencies = [
 [[package]]
 name = "pasion-policy"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7535,7 +7523,6 @@ dependencies = [
 [[package]]
 name = "pasion-tasks"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7568,7 +7555,6 @@ dependencies = [
 [[package]]
 name = "pasion-templates"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?branch=main#03cd9f94c0c0593c3979de68a0b11ee443f23933"
 dependencies = [
  "anyhow",
  "arc-swap",
