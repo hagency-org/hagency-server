@@ -13,7 +13,7 @@ publish = false
 
 [workspace.dependencies]
 # Git branches select upstream sources; Cargo.lock pins exact embedded revisions.
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 anyhow = "1"
 base64 = "0.23"
 camino = "1"
@@ -42,7 +42,9 @@ pasion-config = { git = "https://github.com/meldry-com/pasion.git", branch = "ma
 pasion-data = { git = "https://github.com/meldry-com/pasion.git", branch = "main" }
 percent-encoding = "2.3"
 rand = "0.10"
-rand_chacha = "0.3"
+rand_chacha = { version = "0.9", features = ["os_rng"] }
+# Pasion still exposes rand_core 0.6 in its public RNG bounds.
+rand_core_06 = { package = "rand_core", version = "0.6.4" }
 regex = "1"
 regex-lite = "0.1.9"
 reqwest = { version = "0.13", features = ["json"] }
@@ -51,7 +53,7 @@ rustls = { version = "0.23", features = ["aws_lc_rs"] }
 ryu-js = "1.0.3"
 salvo = { version = "1.2.1", features = ["serve-static", "test", "affix-state", "size-limiter"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde-saphyr = "0.0.27"
+serde-saphyr = "2.0.0"
 serde_json = "1.0.149"
 sha2 = "0.11"
 signal-hook = "0.4"

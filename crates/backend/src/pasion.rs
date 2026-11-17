@@ -3,7 +3,8 @@ use crate::config::Config;
 use anyhow::Context;
 use figment::{Figment, providers::Serialized};
 use pasion_config::{AppConfig, ConfigurationSection, HttpResource};
-use rand_chacha::rand_core::SeedableRng;
+mod rng;
+use rng::PasionRng;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -140,7 +141,7 @@ pub async fn prepare(host: &mut Config) -> anyhow::Result<Option<Figment>> {
     std::fs::create_dir_all(&host.data_dir)?;
     let path = host.data_dir.join("pasion-secrets.json");
     if !path.exists() {
-        let mut rng = rand_chacha::ChaChaRng::from_entropy();
+        let mut rng = PasionRng::from_os_rng()?;
         let generated = pasion_config::RootConfig::generate(&mut rng).await?;
         let generated = serde_json::to_value(generated)?;
         write_private_once(
@@ -283,7 +284,7 @@ pub async fn bootstrap_admin(
         password.len() >= 12 && manager.is_password_complex_enough(&password)?,
         "bootstrap password does not meet Pasion password policy"
     );
-    let mut rng = rand_chacha::ChaChaRng::from_entropy();
+    let mut rng = PasionRng::from_os_rng()?;
     let (version, hash) = manager.hash(&mut rng, password).await?;
     let pool = pasion_backend::util::diesel_pool_from_config(&config.database).await?;
     let mut repo = PgRepositoryFactory::new(pool).create().await?;
