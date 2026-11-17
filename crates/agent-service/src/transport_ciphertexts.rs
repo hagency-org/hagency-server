@@ -1,8 +1,9 @@
 //! Original AS ciphertext custody. Reading/decrypting never admits model work.
-use super::*;
 use diesel::sql_types::Jsonb;
 use diesel::{BoolExpressionMethods, ExpressionMethods, NullableExpressionMethods, QueryDsl};
 use serde_json::{Value, json};
+
+use super::*;
 pub(crate) const CAPABILITY: &str = "agent-encrypted-inbox-v1";
 const MAX_EVENT: usize = 131072;
 #[derive(Serialize, diesel::Queryable, diesel::QueryableByName)]
@@ -153,7 +154,8 @@ impl TransportStore {
    // Original full raw event must still be in a durable verified AS transaction.
    // This same lock serializes against routing compaction and AS acceptance.
    let source=sql_query("SELECT t.received_at_ms FROM hagency_agent_v1.inbound_transactions t JOIN hagency_agent_v1.routing_jobs j ON j.transaction_id=t.id WHERE t.id=$1 AND j.state='pending' AND t.body->'events' @> $2::jsonb").bind::<Text,_>(transaction).bind::<Jsonb,_>(json!([raw])).get_result::<Source>(db).await.optional()?.ok_or(Error::Unauthorized("original_ciphertext_required"))?;
-   if source.received_at_ms<0||source.received_at_ms>now{return Err(invalid());}
+   if source.received_at_ms<0{return Err(invalid());}
+   if source.received_at_ms>now{return Err(Error::Unavailable("event_received_clock_changed"));}
    let puppet=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agents WHERE puppet_mxid=$1) AS matched").bind::<Text,_>(event["sender"].as_str().ok_or_else(invalid)?).get_result::<Flag>(db).await?;
    if puppet.matched||event["sender"].as_str().is_some_and(|s|s.starts_with("@_hagency_")){return Ok(());}
    #[derive(diesel::Queryable, diesel::QueryableByName)]struct Digest{#[diesel(sql_type=Text)] source_digest:String}

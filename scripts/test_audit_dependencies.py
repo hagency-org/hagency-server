@@ -12,7 +12,8 @@ spec.loader.exec_module(audit)
 class DependencyPolicyTests(unittest.TestCase):
     def setUp(self):
         self.report = {"vulnerabilities": {"count": 1, "list": [{"advisory": {"id": "RUSTSEC-2026-0387"}, "package": {"name": "crypto-bigint", "version": "0.5.5"}}]}, "warnings": {}}
-        self.policy = {"version": 1, "reviewed_on": "2026-10-29", "expires_on": "2026-11-28", "reviewed_sources": {"pasion-jose": "git+https://example.test/pasion#original"}, "findings": [{"advisory": "RUSTSEC-2026-0387", "kind": "vulnerability", "package": "crypto-bigint", "version": "0.5.5", "reason": "Incompatible upstream migration; still unresolved.", "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0387.html", "status": "unresolved_upstream"}]}
+        self.policy = {"version": 2, "reviewed_on": "2026-10-29", "expires_on": "2026-11-28", "reviewed_sources": {"pasion-jose": "git+https://example.test/pasion#original"}, "findings": [{"advisory": "RUSTSEC-2026-0387", "kind": "vulnerability", "package": "crypto-bigint", "version": "0.5.5", "reason": "Incompatible upstream migration; still unresolved.", "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0387.html", "status": "unresolved_upstream"}]}
+        self.policy["findings"][0]["advisory_fingerprint"] = next(iter(audit.findings(self.report).values()))
         self.lock = '[[package]]\nname = "pasion-jose"\nversion = "1.8.0"\nsource = "git+https://example.test/pasion#original"\n'
 
     def check(self, report=None, policy=None, lock=None, today=date(2026, 10, 29)):
@@ -35,6 +36,22 @@ class DependencyPolicyTests(unittest.TestCase):
         report = copy.deepcopy(self.report)
         report["vulnerabilities"]["list"][0]["package"]["version"] = "0.5.6"
         self.assertTrue(self.check(report=report))
+
+    def test_existing_advisory_new_patch_range_requires_review(self):
+        report = copy.deepcopy(self.report)
+        report["vulnerabilities"]["list"][0]["versions"] = {"patched": [">=0.7.6"], "unaffected": []}
+        self.assertTrue(any("ranges changed" in error for error in self.check(report=report)))
+
+    def test_existing_advisory_impact_change_requires_review(self):
+        report = copy.deepcopy(self.report)
+        report["vulnerabilities"]["list"][0]["advisory"]["description"] = "A broader vulnerable operation was discovered"
+        self.assertTrue(any("details" in error for error in self.check(report=report)))
+
+    def test_unreviewed_details_cannot_be_omitted(self):
+        policy = copy.deepcopy(self.policy)
+        del policy["findings"][0]["advisory_fingerprint"]
+        with self.assertRaises(ValueError):
+            self.check(policy=policy)
 
     def test_fixed_finding_requires_removing_stale_disposition(self):
         self.assertTrue(self.check(report={"vulnerabilities": {"count": 0, "list": []}, "warnings": {}}))

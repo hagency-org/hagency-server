@@ -2,25 +2,20 @@
 
 The 2026-10-30 hardening updates Rustls, WebPKI, root certificates, ctutils,
 pulldown-cmark, webpage, Tokio and the embedded Pasion/OpenDAL graph. Palpo and
-Pasion remain on their upstream `main` branches with exact commits in Cargo.lock.
+Pasion use reviewed upstream commits explicitly pinned in the manifest and Cargo.lock.
 The host OpenTelemetry version follows the embedded Pasion version.
 
-The original lockfile had 14 vulnerability records. The updated graph has two
-unresolved vulnerability records and five informational warnings. A successful
-dependency-policy check **does not mean that cargo-audit is clean**.
+The 2026-11-18 integration pins Palpo at `36d5ab61` and Pasion at
+`22d3109c` to use Salvo 1.2.1 throughout the embedded server. Pasion includes
+the upstream JOSE and keystore migration. Cargo.lock now contains rsa 0.10.0
+and crypto-bigint 0.7.11, and the previous RSA and crypto-bigint advisories
+no longer appear in the full lockfile audit. The new Pasion dependency graph
+also removes async-std, unsafe-libyaml and smartstring.
 
-## Unresolved upstream cryptography
-
-| Advisory | Locked dependency | Disposition |
-| --- | --- | --- |
-| [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html) | crypto-bigint 0.5.5 through Pasion JOSE and elliptic-curve 0.13 | The fixed 0.7.6 API is incompatible with this curve generation. A coordinated cryptography migration is required. Secret-dependent arithmetic remains an open timing risk; this review does not establish non-exploitability. |
-| [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html) | rsa 0.9.10 through Pasion JOSE/keystore | RustSec has no patched release. Reviewed JOSE code signs/verifies JWTs and does not call RSA padding decryption. The advisory remains unresolved, including its broader warning about observable private-key timing. |
-
-These are retained existing risks, not newly fixed vulnerabilities. They must
-remain visible during deployment risk assessment. No persistent signing keys
-are deleted or silently rotated to make an audit pass. Updating crypto-bigint
-as an additional direct dependency would not replace the vulnerable transitive
-version and is not a fix.
+The audit reports zero vulnerability records and four maintenance warnings:
+paste, pin-utils, chrono and chrono-tz. The existing dispositions and their
+2026-11-29 expiration still apply. The original review started with 14
+vulnerability records.
 
 ## Automated review policy
 
@@ -29,6 +24,10 @@ database, preserves its complete JSON result, and compares every vulnerability
 and informational warning with `security/dependency-policy.json`. It rejects:
 
 - New advisory IDs, finding kinds, packages or affected versions.
+- Changed advisory content, affected operations or patched/unaffected ranges,
+  even when the advisory ID and locked version are unchanged. Version 2 policy
+  records pin a SHA-256 of the reviewed advisory, version ranges and affected
+  metadata; updating that fingerprint requires re-review, not automatic renewal.
 - Changes to the reviewed Pasion JOSE source commit.
 - Expired, future-dated, duplicated or longer-than-30-day review records.
 - Stale dispositions after a vulnerable dependency is fixed or removed.
@@ -56,13 +55,18 @@ The `Dependency risk policy` workflow runs on PRs, main pushes, weekly and manua
 dispatch. Cargo Dependabot updates run weekly. Local offline reproduction may use
 `--no-fetch` only after the advisory database has already been fetched.
 
-Informational warnings currently cover async-std, paste, smartstring,
-unsafe-libyaml and legacy rand. These remain replacement/review work; they are
-not included in the two vulnerability-record count.
-
 On 2026-11-04, upstream main advanced to `37d6e30`. Pasion's JOSE,
 keystore, registration handler and browser source trees remain identical to
 `83e52e5`. The Server graph updates the process/Tokio OpenTelemetry
 instrumentation to 0.3.0 and drops its unused OpenTelemetry 0.32 generation.
 The reviewed source pin follows the new revision; existing risk dispositions
 and their expiration remain unchanged.
+
+On 2026-11-16, the repair review moved the Pasion source pin to
+`716abc5e684be44e7b2883c38f328fdae500f769`. Its JOSE and keystore source trees
+are identical to the prior `37d6e30` review. That graph still had two
+vulnerability records and five informational warnings; legacy rand 0.7.3 has
+left the graph and its stale disposition was removed. Fresh RustSec database
+commit `02e2517f457a359fc6d3440ea4560c8ea188fee8` confirms the RSA patched range.
+The review date and advisory fingerprints were updated explicitly; the
+expiration remains **2026-11-29**. No vulnerable package was relabeled fixed.
