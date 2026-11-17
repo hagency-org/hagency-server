@@ -2966,6 +2966,118 @@
             "method == salvo::http::Method::DELETE"
           ]
         }
+      },
+      "patch": {
+        "operationId": "renameOwnedAgent",
+        "summary": "renameOwnedAgent",
+        "description": "Permanent owner only. Sets displayName (1-64 characters, not blank, no control characters) and the puppet Matrix profile name. Retiring or retired Agents return 409; a Matrix profile failure returns 503 after the stored name is saved, so retrying is safe.",
+        "security": [
+          {
+            "userBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Percent-encode this single path segment."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agent": {
+                      "$ref": "#/components/schemas/Agent"
+                    }
+                  },
+                  "required": [
+                    "agent"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api.rs",
+          "anchors": [
+            "parts.len() == 6 && parts[4] == \"agents\"",
+            "method == salvo::http::Method::PATCH"
+          ]
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameAgent"
+              }
+            }
+          }
+        }
       }
     },
     "/hagency/api/v1/agents/{agentId}/bindings": {
@@ -10590,6 +10702,33 @@
           "reply"
         ],
         "additionalProperties": false
+      },
+      "RenameAgent": {
+        "type": "object",
+        "properties": {
+          "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "displayName"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/api_agent_rename.rs",
+          "name": "Rename",
+          "serializedFields": [
+            "display_name"
+          ],
+          "strictInput": true
+        },
+        "examples": [
+          {
+            "displayName": "Release helper"
+          }
+        ]
       }
     },
     "securitySchemes": {

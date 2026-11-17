@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use std::{collections::BTreeSet, sync::Arc};
 
+#[path = "domain_agent_rename.rs"]
+mod agent_rename;
 #[path = "domain_discovery.rs"]
 mod discovery;
 #[path = "management.rs"]
@@ -930,12 +932,7 @@ impl DomainStore {
         now: i64,
     ) -> Result<Agent> {
         key(&request.idempotency_key)?;
-        if request.display_name.trim().is_empty()
-            || request.display_name.chars().count() > 64
-            || request.display_name.chars().any(char::is_control)
-        {
-            return Err(Error::Invalid("invalid_agent_name"));
-        }
+        agent_rename::agent_name(&request.display_name)?;
         let digest = hash(&encode(&request)?);
         let mut db = self.db.lock().await?;
         (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {

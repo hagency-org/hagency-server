@@ -859,6 +859,9 @@ impl App {
                         json!({"agent":domain.retire_agent(&principal,parts[5],now_ms()).await?}),
                     );
                 }
+                if method == salvo::http::Method::PATCH {
+                    return crate::api_agent_rename::call(domain, self.matrix_client.as_ref(), &principal, parts[5], req).await;
+                }
             }
             if parts.len() == 7 && parts[4] == "agents" {
                 // TODO(R4): api.rs is over budget; split agent sub-routes into api_agents.rs.
