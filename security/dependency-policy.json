@@ -68,6 +68,24 @@
       "status": "reviewed_warning",
       "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
       "reference": "https://rustsec.org/advisories/RUSTSEC-2024-0449.html"
+    },
+    {
+      "advisory": "RUSTSEC-2026-0543",
+      "kind": "unmaintained",
+      "package": "chrono",
+      "version": "0.4.45",
+      "status": "reviewed_warning",
+      "reason": "Reviewed 2026-11-17: chrono is unmaintained across all versions, with no patched release. The server uses it directly for timestamps and Diesel mappings; Palpo and Pasion also depend on it. Migrating to jiff/time requires coordinated upstream and database API changes. Retain this maintenance warning visibly and re-review before the existing policy expiry.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0543.html"
+    },
+    {
+      "advisory": "RUSTSEC-2026-0555",
+      "kind": "unmaintained",
+      "package": "chrono-tz",
+      "version": "0.10.4",
+      "status": "reviewed_warning",
+      "reason": "Reviewed 2026-11-17: chrono-tz is unmaintained across all versions, with no patched release. The Agent service uses its timezone and DST gap APIs to calculate recurring quota periods. Replacement requires a coordinated chrono/timezone API migration. Retain this maintenance warning visibly and re-review before the existing policy expiry.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0555.html"
     }
   ],
   "timezone": "Asia/Shanghai"
