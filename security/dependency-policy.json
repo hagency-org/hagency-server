@@ -84,7 +84,7 @@
       "package": "chrono-tz",
       "version": "0.10.4",
       "status": "reviewed_warning",
-      "reason": "Reviewed 2026-11-17: chrono-tz is unmaintained across all versions, with no patched release. The locked Pasion template path uses it for timezone-aware date formatting. Replacement requires the upstream chrono/timezone migration. Retain this maintenance warning visibly and re-review before the existing policy expiry.",
+      "reason": "Reviewed 2026-11-17: chrono-tz is unmaintained across all versions, with no patched release. The Agent service uses its timezone and DST gap APIs to calculate recurring quota periods. Replacement requires a coordinated chrono/timezone API migration. Retain this maintenance warning visibly and re-review before the existing policy expiry.",
       "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0555.html"
     }
   ],
