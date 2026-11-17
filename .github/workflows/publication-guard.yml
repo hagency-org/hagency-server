@@ -1,0 +1,25 @@
+name: Publication ref guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/scripts/check-publish-ref.py'
+      - '.github/scripts/test_check_publish_ref.py'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/publication-guard.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  publication-guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Publication ref guard mock regressions
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .github/scripts -p test_check_publish_ref.py -v
