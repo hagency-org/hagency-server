@@ -11,3 +11,10 @@ server = "localhost:8088"
 [storage]
 backend = "fs"
 root = "../../data/media"
+
+# Public webpage cards in Desktop. The outbound URL guard still blocks private
+# network addresses and unsafe schemes, and the preview client rejects redirects.
+[url_preview]
+domain_explicit_allowlist = ["*"]
+max_spider_size = 256000
+max_image_size = 10000000

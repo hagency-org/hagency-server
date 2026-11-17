@@ -212,6 +212,22 @@ struct Empty {}
 #[serde(deny_unknown_fields)]
 struct ModelInput {
     profile: ConfigurationModelProfile,
+    #[serde(
+        default,
+        rename = "expectedProfileDigest",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_profile_digest"
+    )]
+    expected_profile_digest: Option<String>,
+}
+
+fn present_profile_digest<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Omission preserves older requests. An explicitly null digest must not
+    // silently turn a reviewed compare-and-set into an unconditional update.
+    String::deserialize(deserializer).map(Some)
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -364,6 +380,14 @@ pub fn validate_input(op: &ConfigurationOperation, value: Value) -> Result<Value
         ConfigurationOperation::SaveAgentModel => {
             let v: ModelInput = decode(value)?;
             profile(&v.profile, false)?;
+            if let Some(digest) = &v.expected_profile_digest
+                && (digest.len() != 64
+                    || !digest
+                        .bytes()
+                        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
+            {
+                return Err(invalid());
+            }
             encode(v)
         }
         ConfigurationOperation::SaveAgentPolicy => {
