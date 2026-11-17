@@ -1,0 +1,61 @@
+{
+  "command": {
+    "version": 2,
+    "capability": "hagency.pool_agents.v1",
+    "operation": "agent.reserve",
+    "commandId": "mae_fixture",
+    "requestId": "mar_fixture",
+    "requestRevision": 2,
+    "proposedAgentId": "agt_fixture",
+    "managerMxid": "@manager:example.test",
+    "roomId": "!pool_agent:example.test",
+    "authorityRevision": 1,
+    "decisionActorMxid": "@owner:example.test",
+    "decisionDigest": "a10244cdd6ee0d2bb23d606f6384ef2bd74eb057d9badb5c6a61ac4839af4609",
+    "allocationId": "mar_fixture",
+    "grantReceiptDigest": "b56bdb069f791c1710ff32ce0bf4d132260a1c18981169522eed119855a9a18a",
+    "enrollmentId": "men_fixture",
+    "executorDeviceId": "dev_fixture",
+    "executorGeneration": 1,
+    "resourceId": "res_fixture",
+    "resourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "definition": {
+      "name": "Documentation helper",
+      "capability": "documentation",
+      "description": "Text-only first execution",
+      "toolMode": "none"
+    },
+    "definitionDigest": "58c55f506c67aa484d45918774cd28fa56f9d7cbb4b7204d158a1cb967b0005d",
+    "requestedTokens": 1000,
+    "periodKey": "2026-10",
+    "issuedAtMs": 1792108800000,
+    "expiresAtMs": 1792195200000,
+    "poolGrant": {
+      "version": 2,
+      "capability": "hagency.project_reservations.v1",
+      "enrollmentId": "men_fixture",
+      "grantId": "mgr_fixture",
+      "grantRevision": 1,
+      "contributionId": "con_fixture",
+      "resourceId": "res_fixture",
+      "resourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "executorDeviceId": "dev_fixture",
+      "executorGeneration": 1,
+      "ownerMxid": "@owner:example.test",
+      "coordinatorMxid": "@owner:example.test",
+      "delegationRevision": 1,
+      "delegationExpiresAtMs": 1793491200000,
+      "allowSelfApproval": false,
+      "eligibleManagers": [
+        "@manager:example.test"
+      ],
+      "allocatedTokens": 1000000,
+      "periodKey": "2026-10",
+      "periodStartMs": 1790812800000,
+      "periodEndMs": 1793491200000,
+      "ledgerRevision": 10,
+      "admissionRequestId": "req_admission_fixture"
+    }
+  },
+  "commandDigest": "3bf89caa13ce6ddc9b95c099db57a6b9b7d11888ce4fa4a1ae032f0f15fbf8d6"
+}

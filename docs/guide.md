@@ -413,6 +413,63 @@ Networking/issuer, Matrix connections, templates, storage and key ownership are
 still derived by Hagency; those sections cannot override the host wiring. Native
 database pool and TLS settings are retained. All three databases remain separate.
 
+Production email delivery must be configured in **Pasion's** `pasion.toml`.
+Palpo's legacy `[registration_email]` settings do not configure the browser
+signup service. With no email provider, Pasion defaults to a blackhole transport:
+it discards verification messages even though registration advances to the code
+entry page. Making contact information optional only skips verification when the
+user leaves the email field empty.
+
+For [AgentMail SMTP](https://www.agentmail.to/docs/imap-smtp), use the existing
+AgentMail inbox address as the sender and SMTP username, and its API key as the
+SMTP password:
+
+```toml
+[email]
+from = "Hagency <your-inbox@agentmail.to>"
+reply_to = "your-inbox@agentmail.to"
+
+[email.provider]
+type = "smtp"
+mode = "tls"
+hostname = "smtp.agentmail.to"
+port = 465
+username = "your-inbox@agentmail.to"
+password = "YOUR_AGENTMAIL_API_KEY"
+```
+
+Keep the deployed configuration readable only by the service account (mode
+`0600`), and never commit the real API key. Restart Hagency after updating the
+production configuration. Verify a fresh registration by receiving its email,
+submitting the received code, finishing registration and signing in; an SMTP
+authentication check alone does not establish delivery. If an earlier
+registration is waiting for a code, use **Resend code** after the update.
+
+AgentMail can temporarily reject a send with SMTP `450` (rate limit). A queued
+notification is not proof of delivery: inspect Pasion's delivery status and the
+provider response. Use one stable test recipient instead of creating a new
+recipient for every probe, and check the account's sending limits before testing
+external delivery. Do not repeatedly resend while the provider is throttling.
+Verified AgentMail accounts can also enter a sending ramp after prolonged
+inactivity. The organization API exposes recipient limits; a send through the
+HTTP API reports the specific limit, its reset time and `Retry-After`. For
+example, a three-recipient first-hour cap can be exhausted by three disposable
+test inboxes even when the daily message allowance has plenty of room. Reuse a
+designated test recipient, and do not treat internal-inbox delivery as proof that
+a new external recipient will be accepted. Account limits require waiting for
+the provider's reset or an owner-managed plan change; application retries cannot
+raise them.
+
+For native launchd deployments, keep stdout/stderr logs bounded as well. Install
+`scripts/rotate-service-logs.py` on the host and run it as the service user once a
+minute with the log directory as its only argument. It checks `server.log` and
+`server-error.log`; above 20 MiB, it preserves the most recent 1 MiB in a private
+`.previous-tail` file and truncates the existing log. Older diagnostic lines are
+discarded. Reads remain bounded even if an existing log has already grown very
+large. A production `RUST_LOG=warn,hagency_server=info` setting also avoids verbose
+dependency logs. Both the log cap and periodic invocation are needed; changing
+the log level alone does not bound disk usage.
+
 For native development, build Pasion's Dioxus WASM frontend/resources once:
 
 ```sh

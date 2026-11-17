@@ -211,7 +211,7 @@ impl TransportStore {
             if intent.delivery_blocked||!matches!(intent.state.as_str(),"pending"|"unknown"|"sending") {return Err(Error::Conflict("processing_not_sendable"));}
             if intent.worker_until_ms>current {return Err(Error::Conflict("processing_sender_busy"));}
             let scope=Self::scope(db,&intent.binding_id).await?;
-            facts(&scope,&intent.requester_mxid,f,current)?;
+            plaintext_sendable(&scope,&intent.requester_mxid,f,current)?;
             let live=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.processing_sendable WHERE id=$1) AS matched").bind::<Text,_>(id).get_result::<Flag>(db).await?;
             if !live.matched {return Err(Error::Unauthorized("processing_authority_expired"));}
             let _admission=gate.map(crate::worker_runtime::ClaimGate::admit).transpose()?;
@@ -270,7 +270,7 @@ impl TransportStore {
             let candidate=Self::processing(db,id).await?;
             let scope=Self::scope(db,&candidate.binding_id).await?;
             observation(&scope,&candidate.requester_mxid,f,current)?;
-            if facts(&scope,&candidate.requester_mxid,f,current).is_ok() {return Ok(());}
+            if plaintext_sendable(&scope,&candidate.requester_mxid,f,current).is_ok() {return Ok(());}
             sql_query("UPDATE hagency_agent_v1.processing_outbox SET delivery_blocked=true,state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END WHERE id=$1 AND state<>'sent'")
                 .bind::<Text,_>(id).execute(db).await?;Ok(())
         }).await
