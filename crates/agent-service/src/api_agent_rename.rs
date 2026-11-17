@@ -7,6 +7,8 @@ use salvo::prelude::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+static RENAMES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Bounds the re-check loop when renames keep landing concurrently.
 const PROFILE_SYNC_ATTEMPTS: usize = 3;
 
@@ -27,6 +29,9 @@ pub(crate) async fn call(
         .parse_json()
         .await
         .map_err(|_| Error::Invalid("invalid_arguments"))?;
+    // Renames are rare: one process-wide lock orders commit+PUT pairs, so a
+    // late PUT cannot overwrite a newer name. The re-read loop covers replicas.
+    let _ordered = RENAMES.lock().await;
     let agent = domain.rename_agent(p, id, &body.display_name, now_ms()).await?;
     match matrix {
         Some(m) => sync_profile(domain, m, p, agent).await.map(|agent| json!({"agent":agent})),
