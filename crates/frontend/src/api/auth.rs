@@ -8,6 +8,9 @@ use crate::types::*;
 use crate::utils::error::HttpError;
 use crate::utils::storage;
 
+#[path = "../../../login_readiness.rs"]
+mod login_readiness;
+
 // ── OAuth2 client configuration ──────────────────────────────────────────────
 // The `client_id` is loaded at runtime from `/config.json` (see
 // `crate::utils::config::get_oauth_client_id`). A bundle-level default is
@@ -131,6 +134,32 @@ async fn send_bearer_get(url: &str, access_token: &str) -> Result<TextResponse, 
     let response = builder.send().await.map_err(|e| make_err(e.to_string()))?;
 
     read_text_response(response).await
+}
+
+async fn fresh_login_whoami(access_token: &str) -> Result<TextResponse, HttpError> {
+    let readiness = login_readiness::wait(
+        || async {
+            if storage::get_item("access_token").as_deref() != Some(access_token) {
+                return Err(make_err("Sign-in was cancelled or replaced.".into()));
+            }
+            let response =
+                send_bearer_get("/_matrix/client/v3/account/whoami", access_token).await?;
+            if storage::get_item("access_token").as_deref() != Some(access_token) {
+                return Err(make_err("Sign-in was cancelled or replaced.".into()));
+            }
+            Ok(response)
+        },
+        |result| matches!(result, Ok(response) if response.status == 401),
+        gloo_timers::future::TimeoutFuture::new,
+    );
+    let deadline = gloo_timers::future::TimeoutFuture::new(login_readiness::DEADLINE_MS);
+    futures::pin_mut!(readiness, deadline);
+    match futures::future::select(readiness, deadline).await {
+        futures::future::Either::Left((result, _)) => result,
+        futures::future::Either::Right(_) => Err(make_err(
+            "Matrix authorization verification timed out. Please retry sign-in.".into(),
+        )),
+    }
 }
 
 async fn send_oauth_form_request(path: &str, body: &str) -> Result<TextResponse, HttpError> {
@@ -430,11 +459,9 @@ pub async fn handle_oauth_callback(
     // Resolve the Matrix identity directly from the delegated access token.
     // This keeps the admin dashboard login flow aligned with the tested
     // device-code helper and avoids depending on OIDC userinfo / id_token.
-    let whoami = send_bearer_get(
-        "/_matrix/client/v3/account/whoami",
-        &token_resp.access_token,
-    )
-    .await?;
+    // Retry only identity readiness for this already exchanged token. Never
+    // replay the single-use authorization code or retry privileged operations.
+    let whoami = fresh_login_whoami(&token_resp.access_token).await?;
     if storage::session_generation() != generation {
         return Err(make_err("The session changed during sign-in.".into()));
     }
