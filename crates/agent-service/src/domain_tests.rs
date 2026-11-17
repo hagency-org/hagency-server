@@ -31,7 +31,7 @@ impl DomainStore {
         self.bind_room(
             p,
             &agent.id,
-            BindRoom {
+            BindRoom {room_human_mxid:None,
                 project_id: input.project_id,
                 room_id: input.room_id,
                 idempotency_key: input.idempotency_key,
@@ -226,7 +226,7 @@ async fn postgres_domain_ownership_policy_isolation_and_lifecycle() {
         .bind_room(
             &p,
             &created.agent.id,
-            BindRoom {
+            BindRoom {room_human_mxid:None,
                 project_id: project2.id.clone(),
                 room_id: room2.clone(),
                 idempotency_key: "bind-test".into(),
@@ -493,7 +493,7 @@ async fn postgres_domain_ownership_policy_isolation_and_lifecycle() {
             .bind_room(
                 &p,
                 &created.agent.id,
-                BindRoom {
+                BindRoom {room_human_mxid:None,
                     project_id: project2.id.clone(),
                     room_id: room2,
                     idempotency_key: "after-retire".into()
@@ -1164,7 +1164,7 @@ async fn postgres_scope_pause_blocks_empty_scope_and_preserves_creation_runtime_
         .suspend_room_bindings(&p, &project.id, &room2, &ra2, *NOW)
         .await
         .unwrap();
-    let bind = || BindRoom {
+    let bind = || BindRoom {room_human_mxid:None,
         project_id: project.id.clone(),
         room_id: room2.clone(),
         idempotency_key: "blocked-new-binding".into(),
@@ -1257,7 +1257,7 @@ async fn rebind_departed(
         .bind_room(
             p,
             &binding.agent_id,
-            BindRoom {
+            BindRoom {room_human_mxid:None,
                 project_id: binding.project_id.clone().unwrap(),
                 room_id: binding.room_id.clone(),
                 idempotency_key: key.into(),
@@ -1329,7 +1329,7 @@ async fn postgres_membership_loss_is_durable_and_old_dispatch_cannot_revive() {
                     .bind_room(
                         &p,
                         agent_id,
-                        BindRoom {
+                        BindRoom {room_human_mxid:None,
                             project_id: project.id.clone(),
                             room_id: room.clone(),
                             idempotency_key: "membership-bind".into(),
@@ -1750,7 +1750,7 @@ async fn postgres_owner_loss_retires_joining_and_paused_bindings_before_provisio
             .unwrap();
         let mut good = facts(&p, &space, &room, Some(&agent.puppet_mxid));
         good.puppet_in_room = false;
-        let request = || BindRoom {
+        let request = || BindRoom {room_human_mxid:None,
             project_id: project.id.clone(),
             room_id: room.clone(),
             idempotency_key: format!("bind-{mode}"),
@@ -2012,7 +2012,7 @@ async fn exercise_membership_controller(url: &str) {
             .bind_room(
                 &p,
                 &agent.id,
-                BindRoom {
+                BindRoom {room_human_mxid:None,
                     project_id: project.id.clone(),
                     room_id: room.clone(),
                     idempotency_key: format!("controller-bind-{mode}"),
@@ -2264,7 +2264,7 @@ async fn postgres_agent_audience_enforces_discovery_room_binding_and_owner_dm() 
         )
         .await
         .unwrap();
-    let request = || BindRoom {
+    let request = || BindRoom {room_human_mxid:None,
         project_id: project.id.clone(),
         room_id: room.clone(),
         idempotency_key: "shared".into(),

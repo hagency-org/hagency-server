@@ -377,6 +377,10 @@ pub struct BindRoom {
     pub project_id: String,
     pub room_id: String,
     pub idempotency_key: String,
+    /// A hosted Agent's requester: their plain messages wake it in this Room
+    /// while they are its only human besides the owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_human_mxid: Option<String>,
 }
 
 /// Trusted lifecycle worker input. It is not a user credential or public DTO.
@@ -560,6 +564,7 @@ impl DomainStore {
             db.batch_execute("CREATE INDEX IF NOT EXISTS management_command_recovery ON hagency_agent_v1.management_commands(actor_user_id,device_id,command_id)").await?;
 
             db.batch_execute(include_str!("visibility_schema.sql")).await?;
+            db.batch_execute(include_str!("room_human_schema.sql")).await?;
             let pause_initialized=sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='bindings' AND column_name='owner_service_paused') AS matched").get_result::<Flag>(db).await?;
             if !pause_initialized.matched {
                 db.batch_execute("ALTER TABLE hagency_agent_v1.bindings ADD COLUMN owner_service_paused boolean NOT NULL DEFAULT false").await?;
@@ -1005,6 +1010,10 @@ impl DomainStore {
         key(&request.idempotency_key)?;
 
         matrix_id(&request.room_id, '!')?;
+        if let Some(human) = &request.room_human_mxid {
+            matrix_id(human, '@')?;
+            if human == &p.mxid { return Err(Error::Invalid("room_human_is_owner")); }
+        }
 
         let digest = hash(&format!("{agent_id}:{}", encode(&request)?));
 
@@ -1063,6 +1072,10 @@ impl DomainStore {
                 &binding.id,
             )
             .await?;
+            if let Some(human) = &request.room_human_mxid {
+                if human == &agent.puppet_mxid { return Err(Error::Invalid("room_human_is_agent")); }
+                sql_query("UPDATE hagency_agent_v1.bindings SET room_human_mxid=$2 WHERE id=$1").bind::<Text,_>(&binding.id).bind::<Text,_>(human).execute(db).await?;
+            }
             Self::audit(db, p, "agent.bind", &binding.id, now).await?;
             Ok(AgentBinding { agent, binding })
         }

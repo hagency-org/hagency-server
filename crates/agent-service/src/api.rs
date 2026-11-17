@@ -861,6 +861,11 @@ impl App {
                 }
             }
             if parts.len() == 7 && parts[4] == "agents" {
+                // TODO(R4): api.rs is over budget; split agent sub-routes into api_agents.rs.
+                if parts[6] == "invites" && method == salvo::http::Method::GET {
+                    let transport = self.transport.as_ref().ok_or(Error::Unavailable("transport_unavailable"))?;
+                    return Ok(json!({"invites":transport.puppet_invites(&principal,parts[5],now_ms()).await?}));
+                }
                 if parts[6] == "bindings" && method == salvo::http::Method::GET {
                     return Ok(
                         json!({"bindings":domain.bindings(&principal,parts[5],now_ms()).await?}),

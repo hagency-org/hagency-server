@@ -197,7 +197,8 @@ impl Gateway {
         if space.is_empty() {
             let state = self.state(room).await?;
             return Ok(crate::transport::DeliveryFacts {
-                requires_mention: !one_to_one(&state, owner, puppet, &self.service_mxid),
+                requires_mention: !one_to_one(&state, owner, puppet, &self.service_mxid)
+                    && !(!pool && requester != owner && pair_room(&state, owner, requester, puppet, &self.service_mxid)),
                 owner_direct_valid: agent_conversation(&state, owner, puppet)
                     || pool && pool_conversation(&state, owner),
                 owner_mxid: owner.into(),
@@ -220,7 +221,8 @@ impl Gateway {
         }
         let (room_state, space_state) = tokio::try_join!(self.state(room), self.state(space))?;
         Ok(crate::transport::DeliveryFacts {
-                requires_mention: true,
+            requires_mention: pool || requester == owner
+                || !pair_room(&room_state, owner, requester, puppet, &self.service_mxid),
             owner_direct_valid: false,
             owner_mxid: owner.into(),
             requester_mxid: requester.into(),
@@ -282,6 +284,15 @@ fn one_to_one(state: &[Value], owner: &str, puppet: &str, service: &str) -> bool
         .filter(|e| e["type"] == "m.room.member"
             && matches!(e["content"]["membership"].as_str(), Some("join" | "invite")))
         .all(|e| e["state_key"] == owner || e["state_key"] == puppet || e["state_key"] == service)
+}
+
+/// Only `human`, the owner, the puppet and the service are joined or invited,
+/// and `human` has joined: the Room is a private pair of one human and the Agent.
+fn pair_room(state: &[Value], owner: &str, human: &str, puppet: &str, service: &str) -> bool {
+    joined(state, human) && state.iter()
+        .filter(|e| e["type"] == "m.room.member"
+            && matches!(e["content"]["membership"].as_str(), Some("join" | "invite")))
+        .all(|e| [owner, human, puppet, service].iter().any(|m| e["state_key"] == *m))
 }
 
 fn content<'a>(state: &'a [Value], kind: &str, key: &str) -> Option<&'a Value> {

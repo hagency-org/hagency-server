@@ -142,7 +142,7 @@ async fn exercise(url: &str) {
         .bind_room(
             &owner,
             &created.agent.id,
-            BindRoom {
+            BindRoom {room_human_mxid:None,
                 project_id: project.id.clone(),
                 room_id: good.into(),
                 idempotency_key: "fair-bind".into(),

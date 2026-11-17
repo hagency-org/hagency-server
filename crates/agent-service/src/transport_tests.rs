@@ -1516,7 +1516,7 @@ async fn postgres_selected_binding_is_filtered_before_limit_and_cannot_cross_own
         .bind_room(
             &user,
             &f.agent,
-            crate::domain::BindRoom {
+            crate::domain::BindRoom {room_human_mxid:None,
                 project_id: binding.project_id.unwrap(),
                 room_id: room.clone(),
                 idempotency_key: "bind-second".into(),
@@ -1645,7 +1645,7 @@ async fn postgres_failed_tool_authorization_still_commits_owner_membership_gener
         .bind_room(
             &owner,
             &f.agent,
-            crate::domain::BindRoom {
+            crate::domain::BindRoom {room_human_mxid:None,
                 project_id: binding.project_id.clone().unwrap(),
                 room_id: binding.room_id.clone(),
                 idempotency_key: "tool-membership-rebind".into(),
@@ -2331,7 +2331,7 @@ async fn postgres_pause_feedback_is_fenced_by_membership_permissions_and_resume(
         .bind_room(
             &f.p,
             &f.agent,
-            crate::domain::BindRoom {
+            crate::domain::BindRoom {room_human_mxid:None,
                 project_id: current.project_id.unwrap(),
                 room_id: current.room_id,
                 idempotency_key: "pause-feedback-rebind".into(),

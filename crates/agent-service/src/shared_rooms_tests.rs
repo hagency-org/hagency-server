@@ -47,7 +47,7 @@ async fn pool_agent_additional_project_room_is_owner_bound_and_keeps_original_ch
         .register_room(owner, &project.id, room, &sf, &rf, crate::api::now_ms())
         .await
         .unwrap();
-    let input = crate::domain::BindRoom {
+    let input = crate::domain::BindRoom {room_human_mxid:None,
         project_id: project.id.clone(),
         room_id: room.into(),
         idempotency_key: "add-team".into(),

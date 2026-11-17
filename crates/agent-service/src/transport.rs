@@ -16,6 +16,10 @@ mod history;
 mod e2ee;
 #[path = "pause_notices.rs"]
 pub(crate) mod pause_notices;
+#[path = "transport_puppet_invites.rs"]
+pub(crate) mod puppet_invites;
+pub(crate) use puppet_invites::parse_puppet_invite;
+pub use puppet_invites::{PuppetInvite, PuppetInviteEvent};
 #[path = "transport_card_reply.rs"]
 mod card_reply;
 pub use card_reply::CardReply;
@@ -281,6 +285,10 @@ pub struct RoutingScope {
     pub service_paused: bool,
     #[diesel(sql_type=Bool)]
     pub thread_auto_reply: bool,
+    /// The one human (besides the owner) whose plain messages address the
+    /// Agent in this Room; empty when every non-owner must @mention it.
+    #[diesel(sql_type=Text)]
+    pub room_human_mxid: String,
 }
 #[derive(diesel::QueryableByName)]
 struct Flag {
@@ -407,7 +415,7 @@ impl TransportStore {
         Ok((now, auth.valid_until_ms))
     }
     async fn scope(db: &mut AsyncPgConnection, binding: &str) -> Result<RoutingScope> {
-        sql_query("SELECT b.id AS binding_id,a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,a.id AS agent_id,b.room_id,coalesce(p.space_id,'') AS space_id,b.generation AS binding_generation,b.thread_auto_reply,(u.active AND a.state='active' AND b.state='active' AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS active,(u.active AND a.state='active' AND b.state='suspended' AND b.owner_service_paused AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS service_paused FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.id=$1")
+        sql_query("SELECT b.id AS binding_id,a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,a.id AS agent_id,b.room_id,coalesce(p.space_id,'') AS space_id,b.generation AS binding_generation,b.thread_auto_reply,b.room_human_mxid,(u.active AND a.state='active' AND b.state='active' AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS active,(u.active AND a.state='active' AND b.state='suspended' AND b.owner_service_paused AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS service_paused FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.id=$1")
             .bind::<Text,_>(binding).get_result(db).await.map_err(unauthorized)
     }
     /// Trusted gateway lookup, never directly exposed as a user HTTP endpoint.
@@ -430,7 +438,7 @@ impl TransportStore {
         let db = &mut *guard;
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;
-            let rows=sql_query("SELECT b.id AS binding_id,a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,a.id AS agent_id,b.room_id,coalesce(p.space_id,'') AS space_id,b.generation AS binding_generation,b.thread_auto_reply,(u.active AND a.state='active' AND b.state='active' AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS active,(u.active AND a.state='active' AND b.state='suspended' AND b.owner_service_paused AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS service_paused FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.room_id=$1")
+            let rows=sql_query("SELECT b.id AS binding_id,a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,a.id AS agent_id,b.room_id,coalesce(p.space_id,'') AS space_id,b.generation AS binding_generation,b.thread_auto_reply,b.room_human_mxid,(u.active AND a.state='active' AND b.state='active' AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS active,(u.active AND a.state='active' AND b.state='suspended' AND b.owner_service_paused AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND ((b.scope_kind='project' AND a.visibility='public' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))) AS service_paused FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.room_id=$1")
                 .bind::<Text,_>(room_id).load::<RoutingScope>(db).await?;
             Ok(rows.into_iter().filter(|scope|scope.active||scope.service_paused).collect())
         }).await
@@ -702,14 +710,14 @@ impl TransportStore {
             if let Some(duplicate)=Self::existing_pause_notice(db,binding,&event.event_id,&digest).await? {return Ok(duplicate);}
             let puppet_sender=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agents WHERE puppet_mxid=$1) AS matched").bind::<Text,_>(&event.sender_mxid).get_result::<Flag>(db).await?;
             if puppet_sender.matched || event.sender_mxid.starts_with("@_hagency_") {return Ok(RouteResult::Ignored);}
-            if event.encrypted && (f.requires_mention || event.sender_mxid != scope.owner_mxid) && !confirmed {
+            if event.encrypted && !plain_addressed(&scope,&event.sender_mxid,f) && !confirmed {
                 sql_query("DELETE FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1 AND received_at_ms<=$2").bind::<Text,_>(binding).bind::<BigInt,_>(now-self.limits.event_ttl_ms).execute(db).await?;
                 if sql_query("SELECT count(*)>=10000 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1 AND event_id=$2) AS matched FROM hagency_agent_v1.personal_e2ee_candidates WHERE binding_id=$1").bind::<Text,_>(binding).bind::<Text,_>(&event.event_id).get_result::<Flag>(db).await?.matched {return Err(Error::Unavailable("encrypted_candidate_capacity"));}
                 let payload=serde_json::to_string(&event).map_err(|_|Error::Invalid("invalid_event"))?;
                 sql_query("INSERT INTO hagency_agent_v1.personal_e2ee_candidates(binding_id,event_id,payload,received_at_ms) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind::<Text,_>(binding).bind::<Text,_>(&event.event_id).bind::<Text,_>(payload).bind::<BigInt,_>(received_at_ms).execute(db).await?;
                 return Ok(RouteResult::Ignored);
             }
-            if (f.requires_mention || event.sender_mxid != scope.owner_mxid)
+            if !plain_addressed(&scope,&event.sender_mxid,f)
                 && !event.mentioned_mxids.contains(&scope.puppet_mxid) {
                 return Ok(RouteResult::Ignored);
             }
@@ -1331,6 +1339,13 @@ fn message(body: &str, max: usize) -> Result<()> {
         Ok(())
     }
 }
+/// A plain (unmentioned) message addresses the Agent when the gateway saw a
+/// private pair Room and the sender is its owner or its recorded Room human.
+fn plain_addressed(scope: &RoutingScope, sender: &str, f: &DeliveryFacts) -> bool {
+    !f.requires_mention
+        && (sender == scope.owner_mxid
+            || (!scope.room_human_mxid.is_empty() && sender == scope.room_human_mxid && sender == f.requester_mxid))
+}
 fn observation(scope: &RoutingScope, requester: &str, f: &DeliveryFacts, now: i64) -> Result<()> {
     let now = now.max(crate::api::now_ms());
     if f.observed_at_ms < 0 || f.observed_at_ms > now || now - f.observed_at_ms > 30_000 {
@@ -1394,3 +1409,6 @@ fn fenced(event: &Dispatch, p: &Principal, lease: &LeaseRef) -> Result<()> {
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "transport_room_human_tests.rs"]
+mod room_human_tests;

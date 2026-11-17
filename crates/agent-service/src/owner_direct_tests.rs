@@ -178,7 +178,7 @@ async fn postgres_owner_direct_switches_to_group_mentions_with_assigned_device()
             .bind_room(
                 &f.p,
                 &f.agent,
-                crate::domain::BindRoom {
+                crate::domain::BindRoom {room_human_mxid:None,
                     project_id: project.id,
                     room_id: room.clone(),
                     idempotency_key: "direct-must-not-morph".into()

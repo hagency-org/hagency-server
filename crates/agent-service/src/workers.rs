@@ -222,6 +222,13 @@ pub(crate) async fn route_with_shared(
                     _ => retry = true,
                 }
             }
+            if let Some(invite) = crate::transport::parse_puppet_invite(raw) {
+                // Transient storage failures keep the transaction for replay.
+                if t.record_puppet_invite(&invite, transaction.received_at_ms).await.is_err() {
+                    retry = true;
+                }
+                continue;
+            }
             let Some(event) = parse_event(raw) else {
                 continue;
             };
