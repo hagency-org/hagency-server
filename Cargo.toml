@@ -92,10 +92,11 @@ palpo-identifiers-validation = { path = ".run/palpo-8c1759f/crates/identifiers-v
 palpo-server-macros = { path = ".run/palpo-8c1759f/crates/server-macros" }
 
 # Demo build: Pasion feat/native-auth-api (native JSON auth API, lowercased
-# usernames, consent hoop) instead of meldry-com/pasion main. .run/pasion-native-auth
+# usernames, consent hoop; built at pasion commit f17b381) instead of pasion main. .run/pasion-native-auth
 # is a local symlink to the Pasion worktree (gitignored, like palpo above).
 # TODO(deferred): replace with a git dependency on the pushed branch, or drop
-# once feat/native-auth-api lands on pasion main.
+# once feat/native-auth-api lands on pasion main. Path deps are not pinned by Cargo.lock
+# and the Linux Dockerfile does not copy .run/pasion-native-auth: demo Mac build only.
 [patch."https://github.com/meldry-com/pasion.git"]
 pasion-backend = { path = ".run/pasion-native-auth/crates/backend" }
 pasion-config = { path = ".run/pasion-native-auth/crates/config" }
