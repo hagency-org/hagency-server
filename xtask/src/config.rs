@@ -109,6 +109,12 @@ fn render(root: &Path, options: &Options, password: &str) -> Result<Vec<(&'stati
             let mut text = fs::read_to_string(root.join(format!("config/examples/{name}.toml")))?
                 .replace("\"http://127.0.0.1:8088\"", &quoted(&options.origin)?)
                 .replace("\"localhost:8088\"", &quoted(&options.server_name)?)
+                // The management administrator carries the server name as its
+                // Matrix domain; keep it in step with `--server-name`.
+                .replace(
+                    "@admin:localhost:8088",
+                    &format!("@admin:{}", options.server_name),
+                )
                 .replace(
                     "hagency:hagency_dev@127.0.0.1:55438/",
                     &format!("hagency:{password}@{endpoint}/"),
