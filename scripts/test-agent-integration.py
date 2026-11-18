@@ -7,6 +7,13 @@ HAGENCY_TEST_BACKUP_RESTORE=1 enables the full native PKCE flow plus stopped
 three-database restoration into separate disposable databases.
 HAGENCY_TEST_MANAGEMENT=1 enables pooled execution only in the generated
 loopback fixture, with its fresh bootstrap owner as management administrator.
+HAGENCY_TEST_NATIVE_ONLY=1 omits browser asset checks for native-client-only
+acceptance; the real Pasion/Palpo APIs and Appservice roundtrip remain required.
+HAGENCY_TEST_CLIENT_TIMEOUT_SECONDS optionally extends the cooperating native
+client deadline (default 600, maximum 3600 seconds).
+HAGENCY_TEST_POSTGRES_FIXTURE optionally selects a private JSON descriptor for
+an isolated native loopback PostgreSQL (binDir, port, user, password), instead
+of the Docker container. No installed database credentials are discovered.
 """
 import json
 import contextlib
@@ -31,8 +38,21 @@ import uuid
 ROOT = Path(__file__).resolve().parent.parent
 CONTAINER = os.environ.get("HAGENCY_TEST_POSTGRES_CONTAINER", "hagency-server-postgres-1")
 PORT = os.environ.get("HAGENCY_TEST_POSTGRES_PORT", "55438")
-USER = subprocess.check_output(["docker", "exec", CONTAINER, "printenv", "POSTGRES_USER"], text=True).strip()
-PASSWORD = subprocess.check_output(["docker", "exec", CONTAINER, "printenv", "POSTGRES_PASSWORD"], text=True).strip()
+POSTGRES_FIXTURE = os.environ.get("HAGENCY_TEST_POSTGRES_FIXTURE")
+POSTGRES_BIN = None
+if POSTGRES_FIXTURE:
+    descriptor = Path(POSTGRES_FIXTURE)
+    assert descriptor.stat().st_mode & 0o077 == 0, "PostgreSQL fixture must be private"
+    postgres = json.loads(descriptor.read_text())
+    assert postgres["kind"] == "disposable-loopback", "isolated PostgreSQL fixture required"
+    POSTGRES_BIN = Path(postgres["binDir"])
+    assert POSTGRES_BIN.is_absolute() and (POSTGRES_BIN / "psql").is_file()
+    PORT = str(int(postgres["port"]))
+    assert 1024 <= int(PORT) <= 65535
+    USER, PASSWORD = postgres["user"], postgres["password"]
+else:
+    USER = subprocess.check_output(["docker", "exec", CONTAINER, "printenv", "POSTGRES_USER"], text=True).strip()
+    PASSWORD = subprocess.check_output(["docker", "exec", CONTAINER, "printenv", "POSTGRES_PASSWORD"], text=True).strip()
 PREFIX = "hagency_smoke_" + uuid.uuid4().hex[:12]
 DBS = [PREFIX + suffix for suffix in ["_agent", "_matrix", "_auth"]]
 CREATED = []
@@ -46,10 +66,18 @@ NATIVE_PKCE = BACKUP_RESTORE or os.environ.get("HAGENCY_TEST_NATIVE_PKCE") == "1
 def entity_id(value, prefix):
     assert re.fullmatch(re.escape(prefix) + r"[0-7][0-9abcdefghjkmnpqrstvwxyz]{25}", value), "invalid lowercase ULID entity ID"
 
+def pg_command(tool, interactive=False):
+    if POSTGRES_BIN:
+        return [str(POSTGRES_BIN / tool), "-h", "127.0.0.1", "-p", PORT, "-U", USER]
+    return ["docker", "exec"] + (["-i"] if interactive else []) + [CONTAINER, tool, "-U", USER]
+
+def pg_env():
+    return dict(os.environ, PGPASSWORD=PASSWORD) if POSTGRES_BIN else None
+
 def sql(database, statement, capture=False):
-    result = subprocess.run(["docker", "exec", CONTAINER, "psql", "-U", USER,
+    result = subprocess.run(pg_command("psql") + [
         "-d", database, "-v", "ON_ERROR_STOP=1", "-At", "-c", statement],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        env=pg_env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode:
         raise RuntimeError("isolated database operation failed")
     return result.stdout.strip() if capture else None
@@ -256,13 +284,16 @@ try:
             else:
                 raise RuntimeError("production startup roundtrip gate did not become ready")
             print("PASS: production startup gate verified its own Matrix event in durable AS inbox")
-            homepage = urlopen(origin + "/").read().decode()
-            assert '<title>Hagency Server</title>' in homepage
-            console = urlopen(origin + "/hagency/home").read().decode()
-            assert '<title>Hagency Server</title>' in console and console == homepage
-            assert urlopen(origin + "/login").read().decode() == homepage
-            assert urlopen(origin + "/hagency/projects").read().decode() == console
-            print("PASS: public sign-in and authenticated console routes share the bundled frontend")
+            if os.environ.get("HAGENCY_TEST_NATIVE_ONLY") != "1":
+                homepage = urlopen(origin + "/").read().decode()
+                assert '<title>Hagency Server</title>' in homepage
+                console = urlopen(origin + "/hagency/home").read().decode()
+                assert '<title>Hagency Server</title>' in console and console == homepage
+                assert urlopen(origin + "/login").read().decode() == homepage
+                assert urlopen(origin + "/hagency/projects").read().decode() == console
+                print("PASS: public sign-in and authenticated console routes share the bundled frontend")
+            else:
+                print("INFO: native-client acceptance; browser assets are outside this run", flush=True)
             for legacy in ["/api/fleets", "/api/approvals", "/api/accounts", "/api/registrations",
                            "/api/hagency/v1/discovery", "/api/browser/hagency/v1/agents",
                            "/api/login/token", "/api/session", "/api/logout",
@@ -328,7 +359,9 @@ try:
                 if os.environ.get("HAGENCY_TEST_CROSS_DEVICE") == "1":
                     subprocess.run([sys.executable, str(ROOT / "scripts/test-cross-device-config.py"),
                                     str(folder / "client-fixture.json")], check=True)
-                for _ in range(600):
+                client_timeout = int(os.environ.get("HAGENCY_TEST_CLIENT_TIMEOUT_SECONDS", "600"))
+                assert 1 <= client_timeout <= 3600, "native client timeout must be between 1 and 3600 seconds"
+                for _ in range(client_timeout):
                     done = folder / "client-done.json"
                     if done.exists():
                         assert done.stat().st_mode & 0o077 == 0
@@ -653,13 +686,13 @@ try:
                     dump=dumps/(str(index)+".dump")
                     fd=os.open(str(dump),os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
                     with os.fdopen(fd,"wb") as output:
-                        status=subprocess.run(["docker","exec",CONTAINER,"pg_dump","-U",USER,"-d",database,"--format=custom"],stdout=output,stderr=subprocess.PIPE)
+                        status=subprocess.run(pg_command("pg_dump")+["-d",database,"--format=custom"],env=pg_env(),stdout=output,stderr=subprocess.PIPE)
                     assert status.returncode==0,"isolated pg_dump failed"
                     target=PREFIX+"_restore_"+str(index)
                     sql("postgres","CREATE DATABASE "+target)
                     CREATED.append(target)
                     with dump.open("rb") as input_file:
-                        status=subprocess.run(["docker","exec","-i",CONTAINER,"pg_restore","-U",USER,"-d",target,"--exit-on-error"],stdin=input_file,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                        status=subprocess.run(pg_command("pg_restore",interactive=True)+["-d",target,"--exit-on-error"],env=pg_env(),stdin=input_file,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
                     assert status.returncode==0,"isolated pg_restore failed"
                     restored.append(target)
                 # Snapshot complete private data/media and all fixture config/key

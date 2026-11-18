@@ -28,6 +28,8 @@ Agent 创建与绑定提交的是**持久化接入意图**。首次通常返回 
 
 客户端先持久化收到的 dispatch，再 ACK；在 start 前持久化 executionId。`newlyStarted: false` 必须复用已有记录，不得重新调用模型或重放工具。`authorize-tool` 只核验这个正在执行的 dispatch/execution 的当前 Matrix 与设备权限，不开始新执行，不授予 token 额度，也不替代本机策略或 owner 对精确 proposal 的一次性确认。
 
+`execution/messages/authorize` 对已由 owner 明确选择的个人 Agent 房间绑定提供短时的消息投递授权，不依赖某次运行仍处于 running。请求只携带设备租约、binding ID 和 generation；服务端从绑定取得 room 和 puppet，在查询 Matrix 后再次校验租约、绑定版本、owner 与 puppet 的成员身份和发言权。客户端必须在每次发送前重新授权并核对已保存的目标，不得将旧消息重定向到新房间。此接口不授权启动或继续工作，暂不覆盖资源池 Agent 的授权。
+
 `replies` 返回 durable outbox receipt，`pending`、`sending` 或 `unknown` 均不等于 Matrix 已送达。客户端应保留原回复和执行身份，直到 `sent` 且有 `matrixEventId`。租约换代后，只能通过 `replies/reconcile-known` 显式重新授权已知原文；请求格式仍只有 lease 和原始 SubmitReply，不能上传“可信事实”。服务端核对原 dispatch/execution、scope、binding generation、payload 和 Matrix transaction 身份及当前权限，保留原 `dispatchEpoch`，更新当前 `deliveryEpoch`。已发送历史 receipt 可保留旧 deliveryEpoch。发送前还核验 puppet 的 m.room.message 实际 power level（events_default，非 state_default）。明确观测到发言权撤销后，旧 outbox 永久阻断，unknown 网络证据保持原文/事务身份；权限后来恢复也不盲目重发。即使发送前检查通过，实际 Matrix 发送返回 403 也会由精确 sender worker 持久阻断原回复，不能当作普通 unknown 自动重试；可能存在的先前网络副作用证据仍保留。明确观测到 owner/puppet 成员或 Space→Room 关联丢失时，先独立提交 binding 暂停/generation 隔离，避免后续 API 拒绝事务回滚导致旧执行复活。deliveryBlocked、作用域撤销及仍占用的旧 sender 不会被恢复请求绕过。未知模型/工具结果不能因此重新执行，本地预算和副作用不确定性仍需保守处理。
 
 Appservice 的 **hs_token** 与 owner/device token 是不同凭据。推荐 Authorization Bearer；兼容 Matrix 的 `access_token` query，仅在二者相同且无重复时接受。事务 ACK 只在原始入站事务及 routing intent 一起持久化后返回；重复事务内容相同幂等，内容不同 409，队列满 503 且不 ACK。这里的 ACK 不表示模型完成。AS 用户查询只确认已知 service/puppet，不创建账号；Room alias 查询目前总是 404。

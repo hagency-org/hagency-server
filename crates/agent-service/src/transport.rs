@@ -287,6 +287,22 @@ pub struct RoutingScope {
     #[diesel(sql_type=Bool)]
     pub thread_auto_reply: bool,
 }
+
+/// A short-lived proof for delivery only. It neither starts work nor extends a
+/// run, and the client must reauthorize each message before sending it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMessageAuthorization {
+    pub agent_id: String,
+    pub binding_id: String,
+    pub binding_generation: i64,
+    pub room_id: String,
+    pub puppet_mxid: String,
+    pub encrypted: bool,
+    pub lease_epoch: i64,
+    pub device_generation: i64,
+    pub valid_until_ms: i64,
+}
 #[derive(diesel::Queryable, diesel::QueryableByName)]
 struct Flag {
     #[diesel(sql_type=Bool)]
@@ -641,6 +657,118 @@ impl TransportStore {
             let (now,_)=Self::authenticate(db,p,now).await?;Self::agent_active(db,p,&reference.agent_id).await?;Self::lease(db,p,reference,now).await?;
             Ok(sql_query("SELECT puppet_mxid FROM hagency_agent_v1.agents WHERE id=$1 AND owner_user_id=$2 AND execution_kind='personal'").bind::<Text,_>(&reference.agent_id).bind::<Text,_>(&p.user_id).get_result::<Puppet>(db).await.map_err(unauthorized)?.puppet_mxid)
         }).await
+    }
+
+    async fn message_scope(
+        db: &mut AsyncPgConnection,
+        p: &Principal,
+        reference: &LeaseRef,
+        binding: &str,
+        generation: i64,
+        now: i64,
+    ) -> Result<(RoutingScope, Lease, i64, i64)> {
+        key(binding)?;
+        if generation <= 0 {
+            return Err(Error::Invalid("invalid_binding_generation"));
+        }
+        let (now, session_until) = Self::authenticate(db, p, now).await?;
+        Self::agent_active(db, p, &reference.agent_id).await?;
+        let lease = Self::lease(db, p, reference, now).await?;
+        let scope = Self::scope(db, binding).await?;
+        if !scope.active
+            || scope.owner_user_id != p.user_id
+            || scope.agent_id != reference.agent_id
+            || scope.binding_generation != generation
+        {
+            return Err(Error::Unauthorized("agent_message_scope_revoked"));
+        }
+        // Pool assignments use a different authority contract. A personal
+        // execution lease must never authorize a pooled Agent's delivery.
+        let puppet = sql_query("SELECT puppet_mxid FROM hagency_agent_v1.agents WHERE id=$1 AND owner_user_id=$2 AND execution_kind='personal'")
+            .bind::<Text, _>(&reference.agent_id)
+            .bind::<Text, _>(&p.user_id)
+            .get_result::<Puppet>(db)
+            .await
+            .map_err(unauthorized)?;
+        if puppet.puppet_mxid != scope.puppet_mxid {
+            return Err(Error::Unauthorized("agent_message_scope_revoked"));
+        }
+        Ok((scope, lease, now, session_until))
+    }
+
+    /// Authenticate the request before asking Matrix for room facts; this
+    /// result is internal to the gateway and is never an authorization to send.
+    pub async fn agent_message_scope(
+        &self,
+        p: &Principal,
+        reference: &LeaseRef,
+        binding: &str,
+        generation: i64,
+        now: i64,
+    ) -> Result<RoutingScope> {
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    Ok(
+                        Self::message_scope(db, p, reference, binding, generation, now)
+                            .await?
+                            .0,
+                    )
+                })
+                .await
+            })
+            .await
+    }
+
+    /// Check fresh gateway-observed Matrix facts and recheck the current lease
+    /// and immutable binding after the external Matrix request completes.
+    pub async fn authorize_agent_message(
+        &self,
+        p: &Principal,
+        reference: &LeaseRef,
+        binding: &str,
+        generation: i64,
+        facts: &DeliveryFacts,
+        now: i64,
+    ) -> Result<AgentMessageAuthorization> {
+        let scope = self
+            .agent_message_scope(p, reference, binding, generation, now)
+            .await?;
+        // Commit a trusted membership/power denial independently of the
+        // authorization transaction. A later denial must not roll its fence
+        // back and revive messages captured under the old binding.
+        self.observe_delivery_authority(Some(p), binding, &scope.owner_mxid, None, facts, now)
+            .await?;
+        self.db
+            .with_connection(async |db| {
+                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                    let (scope, lease, now, session_until) =
+                        Self::message_scope(db, p, reference, binding, generation, now).await?;
+                    facts_in_room(&scope, &scope.owner_mxid, facts, now)?;
+                    let current = Self::clock(db, now).await?;
+                    Self::lease(db, p, reference, current).await?;
+                    let valid_until_ms = lease
+                        .expires_at_ms
+                        .min(session_until)
+                        .min(facts.observed_at_ms.saturating_add(30_000));
+                    if valid_until_ms <= current {
+                        return Err(Error::Unauthorized("agent_message_authorization_expired"));
+                    }
+                    Ok(AgentMessageAuthorization {
+                        agent_id: scope.agent_id,
+                        binding_id: scope.binding_id,
+                        binding_generation: scope.binding_generation,
+                        room_id: scope.room_id,
+                        puppet_mxid: scope.puppet_mxid,
+                        encrypted: facts.encrypted,
+                        lease_epoch: lease.epoch,
+                        device_generation: lease.device_generation,
+                        valid_until_ms,
+                    })
+                })
+                .await
+            })
+            .await
     }
     pub async fn renew_lease(
         &self,

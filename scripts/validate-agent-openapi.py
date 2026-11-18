@@ -226,6 +226,9 @@ def validate(doc):
         require({p for p, _ in operations if p.startswith('/hagency/api/v1/execution/')} == {p for p, _ in literal if p.startswith('/hagency/api/v1/execution/')}, 'invented transport route')
         require(('/hagency/api/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
         require(('/hagency/api/v1/projects/{projectId}/rooms', 'post') not in operations, 'unimplemented Room creation advertised')
+        message = doc['paths']['/hagency/api/v1/execution/messages/authorize']['post']
+        require(message['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/AgentMessage'}, 'message authorization request drift')
+        require(message['responses']['200']['content']['application/json']['schema'] == {'type':'object','properties':{'authorization':{'$ref':'#/components/schemas/AgentMessageAuthorization'}},'required':['authorization'],'additionalProperties':False}, 'message authorization response drift')
         discovery = doc['paths']['/hagency/api/v1/agents/discover']['get']
         cursor = {'type':'string','minLength':1,'maxLength':128,'pattern':'^[A-Za-z0-9_-]+$'}
         require(len(discovery['parameters']) == 1 and discovery['parameters'][0]['name'] == 'after' and discovery['parameters'][0]['in'] == 'query' and discovery['parameters'][0]['required'] is False and discovery['parameters'][0]['schema'] == cursor, 'discovery cursor query drift')
@@ -264,7 +267,7 @@ def validate(doc):
         worker_health = doc['paths']['/workers-healthz']['get']
         require(worker_health['security'] == [] and set(worker_health['responses']) == {'200', '503'}, 'worker health security/status drift')
         require(set(doc['components']['schemas']['WorkerQueueHealth']['properties']) == {'name', 'running', 'consecutiveFailures', 'lastSuccessAgeMs', 'lastActivityAgeMs', 'error'}, 'worker health must remain aggregate and body-free')
-        require(len(operations) == 137, 'reviewed owner route count drift')
+        require(len(operations) == 138, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
