@@ -94,6 +94,27 @@ class DependencyPolicyTests(unittest.TestCase):
                 "settings": {"target_arch": [], "target_os": [], "severity": None, "ignore": [],
                              "informational_warnings": ["unmaintained", "unsound", "notice"]}}
 
+    def test_maintenance_review_checks_expiry_fingerprint_scope_and_sources(self):
+        report = self.clean_report()
+        finding = {"advisory": {"id": "TEST-OLD"}, "package": {"name": "test-dep", "version": "1"}}
+        report["warnings"] = {"unmaintained": [finding]}
+        row = self.policy["findings"][0] | {
+            "advisory": "TEST-OLD", "kind": "unmaintained", "package": "test-dep", "version": "1",
+            "status": "reviewed_warning", "advisory_fingerprint": next(iter(audit.findings(report).values()))}
+        policy = self.clean_policy() | {"mode": "reviewed-maintenance", "expires_on": "2026-11-28",
+                                       "findings": [row]}
+        self.assertEqual(self.check(report=report, policy=policy, today=date(2026, 11, 28)), [])
+        self.assertTrue(self.check(report=report, policy=policy, today=date(2026, 11, 29)))
+        self.assertTrue(self.check(report=report, policy=policy, lock=self.lock.replace("#original", "#new")))
+        self.assertTrue(self.check(report=self.clean_report(), policy=policy))
+        with self.assertRaises(ValueError):
+            self.check(report=report, policy=policy | {"findings": self.policy["findings"]})
+        finding["advisory"]["description"] = "new impact"
+        self.assertTrue(self.check(report=report, policy=policy))
+        report["settings"]["ignore"] = ["TEST-OLD"]
+        with self.assertRaises(ValueError):
+            self.check(report=report, policy=policy)
+
     def test_clean_policy_has_no_exception_expiry(self):
         clean = self.clean_report()
         self.assertEqual(self.check(report=clean, policy=self.clean_policy(), today=date(2027, 1, 1)), [])

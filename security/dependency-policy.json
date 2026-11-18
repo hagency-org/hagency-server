@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "mode": "strict-clean",
+  "mode": "reviewed-maintenance",
   "reviewed_on": "2026-11-18",
   "reviewed_sources": {
     "lettre": "git+https://github.com/chrislearn/lettre.git?rev=388699bd167493a1fe88d51fd0a28e17ab1a6596#388699bd167493a1fe88d51fd0a28e17ab1a6596",
@@ -27,6 +27,28 @@
     "pasion-templates": "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee",
     "rav1e": "git+https://github.com/chrislearn/rav1e?rev=d2deddc58fdbbb30aafbc550836454910de91af9#d2deddc58fdbbb30aafbc550836454910de91af9"
   },
-  "findings": [],
-  "timezone": "Asia/Shanghai"
+  "findings": [
+    {
+      "advisory": "RUSTSEC-2026-0543",
+      "kind": "unmaintained",
+      "package": "chrono",
+      "version": "0.4.45",
+      "status": "reviewed_warning",
+      "reason": "Reviewed 2026-11-17: chrono is unmaintained across all versions, with no patched release. The server uses it directly for timestamps and Diesel mappings; Palpo and Pasion also depend on it. Migrating to jiff/time requires coordinated upstream and database API changes. Retain this maintenance warning visibly and re-review before the existing policy expiry.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0543.html",
+      "advisory_fingerprint": "c9db0efdf883e899c4a02194c2903f8da0a60518ea77d63451dde11e200c0847"
+    },
+    {
+      "advisory": "RUSTSEC-2026-0555",
+      "kind": "unmaintained",
+      "package": "chrono-tz",
+      "version": "0.10.4",
+      "status": "reviewed_warning",
+      "reason": "Reviewed 2026-11-17: chrono-tz is unmaintained across all versions, with no patched release. The Agent service uses its timezone and DST gap APIs to calculate recurring quota periods. Replacement requires a coordinated chrono/timezone API migration. Retain this maintenance warning visibly and re-review before the existing policy expiry.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0555.html",
+      "advisory_fingerprint": "14d83969469c2427c08281b0f2c79f1e5f5e9c8e4890d5763b164f8dcef30d23"
+    }
+  ],
+  "timezone": "Asia/Shanghai",
+  "expires_on": "2026-11-29"
 }

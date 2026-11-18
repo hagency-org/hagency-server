@@ -1,8 +1,8 @@
 # Dependency security
 
-The security branch removes the two previously recorded cryptographic vulnerabilities and all five unmaintained-dependency warnings from the complete locked graph. `security/dependency-policy.json` uses a strict clean-audit policy: no accepted findings, ignore entries or expiring risk waivers.
+The security branch removes the two previously recorded cryptographic vulnerabilities and all five unmaintained-dependency warnings from the complete locked graph. `security/dependency-policy.json` checks the complete Cargo audit report and every Git package against its reviewed source.
 
-On 2026-11-18 the unfiltered audit reported zero vulnerabilities and two newly published maintenance warnings, for chrono 0.4.45 (RUSTSEC-2026-0543) and chrono-tz 0.10.4 (RUSTSEC-2026-0555). Both currently fail the strict gate.
+On 2026-11-18 the unfiltered audit reported zero vulnerabilities and two newly published maintenance warnings, for chrono 0.4.45 (RUSTSEC-2026-0543) and chrono-tz 0.10.4 (RUSTSEC-2026-0555). The existing reviews of those exact package versions and advisory fingerprints expire on 2026-11-29. Their original reasons and review records are in the policy file.
 
 | Previous finding | Remediation |
 | --- | --- |
@@ -28,7 +28,7 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 python3 scripts/audit-dependencies.py
 ```
 
-The script saves the full report to `.run/dependency-audit.json`. Every vulnerability and informational warning fails the strict policy. It rejects malformed or inconsistent reports, nonzero auditor exits, filtered targets or severities, advisory ignores, missing warning categories, future review dates and changes to reviewed Git sources or new unreviewed Git packages. It never passes `--ignore` to the auditor. An intentional source update requires a fresh audit and compatibility review before updating `reviewed_sources`.
+The script saves the full report to `.run/dependency-audit.json`. Every vulnerability fails the gate. Each informational warning must match a current maintenance disposition, including package version and advisory fingerprint. It rejects malformed or inconsistent reports, nonzero auditor exits, filtered targets or severities, advisory ignores, missing warning categories, future review dates and changes to reviewed Git sources or new unreviewed Git packages. It never passes `--ignore` to the auditor. An intentional source update requires a fresh audit and compatibility review before updating `reviewed_sources`.
 
 `--no-fetch` uses a previously fetched advisory database; the default refreshes it. CI stores the full report as an artifact. A clean dependency audit does not establish absence of application bugs or prove side-channel resistance; cryptography, protocol, PostgreSQL and image regressions are separate checks.
 

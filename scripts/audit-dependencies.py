@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce an unfiltered clean audit or an explicit legacy risk review."""
+"""Validate locked dependencies against their reviewed sources and advisory policy."""
 import argparse
 import hashlib
 from datetime import date, datetime, timedelta
@@ -57,18 +57,26 @@ def check(report, policy, lock, today):
         raise ValueError("unsupported dependency policy")
     reviewed = date.fromisoformat(policy["reviewed_on"])
     if policy["version"] == 3:
-        if policy.get("mode") != "strict-clean" or policy["findings"] != [] or "expires_on" in policy:
-            raise ValueError("strict-clean policy cannot contain exceptions or an exception expiry")
+        mode = policy.get("mode")
+        if mode == "strict-clean":
+            if policy["findings"] != [] or "expires_on" in policy:
+                raise ValueError("strict-clean policy cannot contain exceptions or an exception expiry")
+        elif mode == "reviewed-maintenance":
+            if not policy["findings"] or any(row["kind"] != "unmaintained" or row["status"] != "reviewed_warning"
+                                             for row in policy["findings"]):
+                raise ValueError("only reviewed maintenance warnings may have a temporary disposition")
+        else:
+            raise ValueError("unsupported dependency policy mode")
         expected_settings = {"target_arch": [], "target_os": [], "severity": None, "ignore": [],
                              "informational_warnings": ["unmaintained", "unsound", "notice"]}
         settings = report.get("settings")
         if not isinstance(settings, dict) or settings != expected_settings:
-            raise ValueError("strict-clean audit must include all targets, severities and informational warnings without ignores")
+            raise ValueError("version 3 audit must include all targets, severities and informational warnings without ignores")
         if "found" not in report["vulnerabilities"]:
-            raise ValueError("strict-clean audit needs a vulnerability flag")
+            raise ValueError("version 3 audit needs a vulnerability flag")
         if reviewed > today:
             errors.append("dependency source review is future-dated")
-    else:
+    if policy["version"] == 2 or policy["mode"] == "reviewed-maintenance":
         expires = date.fromisoformat(policy["expires_on"])
         if not reviewed <= today <= expires or not reviewed <= expires <= reviewed + timedelta(days=30):
             errors.append("dependency risk review is expired, future-dated or longer than 30 days")
@@ -121,7 +129,7 @@ def main():
     policy = json.loads((ROOT / "security/dependency-policy.json").read_text())
     errors = check(report, policy, (ROOT / "Cargo.lock").read_text(), review_date(policy, datetime.now().astimezone()))
     if policy["version"] == 3 and result.returncode != 0:
-        errors.append("strict-clean cargo-audit process did not succeed")
+        errors.append("cargo-audit process did not succeed")
     print("Audit: {} unresolved vulnerability records; {} informational warnings.".format(
         report["vulnerabilities"]["count"], sum(len(rows) for rows in report["warnings"].values())))
     for row in policy["findings"]:
@@ -129,7 +137,7 @@ def main():
     for error in errors:
         print("ERROR: " + error, file=sys.stderr)
     if not errors:
-        if policy["version"] == 3:
+        if policy.get("mode") == "strict-clean":
             print("Clean dependency audit passed: no vulnerabilities, warnings or exceptions.")
         else:
             print("Dependency policy satisfied until {}; unresolved risks remain recorded.".format(policy["expires_on"]))
