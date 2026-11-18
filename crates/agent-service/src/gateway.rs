@@ -1,12 +1,14 @@
 //! Reads current Matrix state from the host's existing privileged state API.
 //! Human membership and Matrix power levels remain the domain authority.
-use crate::{
-    Error, Result,
-    api::now_ms,
-    domain::{AdminFacts, RoomFacts},
-};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
 use serde_json::Value;
-use std::{future::Future, pin::Pin, sync::Arc};
+
+use crate::api::now_ms;
+use crate::domain::{AdminFacts, RoomFacts};
+use crate::{Error, Result};
 
 pub type ReadState =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<Vec<Value>>> + Send>> + Send + Sync>;
@@ -125,6 +127,19 @@ impl Gateway {
         }
         Ok((now_ms(), state))
     }
+    /// A request may be registered while the service's authorized invitation is pending.
+    /// Execution still uses pool_room, which requires the service to have joined.
+    pub(crate) async fn pool_request(&self, room: &str, owner: &str) -> Result<i64> {
+        let state = self.pool_room_state(room, owner).await?;
+        let invited = content(&state, "m.room.member", &self.service_mxid)
+            .is_some_and(|c| c["membership"] == "invite");
+        if !joined(&state, &self.service_mxid) && !invited {
+            return Err(Error::Unauthorized(
+                "pool_agent_service_membership_required",
+            ));
+        }
+        Ok(now_ms())
+    }
     pub(crate) async fn pool_service_invited(&self, room: &str, owner: &str) -> Result<bool> {
         let state = self.pool_room_state(room, owner).await?;
         Ok(content(&state, "m.room.member", &self.service_mxid)
@@ -133,13 +148,14 @@ impl Gateway {
     async fn pool_room_state(&self, room: &str, owner: &str) -> Result<Vec<Value>> {
         let state = self.state(room).await?;
         if !pool_conversation(&state, owner)
-            || level(
-                content(&state, "m.room.power_levels", ""),
+            || !at_least(
+                &state,
                 &self.service_mxid,
-            )? < power_integer(
-                power_object(content(&state, "m.room.power_levels", ""))?
-                    .and_then(|p| p.get("invite")),
-                0,
+                power_integer(
+                    power_object(content(&state, "m.room.power_levels", ""))?
+                        .and_then(|p| p.get("invite")),
+                    0,
+                )?,
             )?
         {
             return Err(Error::Unauthorized("pool_agent_private_room_required"));
@@ -165,9 +181,12 @@ impl Gateway {
                 room_id: id.into(),
                 observed_at_ms,
                 joined: joined(events, actor),
-                can_manage_policy: level(powers, actor)?
-                    >= state_threshold(powers, "im.hagency.agent.policy")?
+                can_manage_policy: at_least(
+                    events,
+                    actor,
+                    state_threshold(powers, "im.hagency.agent.policy")?
                         .max(state_threshold(powers, "m.space.child")?),
+                )?,
                 is_space: content(events, "m.room.create", "")
                     .is_some_and(|c| c["type"] == "m.space"),
                 linked_space_id: parent,
@@ -186,8 +205,11 @@ impl Gateway {
             owner_in_space: joined(&ss, actor),
             owner_in_room: joined(&rs, actor),
             service_can_invite: joined(&rs, &self.service_mxid)
-                && level(powers, &self.service_mxid)?
-                    >= power_integer(power_object(powers)?.and_then(|p| p.get("invite")), 0)?,
+                && at_least(
+                    &rs,
+                    &self.service_mxid,
+                    power_integer(power_object(powers)?.and_then(|p| p.get("invite")), 0)?,
+                )?,
             puppet_mxid: None,
             puppet_in_room: false,
             encrypted: content(&rs, "m.room.encryption", "").is_some(),
@@ -475,13 +497,40 @@ fn room_creator(state: &[Value], user: &str) -> Result<bool> {
     }
     Ok(is_creator)
 }
+fn user_level(state: &[Value], user: &str) -> Result<i64> {
+    if let Some(powers) = content(state, "m.room.power_levels", "") {
+        return level(Some(powers), user);
+    }
+    let create = state
+        .iter()
+        .find(|event| event["type"] == "m.room.create" && event["state_key"] == "");
+    let creator =
+        create.and_then(
+            |event| match event["content"]["room_version"].as_str().unwrap_or("1") {
+                "11" | "12" => event["sender"].as_str(),
+                _ => event["content"]["creator"]
+                    .as_str()
+                    .or_else(|| event["sender"].as_str()),
+            },
+        );
+    Ok(if creator == Some(user) { 100 } else { 0 })
+}
 fn at_least(state: &[Value], user: &str, required: i64) -> Result<bool> {
-    let explicit = level(content(state, "m.room.power_levels", ""), user)?;
+    // Validate any present power state even for privileged v12 creators.
+    let explicit = user_level(state, user)?;
     Ok(room_creator(state, user)? || explicit >= required)
 }
 fn can_send(state: &[Value], user: &str) -> Result<bool> {
-    let ordinary = message_permission(content(state, "m.room.power_levels", ""), user)?;
-    Ok(room_creator(state, user)? || ordinary)
+    let event_type = if content(state, "m.room.encryption", "").is_some() {
+        "m.room.encrypted"
+    } else {
+        "m.room.message"
+    };
+    at_least(
+        state,
+        user,
+        message_threshold(content(state, "m.room.power_levels", ""), event_type)?,
+    )
 }
 /// Linking Rooms and managing Agent policy may have different Matrix thresholds.
 pub(crate) fn can_create_room(state: &[Value], actor: &str) -> Result<bool> {
@@ -504,14 +553,17 @@ fn state_threshold(powers: Option<&Value>, event: &str) -> Result<i64> {
 }
 // Missing fields use Matrix defaults. Present but invalid fields never silently
 // fall back; valid legacy decimal strings match Palpo's v1 power-level parser.
-fn message_permission(powers: Option<&Value>, puppet: &str) -> Result<bool> {
+fn message_threshold(powers: Option<&Value>, event_type: &str) -> Result<i64> {
     let object = power_object(powers)?;
     let default = power_integer(object.and_then(|p| p.get("events_default")), 0)?;
-    let required = power_integer(
-        power_map(object, "events")?.and_then(|p| p.get("m.room.message")),
+    power_integer(
+        power_map(object, "events")?.and_then(|p| p.get(event_type)),
         default,
-    )?;
-    Ok(level(powers, puppet)? >= required)
+    )
+}
+#[cfg(test)]
+fn message_permission(powers: Option<&Value>, puppet: &str) -> Result<bool> {
+    Ok(level(powers, puppet)? >= message_threshold(powers, "m.room.message")?)
 }
 #[cfg(test)]
 mod tests {
@@ -794,8 +846,9 @@ mod creator_boundary_tests {
 
 #[cfg(test)]
 mod navigation_tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
     #[test]
     fn project_room_invitation_is_discoverable_without_granting_joined_authority() {
         let space = vec![
@@ -823,5 +876,111 @@ mod navigation_tests {
         room.push(json!({"type":"m.room.tombstone","state_key":"","content":{"replacement_room":"!replacement:test"}}));
         assert!(!room_navigation_candidate(&room, &space, "!room:test"));
         assert!(room_navigation_metadata(&room, &space, "!room:test", "@bob:test").is_none());
+    }
+}
+
+#[cfg(test)]
+mod audit_power_tests {
+    use serde_json::json;
+
+    use super::*;
+    #[test]
+    fn encrypted_send_uses_outer_type_and_legacy_absent_powers_give_creator_100() {
+        let mut state = vec![
+            json!({"type":"m.room.create","state_key":"","sender":"@owner:test","content":{"room_version":"11"}}),
+        ];
+        assert!(at_least(&state, "@owner:test", 100).unwrap());
+        assert!(!at_least(&state, "@owner:test", 101).unwrap());
+        state.push(json!({"type":"m.room.power_levels","state_key":"","content":{"events":{"m.room.message":0,"m.room.encrypted":50}}}));
+        assert!(!at_least(&state, "@owner:test", 50).unwrap());
+        assert!(can_send(&state, "@agent:test").unwrap());
+        state.push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
+        assert!(!can_send(&state, "@agent:test").unwrap());
+        state[1]["content"]["events"] = json!({"m.room.message":50,"m.room.encrypted":0});
+        assert!(can_send(&state, "@agent:test").unwrap());
+    }
+    #[tokio::test]
+    async fn project_setup_uses_v12_primary_and_additional_creator_authority() {
+        let read: ReadState = Arc::new(|_| {
+            Box::pin(async {
+                Ok(vec![
+                    json!({"type":"m.room.create","state_key":"","sender":"@owner:test","content":{"room_version":"12","type":"m.space","additional_creators":["@service:test"]}}),
+                    json!({"type":"m.room.power_levels","state_key":"","content":{"invite":900,"state_default":900,"users":{}}}),
+                    json!({"type":"m.room.member","state_key":"@owner:test","content":{"membership":"join"}}),
+                    json!({"type":"m.room.member","state_key":"@service:test","content":{"membership":"join"}}),
+                ])
+            })
+        });
+        let gateway = Gateway::new(read, "@service:test".into());
+        let (space, room, facts, ..) = gateway
+            .project_setup("!space:test", "!room:test", "@owner:test")
+            .await
+            .unwrap();
+        assert!(space.can_manage_policy && room.can_manage_policy && facts.service_can_invite);
+    }
+    #[tokio::test]
+    async fn pool_request_accepts_only_service_join_or_invite_and_keeps_room_authority() {
+        let state = Arc::new(std::sync::Mutex::new(vec![
+            json!({"type":"m.room.create","state_key":"","sender":"@owner:test","content":{"room_version":"11"}}),
+            json!({"type":"m.room.join_rules","state_key":"","content":{"join_rule":"invite"}}),
+            json!({"type":"m.room.member","state_key":"@owner:test","content":{"membership":"join"}}),
+            json!({"type":"m.room.member","state_key":"@service:test","content":{"membership":"invite"}}),
+            json!({"type":"m.room.power_levels","state_key":"","content":{"users":{"@service:test":50},"invite":50}}),
+            json!({"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"shared"}}),
+        ]));
+        let reads = state.clone();
+        let gateway = Gateway::new(
+            Arc::new(move |_| {
+                let state = reads.lock().unwrap().clone();
+                Box::pin(async move { Ok(state) })
+            }),
+            "@service:test".into(),
+        );
+        let now = now_ms();
+        assert!(
+            gateway
+                .pool_request("!room:test", "@owner:test")
+                .await
+                .unwrap()
+                >= now
+        );
+        assert!(matches!(
+            gateway.pool_room("!room:test", "@owner:test").await,
+            Err(Error::Unavailable("pool_agent_service_join_pending"))
+        ));
+        state.lock().unwrap()[3]["content"]["membership"] = json!("join");
+        gateway
+            .pool_request("!room:test", "@owner:test")
+            .await
+            .unwrap();
+        gateway
+            .pool_room("!room:test", "@owner:test")
+            .await
+            .unwrap();
+        for membership in ["leave", "ban", "knock"] {
+            state.lock().unwrap()[3]["content"]["membership"] = json!(membership);
+            assert!(
+                gateway
+                    .pool_request("!room:test", "@owner:test")
+                    .await
+                    .is_err()
+            );
+        }
+        state.lock().unwrap()[3]["content"]["membership"] = json!("invite");
+        state.lock().unwrap()[4]["content"]["invite"] = json!(51);
+        assert!(
+            gateway
+                .pool_request("!room:test", "@owner:test")
+                .await
+                .is_err()
+        );
+        state.lock().unwrap()[4]["content"]["invite"] = json!(50);
+        state.lock().unwrap()[1]["content"]["join_rule"] = json!("public");
+        assert!(
+            gateway
+                .pool_request("!room:test", "@owner:test")
+                .await
+                .is_err()
+        );
     }
 }

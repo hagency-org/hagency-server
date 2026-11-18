@@ -36,3 +36,11 @@ ALTER TABLE hagency_agent_v1.personal_e2ee_candidates ADD COLUMN IF NOT EXISTS c
 ALTER TABLE hagency_agent_v1.executor_matrix_devices ADD COLUMN IF NOT EXISTS retiring boolean NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS shared_e2ee_poll ON hagency_agent_v1.management_shared_e2ee_candidates(assignment_id,last_polled_ms,received_at_ms,event_id);
 CREATE INDEX IF NOT EXISTS personal_e2ee_poll ON hagency_agent_v1.personal_e2ee_candidates(binding_id,last_polled_ms,received_at_ms,event_id);
+
+ALTER TABLE hagency_agent_v1.executor_matrix_devices ADD COLUMN IF NOT EXISTS last_checked_ms bigint NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS executor_matrix_device_cleanup ON hagency_agent_v1.executor_matrix_devices(kind,last_checked_ms,scope_id,device_id) WHERE NOT revoked;
+
+-- A durable, bounded issuance claim serializes refreshes for one Matrix device.
+-- It also survives a cancelled/unknown login so cleanup can retire that identity.
+ALTER TABLE hagency_agent_v1.executor_matrix_devices ADD COLUMN IF NOT EXISTS issuance_nonce text;
+ALTER TABLE hagency_agent_v1.executor_matrix_devices ADD COLUMN IF NOT EXISTS issuance_until_ms bigint NOT NULL DEFAULT 0;

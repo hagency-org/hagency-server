@@ -200,6 +200,14 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
+        hagency_agent_v1.execution_history_snapshots (agent_id) {
+            agent_id -> Text,
+            count -> Int8,
+            digest -> Text,
+        }
+    }
+
+    diesel::table! {
         hagency_agent_v1.execution_leases (agent_id) {
             agent_id -> Text,
             owner_user_id -> Text,
@@ -220,6 +228,9 @@ pub mod hagency_agent_v1 {
             kind -> Text,
             revoked -> Bool,
             retiring -> Bool,
+            last_checked_ms -> Int8,
+            issuance_nonce -> Nullable<Text>,
+            issuance_until_ms -> Int8,
         }
     }
 
@@ -480,6 +491,13 @@ pub mod hagency_agent_v1 {
             expires_at_ms -> Nullable<Int8>,
             lease_hash -> Nullable<Text>,
             lease_until_ms -> Int8,
+        }
+    }
+
+    diesel::table! {
+        hagency_agent_v1.management_agent_runtime_cursors (executor_device_id) {
+            executor_device_id -> Text,
+            after_assignment_id -> Text,
         }
     }
 
@@ -1388,6 +1406,19 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
+        hagency_agent_v1.request_notice_candidate_deployment (singleton) {
+            singleton -> Bool,
+        }
+    }
+
+    diesel::table! {
+        hagency_agent_v1.request_notice_candidates (owner_event_id) {
+            owner_event_id -> Text,
+            next_check_ms -> Int8,
+        }
+    }
+
+    diesel::table! {
         hagency_agent_v1.request_notice_deployment (singleton) {
             singleton -> Bool,
             since_ms -> Int8,
@@ -1404,6 +1435,7 @@ pub mod hagency_agent_v1 {
             worker_token -> Nullable<Text>,
             worker_until_ms -> Int8,
             matrix_event_id -> Nullable<Text>,
+            content -> Nullable<Text>,
         }
     }
 
@@ -1509,6 +1541,7 @@ pub mod hagency_agent_v1 {
     diesel::joinable!(encrypted_dispatches -> owner_events (dispatch_id));
     diesel::joinable!(encrypted_publications -> encrypted_dispatches (dispatch_id));
     diesel::joinable!(event_attachments -> owner_events (dispatch_id));
+    diesel::joinable!(execution_history_snapshots -> agents (agent_id));
     diesel::joinable!(execution_leases -> agents (agent_id));
     diesel::joinable!(execution_leases -> devices (device_id));
     diesel::joinable!(execution_leases -> users (owner_user_id));
@@ -1541,6 +1574,7 @@ pub mod hagency_agent_v1 {
     diesel::joinable!(management_agent_requests -> management_resource_grants (pool_grant_id));
     diesel::joinable!(management_agent_requests -> projects (domain_project_id));
     diesel::joinable!(management_agent_runtime_commands -> management_shared_assignments (assignment_id));
+    diesel::joinable!(management_agent_runtime_cursors -> devices (executor_device_id));
     diesel::joinable!(management_agent_runtime_observations -> management_agent_runtime_commands (command_id));
     diesel::joinable!(management_agent_settlement_commands -> management_agent_executor_commands (fence_id));
     diesel::joinable!(management_agent_settlement_commands -> management_agent_requests (request_id));
@@ -1645,6 +1679,7 @@ pub mod hagency_agent_v1 {
     diesel::joinable!(reply_outbox -> bindings (binding_id));
     diesel::joinable!(reply_outbox -> owner_events (owner_event_id));
     diesel::joinable!(reply_outbox -> users (owner_user_id));
+    diesel::joinable!(request_notice_candidates -> owner_events (owner_event_id));
     diesel::joinable!(request_notice_outbox -> owner_events (owner_event_id));
     diesel::joinable!(rooms -> projects (project_id));
     diesel::joinable!(routing_jobs -> inbound_transactions (transaction_id));
@@ -1672,6 +1707,7 @@ pub mod hagency_agent_v1 {
         encrypted_dispatches,
         encrypted_publications,
         event_attachments,
+        execution_history_snapshots,
         execution_leases,
         executor_matrix_devices,
         file_chunks,
@@ -1694,6 +1730,7 @@ pub mod hagency_agent_v1 {
         management_agent_renewal_cursors,
         management_agent_requests,
         management_agent_runtime_commands,
+        management_agent_runtime_cursors,
         management_agent_runtime_observations,
         management_agent_settlement_commands,
         management_agent_settlement_issuance,
@@ -1763,6 +1800,8 @@ pub mod hagency_agent_v1 {
         readiness_receipts,
         readiness_room,
         reply_outbox,
+        request_notice_candidate_deployment,
+        request_notice_candidates,
         request_notice_deployment,
         request_notice_outbox,
         rooms,

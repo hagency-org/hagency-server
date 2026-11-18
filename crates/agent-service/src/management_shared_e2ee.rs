@@ -1,8 +1,10 @@
 //! The assigned executor is a normal Matrix device. This journal holds only
 //! event references and delivery receipts, never plaintext or encryption keys.
-use super::*;
-use crate::{matrix_client::MatrixClient, transport::RoutedEvent};
 use serde_json::{Value, json};
+
+use super::*;
+use crate::matrix_client::MatrixClient;
+use crate::transport::RoutedEvent;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -112,7 +114,10 @@ impl DomainStore {
         // encrypted events. Keep the original timestamp and validate future
         // input against its source clock; later authorization still uses the
         // database's period, control-generation, and expiry checks.
-        if received > crate::api::now_ms() || event.sender_mxid.starts_with("@_hagency_") {
+        if received > crate::api::now_ms() {
+            return Err(Error::Unavailable("shared_intake_clock_changed"));
+        }
+        if event.sender_mxid.starts_with("@_hagency_") {
             return Ok(());
         }
         sql_query("DELETE FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE received_at_ms<=$1").bind::<BigInt,_>(now-86_400_000).execute(&mut *db).await?;
@@ -302,32 +307,57 @@ impl DomainStore {
         Ok(json!({"confirmed":addressed}))
     }
     pub(crate) async fn revoke_shared_crypto_devices(&self, matrix: &MatrixClient) -> Result<()> {
-        let mut db = self.db.lock().await?;
-        let devices=sql_query("SELECT * FROM hagency_agent_v1.executor_matrix_devices WHERE kind='shared' AND NOT revoked ORDER BY scope_id,device_id")
-            .load::<Device>(&mut *db).await?;
+        // Scan fairly in a bounded batch. Network logout must not hold the
+        // DomainStore guard and block unrelated management and work requests.
         let mut failure = None;
-        for d in devices {
-            let result: Result<()> = async {
-            let assignment = match intake::assignment(&mut db, &d.scope_id).await {
-                Ok(w) => Some(w), Err(Error::NotFound(_)) => None, Err(e) => return Err(e),
-            };
-            let now = clock(&mut db).await?;
-            let live = if let Some(w) = assignment { !d.retiring && w.executor_device_id == d.executor_device_id
-                && w.executor_generation == d.executor_generation
-                && intake::member(&mut db, &d.scope_id).await.is_ok()
-                && intake::running(&mut db, &d.scope_id).await?
-                && intake::retainable(&mut db, &d.scope_id, &w, &self.server, now).await?
-            } else { false };
-            if !live {
-                sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET retiring=true WHERE scope_id=$1 AND device_id=$2").bind::<Text,_>(&d.scope_id).bind::<Text,_>(&d.device_id).execute(&mut *db).await?;
-                matrix.logout_device(&d.puppet_mxid, &d.device_id).await?;
-                sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET revoked=true WHERE scope_id=$1 AND device_id=$2")
-                    .bind::<Text,_>(&d.scope_id).bind::<Text,_>(&d.device_id).execute(&mut *db).await?;
+        let retiring = {
+            let mut db = self.db.lock().await?;
+            let devices=sql_query("SELECT * FROM hagency_agent_v1.executor_matrix_devices WHERE kind='shared' AND NOT revoked ORDER BY last_checked_ms,scope_id,device_id LIMIT 8").load::<Device>(&mut *db).await?;
+            let mut retiring = Vec::new();
+            for d in devices {
+                let now = clock(&mut db).await?;
+                sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET last_checked_ms=greatest(last_checked_ms+1,$3) WHERE scope_id=$1 AND device_id=$2").bind::<Text,_>(&d.scope_id).bind::<Text,_>(&d.device_id).bind::<BigInt,_>(now).execute(&mut *db).await?;
+                let live: Result<bool> = async {
+                    let assignment = match intake::assignment(&mut db, &d.scope_id).await {
+                        Ok(w) => Some(w),
+                        Err(Error::NotFound(_)) => None,
+                        Err(e) => return Err(e),
+                    };
+                    if let Some(w) = assignment {
+                        Ok(!d.retiring
+                            && w.executor_device_id == d.executor_device_id
+                            && w.executor_generation == d.executor_generation
+                            && intake::member(&mut db, &d.scope_id).await.is_ok()
+                            && intake::running(&mut db, &d.scope_id).await?
+                            && intake::retainable(&mut db, &d.scope_id, &w, &self.server, now)
+                                .await?)
+                    } else {
+                        Ok(false)
+                    }
+                }
+                .await;
+                match live {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET retiring=true WHERE scope_id=$1 AND device_id=$2").bind::<Text,_>(&d.scope_id).bind::<Text,_>(&d.device_id).execute(&mut *db).await?;
+                        retiring.push(d);
+                    }
+                    Err(e) => {
+                        failure.get_or_insert(e);
+                    }
+                }
             }
-            Ok(())
+            retiring
+        };
+        for d in retiring {
+            let result:Result<()>=async {
+                matrix.logout_device(&d.puppet_mxid,&d.device_id).await?;
+                let mut db=self.db.lock().await?;
+                sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET revoked=true WHERE scope_id=$1 AND device_id=$2 AND retiring AND NOT revoked").bind::<Text,_>(&d.scope_id).bind::<Text,_>(&d.device_id).execute(&mut *db).await?;
+                Ok(())
             }.await;
-            if let Err(error) = result {
-                failure.get_or_insert(error);
+            if let Err(e) = result {
+                failure.get_or_insert(e);
             }
         }
         failure.map_or(Ok(()), Err)

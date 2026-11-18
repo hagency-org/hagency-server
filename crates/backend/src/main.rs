@@ -1,8 +1,18 @@
+#![recursion_limit = "256"]
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
 use clap::Parser;
-use hagency_server::{MatrixServer, browser_auth::BrowserAuth, config::Config, frontend::Frontend};
+use hagency_server::MatrixServer;
+use hagency_server::browser_auth::BrowserAuth;
+use hagency_server::config::Config;
+use hagency_server::frontend::Frontend;
 use salvo::prelude::*;
-use std::{path::PathBuf, sync::Arc, time::Duration};
-use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Parser)]
 #[command(
@@ -212,6 +222,7 @@ async fn run() -> anyhow::Result<()> {
             &conf.database_url,
             hagency_agent_service::transport::Limits {
                 event_ttl_ms: conf.queue.event_ttl_ms,
+                worker_lease_ms: conf.queue.lease_ms,
                 ..Default::default()
             },
         )

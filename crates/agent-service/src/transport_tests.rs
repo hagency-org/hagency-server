@@ -1,9 +1,7 @@
 use super::*;
-use crate::{
-    domain::{AdminFacts, CreateBoundAgent, DomainStore, RoomFacts},
-    identity::Identity,
-    store::{RegisterDevice, Store},
-};
+use crate::domain::{AdminFacts, CreateBoundAgent, DomainStore, RoomFacts};
+use crate::identity::Identity;
+use crate::store::{RegisterDevice, Store};
 struct Fixture {
     auth: Store,
     domain: DomainStore,
@@ -1563,7 +1561,7 @@ async fn postgres_delayed_appservice_routing_never_resets_the_original_request_t
                 now
             )
             .await,
-        Err(Error::Invalid("invalid_event_received_time"))
+        Err(Error::Unavailable("event_received_clock_changed"))
     ));
     let original = now - 10_000;
     let RouteResult::Queued { dispatch_id } = f
@@ -2781,7 +2779,13 @@ async fn postgres_group_mentions_override_legacy_thread_auto_reply() {
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_failed_request_feedback_is_idempotent_and_next_request_runs() {
-    let f = fixture().await;
+    isolated_notice_fixture("failed_feedback", |url| async move {
+        failed_request_feedback_is_idempotent(&url).await;
+    })
+    .await;
+}
+async fn failed_request_feedback_is_idempotent(url: &str) {
+    let f = fixture_at(url).await;
     let now = crate::api::now_ms();
     let lease = LeaseRef {
         agent_id: f.agent.clone(),
@@ -2839,6 +2843,11 @@ async fn postgres_failed_request_feedback_is_idempotent_and_next_request_runs() 
         .await
         .unwrap();
     assert_eq!(retry.matrix_txn_id, first.matrix_txn_id);
+    assert!(first.content.is_some());
+    assert_eq!(
+        retry.content, first.content,
+        "same Matrix transaction retains first observation and exact body"
+    );
     f.transport
         .confirm_request_notice(
             &retry.id,
@@ -2867,7 +2876,39 @@ async fn postgres_failed_request_feedback_is_idempotent_and_next_request_runs() 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_delivery_feedback_uses_reply_age_and_suppresses_sent_answers() {
-    let f = fixture().await;
+    isolated_notice_fixture("delivery_feedback", |url| async move {
+        delivery_feedback_uses_reply_age(&url).await;
+    })
+    .await;
+}
+
+/// Any scenario asserting a particular request-notice page owns a database.
+/// This keeps bounded scheduler batches independent of unrelated test history;
+/// watermark/backdated-row cases also cannot change another case's eligibility.
+async fn isolated_notice_fixture<F, Fut>(purpose: &str, run: F)
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let source = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let name = format!("hagency_notice_{purpose}_{}", &hash(&secret_token())[..16]);
+    let mut admin = AsyncPgConnection::establish(&source).await.unwrap();
+    admin
+        .batch_execute(&format!("CREATE DATABASE {name}"))
+        .await
+        .unwrap();
+    let mut url = url::Url::parse(&source).unwrap();
+    url.set_path(&name);
+    let result = tokio::spawn(run(url.into())).await;
+    // Cleanup also runs when a scenario panics; preserve its failure afterward.
+    admin
+        .batch_execute(&format!("DROP DATABASE {name} WITH (FORCE)"))
+        .await
+        .unwrap();
+    result.unwrap();
+}
+async fn delivery_feedback_uses_reply_age(url: &str) {
+    let f = fixture_at(url).await;
     let now = crate::api::now_ms();
     let lease = LeaseRef {
         agent_id: f.agent.clone(),
@@ -2898,8 +2939,7 @@ async fn postgres_delivery_feedback_uses_reply_age_and_suppresses_sent_answers()
             .replace("AND r.created_at_ms<=", "AND e.created_at_ms<=");
         db.batch_execute(&old).await.unwrap();
     }
-    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-    TransportStore::open(&url, Limits::default()).await.unwrap();
+    TransportStore::open(url, Limits::default()).await.unwrap();
     let reply = f
         .transport
         .submit_reply(
@@ -2977,7 +3017,13 @@ async fn postgres_delivery_feedback_uses_reply_age_and_suppresses_sent_answers()
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_offline_feedback_keeps_request_queued_and_stale_notice_is_suppressed() {
-    let f = fixture().await;
+    isolated_notice_fixture("offline_feedback", |url| async move {
+        offline_feedback_keeps_request_queued(&url).await;
+    })
+    .await;
+}
+async fn offline_feedback_keeps_request_queued(url: &str) {
+    let f = fixture_at(url).await;
     let now = crate::api::now_ms();
     let id = enqueue(&f, "offline-feedback").await;
     assert!(
@@ -3133,7 +3179,13 @@ async fn postgres_offline_feedback_keeps_request_queued_and_stale_notice_is_supp
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn postgres_lost_start_can_retire_unstarted_offer_without_poisoning_next_request() {
-    let f = fixture().await;
+    isolated_notice_fixture("lost_start", |url| async move {
+        lost_start_retires_unstarted_offer(&url).await;
+    })
+    .await;
+}
+async fn lost_start_retires_unstarted_offer(url: &str) {
+    let f = fixture_at(url).await;
     let now = crate::api::now_ms();
     let lease = LeaseRef {
         agent_id: f.agent.clone(),
@@ -3421,3 +3473,350 @@ async fn encrypted_personal_group_waits_for_local_addressing_before_dispatch() {
         RouteResult::Duplicate { .. }
     ));
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn trusted_future_receipt_is_retryable_without_consuming_the_event() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    let event = event(&f, "future-clock-retry", true, None);
+    let received = now + 10_000;
+    assert!(matches!(
+        f.transport
+            .ingest_routed_received(&f.binding, event.clone(), &f.facts, received, now)
+            .await,
+        Err(Error::Unavailable("event_received_clock_changed"))
+    ));
+    let value = f
+        .transport
+        .ingest_routed_received(&f.binding, event, &f.facts, received, received)
+        .await
+        .unwrap();
+    assert!(matches!(value, RouteResult::Queued { .. }));
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn explicit_device_revocation_between_puppet_lookup_and_issuance_rejects_login() {
+    let f = fixture().await;
+    let now = crate::api::now_ms();
+    let lease = f
+        .transport
+        .acquire_for_test(&f.p, &f.agent, 60_000, false, now)
+        .await
+        .unwrap();
+    let lease = LeaseRef {
+        agent_id: lease.agent_id,
+        epoch: lease.epoch,
+    };
+    let puppet = f.transport.leased_puppet(&f.p, &lease, now).await.unwrap();
+    f.auth
+        .revoke_device(&f.credential, f.p.device_id.as_deref().unwrap(), now)
+        .await
+        .unwrap();
+    let matrix = crate::matrix_client::MatrixClient::new(
+        url::Url::parse("http://127.0.0.1:1").unwrap(),
+        "test-only".into(),
+        "example.test".into(),
+    )
+    .unwrap();
+    assert!(matches!(
+        f.transport
+            .issue_matrix_device(&f.p, &lease, &puppet, "HAGE2EEREVOKEDRACE", &matrix)
+            .await,
+        Err(Error::Unauthorized(_))
+    ));
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_public_agent_catalog_cursor_reaches_every_page_without_private_fields() {
+    let f = fixture().await;
+    let other = fixture().await;
+    let prefix = format!("agt_catalog_{}", secret_token());
+    {
+        let mut db = f.transport.db.test_connection().await.unwrap();
+        // Seed public identities through the normal schema and INSERT triggers.
+        // Distinct active/suspended entries exercise both discoverable states.
+        sql_query("INSERT INTO hagency_agent_v1.agents(id,owner_user_id,puppet_mxid,execution_device_id,display_name,state,visibility) SELECT $1||'_'||lpad(n::text,4,'0'),$2,'@_hagency_test_catalog_'||$1||'_'||n||':example.test',$3,'Catalog '||n,CASE WHEN n%2=0 THEN 'active' ELSE 'suspended' END,'public' FROM generate_series(0,299) n")
+            .bind::<Text,_>(&prefix).bind::<Text,_>(&f.p.user_id).bind::<Text,_>(f.p.device_id.as_deref().unwrap()).execute(&mut *db).await.unwrap();
+        sql_query("INSERT INTO hagency_agent_v1.agents(id,owner_user_id,puppet_mxid,execution_device_id,display_name,state,visibility) VALUES($1,$2,$3,$4,'Hidden catalog entry','active','private')")
+            .bind::<Text,_>(format!("{prefix}_private")).bind::<Text,_>(&f.p.user_id).bind::<Text,_>(format!("@_hagency_test_{prefix}_private:example.test")).bind::<Text,_>(f.p.device_id.as_deref().unwrap()).execute(&mut *db).await.unwrap();
+    }
+    let mut after = None::<String>;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut own_entries = std::collections::BTreeSet::new();
+    let mut pages = 0;
+    loop {
+        let (page, next) = f
+            .domain
+            .discover_agents_page(&other.p, after.as_deref(), crate::api::now_ms())
+            .await
+            .unwrap();
+        assert!(page.len() <= 256);
+        assert!(page.windows(2).all(|rows| rows[0].id < rows[1].id));
+        for entry in &page {
+            assert!(
+                after
+                    .as_deref()
+                    .is_none_or(|cursor| entry.id.as_str() > cursor)
+            );
+            assert!(
+                seen.insert(entry.id.clone()),
+                "cursor must not duplicate entries"
+            );
+            assert_ne!(entry.id, format!("{prefix}_private"));
+            if entry.id.starts_with(&prefix) {
+                assert!(!entry.is_mine);
+                let encoded = serde_json::to_value(entry).unwrap();
+                for field in [
+                    "ownerUserId",
+                    "executionDeviceId",
+                    "ownerDirectRoomId",
+                    "token",
+                ] {
+                    assert!(encoded.get(field).is_none());
+                }
+                own_entries.insert(entry.id.clone());
+            }
+        }
+        pages += 1;
+        assert!(pages < 50, "cursor must terminate");
+        if let Some(cursor) = next {
+            assert_eq!(page.len(), 256);
+            assert_eq!(page.last().unwrap().id, cursor);
+            after = Some(cursor);
+        } else {
+            break;
+        }
+    }
+    assert!(pages >= 2);
+    assert_eq!(
+        own_entries.len(),
+        300,
+        "the old single-page limit silently lost later Agents"
+    );
+    for n in 0..300 {
+        assert!(own_entries.contains(&format!("{prefix}_{n:04}")));
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_notice_deadline_uses_database_clock_and_terminal_queue_stays_empty() {
+    isolated_notice_fixture("clock", |url| async move {
+        audit_notice_clock_deadline(&url).await;
+    })
+    .await;
+}
+async fn audit_notice_clock_deadline(url: &str) {
+    let f = fixture_at(url).await;
+    let id = enqueue(&f, "notice-clock-boundary").await;
+    {
+        let mut db = f.transport.db.test_connection().await.unwrap();
+        // Lower the fixture's clock only to one second before the waiting
+        // threshold. A fast API host must not consume this future deadline.
+        sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=(extract(epoch from clock_timestamp())*1000)::bigint-29000 WHERE id=$1").bind::<Text,_>(&id).execute(&mut *db).await.unwrap();
+        sql_query("UPDATE hagency_agent_v1.request_notice_deployment SET since_ms=(extract(epoch from clock_timestamp())*1000)::bigint-31000").execute(&mut *db).await.unwrap();
+    }
+    let early = f
+        .transport
+        .request_notice_candidates("", crate::api::now_ms() + 5000)
+        .await
+        .unwrap();
+    assert!(early.iter().all(|notice| notice.owner_event_id != id));
+    #[derive(diesel::QueryableByName)]
+    struct Scheduled {
+        #[diesel(sql_type=diesel::sql_types::Bool)]
+        matched: bool,
+    }
+    {
+        let mut db = f.transport.db.test_connection().await.unwrap();
+        assert!(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.request_notice_candidates WHERE owner_event_id=$1) AS matched").bind::<Text,_>(&id).get_result::<Scheduled>(&mut *db).await.unwrap().matched,"an API clock lead must not drop the scheduled event");
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let due = f
+        .transport
+        .request_notice_candidates("", crate::api::now_ms())
+        .await
+        .unwrap();
+    let notice = due
+        .iter()
+        .find(|notice| notice.owner_event_id == id)
+        .expect("the same deadline becomes due on the database clock");
+    assert_eq!(notice.kind, "waiting");
+    let claimed = f
+        .transport
+        .claim_request_notice(&notice.id, &f.facts, crate::api::now_ms())
+        .await
+        .unwrap();
+    f.transport
+        .confirm_request_notice(
+            &notice.id,
+            claimed.worker_token.as_deref().unwrap(),
+            &Ok("$notice-clock-sent:example.test".into()),
+            crate::api::now_ms(),
+        )
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        assert!(
+            f.transport
+                .request_notice_candidates("", crate::api::now_ms())
+                .await
+                .unwrap()
+                .iter()
+                .all(|n| n.owner_event_id != id)
+        );
+        let mut db = f.transport.db.test_connection().await.unwrap();
+        assert!(!sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.request_notice_candidates WHERE owner_event_id=$1) AS matched").bind::<Text,_>(&id).get_result::<Scheduled>(&mut *db).await.unwrap().matched,"terminal history must not be scheduled and evaluated again on every tick");
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_request_notice_backlog_makes_bounded_progress_without_duplicates_or_rearming() {
+    isolated_notice_fixture("backlog", |url| async move {
+        request_notice_backlog_progress(&url).await;
+    })
+    .await;
+}
+async fn request_notice_backlog_progress(url: &str) {
+    const REQUESTS: usize = 137; // More than two 64-row maintenance batches.
+    let mut f = fixture_at(url).await;
+    let lease = LeaseRef {
+        agent_id: f.agent.clone(),
+        epoch: f
+            .transport
+            .acquire_for_test(&f.p, &f.agent, 60000, false, crate::api::now_ms())
+            .await
+            .unwrap()
+            .epoch,
+    };
+    let mut expected = BTreeSet::new();
+    // Build real failed dispatches through claim/ACK/start/finish, preserving
+    // normal identity, authorization and scheduler-trigger behavior.
+    for index in 0..REQUESTS {
+        let now = crate::api::now_ms();
+        f.facts.observed_at_ms = now;
+        if index % 16 == 0 {
+            f.transport
+                .renew_lease(&f.p, &lease, 60000, now)
+                .await
+                .unwrap();
+        }
+        let id = enqueue(&f, &format!("notice-backlog-{index:03}")).await;
+        let execution = format!("notice-backlog-execution-{index:03}");
+        running(&f, &lease, &id, &execution).await;
+        f.transport
+            .finish_without_reply(
+                &f.p,
+                &lease,
+                &id,
+                &execution,
+                "failed",
+                crate::api::now_ms(),
+            )
+            .await
+            .unwrap();
+        assert!(expected.insert(id));
+    }
+    #[derive(diesel::QueryableByName)]
+    struct Progress {
+        #[diesel(sql_type=BigInt)]
+        scheduled: i64,
+        #[diesel(sql_type=BigInt)]
+        outbox: i64,
+        #[diesel(sql_type=BigInt)]
+        sent: i64,
+    }
+    async fn progress(f: &Fixture) -> Progress {
+        let mut db = f.transport.db.test_connection().await.unwrap();
+        sql_query("SELECT (SELECT count(*) FROM hagency_agent_v1.request_notice_candidates) AS scheduled,(SELECT count(*) FROM hagency_agent_v1.request_notice_outbox) AS outbox,(SELECT count(*) FROM hagency_agent_v1.request_notice_outbox WHERE state='sent') AS sent").get_result::<Progress>(&mut *db).await.unwrap()
+    }
+    let initial = progress(&f).await;
+    assert_eq!(initial.scheduled, REQUESTS as i64);
+    assert_eq!((initial.outbox, initial.sent), (0, 0));
+    let mut delivered = BTreeSet::new();
+    let mut cursor = String::new();
+    let mut rounds = 0;
+    loop {
+        let before = progress(&f).await;
+        let page = f
+            .transport
+            .request_notice_candidates(&cursor, crate::api::now_ms())
+            .await
+            .unwrap();
+        let after = progress(&f).await;
+        assert!(
+            page.len() <= 20,
+            "the returned delivery window stays bounded"
+        );
+        assert_eq!(
+            before.scheduled - after.scheduled,
+            before.scheduled.min(64),
+            "one tick maintains at most 64 due requests"
+        );
+        assert_eq!(after.outbox - before.outbox, before.scheduled.min(64));
+        if rounds == 0 {
+            assert_eq!(after.scheduled, (REQUESTS - 64) as i64);
+            assert_eq!((after.outbox, page.len()), (64, 20));
+        }
+        if page.is_empty() {
+            break;
+        }
+        rounds += 1;
+        assert!(rounds <= REQUESTS, "a finite backlog must make progress");
+        for notice in page {
+            assert!(expected.contains(&notice.owner_event_id));
+            assert_eq!(notice.kind, "failed");
+            assert!(
+                delivered.insert(notice.owner_event_id.clone()),
+                "confirmed notifications must never appear in a later window"
+            );
+            f.facts.observed_at_ms = crate::api::now_ms();
+            let claimed = f
+                .transport
+                .claim_request_notice(&notice.id, &f.facts, crate::api::now_ms())
+                .await
+                .unwrap();
+            f.transport
+                .confirm_request_notice(
+                    &notice.id,
+                    claimed.worker_token.as_deref().unwrap(),
+                    &Ok(format!("$backlog-notice-{}:example.test", delivered.len())),
+                    crate::api::now_ms(),
+                )
+                .await
+                .unwrap();
+            cursor = notice.id;
+        }
+        assert_eq!(progress(&f).await.sent, delivered.len() as i64);
+    }
+    assert_eq!(
+        delivered, expected,
+        "all requests beyond the first maintenance batch must eventually be notified"
+    );
+    assert_eq!(rounds, REQUESTS.div_ceil(20));
+    for _ in 0..3 {
+        assert!(
+            f.transport
+                .request_notice_candidates(&cursor, crate::api::now_ms())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let state = progress(&f).await;
+        assert_eq!(
+            state.scheduled, 0,
+            "terminal notices must not be requeued for repeated historical evaluation"
+        );
+        assert_eq!(
+            (state.outbox, state.sent),
+            (REQUESTS as i64, REQUESTS as i64)
+        );
+    }
+}
+
+#[path = "transport_e2ee_issuance_tests.rs"]
+mod issuance_tests;

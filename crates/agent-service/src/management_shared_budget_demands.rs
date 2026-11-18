@@ -29,7 +29,10 @@ fn original_block_evidence(b: Block) -> Result<SharedOriginalBudgetBlock> {
     }
     let value: serde_json::Value = serde_json::from_str(&b.payload)
         .map_err(|_| Error::Conflict("shared_demand_block_changed"))?;
-    if value["reason"] != b.reason {
+    // Legacy automatic exhaustion stored this exact JSON string. Its raw hash
+    // still authenticates the evidence; do not reinterpret other scalar blocks.
+    let legacy = b.reason == "budget_blocked" && value == "known_consumption_exhausted";
+    if value["reason"] != b.reason && !legacy {
         return Err(Error::Conflict("shared_demand_block_changed"));
     }
     Ok(SharedOriginalBudgetBlock {
@@ -243,7 +246,7 @@ impl DomainStore {
                     if h.id!=expected || s.is_some()&&h.state=="stopped" {terminal(db,&d,"head_changed").await?;continue;}
                     if original_block(db,&d.id).await?.is_some_and(|b|b.reason!="budget_blocked"){break;}
                     if s.is_none()&&known>=pin.effective_ceiling_tokens {
-                        let payload=wire(&json!({"reason":"known_consumption_exhausted","executionBudget":pin}))?;block(db,&d,&pin,"budget_blocked",&payload).await?;break;
+                        let payload=wire(&json!({"reason":"budget_blocked","source":"known_consumption_exhausted","executionBudget":pin}))?;block(db,&d,&pin,"budget_blocked",&payload).await?;break;
                     }
                     // An old live process is never upgraded in place.
                     if s.is_none()&&h.state!="stopped"&&runtime_version(&h)?!=3 {break;}
@@ -355,7 +358,7 @@ pub(in super::super) async fn promote(
             &d,
             &pin,
             "budget_blocked",
-            "\"known_consumption_exhausted\"",
+            r#"{"reason":"budget_blocked","source":"known_consumption_exhausted"}"#,
         )
         .await?;
         return Ok(());
@@ -415,4 +418,55 @@ pub(in super::super) async fn promote(
     .await?;
     sql_query("UPDATE hagency_agent_v1.management_shared_intake SET state='bound',reason=NULL WHERE id=$1 AND state='pending'").bind::<Text,_>(&q.id).execute(db).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod block_compatibility_tests {
+    use super::*;
+    #[test]
+    fn original_budget_block_accepts_only_authenticated_legacy_or_matching_object() {
+        for payload in [
+            r#""known_consumption_exhausted""#,
+            r#"{"reason":"budget_blocked","source":"known_consumption_exhausted"}"#,
+        ] {
+            let proof = original_block_evidence(Block {
+                reason: "budget_blocked".into(),
+                payload: payload.into(),
+                digest: hash(payload),
+            })
+            .unwrap();
+            assert_eq!(
+                proof.payload_digest,
+                allocation_digest(&serde_json::from_str::<serde_json::Value>(payload).unwrap())
+                    .unwrap()
+            );
+        }
+        for (reason, payload, digest) in [
+            (
+                "other",
+                r#""known_consumption_exhausted""#,
+                hash(r#""known_consumption_exhausted""#),
+            ),
+            ("budget_blocked", r#""other""#, hash(r#""other""#)),
+            (
+                "budget_blocked",
+                r#"{"reason":"other"}"#,
+                hash(r#"{"reason":"other"}"#),
+            ),
+            (
+                "budget_blocked",
+                r#""known_consumption_exhausted""#,
+                "0".repeat(64),
+            ),
+        ] {
+            assert!(
+                original_block_evidence(Block {
+                    reason: reason.into(),
+                    payload: payload.into(),
+                    digest
+                })
+                .is_err()
+            );
+        }
+    }
 }

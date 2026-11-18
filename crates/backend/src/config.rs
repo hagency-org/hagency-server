@@ -1,9 +1,8 @@
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+
 use anyhow::Context;
 use serde::Deserialize;
-use std::{
-    net::SocketAddr,
-    path::{Path, PathBuf},
-};
 use url::Url;
 
 #[derive(Clone, Deserialize)]
@@ -121,6 +120,33 @@ impl Default for QueueConfig {
             lease_ms: 30000,
             event_ttl_ms: 86_400_000,
         }
+    }
+}
+impl QueueConfig {
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.max_pending > 0 && self.max_records > 0 && self.max_bytes > 0,
+            "queue limits must be positive"
+        );
+        anyhow::ensure!(
+            (1_000..=120_000).contains(&self.lease_ms),
+            "queue lease_ms must be between one second and two minutes"
+        );
+        anyhow::ensure!(
+            (1_000..=2_592_000_000).contains(&self.event_ttl_ms),
+            "queue event_ttl_ms must be between one second and thirty days"
+        );
+        Ok(())
+    }
+}
+impl HostConfig {
+    pub(crate) fn browser_session_ttl_ms(&self) -> anyhow::Result<u64> {
+        let ttl = self.session_ttl_ms.unwrap_or(1_800_000);
+        anyhow::ensure!(
+            (1_000..=86_400_000).contains(&ttl),
+            "browser session TTL must be between one second and one day"
+        );
+        Ok(ttl)
     }
 }
 fn board_enabled() -> bool {
@@ -242,19 +268,10 @@ impl Config {
         }
 
         origin(&self.public_origin, true)?;
+        self.queue.validate()?;
+        self.browser_session_ttl_ms()?;
         anyhow::ensure!(
-            self.queue.max_pending > 0
-                && self.queue.max_records > 0
-                && self.queue.max_bytes > 0
-                && self.queue.lease_ms > 0,
-            "queue limits must be positive"
-        );
-        anyhow::ensure!(
-            (1_000..=2_592_000_000).contains(&self.queue.event_ttl_ms),
-            "queue event_ttl_ms must be between one second and thirty days"
-        );
-        anyhow::ensure!(
-            self.session_ttl_ms.unwrap_or(1800000) > 0 && self.read_timeout_ms.unwrap_or(8000) > 0,
+            self.read_timeout_ms.unwrap_or(8000) > 0,
             "timeouts must be positive"
         );
         anyhow::ensure!(
@@ -354,8 +371,42 @@ pub fn origin(url: &Url, public: bool) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod encrypted_delivery_tests {
-    use super::HostConfig;
     use hagency_agent_service::transport::EncryptedDelivery;
+
+    use super::HostConfig;
+
+    #[test]
+    fn startup_and_check_config_share_browser_ttl_boundaries() {
+        let base = "listen='127.0.0.1:8088'\npublic_origin='http://127.0.0.1:8088'\ndatabase_url='postgres://localhost/hagency'\npalpo_config='palpo.toml'\n";
+        for (ttl, valid) in [
+            (0, false),
+            (999, false),
+            (1_000, true),
+            (86_400_000, true),
+            (86_400_001, false),
+        ] {
+            let config: HostConfig =
+                toml::from_str(&format!("{base}session_ttl_ms={ttl}\n")).unwrap();
+            assert_eq!(config.browser_session_ttl_ms().is_ok(), valid, "{ttl}");
+        }
+        for (lease_ms, valid) in [
+            (999, false),
+            (1_000, true),
+            (120_000, true),
+            (120_001, false),
+        ] {
+            assert_eq!(
+                super::QueueConfig {
+                    lease_ms,
+                    ..Default::default()
+                }
+                .validate()
+                .is_ok(),
+                valid,
+                "{lease_ms}"
+            );
+        }
+    }
 
     #[test]
     fn personal_encrypted_delivery_defaults_to_executor_and_accepts_brokered_mode() {

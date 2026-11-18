@@ -1,11 +1,9 @@
 //! Recurring approvals are durable executor commands. Central state describes
 //! native authorization; it never fabricates a reservation or resets usage.
 use super::*;
-use crate::{
-    management_agent_executor_types::*,
-    management_pool_types::*,
-    recurring_quota::{Calendar, Period, RenewalMode},
-};
+use crate::management_agent_executor_types::*;
+use crate::management_pool_types::*;
+use crate::recurring_quota::{Calendar, Period, RenewalMode};
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,7 +104,7 @@ pub(super) async fn projection(
         Err(e) => return Err(e),
     };
     let consumed = known(db, &r.id, &period).await?;
-    let unsettled=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes x ON x.id=w.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=x.assignment_id WHERE a.request_id=$1 AND w.created_at_ms>=$2 AND w.created_at_ms<$3 AND NOT w.usage_complete AND w.state<>'cancelled' AND x.state<>'stopped') AS matched").bind::<Text,_>(&r.id).bind::<BigInt,_>(period.start_ms as i64).bind::<BigInt,_>(period.end_ms as i64).get_result::<Flag>(db).await?.matched;
+    let unsettled=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes x ON x.id=w.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=x.assignment_id WHERE a.request_id=$1 AND w.created_at_ms>=$2 AND w.created_at_ms<$3 AND NOT w.usage_complete AND (w.state<>'cancelled' OR w.started_at_ms IS NOT NULL)) AS matched").bind::<Text,_>(&r.id).bind::<BigInt,_>(period.start_ms as i64).bind::<BigInt,_>(period.end_ms as i64).get_result::<Flag>(db).await?.matched;
     let new_period = original
         .as_ref()
         .and_then(|c| c.pool_grant.as_ref())

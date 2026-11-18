@@ -1,8 +1,6 @@
 //! Rich Matrix replies retain the original Markdown body and exact relations.
-use palpo_core::{
-    events::room::message::FormattedBody,
-    html::{HtmlSanitizerMode, RemoveReplyFallback},
-};
+use palpo_core::events::room::message::FormattedBody;
+use palpo_core::html::{HtmlSanitizerMode, RemoveReplyFallback};
 use serde_json::Value;
 
 pub(crate) fn add_markdown(content: &mut Value) {
@@ -26,6 +24,19 @@ pub(crate) fn add_markdown(content: &mut Value) {
             "Agent rich reply exceeds Matrix envelope; retaining complete Markdown body"
         );
     }
+}
+
+/// This is a content budget, not a proof about the homeserver's signed PDU.
+/// Leave envelope space and reject before committing an immutable send intent.
+pub(crate) fn validate_content(content: &Value) -> crate::Result<()> {
+    if serde_json::to_vec(content)
+        .map_err(|_| crate::Error::Invalid("invalid_reply"))?
+        .len()
+        > 60 * 1024
+    {
+        return Err(crate::Error::Invalid("matrix_message_too_large"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -53,6 +64,16 @@ mod tests {
         assert!(!html.contains("<script") && !html.contains("href=\"javascript:"));
     }
 
+    #[test]
+    fn plaintext_reply_budget_counts_json_escaping_and_relations() {
+        let content = reply_content(false, "!room:x", "$thread", &"x".repeat(64 * 1024));
+        assert!(super::validate_content(&content).is_err());
+        let escaped = reply_content(false, "!room:x", "$thread", &"\t".repeat(32 * 1024));
+        assert!(super::validate_content(&escaped).is_err());
+        assert!(
+            super::validate_content(&reply_content(false, "!room:x", "$thread", "answer")).is_ok()
+        );
+    }
     #[test]
     fn rich_reply_capacity_preserves_complete_plain_body() {
         let body = "**<&>**\n".repeat(4000);

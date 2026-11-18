@@ -1,15 +1,18 @@
 //! Durable owner delivery and replies. Host-only facts are never accepted from HTTP
 //! DTOs. ACK confirms local inbox persistence; execution start and completion are
 //! separate durable transitions. Unknown executions are never automatically rerun.
-use crate::{Error, Result, entity_id, hash, key, secret_token, store::Principal};
-use diesel::{BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl};
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use diesel::sql_types::{BigInt, Bool, Nullable, Text};
 use diesel::{
-    OptionalExtension, sql_query,
-    sql_types::{BigInt, Bool, Nullable, Text},
+    BoolExpressionMethods, ExpressionMethods, IntoSql, OptionalExtension, QueryDsl, sql_query,
 };
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, sync::Arc};
+
+use crate::store::Principal;
+use crate::{Error, Result, entity_id, hash, key, secret_token};
 
 #[path = "transport_attachments.rs"]
 mod attachments;
@@ -409,6 +412,7 @@ impl TransportStore {
                 .map_err(|_| Error::Conflict("attachment_schema_incompatible"))?;
             // Refresh the derived view for existing installations without changing journals.
             db.batch_execute(include_str!("request_notice_needed.sql")).await?;
+            db.batch_execute(include_str!("transport_recovery_schema.sql")).await?;
             db.batch_execute("SELECT id FROM hagency_agent_v1.processing_sendable LIMIT 0").await
                 .map_err(|_| Error::Conflict("processing_schema_incompatible"))?;
             db.batch_execute("SELECT delivery_epoch FROM hagency_agent_v1.reply_outbox LIMIT 0")
@@ -991,7 +995,8 @@ impl TransportStore {
 
         db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
             Self::lock(db).await?;let now=Self::clock(db,now).await?;let scope=Self::scope(db,binding).await?;
-            if received_at_ms < 0 || received_at_ms > now { return Err(Error::Invalid("invalid_event_received_time")); }
+            if received_at_ms < 0 { return Err(Error::Invalid("invalid_event_received_time")); }
+            if received_at_ms > now { return Err(Error::Unavailable("event_received_clock_changed")); }
             if received_at_ms <= now.saturating_sub(self.limits.event_ttl_ms) { return Err(Error::Conflict("event_expired")); }
             Self::expire_pending(db,self.limits.event_ttl_ms,now).await?;
             pause_notices::routing_facts(&scope,&event.sender_mxid,f,now)?;if event.room_id!=scope.room_id {return Err(Error::Unauthorized("event_room_mismatch"));}
@@ -1460,6 +1465,12 @@ impl TransportStore {
                     {
                         return Err(Error::Conflict("execution_not_running"));
                     }
+                    crate::reply_format::validate_content(&crate::workers::reply_content(
+                        scope.space_id.is_empty(),
+                        &scope.room_id,
+                        &e.thread_root,
+                        &request.body,
+                    ))?;
                     let id = format!("rep_{}", entity_id()?);
                     let txn = format!("hagency_{}", hash(&e.id));
                     {
@@ -1611,6 +1622,7 @@ impl TransportStore {
                 return Self::reply(db,&old.id).await;
             }
             if event.state!="unknown" {return Err(Error::Conflict("execution_not_reconcilable"));}
+            crate::reply_format::validate_content(&crate::workers::reply_content(scope.space_id.is_empty(),&scope.room_id,&event.thread_root,&request.body))?;
             let id=format!("rep_{}",entity_id()?);let txn=format!("hagency_{}",hash(&event.id));
             {
                 use crate::schema::agent_tables::reply_outbox as q;
@@ -1961,7 +1973,7 @@ impl TransportStore {
             })
             .await
     }
-    /// Exact sender observed Matrix HTTP 403 after the pre-send observation.
+    /// Exact sender observed a permanent Matrix refusal (403 or M_TOO_LARGE).
     /// Keep possible earlier network effects unknown, but prohibit every resend.
     pub(crate) async fn confirm_reply_permission_denied(
         &self,

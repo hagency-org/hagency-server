@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS hagency_agent_v1.management_agent_renewal_cursors (
 );
 CREATE OR REPLACE FUNCTION hagency_agent_v1.require_agent_allocation_generation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF NEW.pool_contribution_id IS NOT NULL AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests r WHERE r.room_id=NEW.room_id AND r.id<>NEW.id AND r.proposed_agent_id<>NEW.proposed_agent_id AND r.pool_contribution_id IS NOT NULL) THEN RAISE EXCEPTION 'pool_agent_room_used'; END IF;
+ IF NEW.pool_contribution_id IS NOT NULL AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests r JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=r.id WHERE r.room_id=NEW.room_id AND r.id<>NEW.id AND r.proposed_agent_id<>NEW.proposed_agent_id AND r.pool_contribution_id IS NOT NULL) THEN RAISE EXCEPTION 'pool_agent_room_used'; END IF;
  IF EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests r WHERE r.proposed_agent_id=NEW.proposed_agent_id AND r.id<>NEW.id)
  AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_reallocations x
  JOIN hagency_agent_v1.management_agent_requests previous ON previous.id=x.previous_request_id
@@ -45,3 +45,23 @@ RETURNS text LANGUAGE sql STABLE AS $$
   SELECT x.previous_request_id,p.depth+1 FROM hagency_agent_v1.management_agent_reallocations x JOIN prior p ON x.request_id=p.request_id WHERE p.depth<4096
  ) SELECT a.id FROM prior p JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=p.request_id ORDER BY p.depth LIMIT 1;
 $$;
+
+CREATE TABLE IF NOT EXISTS hagency_agent_v1.management_agent_runtime_cursors (
+ executor_device_id text PRIMARY KEY REFERENCES hagency_agent_v1.devices(id),
+ after_assignment_id text NOT NULL
+);
+
+CREATE OR REPLACE FUNCTION hagency_agent_v1.require_pool_assignment_room() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE q hagency_agent_v1.management_agent_requests;
+BEGIN
+ PERFORM pg_advisory_xact_lock(5210750088328904);
+ SELECT * INTO STRICT q FROM hagency_agent_v1.management_agent_requests WHERE id=NEW.request_id;
+ IF q.pool_contribution_id IS NOT NULL AND EXISTS(
+  SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_requests r ON r.id=a.request_id
+  WHERE r.room_id=q.room_id AND r.pool_contribution_id IS NOT NULL AND r.proposed_agent_id<>q.proposed_agent_id
+ ) THEN RAISE EXCEPTION 'pool_agent_room_used'; END IF;
+ RETURN NEW;
+END;$$;
+DROP TRIGGER IF EXISTS require_pool_assignment_room ON hagency_agent_v1.management_shared_assignments;
+CREATE TRIGGER require_pool_assignment_room BEFORE INSERT ON hagency_agent_v1.management_shared_assignments
+ FOR EACH ROW EXECUTE FUNCTION hagency_agent_v1.require_pool_assignment_room();

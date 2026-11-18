@@ -24,7 +24,7 @@ All paths below follow `/hagency/api/v1/management/`. The exact closed DTOs are 
 | History index | `POST agent-work/list` | Current manager/assigned administrator only, requests with recorded work, project filter before pagination; independent of the admission gate. |
 | History | `POST agent-requests/{id}/work/query` | Manager/current assigned administrator only; cursor and limit 1–16. No input/output, lease, provider identity or receipt material. |
 
-`shared-work-history-v1` is advertised only when the explicit shared-execution policy is enabled. Discovery describes the read protocol, not runnable authority. History stays readable when issuance dependencies are disabled. With shared execution disabled the route returns the documented `shared_execution_unavailable` error; older servers may lack the route/feature entirely.
+`shared-work-history-v1` is advertised only when the explicit shared-execution policy is enabled. Discovery describes the read protocol, not runnable authority. When the session also advertises `pool-work-history-v1`, clients may send `includePoolAgents: true` to include direct pool requests. Pool rows identify their source with `poolId` and `poolName` and are visible to the applicant and resource owner. Omitting the flag keeps the original four-field project rows. History stays readable when issuance dependencies are disabled. With shared execution disabled the route returns the documented `shared_execution_unavailable` error; older servers may lack the route/feature entirely.
 
 Canonical UTF-8 vectors: `tests/fixtures/management-shared-work-v1.json`. Existing version 1 reserve, metadata qualification, agent fence and schema 12 process command bytes remain unchanged.
 

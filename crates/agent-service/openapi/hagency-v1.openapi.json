@@ -6001,13 +6001,26 @@
       "get": {
         "operationId": "discoverPublicAgents",
         "summary": "Discover public Agent services",
-        "description": "Authenticated public catalog. Device, owner-direct Room and internal owner identifiers are never exposed. At most 256 rows ordered by Agent ID.",
+        "description": "Authenticated public catalog. Device, owner-direct Room and internal owner identifiers are never exposed. Returns at most 256 rows per page ordered by Agent ID. Follow nextAfter as the next request's after cursor until it is null; concurrent catalog changes can affect later pages.",
         "security": [
           {
             "userBearer": []
           }
         ],
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "description": "Exclusive Agent ID cursor returned as nextAfter by the previous page. Omit for the first page. Duplicate or unknown query parameters are rejected.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success; returned state is authoritative.",
@@ -6020,13 +6033,31 @@
                       "type": "array",
                       "items": {
                         "$ref": "#/components/schemas/DiscoverableAgent"
-                      }
+                      },
+                      "maxItems": 256
+                    },
+                    "nextAfter": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "pattern": "^[A-Za-z0-9_-]+$",
+                      "description": "Pass this cursor as after to continue; null means this is the final page."
                     }
                   },
                   "required": [
-                    "agents"
+                    "agents",
+                    "nextAfter"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "examples": [
+                    {
+                      "agents": [],
+                      "nextAfter": null
+                    }
+                  ]
                 }
               }
             }
@@ -6089,7 +6120,8 @@
           "file": "crates/agent-service/src/api.rs",
           "anchors": [
             "path == \"/hagency/api/v1/agents/discover\"",
-            "method == salvo::http::Method::GET"
+            "method == salvo::http::Method::GET",
+            "json!({\"agents\":agents,\"nextAfter\":next_after})"
           ]
         }
       }
@@ -11334,7 +11366,7 @@
       "get": {
         "operationId": "syncAgentCryptoOwnerReceive",
         "summary": "getAgentCryptoWhoami",
-        "description": "Receive only to-device crypto updates for the exact Agent device. Broker fixes timeout=0, offline presence and an empty-room/presence/account-data filter. Arbitrary filter, identity and token query parameters are rejected. The upstream response is limited to 1 MiB. The broker strips room, presence and account-data sections before sending only the validated crypto mailbox. No execution/admission/ACK grant.",
+        "description": "Receive only to-device crypto updates for the exact Agent device. Broker fixes timeout=0, offline presence and an empty-room/presence/account-data filter. Arbitrary filter, identity and token query parameters are rejected. The broker's local raw upstream response budget is 9 MiB, allowing the reviewed homeserver's 8 MiB JSON ingress plus crypto metadata; this is not a Matrix protocol limit. If exceeded, the complete response fails without releasing a next_batch cursor. The broker strips room, presence and account-data sections before sending only the validated crypto mailbox. No execution/admission/ACK grant.",
         "security": [
           {
             "deviceBearer": []
@@ -18299,9 +18331,7 @@
           }
         },
         "required": [
-          "agentId",
-          "cursor",
-          "snapshot"
+          "agentId"
         ],
         "additionalProperties": false,
         "x-rust-dto": {
@@ -20023,10 +20053,7 @@
         "required": [
           "idempotencyKey",
           "expectedVersion",
-          "state",
-          "expectedSequence",
-          "before",
-          "after"
+          "state"
         ],
         "additionalProperties": false,
         "x-rust-dto": {
@@ -20726,7 +20753,6 @@
         "required": [
           "id",
           "title",
-          "wipLimit",
           "isDone"
         ],
         "additionalProperties": false,
@@ -21191,7 +21217,6 @@
         },
         "required": [
           "filename",
-          "caption",
           "bytes",
           "sha256"
         ],
@@ -21752,7 +21777,6 @@
           }
         },
         "required": [
-          "threadRoot",
           "mentionedMxids"
         ],
         "additionalProperties": false,
@@ -22411,27 +22435,27 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "beca231723aab7f8702c0ec4f3b3f7fd1cfc969ba4f9549a419a77b0ba4d739d",
+    "crates/agent-service/src/api.rs": "513091f96c35b144e02caee23f3d9072a9d2401e5d8494d89c7f6804f35e36e3",
     "crates/agent-service/src/api_transport.rs": "6ae8f015419f7d02db2e1dc252e27c24659beab94658264195cff8046c84ddf7",
-    "crates/agent-service/src/transport_history.rs": "839283ce0e2dde651652cce7239099069b008fd63ed12aa1febde66c8068ba4d",
+    "crates/agent-service/src/transport_history.rs": "b50c4b1a6e9b483f1a42c525059974ae1744ae457965a3494ab615820339b820",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
     "crates/agent-service/src/api_project_board.rs": "315e3c9359438a28c04694b68d9619f281c1b3fcdabc557d4a6971373110cc47",
     "crates/agent-service/src/agent_crypto.rs": "2f74ef9465ac627a727d142e9ebffbe9af2ad39eef08117b97434bf7e11ad975",
-    "crates/agent-service/src/matrix_crypto.rs": "f234c8707661c31d1265cc8c29621452abe0d4802f0361f1f81a023d89677f47",
-    "crates/agent-service/src/agent_crypto_receive.rs": "ab953385061b318dbefca41c01203b240c40fa9dcfd763f5e3984ee450605850",
-    "crates/agent-service/src/transport_ciphertexts.rs": "c3db5bd5d59da1f5b42302d3b623bd19633ebdd87295dc7c860ad472bb751224",
+    "crates/agent-service/src/matrix_crypto.rs": "daea874101980a7bea72d86d31bd59e101d9b0c1ce1079f449db19502c8ebadb",
+    "crates/agent-service/src/agent_crypto_receive.rs": "3cc274036e5efdb36e5a2c99c9a434bf2570929538f88f5a78b1323138701ae3",
+    "crates/agent-service/src/transport_ciphertexts.rs": "857b2110ed63e1854edfafa4abf1b0ec1adf2c18624b5fde313852bff2862b2e",
     "crates/agent-service/src/ciphertext_schema.sql": "ea43c360e60a316d3cd15e16494bee1b5c60f5482b4d0ad9bbe0883c2f07ad29",
-    "crates/agent-service/src/workers.rs": "1fd0bee02edab8f716424c49ca157303d949e10ae25b4e7710ba78555132eb37",
+    "crates/agent-service/src/workers.rs": "cc1c1f6c9484f0cb6e72f079fcaa8ab02c53d0fde9bf2b3e35a5e5605eff6582",
     "crates/agent-service/src/encrypted_dispatches.rs": "2fc78608661e2d4729c578546fbbf2c831dde442b7d5bbd39a4039be844d0b5e",
     "crates/agent-service/src/encrypted_dispatches_schema.sql": "73c338d99a17eb64e2173c6fdb7246962039d5e7229e03345bad14237852427d",
-    "crates/agent-service/src/transport.rs": "63327845cadd0246cefcd195fd3cc82d84f7b3f927b4b1f0c205a2e0fd47b73c",
+    "crates/agent-service/src/transport.rs": "7d384555aec08ab6f9cfad4902448306cabf185f515865a35257c4bc569b5c15",
     "crates/agent-service/src/encrypted_execution.rs": "404f3bffd0a202fdaefb0aff4c80201806673bf019babbecfad287eafbce63cc",
     "crates/agent-service/src/encrypted_execution_schema.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "dc6cd49f41d5cab901249a217704e6b0afd6f5186f7cc1b3c1eb64e8ec1d3218",
-    "crates/agent-service/src/domain.rs": "d636c937f96922873c5dbf254e1eac3b0c87a02ffa101143f9c6ea44028affa9",
-    "crates/agent-service/src/matrix_client.rs": "91419bcee1691a323d06bed8cef393c2eba112efbbb4c4df0c743746f72f3be2",
+    "crates/agent-service/src/domain.rs": "23e53c80d94df8d0a4e47c428d81b948b596628a8c0345cc73f97787956d158a",
+    "crates/agent-service/src/matrix_client.rs": "42ef7077279779a678141db8a3333f91286eb586afeb59574fcc3e00bb194533",
     "crates/agent-service/src/worker_runtime.rs": "7e1de44fa9d7635bfb24a68659a687345573698799f85e418c77eb6c9e1abebe",
-    "crates/agent-service/src/transport_e2ee.rs": "ef9c470ee9c12b188a9ed781f5fdf5739e8aa2cb39d7f45d8da40d171949fedf"
+    "crates/agent-service/src/transport_e2ee.rs": "6819e1da85d0410f36f5416c02919aed45d63a14c5bbf3b0afa01ef7e9d0337b"
   },
   "x-not-implemented": [
     "POST /hagency/api/v1/projects (create Matrix Space)",
