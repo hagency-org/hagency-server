@@ -299,22 +299,62 @@ pub async fn get_user_devices(
 }
 
 pub async fn delete_user_device(user_id: &str, device_id: &str) -> Result<(), HttpError> {
-    let encoded_user = urlencoding::encode(user_id);
-    let url = build_url(
-        &format!("/_palpo/admin/v2/users/{encoded_user}/devices/{device_id}"),
-        &[],
-    )?;
-    let _: serde_json::Value = api_client(&url, "DELETE", None).await?;
+    let (path, body) = device_delete_request(user_id, device_id);
+    let url = build_url(&path, &[])?;
+    let _: serde_json::Value = api_client(&url, "POST", Some(body.to_string())).await?;
     Ok(())
 }
 
 pub async fn delete_all_user_devices(user_id: &str) -> Result<u64, HttpError> {
     let devices = get_user_devices(user_id, 1, ALL_DEVICES_LIMIT).await?;
+    let deleted = delete_devices_with(
+        devices.data.into_iter().map(|device| device.id).collect(),
+        |id| async move { delete_user_device(user_id, &id).await },
+    )
+    .await?;
+    // Confirm the postcondition even against older servers that may acknowledge
+    // an operation without exposing a lower-level deletion error.
+    let remaining = get_user_devices(user_id, 1, ALL_DEVICES_LIMIT).await?;
+    if !remaining.data.is_empty() || remaining.total != 0 {
+        return Err(HttpError::message(format!(
+            "The server still reports {} Matrix devices after removal. Refresh and retry; Pasion grants are managed separately.",
+            remaining.total
+        )));
+    }
+    Ok(deleted)
+}
+
+fn device_delete_request(user_id: &str, device_id: &str) -> (String, serde_json::Value) {
+    // A Device ID is opaque: even percent-encoded dot segments are normalized
+    // by browser URL parsing. Keep it in the admin endpoint's JSON body.
+    (
+        format!(
+            "/_palpo/admin/v2/users/{}/delete_devices",
+            urlencoding::encode(user_id)
+        ),
+        serde_json::json!({"devices": [device_id]}),
+    )
+}
+
+async fn delete_devices_with<F, Fut>(ids: Vec<String>, mut remove: F) -> Result<u64, HttpError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), HttpError>>,
+{
+    let total = ids.len();
     let mut deleted = 0u64;
-    for device in &devices.data {
-        if delete_user_device(user_id, &device.id).await.is_ok() {
-            deleted += 1;
+    let mut failed = Vec::new();
+    for id in ids {
+        match remove(id.clone()).await {
+            Ok(()) => deleted += 1,
+            Err(error) => failed.push(format!("{id}: {}", error.message)),
         }
+    }
+    if !failed.is_empty() {
+        return Err(HttpError::message(format!(
+            "Removed {deleted} of {total} Matrix devices. Failed: {}",
+            failed.join("; ")
+        )));
     }
     Ok(deleted)
 }
@@ -415,4 +455,73 @@ pub async fn send_server_notice(user_id: &str, body: &str) -> Result<String, Htt
 
     let response: Resp = api_client(&url, "POST", Some(req_body)).await?;
     Ok(response.event_id)
+}
+
+/// Account-wide moderation uses the dedicated vendor administration endpoints.
+pub async fn set_shadow_banned(user: &str, banned: bool) -> Result<(), HttpError> {
+    let encoded = urlencoding::encode(user);
+    let url = build_url(&format!("/_palpo/admin/v1/users/{encoded}/shadow_ban"), &[])?;
+    let _: serde_json::Value =
+        api_client(&url, if banned { "POST" } else { "DELETE" }, None).await?;
+    invalidate_user_related_caches();
+    Ok(())
+}
+
+pub async fn set_suspended(user: &str, suspended: bool) -> Result<(), HttpError> {
+    super::admin_capabilities::require("user_suspended").await?;
+    let encoded = urlencoding::encode(user);
+    let url = build_url(&format!("/_palpo/admin/v1/suspend/{encoded}"), &[])?;
+    let _: serde_json::Value = api_client(
+        &url,
+        "PUT",
+        Some(serde_json::json!({"suspend": suspended}).to_string()),
+    )
+    .await?;
+    invalidate_user_related_caches();
+    Ok(())
+}
+
+#[cfg(test)]
+mod device_deletion_tests {
+    use super::*;
+    #[test]
+    fn partial_failure_is_reported_and_later_devices_are_still_attempted() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let result = futures::executor::block_on(delete_devices_with(
+            vec!["one".into(), "failed".into(), "three".into()],
+            |id| {
+                seen.borrow_mut().push(id.clone());
+                std::future::ready(if id == "failed" {
+                    Err(HttpError::message("denied"))
+                } else {
+                    Ok(())
+                })
+            },
+        ));
+        let error = result.unwrap_err();
+        assert!(error.message.contains("Removed 2 of 3"));
+        assert!(error.message.contains("failed: denied"));
+        assert_eq!(seen.into_inner(), vec!["one", "failed", "three"]);
+    }
+    #[test]
+    fn opaque_device_ids_are_json_data_and_never_url_path_segments() {
+        for id in [
+            ".",
+            "..",
+            "/",
+            "?",
+            "#",
+            "%2e%2e",
+            "opaque/with?query#fragment",
+            "quote\"\\设备",
+        ] {
+            let (path, body) = device_delete_request("@user:server", id);
+            assert_eq!(
+                path,
+                "/_palpo/admin/v2/users/%40user%3Aserver/delete_devices"
+            );
+            let wire: serde_json::Value = serde_json::from_str(&body.to_string()).unwrap();
+            assert_eq!(wire, serde_json::json!({"devices": [id]}));
+        }
+    }
 }

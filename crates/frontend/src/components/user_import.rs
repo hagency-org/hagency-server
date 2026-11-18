@@ -133,7 +133,7 @@ pub fn UserImport(on_import_complete: EventHandler<()>) -> Element {
                     }
                 }
                 CardContent { class: "space-y-4".to_string(),
-                    textarea {
+                    crate::components::ui::input::Textarea {
                         class: "flex min-h-[200px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 font-mono",
                         placeholder: "id,displayname,password,admin\nuser1,User One,password123,false\nuser2,User Two,,true",
                         value: csv_content.read().clone(),

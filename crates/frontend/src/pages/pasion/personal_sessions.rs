@@ -14,13 +14,28 @@ use crate::utils::i18n::t;
 
 #[component]
 pub fn PersonalSessionsPage() -> Element {
-    let mut sessions_data = use_resource(|| async { pasion::pasion_get_personal_sessions().await });
+    let cursors = use_signal(Vec::<Option<String>>::new);
+    let mut next_cursor = use_signal(|| None::<String>);
+    let mut sessions_data = use_resource(move || {
+        let after = cursors().last().cloned().flatten();
+        async move {
+            pasion::pasion_get_personal_sessions(after.as_deref())
+                .await
+                .map(|page| {
+                    next_cursor.set(page.next_cursor);
+                    page.data
+                })
+        }
+    });
 
     // Create dialog state
     let mut show_create = use_signal(|| false);
     let mut create_name = use_signal(String::new);
     let mut create_scope = use_signal(String::new);
     let mut create_user_id = use_signal(String::new);
+    let mut create_lifetime = use_signal(String::new);
+    let mut rotate_target = use_signal(|| None::<String>);
+    let mut rotate_lifetime = use_signal(|| "3600".to_string());
     let mut creating = use_signal(|| false);
     let mut new_token = use_signal(|| Option::<String>::None);
 
@@ -33,23 +48,31 @@ pub fn PersonalSessionsPage() -> Element {
         let scope = create_scope.read().clone();
         let user_id = create_user_id.read().clone();
 
-        let mut data = serde_json::json!({});
-        if !name.is_empty() {
-            data["name"] = serde_json::Value::String(name);
-        }
-        if !scope.is_empty() {
-            data["scope"] = serde_json::Value::String(scope);
-        }
-        if !user_id.is_empty() {
-            data["user_id"] = serde_json::Value::String(user_id);
-        }
-
+        let data = match crate::types::CreatePersonalSession::from_input(
+            &user_id,
+            &name,
+            &scope,
+            &create_lifetime(),
+        ) {
+            Ok(data) => data,
+            Err(error) => {
+                show_toast(&error, ToastVariant::Error);
+                return;
+            }
+        };
+        new_token.set(None);
         creating.set(true);
         spawn(async move {
-            match pasion::pasion_create_personal_session(data).await {
+            match pasion::pasion_create_personal_session(&data).await {
                 Ok(session) => {
-                    if let Some(token) = session.token.clone() {
-                        new_token.set(Some(token));
+                    match session.issued_token() {
+                        Ok(token) => new_token.set(Some(token)),
+                        Err(error) => {
+                            show_toast(&error, ToastVariant::Error);
+                            creating.set(false);
+                            sessions_data.restart();
+                            return;
+                        }
                     }
                     show_toast(
                         &t("pasion.personal_sessions.created_success"),
@@ -67,13 +90,30 @@ pub fn PersonalSessionsPage() -> Element {
         });
     };
 
-    let handle_regenerate = move |id: String| {
+    let mut handle_regenerate = move |id: String| {
+        let lifetime = match crate::types::token_lifetime(&rotate_lifetime()) {
+            Ok(value) => value,
+            Err(error) => {
+                show_toast(&error, ToastVariant::Error);
+                return;
+            }
+        };
+        new_token.set(None);
+        creating.set(true);
         spawn(async move {
-            match pasion::pasion_regenerate_personal_session(&id).await {
+            match pasion::pasion_regenerate_personal_session(&id, lifetime).await {
                 Ok(session) => {
-                    if let Some(token) = session.token {
-                        new_token.set(Some(token));
+                    match session.issued_token() {
+                        Ok(token) => new_token.set(Some(token)),
+                        Err(error) => {
+                            show_toast(&error, ToastVariant::Error);
+                            creating.set(false);
+                            rotate_target.set(None);
+                            sessions_data.restart();
+                            return;
+                        }
                     }
+                    rotate_target.set(None);
                     show_toast(
                         &t("pasion.personal_sessions.regenerated_success"),
                         ToastVariant::Success,
@@ -82,6 +122,7 @@ pub fn PersonalSessionsPage() -> Element {
                 }
                 Err(e) => show_toast(&format!("Failed: {}", e.message), ToastVariant::Error),
             }
+            creating.set(false);
         });
     };
 
@@ -137,8 +178,10 @@ pub fn PersonalSessionsPage() -> Element {
                                     let window = web_sys::window().unwrap();
                                     let navigator = window.navigator();
                                     let clipboard = navigator.clipboard();
-                                    let _ = wasm_bindgen_futures::JsFuture::from(clipboard.write_text(&tok)).await;
-                                    show_toast(&t("pasion.personal_sessions.copy_success"), ToastVariant::Success);
+                                    match wasm_bindgen_futures::JsFuture::from(clipboard.write_text(&tok)).await {
+                                        Ok(_) => show_toast(&t("pasion.personal_sessions.copy_success"), ToastVariant::Success),
+                                        Err(_) => show_toast("Clipboard access failed. Select and copy the displayed token manually.", ToastVariant::Error),
+                                    }
                                 });
                             },
                             {t("common.copy")}
@@ -153,6 +196,7 @@ pub fn PersonalSessionsPage() -> Element {
                 }
             }
 
+            crate::components::ui::pagination::CursorPagination { cursors, next_cursor: next_cursor(), loading: !sessions_data.finished() }
             match &*sessions_data.read() {
                 Some(Ok(sessions)) => rsx! {
                     div { class: "rounded-md border",
@@ -177,9 +221,11 @@ pub fn PersonalSessionsPage() -> Element {
                                             let sid = session.id.clone();
                                             let sid2 = sid.clone();
                                             let sid3 = sid.clone();
-                                            let name = session.name.clone().unwrap_or_else(|| "-".to_string());
+                                            let name = session.human_name.clone();
                                             let scope = session.scope.clone();
-                                            let owner = session.user_id.clone().unwrap_or_else(|| "-".to_string());
+                                            let owner = session.owner_user_id.clone().map(|id| format!("User {id}")).or_else(|| session.owner_client_id.clone().map(|id|format!("Client {id}"))).unwrap_or_else(|| "Unknown owner".to_string());
+                                            let actor = session.actor_user_id.clone();
+                                            let expiry = session.expires_at.clone().unwrap_or_else(|| "No automatic expiry".into());
                                             let created = session.created_at.clone();
                                             let last_active = session.last_active_at.clone().unwrap_or_else(|| "-".to_string());
                                             let is_revoked = session.revoked_at.is_some();
@@ -194,6 +240,8 @@ pub fn PersonalSessionsPage() -> Element {
                                                     }
                                                     TableCell {
                                                         span { class: "text-xs font-mono text-muted-foreground", "{owner}" }
+                                                        p { class: "text-xs text-muted-foreground", "Acts as: {actor}" }
+                                                        p { class: "text-xs text-muted-foreground", "Token expiry: {expiry}" }
                                                     }
                                                     TableCell {
                                                         span { class: "text-xs text-muted-foreground", "{created}" }
@@ -214,13 +262,15 @@ pub fn PersonalSessionsPage() -> Element {
                                                                 Button {
                                                                     variant: ButtonVariant::Ghost,
                                                                     size: ButtonSize::Sm,
-                                                                    onclick: move |_| handle_regenerate(sid2.clone()),
+                                                                    disabled: creating(),
+                                                                    onclick: move |_| { rotate_target.set(Some(sid2.clone())); rotate_lifetime.set("3600".into()); },
                                                                     {t("pasion.personal_sessions.regenerate")}
                                                                 }
                                                                 Button {
                                                                     variant: ButtonVariant::Ghost,
                                                                     size: ButtonSize::Sm,
                                                                     class: "text-destructive hover:text-destructive".to_string(),
+                                                                    disabled: creating(),
                                                                     onclick: move |_| {
                                                                         session_to_revoke.set(Some(sid3.clone()));
                                                                         confirm_revoke_open.set(true);
@@ -257,7 +307,7 @@ pub fn PersonalSessionsPage() -> Element {
             },
                     h2 { class: "text-lg font-semibold mb-4", {t("pasion.personal_sessions.create_title")} }
                     div { class: "space-y-4",
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { {t("common.name")} }
                             Input {
                                 placeholder: t("pasion.personal_sessions.name_placeholder"),
@@ -266,7 +316,7 @@ pub fn PersonalSessionsPage() -> Element {
                                 disabled: is_creating,
                             }
                         }
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { {t("pasion.personal_sessions.scope_label")} }
                             Input {
                                 placeholder: t("pasion.personal_sessions.scope_placeholder"),
@@ -275,7 +325,7 @@ pub fn PersonalSessionsPage() -> Element {
                                 disabled: is_creating,
                             }
                         }
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { {t("pasion.personal_sessions.owner_label")} }
                             Input {
                                 placeholder: t("pasion.personal_sessions.owner_placeholder"),
@@ -285,6 +335,8 @@ pub fn PersonalSessionsPage() -> Element {
                             }
                         }
                     }
+                    crate::components::ui::input::Field { class: "space-y-2", Label { "Token lifetime (seconds; blank means no automatic expiry)" } Input { value: create_lifetime(), oninput: move |e: FormEvent| create_lifetime.set(e.value()), disabled: is_creating } }
+                    p { class: "text-sm text-muted-foreground", "The owner is derived from your current Pasion session. The required acting account determines whose authority the token uses." }
                     div { class: "flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2 mt-6",
                         Button {
                             variant: ButtonVariant::Outline,
@@ -303,6 +355,12 @@ pub fn PersonalSessionsPage() -> Element {
                     }
         }
 
+        Modal { open: rotate_target().is_some(), on_close: move |_| { if !creating() {rotate_target.set(None);} },
+            h2 { class: "text-lg font-semibold", "Regenerate personal token" }
+            p { "The previous token will be revoked. Choose the replacement token lifetime explicitly." }
+            crate::components::ui::input::Field { class: "space-y-2", Label { "Lifetime in seconds (blank = no automatic expiry)" } Input { value: rotate_lifetime(), oninput: move |e: FormEvent| rotate_lifetime.set(e.value()), disabled: creating() } }
+            Button { disabled: creating(), onclick: move |_| { if let Some(id) = rotate_target() { handle_regenerate(id); } }, "Regenerate" }
+        }
         ConfirmDialog {
             open: *confirm_revoke_open.read(),
             title: t("pasion.personal_sessions.revoke_title"),

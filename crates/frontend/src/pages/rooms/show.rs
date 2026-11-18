@@ -41,9 +41,9 @@ pub fn RoomShow(room_id: String) -> Element {
         async move { rooms::get_room(&id).await }
     });
 
-    let mut state_for_aliases = use_resource(move || {
+    let mut local_aliases = use_resource(move || {
         let id = decoded_for_state.clone();
-        async move { rooms::get_room_state(&id).await }
+        async move { rooms::get_room_aliases(&id).await }
     });
 
     let mut active_tab = use_signal(|| Tab::Overview);
@@ -61,6 +61,33 @@ pub fn RoomShow(room_id: String) -> Element {
     let mut edit_join_rules = use_signal(String::new);
     let mut edit_history_vis = use_signal(String::new);
     let mut saving_room = use_signal(|| false);
+    let mut edit_allow = use_signal(|| "[]".to_string());
+    let join_room = decoded_room_id.clone();
+    let join_policy = use_resource(move || {
+        let editing = editing_room();
+        let id = join_room.clone();
+        async move {
+            if editing {
+                rooms::get_room_state_content(&id, "m.room.join_rules")
+                    .await
+                    .map(Some)
+            } else {
+                Ok(None)
+            }
+        }
+    });
+    use_effect(move || {
+        if let Some(Ok(Some(policy))) = join_policy() {
+            edit_join_rules.set(policy["join_rule"].as_str().unwrap_or("invite").into());
+            edit_allow.set(
+                policy
+                    .get("allow")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([]))
+                    .to_string(),
+            );
+        }
+    });
 
     // Alias management
     let mut new_alias = use_signal(String::new);
@@ -108,7 +135,7 @@ pub fn RoomShow(room_id: String) -> Element {
                     }
 
                     let name_for_edit = room.room.name.clone().unwrap_or_default();
-                    let topic_for_edit = topic.clone();
+                    let topic_for_edit = room.room.topic.clone().unwrap_or_default();
                     let jr_for_edit = join_rules.clone();
                     let hv_for_edit = history_visibility.clone();
 
@@ -126,7 +153,7 @@ pub fn RoomShow(room_id: String) -> Element {
                                     move |_| {
                                         if !*editing_room.read() {
                                             edit_name.set(n.clone());
-                                            edit_topic.set(if tp == "-" { String::new() } else { tp.clone() });
+                                            edit_topic.set(tp.clone());
                                             edit_join_rules.set(jr.clone());
                                             edit_history_vis.set(hv.clone());
                                         }
@@ -198,41 +225,13 @@ pub fn RoomShow(room_id: String) -> Element {
 
                         match current_tab {
                             Tab::Overview => {
-                                // Extract aliases from state events
-                                let mut alias_list: Vec<String> = Vec::new();
-                                if let Some(Ok(events)) = &*state_for_aliases.read() {
-                                    for event in events.iter() {
-                                        if event.event_type == "m.room.canonical_alias" {
-                                            // Extract alt_aliases from canonical alias event
-                                            if let Some(alts) = event.content.get("alt_aliases")
-                                                && let Some(arr) = alts.as_array()
-                                            {
-                                                for v in arr {
-                                                    if let Some(s) = v.as_str() {
-                                                        alias_list.push(s.to_string());
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        if event.event_type == "m.room.aliases"
-                                            && let Some(aliases) = event.content.get("aliases")
-                                            && let Some(arr) = aliases.as_array()
-                                        {
-                                            for v in arr {
-                                                if let Some(s) = v.as_str()
-                                                    && !alias_list.contains(&s.to_string())
-                                                {
-                                                    alias_list.push(s.to_string());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                // Directory mappings are distinct from preferred aliases in state.
+                                let alias_list=local_aliases().and_then(Result::ok).unwrap_or_default();
                                 let canonical_alias_display = alias.clone();
                                 let room_id_for_edit = room_id_str.clone();
                                 let room_id_for_alias = room_id_str.clone();
                                 let is_editing_room = *editing_room.read();
-                                let is_saving_room = *saving_room.read();
+                                let is_saving_room = *saving_room.read() || !matches!(join_policy(),Some(Ok(Some(_))));
 
                                 rsx! {
                                 // Edit Room Form
@@ -240,8 +239,9 @@ pub fn RoomShow(room_id: String) -> Element {
                                     Card {
                                         CardHeader { CardTitle { {t("rooms.edit_room")} } }
                                         CardContent {
+                                            if let Some(Err(error))=join_policy() { p { role:"alert",class:"text-destructive", "Unable to read the complete join policy: {error.message}" } }
                                             div { class: "space-y-4 max-w-xl",
-                                                div { class: "space-y-2",
+                                                crate::components::ui::input::Field { class: "space-y-2",
                                                     Label { {t("rooms.name")} }
                                                     Input {
                                                         placeholder: t("rooms.name"),
@@ -250,7 +250,7 @@ pub fn RoomShow(room_id: String) -> Element {
                                                         disabled: is_saving_room,
                                                     }
                                                 }
-                                                div { class: "space-y-2",
+                                                crate::components::ui::input::Field { class: "space-y-2",
                                                     Label { {t("rooms.topic")} }
                                                     Input {
                                                         placeholder: t("rooms.topic"),
@@ -259,9 +259,9 @@ pub fn RoomShow(room_id: String) -> Element {
                                                         disabled: is_saving_room,
                                                     }
                                                 }
-                                                div { class: "space-y-2",
+                                                crate::components::ui::input::Field { class: "space-y-2",
                                                     Label { {t("rooms.join_rules")} }
-                                                    select {
+                                                    crate::components::ui::input::Select {
                                                         class: "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm",
                                                         value: edit_join_rules.read().clone(),
                                                         disabled: is_saving_room,
@@ -270,11 +270,17 @@ pub fn RoomShow(room_id: String) -> Element {
                                                         option { value: "invite", "invite" }
                                                         option { value: "knock", "knock" }
                                                         option { value: "restricted", "restricted" }
+                                                        option { value: "knock_restricted", "knock_restricted" }
                                                     }
                                                 }
-                                                div { class: "space-y-2",
+                                                if matches!(edit_join_rules().as_str(),"restricted"|"knock_restricted") {
+                                                    crate::components::ui::input::Field { class:"space-y-2", Label { "Allowed spaces (JSON conditions)" }
+                                                        crate::components::ui::input::Textarea { class:"hg-input min-h-24 font-mono", value:edit_allow(), disabled:is_saving_room, oninput:move |e: FormEvent| edit_allow.set(e.value()) }
+                                                    }
+                                                }
+                                                crate::components::ui::input::Field { class: "space-y-2",
                                                     Label { {t("rooms.history_visibility")} }
-                                                    select {
+                                                    crate::components::ui::input::Select {
                                                         class: "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm",
                                                         value: edit_history_vis.read().clone(),
                                                         disabled: is_saving_room,
@@ -298,26 +304,22 @@ pub fn RoomShow(room_id: String) -> Element {
                                                 disabled: is_saving_room,
                                                 onclick: {
                                                     let rid = room_id_for_edit.clone();
+                                                    let baseline=room.clone();
                                                     move |_| {
                                                         let rid = rid.clone();
                                                         let name = edit_name.read().clone();
                                                         let topic = edit_topic.read().clone();
                                                         let jr = edit_join_rules.read().clone();
                                                         let hv = edit_history_vis.read().clone();
+                                                        let Some(Ok(Some(original)))=join_policy() else { return; };
+                                                        let changes=match super::edit::changes(&baseline,&original,&name,&topic,&jr,&hv,&edit_allow()) {
+                                                            Ok(changes)=>changes, Err(error)=>{show_toast(&error,ToastVariant::Error);return;}
+                                                        };
                                                         saving_room.set(true);
                                                         spawn(async move {
                                                             let mut errors = Vec::new();
-                                                            if rooms::set_room_name(&rid, &name).await.is_err() {
-                                                                errors.push("name");
-                                                            }
-                                                            if rooms::set_room_topic(&rid, &topic).await.is_err() {
-                                                                errors.push("topic");
-                                                            }
-                                                            if rooms::set_room_join_rules(&rid, &jr).await.is_err() {
-                                                                errors.push("join_rules");
-                                                            }
-                                                            if rooms::set_room_history_visibility(&rid, &hv).await.is_err() {
-                                                                errors.push("history_visibility");
+                                                            for (event_type,content) in changes {
+                                                                if let Err(error)=rooms::set_room_state(&rid,event_type,"",content).await { errors.push(format!("{event_type}: {}",error.message)); }
                                                             }
                                                             saving_room.set(false);
                                                             if errors.is_empty() {
@@ -448,7 +450,7 @@ pub fn RoomShow(room_id: String) -> Element {
                                                                                     match rooms::delete_room_alias(&alias).await {
                                                                                         Ok(_) => {
                                                                                             show_toast("Alias removed", ToastVariant::Success);
-                                                                                            state_for_aliases.restart();
+                                                                                            local_aliases.restart(); room_data.restart();
                                                                                         }
                                                                                         Err(e) => show_toast(&format!("Failed: {}", e.message), ToastVariant::Error),
                                                                                     }
@@ -466,9 +468,10 @@ pub fn RoomShow(room_id: String) -> Element {
                                                 p { class: "text-sm text-muted-foreground", {t("rooms.no_aliases")} }
                                             }
 
+                                            if let Some(Err(error))=local_aliases() {p {role:"alert",class:"text-sm text-muted-foreground", "Local directory mappings unavailable: {error.message}"}}
                                             // Add alias form
                                             div { class: "flex items-center gap-2 mt-4 pt-4 border-t",
-                                                input {
+                                                crate::components::ui::input::Input {
                                                     class: "flex h-10 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                                                     placeholder: "#alias:example.com",
                                                     value: new_alias.read().clone(),
@@ -476,6 +479,7 @@ pub fn RoomShow(room_id: String) -> Element {
                                                 }
                                                 Button {
                                                     variant: ButtonVariant::Outline,
+                                                    disabled: !matches!(local_aliases(),Some(Ok(_))),
                                                     onclick: {
                                                         let rid = room_id_for_alias.clone();
                                                         move |_| {
@@ -487,7 +491,7 @@ pub fn RoomShow(room_id: String) -> Element {
                                                                     Ok(_) => {
                                                                         show_toast("Alias added", ToastVariant::Success);
                                                                         new_alias.set(String::new());
-                                                                        state_for_aliases.restart();
+                                                                        local_aliases.restart(); room_data.restart();
                                                                     }
                                                                     Err(e) => show_toast(&format!("Failed: {}", e.message), ToastVariant::Error),
                                                                 }
@@ -530,9 +534,9 @@ pub fn RoomShow(room_id: String) -> Element {
                                         {t("rooms.purge_description")}
                                     }
                                     div { class: "space-y-4",
-                                        div { class: "space-y-2",
-                                            label { class: "text-sm font-medium", {t("rooms.purge_before")} }
-                                            input {
+                                        crate::components::ui::input::Field { class: "space-y-2",
+                                            crate::components::ui::input::Label { class: "text-sm font-medium", {t("rooms.purge_before")} }
+                                            crate::components::ui::input::Input {
                                                 r#type: "date",
                                                 class: "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm",
                                                 value: purge_date.read().clone(),
@@ -640,9 +644,12 @@ fn RoomMembers(room_id: String) -> Element {
     let rid_for_invite = room_id.clone();
     let mut invite_user_id = use_signal(String::new);
 
+    let mut member_page = use_signal(|| 1u64);
+    let member_capabilities = use_resource(crate::api::admin_capabilities::get);
     let mut members_data = use_resource(move || {
         let id = rid.clone();
-        async move { rooms::get_room_members(&id, 1, 50).await }
+        let page = member_page();
+        async move { rooms::get_room_members(&id, page, 50).await }
     });
 
     rsx! {
@@ -651,9 +658,11 @@ fn RoomMembers(room_id: String) -> Element {
                 CardTitle { {t("rooms.members")} }
             }
             CardContent {
+                crate::components::ui::pagination::Pagination { page:member_page(),total:members_data().and_then(Result::ok).map(|data|data.total).unwrap_or(0),per_page:50,on_page_change:move |page| member_page.set(page) }
+                if member_capabilities().is_some_and(|caps|caps.is_ok_and(|c|!c.supports("room_members_pagination"))) { p {class:"text-sm text-muted-foreground", "This older server sends the full member list; only 50 members are rendered per page. Upgrade the server for network pagination."} }
                 // Invite user input
                 div { class: "flex items-center gap-2 mb-4",
-                    input {
+                    crate::components::ui::input::Input {
                         class: "flex h-10 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                         placeholder: t("rooms.invite_user_id"),
                         value: invite_user_id.read().clone(),
@@ -1137,7 +1146,7 @@ fn EventLookup() -> Element {
             CardContent {
                 div { class: "space-y-4",
                     div { class: "flex items-center gap-2",
-                        input {
+                        crate::components::ui::input::Input {
                             class: "flex h-10 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                             placeholder: "$event_id",
                             value: event_id_input.read().clone(),

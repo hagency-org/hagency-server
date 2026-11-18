@@ -7,7 +7,11 @@ pub async fn get_destinations(
     per_page: u64,
     order_by: &str,
     order: &str,
+    search: &str,
 ) -> Result<ListResponse<DestinationRecord>, HttpError> {
+    if !search.is_empty() {
+        super::admin_capabilities::require("destination_search").await?;
+    }
     let from = (page - 1) * per_page;
     let from_str = from.to_string();
     let limit_str = per_page.to_string();
@@ -20,6 +24,7 @@ pub async fn get_destinations(
             ("limit", &limit_str),
             ("order_by", order_by),
             ("dir", dir),
+            ("destination", search),
         ],
     )?;
 

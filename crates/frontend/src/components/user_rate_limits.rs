@@ -14,7 +14,7 @@ pub fn UserRateLimits(user_id: String) -> Element {
     let uid = user_id.clone();
     let uid_for_resource = uid.clone();
 
-    let rate_limits_data = use_resource(move || {
+    let mut rate_limits_data = use_resource(move || {
         let user = uid_for_resource.clone();
         async move {
             let mxid = return_mxid(&user);
@@ -32,19 +32,17 @@ pub fn UserRateLimits(user_id: String) -> Element {
     let mut mps = use_signal(String::new);
     let mut burst = use_signal(String::new);
 
-    // Initialize from data
-    if let Some(Some(data)) = &*rate_limits_data.read() {
-        if mps.read().is_empty()
-            && let Some(v) = data.messages_per_second
-        {
-            mps.set(v.to_string());
+    // Only a new response initializes the draft; clearing an input is an edit.
+    use_effect(move || {
+        if let Some(Some(data)) = &*rate_limits_data.read() {
+            mps.set(
+                data.messages_per_second
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            );
+            burst.set(data.burst_count.map(|v| v.to_string()).unwrap_or_default());
         }
-        if burst.read().is_empty()
-            && let Some(v) = data.burst_count
-        {
-            burst.set(v.to_string());
-        }
-    }
+    });
 
     let uid_for_save = uid.clone();
     let handle_save = move |_: MouseEvent| {
@@ -59,26 +57,24 @@ pub fn UserRateLimits(user_id: String) -> Element {
                 &format!("/_palpo/admin/v1/users/{encoded}/override_ratelimit"),
                 &[],
             ) {
-                let mut body = serde_json::Map::new();
-                if let Ok(v) = mps_val.parse::<u64>() {
-                    body.insert("messages_per_second".into(), serde_json::json!(v));
-                }
-                if let Ok(v) = burst_val.parse::<u64>() {
-                    body.insert("burst_count".into(), serde_json::json!(v));
-                }
-
-                let (method, req_body) = if body.is_empty() {
-                    ("DELETE", None)
-                } else {
-                    (
-                        "POST",
-                        Some(serde_json::to_string(&body).unwrap_or_default()),
-                    )
+                let body = match rate_limit_body(&mps_val, &burst_val) {
+                    Ok(body) => body,
+                    Err(error) => {
+                        show_toast(&error, ToastVariant::Error);
+                        return;
+                    }
+                };
+                let (method, req_body) = match body {
+                    Some(body) => ("POST", Some(body.to_string())),
+                    None => ("DELETE", None),
                 };
 
                 let result: Result<serde_json::Value, _> = api_client(&url, method, req_body).await;
                 match result {
-                    Ok(_) => show_toast("Rate limits updated", ToastVariant::Success),
+                    Ok(_) => {
+                        show_toast("Rate limits updated", ToastVariant::Success);
+                        rate_limits_data.restart();
+                    }
                     Err(e) => show_toast(&format!("Failed: {}", e.message), ToastVariant::Error),
                 }
             }
@@ -94,7 +90,7 @@ pub fn UserRateLimits(user_id: String) -> Element {
             CardContent { class: "space-y-4".to_string(),
                 match &*rate_limits_data.read() {
                     Some(Some(_)) => rsx! {
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { "Messages per Second" }
                             Input {
                                 r#type: "number".to_string(),
@@ -103,7 +99,7 @@ pub fn UserRateLimits(user_id: String) -> Element {
                                 oninput: move |evt: FormEvent| mps.set(evt.value()),
                             }
                         }
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { "Burst Count" }
                             Input {
                                 r#type: "number".to_string(),
@@ -126,5 +122,46 @@ pub fn UserRateLimits(user_id: String) -> Element {
                 }
             }
         }
+    }
+}
+
+fn rate_limit_body(mps: &str, burst: &str) -> Result<Option<serde_json::Value>, String> {
+    let mut body = serde_json::Map::new();
+    for (key, input) in [("messages_per_second", mps), ("burst_count", burst)] {
+        if input.trim().is_empty() {
+            continue;
+        }
+        let value = input
+            .trim()
+            .parse::<i32>()
+            .ok()
+            .filter(|v| *v >= 0)
+            .ok_or_else(|| {
+                format!(
+                    "{key} must be a non-negative integer no greater than {}",
+                    i32::MAX
+                )
+            })?;
+        body.insert(key.into(), serde_json::json!(value));
+    }
+    Ok((!body.is_empty()).then_some(serde_json::Value::Object(body)))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn only_explicit_blank_inputs_restore_defaults() {
+        assert_eq!(rate_limit_body("", " ").unwrap(), None);
+        for bad in ["-1", "1.5", "2147483648", "bad"] {
+            assert!(rate_limit_body(bad, "").is_err());
+        }
+        assert_eq!(
+            rate_limit_body("0", "10").unwrap(),
+            Some(serde_json::json!({"messages_per_second":0,"burst_count":10}))
+        );
+        assert_eq!(
+            rate_limit_body("", "2").unwrap(),
+            Some(serde_json::json!({"burst_count":2}))
+        );
     }
 }

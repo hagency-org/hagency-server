@@ -390,7 +390,7 @@ fn EnumSelect(
     // Keep unknown stored values selectable instead of silently replacing them.
     let unknown = (!options.contains(&value.as_str())).then(|| value.clone());
     rsx! {
-        select {
+        crate::components::ui::input::Select {
             class: SELECT_CLASS,
             disabled,
             onchange: move |e: FormEvent| onchange.call(e.value()),
@@ -410,8 +410,19 @@ fn EnumSelect(
 
 #[component]
 pub fn UpstreamProvidersPage() -> Element {
-    let mut providers_data =
-        use_resource(|| async { pasion::pasion_get_upstream_providers().await });
+    let cursors = use_signal(Vec::<Option<String>>::new);
+    let mut next_cursor = use_signal(|| None::<String>);
+    let mut providers_data = use_resource(move || {
+        let after = cursors().last().cloned().flatten();
+        async move {
+            pasion::pasion_get_upstream_providers(after.as_deref())
+                .await
+                .map(|page| {
+                    next_cursor.set(page.next_cursor);
+                    page.data
+                })
+        }
+    });
 
     let mut form_open = use_signal(|| false);
     let mut form = use_signal(ProviderForm::default);
@@ -541,6 +552,7 @@ pub fn UpstreamProvidersPage() -> Element {
                 }
             }
 
+            crate::components::ui::pagination::CursorPagination { cursors, next_cursor: next_cursor(), loading: !providers_data.finished() }
             match &*providers_data.read() {
                 Some(Ok(providers)) => rsx! {
                     div { class: "rounded-md border",
@@ -729,7 +741,7 @@ pub fn UpstreamProvidersPage() -> Element {
                     }
                     div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
                         h3 { class: "text-sm font-semibold sm:col-span-2", "General" }
-                        div { class: "space-y-1 sm:col-span-2",
+                        crate::components::ui::input::Field { class: "space-y-1 sm:col-span-2",
                             Label { "Issuer" }
                             Input {
                                 placeholder: "https://accounts.google.com".to_string(),
@@ -741,7 +753,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 "Optional for non-OIDC providers such as GitHub (set discovery to disabled and fill in the endpoints below)."
                             }
                         }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "Human name" }
                             Input {
                                 placeholder: "Google".to_string(),
@@ -750,7 +762,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 disabled: is_saving,
                             }
                         }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "Brand" }
                             Input {
                                 placeholder: "google".to_string(),
@@ -759,7 +771,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 disabled: is_saving,
                             }
                         }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "UI order" }
                             Input {
                                 r#type: "number".to_string(),
@@ -771,7 +783,7 @@ pub fn UpstreamProvidersPage() -> Element {
                         }
 
                         h3 { class: "text-sm font-semibold sm:col-span-2 pt-2", "Client" }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "Client ID" }
                             Input {
                                 value: form.read().client_id.clone(),
@@ -779,7 +791,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 disabled: is_saving,
                             }
                         }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "Client secret" }
                             Input {
                                 r#type: "password".to_string(),
@@ -808,7 +820,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 }
                             }
                         }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "Token auth method" }
                             EnumSelect {
                                 value: form.read().token_endpoint_auth_method.clone(),
@@ -817,7 +829,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 onchange: move |v: String| form.write().token_endpoint_auth_method = v,
                             }
                         }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "Token endpoint signing alg" }
                             Input {
                                 placeholder: "RS256".to_string(),
@@ -827,7 +839,7 @@ pub fn UpstreamProvidersPage() -> Element {
                             }
                             p { class: "text-xs text-muted-foreground", "Only for client_secret_jwt / private_key_jwt." }
                         }
-                        div { class: "space-y-1 sm:col-span-2",
+                        crate::components::ui::input::Field { class: "space-y-1 sm:col-span-2",
                             Label { "Scope" }
                             Input {
                                 value: form.read().scope.clone(),
@@ -837,7 +849,7 @@ pub fn UpstreamProvidersPage() -> Element {
                         }
 
                         h3 { class: "text-sm font-semibold sm:col-span-2 pt-2", "Discovery & endpoints" }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "Discovery mode" }
                             EnumSelect {
                                 value: form.read().discovery_mode.clone(),
@@ -846,7 +858,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 onchange: move |v: String| form.write().discovery_mode = v,
                             }
                         }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "PKCE mode" }
                             EnumSelect {
                                 value: form.read().pkce_mode.clone(),
@@ -855,7 +867,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 onchange: move |v: String| form.write().pkce_mode = v,
                             }
                         }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "Response mode" }
                             EnumSelect {
                                 value: form.read().response_mode.clone(),
@@ -864,7 +876,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 onchange: move |v: String| form.write().response_mode = v,
                             }
                         }
-                        div { class: "space-y-1 sm:col-span-2",
+                        crate::components::ui::input::Field { class: "space-y-1 sm:col-span-2",
                             Label { "Authorization endpoint" }
                             Input {
                                 placeholder: "https://github.com/login/oauth/authorize".to_string(),
@@ -873,7 +885,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 disabled: is_saving,
                             }
                         }
-                        div { class: "space-y-1 sm:col-span-2",
+                        crate::components::ui::input::Field { class: "space-y-1 sm:col-span-2",
                             Label { "Token endpoint" }
                             Input {
                                 placeholder: "https://github.com/login/oauth/access_token".to_string(),
@@ -882,7 +894,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 disabled: is_saving,
                             }
                         }
-                        div { class: "space-y-1 sm:col-span-2",
+                        crate::components::ui::input::Field { class: "space-y-1 sm:col-span-2",
                             Label { "Userinfo endpoint" }
                             Input {
                                 placeholder: "https://api.github.com/user".to_string(),
@@ -891,7 +903,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 disabled: is_saving,
                             }
                         }
-                        div { class: "space-y-1 sm:col-span-2",
+                        crate::components::ui::input::Field { class: "space-y-1 sm:col-span-2",
                             Label { "JWKS URI" }
                             Input {
                                 value: form.read().jwks_uri_override.clone(),
@@ -904,7 +916,7 @@ pub fn UpstreamProvidersPage() -> Element {
                         }
 
                         h3 { class: "text-sm font-semibold sm:col-span-2 pt-2", "Tokens & userinfo" }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "ID token alg" }
                             Input {
                                 value: form.read().id_token_signed_response_alg.clone(),
@@ -912,7 +924,7 @@ pub fn UpstreamProvidersPage() -> Element {
                                 disabled: is_saving,
                             }
                         }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "Userinfo signed response alg" }
                             Input {
                                 placeholder: "(unsigned)".to_string(),
@@ -945,7 +957,7 @@ pub fn UpstreamProvidersPage() -> Element {
                         }
 
                         h3 { class: "text-sm font-semibold sm:col-span-2 pt-2", "Advanced" }
-                        div { class: "space-y-1",
+                        crate::components::ui::input::Field { class: "space-y-1",
                             Label { "Backchannel logout" }
                             EnumSelect {
                                 value: form.read().on_backchannel_logout.clone(),
@@ -954,9 +966,9 @@ pub fn UpstreamProvidersPage() -> Element {
                                 onchange: move |v: String| form.write().on_backchannel_logout = v,
                             }
                         }
-                        div { class: "space-y-1 sm:col-span-2",
+                        crate::components::ui::input::Field { class: "space-y-1 sm:col-span-2",
                             Label { "Extra authorization parameters" }
-                            textarea {
+                            crate::components::ui::input::Textarea {
                                 class: "flex min-h-[72px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                                 placeholder: "prompt=consent",
                                 value: form.read().additional_authorization_parameters.clone(),
@@ -965,9 +977,9 @@ pub fn UpstreamProvidersPage() -> Element {
                             }
                             p { class: "text-xs text-muted-foreground", "One key=value pair per line." }
                         }
-                        div { class: "space-y-1 sm:col-span-2",
+                        crate::components::ui::input::Field { class: "space-y-1 sm:col-span-2",
                             Label { "Claims imports (JSON, optional)" }
-                            textarea {
+                            crate::components::ui::input::Textarea {
                                 class: "flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                                 value: form.read().claims_imports.clone(),
                                 oninput: move |e: FormEvent| form.write().claims_imports = e.value(),

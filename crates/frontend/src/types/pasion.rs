@@ -1,20 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-// Generic list response wrapper
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PasionListResponse<T> {
-    #[serde(default)]
-    pub data: Vec<T>,
-    #[serde(default)]
-    pub meta: PasionPaginationMeta,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PasionPaginationMeta {
-    #[serde(default)]
-    pub count: u64,
-}
-
 // User
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct PasionUser {
@@ -117,24 +102,108 @@ pub struct PasionOAuth2Session {
 // Personal Session (API Token)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PasionPersonalSession {
-    #[serde(default)]
     pub id: String,
-    #[serde(default)]
-    pub user_id: Option<String>,
-    #[serde(default)]
-    pub client_id: Option<String>,
-    #[serde(default)]
+    pub owner_user_id: Option<String>,
+    pub owner_client_id: Option<String>,
+    pub actor_user_id: String,
     pub scope: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
+    pub human_name: String,
     pub created_at: String,
-    #[serde(default)]
     pub last_active_at: Option<String>,
-    #[serde(default)]
+    pub last_active_ip: Option<String>,
     pub revoked_at: Option<String>,
-    #[serde(default)]
-    pub token: Option<String>, // only returned on create/regenerate
+    pub expires_at: Option<String>,
+    pub access_token: Option<String>,
+}
+impl PasionPersonalSession {
+    pub fn issued_token(&self) -> Result<String, String> {
+        self.access_token.clone().filter(|t| !t.is_empty()).ok_or_else(|| "The server accepted the operation but did not return the new credential. The previous token may already be revoked; regenerate again to recover it.".into())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatePersonalSession {
+    pub actor_user_id: String,
+    pub human_name: String,
+    pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_in: Option<u32>,
+}
+impl CreatePersonalSession {
+    pub fn from_input(
+        actor: &str,
+        name: &str,
+        scope: &str,
+        lifetime: &str,
+    ) -> Result<Self, String> {
+        let actor = actor.trim().to_ascii_uppercase();
+        if actor.len() != 26
+            || actor.as_bytes()[0] > b'7'
+            || !actor
+                .bytes()
+                .all(|b| b"0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(&b))
+        {
+            return Err("Acting user must be a Pasion account ID (26-character ULID), not a Matrix ID or username.".into());
+        }
+        if name.trim().is_empty() || scope.trim().is_empty() {
+            return Err("Name and scope are required.".into());
+        }
+        Ok(Self {
+            actor_user_id: actor,
+            human_name: name.trim().into(),
+            scope: scope.trim().into(),
+            expires_in: token_lifetime(lifetime)?,
+        })
+    }
+}
+pub fn token_lifetime(value: &str) -> Result<Option<u32>, String> {
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    value
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|v| *v > 0)
+        .map(Some)
+        .ok_or_else(|| {
+            "Lifetime must be positive seconds, or blank for a non-expiring token.".into()
+        })
+}
+
+#[cfg(test)]
+mod personal_session_contract_tests {
+    use super::*;
+    #[test]
+    fn actor_owner_and_one_time_secret_remain_distinct() {
+        let v = serde_json::json!({"id":"session","owner_user_id":"owner","owner_client_id":null,"actor_user_id":"actor","human_name":"tool","scope":"urn:pasion:admin","created_at":"2026-11-16T00:00:00Z","access_token":"new-secret","expires_at":"2026-11-16T01:00:00Z"});
+        let session: PasionPersonalSession = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(session.owner_user_id.as_deref(), Some("owner"));
+        assert_eq!(session.actor_user_id, "actor");
+        assert_eq!(session.issued_token().unwrap(), "new-secret");
+        let mut get = v;
+        get.as_object_mut().unwrap().remove("access_token");
+        assert!(
+            serde_json::from_value::<PasionPersonalSession>(get)
+                .unwrap()
+                .issued_token()
+                .is_err()
+        );
+        let input = CreatePersonalSession::from_input(
+            "01J2KDPHTZYW3TAT1SKVAD63SQ",
+            "tool",
+            "urn:pasion:admin",
+            "3600",
+        )
+        .unwrap();
+        let body = serde_json::to_value(input).unwrap();
+        assert_eq!(body["expires_in"], 3600);
+        assert!(body.get("owner_user_id").is_none());
+        assert!(body.get("user_id").is_none());
+        assert!(CreatePersonalSession::from_input("@owner:server", "tool", "scope", "").is_err());
+        assert!(token_lifetime("-1").is_err());
+        assert_eq!(token_lifetime("").unwrap(), None);
+    }
 }
 
 // Upstream OAuth Provider
@@ -252,6 +321,8 @@ pub struct PasionNotificationChannel {
 // Notification Template
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PasionNotificationTemplate {
+    #[serde(default)]
+    pub channels: Vec<String>,
     #[serde(default)]
     pub key: String,
     #[serde(default)]

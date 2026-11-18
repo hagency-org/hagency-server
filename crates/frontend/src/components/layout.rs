@@ -54,7 +54,7 @@ pub fn AppLayout(children: Element) -> Element {
 
     let mobile_sidebar_state = *mobile_sidebar_open.read();
 
-    rsx! {
+    rsx! { KeyboardShortcuts {
         div { class: "flex h-screen overflow-hidden",
             div {
                 class: if mobile_sidebar_state {
@@ -79,6 +79,5 @@ pub fn AppLayout(children: Element) -> Element {
             }
         }
         Toaster {}
-        KeyboardShortcuts {}
-    }
+    }}
 }

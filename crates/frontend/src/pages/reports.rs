@@ -69,9 +69,12 @@ pub fn ReportList() -> Element {
     let mut notified = use_signal(|| false);
     let page_val = *page.read();
 
-    let mut reports_data = use_resource(move || async move {
-        notified.set(false);
-        reports::get_reports_cached(page_val, PAGE_SIZE, "received_ts", "desc").await
+    let mut reports_data = use_resource(move || {
+        let page = page();
+        async move {
+            notified.set(false);
+            reports::get_reports_cached(page, PAGE_SIZE, "received_ts", "desc").await
+        }
     });
 
     // Notify when new reports are loaded
@@ -224,7 +227,7 @@ pub fn ReportShow(report_id: String) -> Element {
                     let score = report.score.map(|s| s.to_string()).unwrap_or_else(|| "-".to_string());
                     let sender = report.sender.clone().unwrap_or_else(|| "-".to_string());
                     let received = format_timestamp_short(report.received_ts);
-                    let event_json = report.event_json.clone();
+                    let event_json = report.event_json.clone().filter(|event|event.get("sender").is_some() && event.get("content").is_some());
 
                     let room_id_for_redact = room_id.clone();
                     let event_id_for_redact = event_id.clone();
@@ -245,9 +248,9 @@ pub fn ReportShow(report_id: String) -> Element {
                         PageHeader {
                             title: format!("Report #{id}"),
                             description: format!("Received {received}"),
-                            div { class: "page-header-inline-control",
-                                label { class: "text-sm font-medium text-muted-foreground", "Status:" }
-                                select {
+                            crate::components::ui::input::Field { class: "page-header-inline-control",
+                                crate::components::ui::input::Label { class: "text-sm font-medium text-muted-foreground", "Status:" }
+                                crate::components::ui::input::Select {
                                     class: "rounded-md border bg-background px-3 py-1.5 text-sm touch-target",
                                     disabled: is_status_loading,
                                     value: "{status_value}",
@@ -345,6 +348,7 @@ pub fn ReportShow(report_id: String) -> Element {
                             }
                         }
 
+                        if report.sender.is_none() { p {class:"text-sm text-muted-foreground", "This server has not provided a verified event sender. Update its report-details capability to enable sender moderation."} }
                         // Moderation Actions
                         Card {
                             CardHeader {

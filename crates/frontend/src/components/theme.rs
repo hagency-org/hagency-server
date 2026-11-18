@@ -41,12 +41,15 @@ pub fn get_resolved_theme() -> String {
 }
 
 pub fn apply_theme() {
-    let resolved = get_resolved_theme();
+    let preference = storage::get_item("theme").unwrap_or_else(|| "system".into());
+    let explicit = explicit_theme_class(&preference);
     if let Some(document) = web_sys::window().and_then(|w| w.document())
         && let Some(root) = document.document_element()
     {
         let _ = root.class_list().remove_2("light", "dark");
-        let _ = root.class_list().add_1(&resolved);
+        if let Some(explicit) = explicit {
+            let _ = root.class_list().add_1(explicit);
+        }
     }
 }
 
@@ -80,5 +83,59 @@ pub fn ThemeSwitcher() -> Element {
                 }
             }
         }
+    }
+}
+
+fn explicit_theme_class(preference: &str) -> Option<&'static str> {
+    match Theme::from_str(preference) {
+        Theme::Light => Some("light"),
+        Theme::Dark => Some("dark"),
+        Theme::System => None,
+    }
+}
+
+/// CSS follows system colours; this listener keeps theme-toggle labels in sync too.
+pub fn use_resolved_dark_mode() -> Signal<bool> {
+    use wasm_bindgen::{JsCast, closure::Closure};
+    struct Listener {
+        media: web_sys::MediaQueryList,
+        callback: Closure<dyn FnMut()>,
+    }
+    impl Drop for Listener {
+        fn drop(&mut self) {
+            let _ = self.media.remove_event_listener_with_callback(
+                "change",
+                self.callback.as_ref().unchecked_ref(),
+            );
+        }
+    }
+    let mut dark = use_signal(|| get_resolved_theme() == "dark");
+    use_hook(move || {
+        web_sys::window()
+            .and_then(|w| w.match_media("(prefers-color-scheme: dark)").ok().flatten())
+            .map(|media| {
+                let callback = Closure::wrap(Box::new(move || {
+                    if explicit_theme_class(&storage::get_item("theme").unwrap_or_default())
+                        .is_none()
+                    {
+                        dark.set(get_resolved_theme() == "dark");
+                    }
+                }) as Box<dyn FnMut()>);
+                let _ = media
+                    .add_event_listener_with_callback("change", callback.as_ref().unchecked_ref());
+                std::rc::Rc::new(Listener { media, callback })
+            })
+    });
+    dark
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn system_mode_does_not_pin_a_css_colour() {
+        assert_eq!(explicit_theme_class("system"), None);
+        assert_eq!(explicit_theme_class(""), None);
+        assert_eq!(explicit_theme_class("dark"), Some("dark"));
+        assert_eq!(explicit_theme_class("light"), Some("light"));
     }
 }

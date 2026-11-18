@@ -11,6 +11,8 @@ pub enum NotificationType {
     ReportFiled,
     UserRegistered,
     SystemInfo,
+    FederationAlert,
+    JobFailure,
 }
 
 #[derive(Debug, Clone)]

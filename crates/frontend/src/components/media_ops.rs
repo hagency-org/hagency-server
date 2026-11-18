@@ -54,7 +54,7 @@ pub fn DeleteMediaDialog(
         Modal { open, on_close: move |_| on_close.call(()),
                 h2 { class: "text-lg font-semibold mb-4", "Delete Local Media" }
                 div { class: "space-y-4",
-                    div { class: "space-y-2",
+                    crate::components::ui::input::Field { class: "space-y-2",
                         Label { "Delete media before (timestamp in ms)" }
                         Input {
                             r#type: "number".to_string(),
@@ -63,7 +63,7 @@ pub fn DeleteMediaDialog(
                             oninput: move |evt: FormEvent| before_ts.set(evt.value()),
                         }
                     }
-                    div { class: "space-y-2",
+                    crate::components::ui::input::Field { class: "space-y-2",
                         Label { "Only delete media larger than (bytes)" }
                         Input {
                             r#type: "number".to_string(),
@@ -84,6 +84,7 @@ pub fn DeleteMediaDialog(
                             },
                         }
                         Label { r#for: "keep_profiles".to_string(), "Keep profile images" }
+                        p {class:"text-xs text-muted-foreground", "Profile protection requires the server's media_keep_profiles capability. Without it, leave protection enabled and upgrade the server, or explicitly clear it to allow deleting profile media too."}
                     }
                 }
                 div { class: "flex justify-end gap-2 mt-4",
@@ -118,7 +119,7 @@ pub fn PurgeRemoteMediaDialog(
             match media::purge_remote_media(ts).await {
                 Ok(result) => {
                     show_toast(
-                        &format!("Purged {} media files", result.total),
+                        &format!("Purged {} media files", result.deleted),
                         ToastVariant::Success,
                     );
                     loading.set(false);
@@ -141,7 +142,7 @@ pub fn PurgeRemoteMediaDialog(
         Modal { open, on_close: move |_| on_close.call(()),
                 h2 { class: "text-lg font-semibold mb-4", "Purge Remote Media" }
                 div { class: "space-y-4",
-                    div { class: "space-y-2",
+                    crate::components::ui::input::Field { class: "space-y-2",
                         Label { "Purge remote media cached before (timestamp in ms)" }
                         Input {
                             r#type: "number".to_string(),

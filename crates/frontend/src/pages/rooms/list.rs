@@ -288,9 +288,9 @@ pub fn RoomList() -> Element {
                         },
                     }
                 }
-                div { class: "flex items-center gap-2",
-                    label { class: "text-sm text-muted-foreground whitespace-nowrap", {t("rooms.sort")} }
-                    select {
+                crate::components::ui::input::Field { class: "flex items-center gap-2",
+                    crate::components::ui::input::Label { class: "text-sm text-muted-foreground whitespace-nowrap", {t("rooms.sort")} }
+                    crate::components::ui::input::Select {
                         class: "flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm",
                         value: current_sort.order_by(),
                         onchange: move |evt: FormEvent| {
@@ -302,9 +302,9 @@ pub fn RoomList() -> Element {
                         option { value: "state_events", selected: current_sort == SortOption::StateEvents, {t("rooms.created")} }
                     }
                 }
-                div { class: "flex items-center gap-2",
-                    label { class: "text-sm text-muted-foreground whitespace-nowrap", {t("common.rows")} }
-                    select {
+                crate::components::ui::input::Field { class: "flex items-center gap-2",
+                    crate::components::ui::input::Label { class: "text-sm text-muted-foreground whitespace-nowrap", {t("common.rows")} }
+                    crate::components::ui::input::Select {
                         class: "flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm",
                         value: "{per_page_val}",
                         onchange: move |evt: FormEvent| {
@@ -544,7 +544,7 @@ pub fn RoomList() -> Element {
                         p { class: "text-sm text-muted-foreground", {t("rooms.create_description")} }
                     }
                     div { class: "space-y-4 mt-4",
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { r#for: "room_name".to_string(), {t("rooms.room_name")} }
                             Input {
                                 placeholder: "My Room".to_string(),
@@ -553,7 +553,7 @@ pub fn RoomList() -> Element {
                                 disabled: is_creating,
                             }
                         }
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { r#for: "room_topic".to_string(), {t("rooms.topic")} }
                             Input {
                                 placeholder: t("rooms.topic_placeholder"),
@@ -562,7 +562,7 @@ pub fn RoomList() -> Element {
                                 disabled: is_creating,
                             }
                         }
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { {t("rooms.visibility")} }
                             div { class: "flex items-center gap-4",
                                 label { class: "flex items-center gap-2 text-sm cursor-pointer",

@@ -753,11 +753,11 @@ impl I18n {
         );
         m.insert(
             "pasion.personal_sessions.scope_placeholder".into(),
-            "e.g. read write".into(),
+            "e.g. urn:pasion:admin".into(),
         );
         m.insert(
             "pasion.personal_sessions.owner_label".into(),
-            "Owner User ID (optional)".into(),
+            "Acting Pasion account ID (required)".into(),
         );
         m.insert(
             "pasion.personal_sessions.owner_placeholder".into(),

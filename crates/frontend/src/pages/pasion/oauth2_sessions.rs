@@ -14,7 +14,10 @@ use crate::utils::i18n::t;
 #[component]
 pub fn OAuth2SessionsPage() -> Element {
     let mut user_filter = use_signal(String::new);
+    let mut cursors = use_signal(Vec::<Option<String>>::new);
+    let mut next_cursor = use_signal(|| None::<String>);
     let mut sessions_data = use_resource(move || {
+        let after = cursors().last().cloned().flatten();
         let uid = user_filter.read().clone();
         async move {
             let filter = if uid.is_empty() {
@@ -22,7 +25,12 @@ pub fn OAuth2SessionsPage() -> Element {
             } else {
                 Some(uid.as_str())
             };
-            pasion::pasion_get_oauth2_sessions(filter).await
+            pasion::pasion_get_oauth2_sessions(filter, after.as_deref())
+                .await
+                .map(|page| {
+                    next_cursor.set(page.next_cursor);
+                    page.data
+                })
         }
     });
 
@@ -58,11 +66,13 @@ pub fn OAuth2SessionsPage() -> Element {
 
             // Filter bar
             div { class: "flex items-center gap-4",
-                input {
+                crate::components::ui::input::Input {
                     class: "flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     placeholder: "Filter by user ID...",
                     value: user_filter.read().clone(),
                     oninput: move |evt: FormEvent| {
+                        cursors.set(Vec::new());
+                        next_cursor.set(None);
                         user_filter.set(evt.value());
                         sessions_data.restart();
                     },
@@ -74,6 +84,7 @@ pub fn OAuth2SessionsPage() -> Element {
                 }
             }
 
+            crate::components::ui::pagination::CursorPagination { cursors, next_cursor: next_cursor(), loading: !sessions_data.finished() }
             match &*sessions_data.read() {
                 Some(Ok(sessions)) => rsx! {
                     div { class: "rounded-md border",

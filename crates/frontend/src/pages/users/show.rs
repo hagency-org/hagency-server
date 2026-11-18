@@ -224,7 +224,7 @@ pub fn UserShow(user_id: String) -> Element {
                                         }
                                         CardContent {
                                             div { class: "space-y-4",
-                                                div { class: "space-y-2",
+                                                crate::components::ui::input::Field { class: "space-y-2",
                                                     Label { {t("users.display_name")} }
                                                     Input {
                                                         placeholder: t("users.display_name"),
@@ -342,10 +342,7 @@ pub fn UserShow(user_id: String) -> Element {
                                                                         let uid = uid.clone();
                                                                         let new_val = !is_shadow_banned;
                                                                         spawn(async move {
-                                                                            let data = serde_json::json!({
-                                                                                "shadow_banned": new_val,
-                                                                            });
-                                                                            match users::update_user(&uid, data).await {
+                                                                            match users::set_shadow_banned(&uid, new_val).await {
                                                                                 Ok(_) => {
                                                                                     let msg = if new_val { "User shadow banned" } else { "Shadow ban removed" };
                                                                                     show_toast(msg, ToastVariant::Success);
@@ -365,25 +362,23 @@ pub fn UserShow(user_id: String) -> Element {
                                                 div { class: "flex items-center justify-between py-2",
                                                     span { class: "text-sm font-medium text-muted-foreground", {t("users.suspended")} }
                                                     div { class: "flex items-center gap-2",
-                                                        if is_suspended {
+                                                        if is_suspended == Some(true) {
                                                             Badge { variant: BadgeVariant::Destructive, "Yes" }
                                                         } else {
-                                                            span { class: "text-sm", "No" }
+                                                            span { class: "text-sm", if is_suspended.is_none() {"State unavailable on this server"} else {"No"} }
                                                         }
                                                         if !is_deactivated {
                                                             Button {
                                                                 variant: ButtonVariant::Ghost,
                                                                 size: crate::components::ui::button::ButtonSize::Sm,
+                                                                disabled: is_suspended.is_none(),
                                                                 onclick: {
                                                                     let uid = uid_for_suspend.clone();
                                                                     move |_| {
                                                                         let uid = uid.clone();
-                                                                        let new_val = !is_suspended;
+                                                                        let new_val = !is_suspended.unwrap_or(false);
                                                                         spawn(async move {
-                                                                            let data = serde_json::json!({
-                                                                                "suspended": new_val,
-                                                                            });
-                                                                            match users::update_user(&uid, data).await {
+                                                                            match users::set_suspended(&uid, new_val).await {
                                                                                 Ok(_) => {
                                                                                     let msg = if new_val { "User suspended" } else { "Suspension removed" };
                                                                                     show_toast(msg, ToastVariant::Success);
@@ -394,7 +389,7 @@ pub fn UserShow(user_id: String) -> Element {
                                                                         });
                                                                     }
                                                                 },
-                                                                if is_suspended { {t("common.remove")} } else { {t("common.enable")} }
+                                                                if is_suspended == Some(true) { {t("common.remove")} } else { {t("common.enable")} }
                                                             }
                                                         }
                                                     }
@@ -603,7 +598,7 @@ fn ResetPasswordDialog(
                         "Enter a new password for this user. The user will be logged out of all sessions."
                     }
                 }
-                div { class: "mt-4 space-y-2",
+                crate::components::ui::input::Field { class: "mt-4 space-y-2",
                     Label { {t("users.new_password")} }
                     Input {
                         r#type: "password".to_string(),
@@ -737,19 +732,21 @@ fn UserDevices(user_id: String) -> Element {
                             spawn(async move {
                                 match users::delete_all_user_devices(&uid).await {
                                     Ok(count) => {
-                                        show_toast(&format!("Revoked {count} devices"), ToastVariant::Success);
-                                        devices_data.restart();
+                                        show_toast(&format!("Removed {count} Matrix devices"), ToastVariant::Success);
                                     }
                                     Err(e) => show_toast(&format!("Failed: {}", e.message), ToastVariant::Error),
                                 }
+                                devices_data.restart();
                                 revoking_all.set(false);
                             });
                         }
                     },
-                    {t("users.revoke_all_sessions")}
+                    "Remove all Matrix devices"
                 }
             }
             CardContent {
+                p { class: "text-sm text-muted-foreground mb-3", "This removes Matrix devices. Pasion OAuth and personal sessions are managed separately in Account management." }
+                Link { to: Route::PasionAccounts {}, class: "text-sm text-primary hover:underline", "Manage Pasion sessions" }
                 match &*devices_data.read() {
                     Some(Ok(resp)) => rsx! {
                         if resp.data.is_empty() {
