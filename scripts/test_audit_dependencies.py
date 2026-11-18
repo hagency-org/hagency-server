@@ -1,8 +1,13 @@
 import copy
 from datetime import date, datetime, timezone
 import importlib.util
+import io
+import json
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("audit_dependencies", Path(__file__).with_name("audit-dependencies.py"))
 audit = importlib.util.module_from_spec(spec)
@@ -77,6 +82,132 @@ class DependencyPolicyTests(unittest.TestCase):
         policy["findings"][0]["status"] = "resolved"
         with self.assertRaises(ValueError):
             self.check(policy=policy)
+
+    def clean_policy(self):
+        policy = copy.deepcopy(self.policy)
+        policy.update(version=3, mode="strict-clean", findings=[])
+        del policy["expires_on"]
+        return policy
+
+    def clean_report(self):
+        return {"vulnerabilities": {"count": 0, "found": False, "list": []}, "warnings": {},
+                "settings": {"target_arch": [], "target_os": [], "severity": None, "ignore": [],
+                             "informational_warnings": ["unmaintained", "unsound", "notice"]}}
+
+    def test_maintenance_review_checks_expiry_fingerprint_scope_and_sources(self):
+        report = self.clean_report()
+        finding = {"advisory": {"id": "TEST-OLD"}, "package": {"name": "test-dep", "version": "1"}}
+        report["warnings"] = {"unmaintained": [finding]}
+        row = self.policy["findings"][0] | {
+            "advisory": "TEST-OLD", "kind": "unmaintained", "package": "test-dep", "version": "1",
+            "status": "reviewed_warning", "advisory_fingerprint": next(iter(audit.findings(report).values()))}
+        policy = self.clean_policy() | {"mode": "reviewed-maintenance", "expires_on": "2026-11-28",
+                                       "findings": [row]}
+        self.assertEqual(self.check(report=report, policy=policy, today=date(2026, 11, 28)), [])
+        self.assertTrue(self.check(report=report, policy=policy, today=date(2026, 11, 29)))
+        self.assertTrue(self.check(report=report, policy=policy, lock=self.lock.replace("#original", "#new")))
+        self.assertTrue(self.check(report=self.clean_report(), policy=policy))
+        with self.assertRaises(ValueError):
+            self.check(report=report, policy=policy | {"findings": self.policy["findings"]})
+        finding["advisory"]["description"] = "new impact"
+        self.assertTrue(self.check(report=report, policy=policy))
+        report["settings"]["ignore"] = ["TEST-OLD"]
+        with self.assertRaises(ValueError):
+            self.check(report=report, policy=policy)
+
+    def test_clean_policy_has_no_exception_expiry(self):
+        clean = self.clean_report()
+        self.assertEqual(self.check(report=clean, policy=self.clean_policy(), today=date(2027, 1, 1)), [])
+
+    def test_clean_policy_rejects_every_new_advisory_and_warning(self):
+        vulnerability = self.clean_report()
+        vulnerability["vulnerabilities"] = self.report["vulnerabilities"] | {"found": True}
+        self.assertTrue(self.check(report=vulnerability, policy=self.clean_policy()))
+        warning = self.clean_report()
+        warning["warnings"] = {"unmaintained": [self.report["vulnerabilities"]["list"][0]]}
+        self.assertTrue(self.check(report=warning, policy=self.clean_policy()))
+
+    def test_clean_policy_cannot_accept_a_waiver_or_expiry(self):
+        policy = self.clean_policy()
+        policy["findings"] = self.policy["findings"]
+        with self.assertRaises(ValueError):
+            self.check(policy=policy)
+        policy = self.clean_policy()
+        policy["expires_on"] = "2027-01-01"
+        with self.assertRaises(ValueError):
+            self.check(policy=policy)
+
+    def test_clean_policy_still_rejects_source_drift_and_future_review(self):
+        clean = self.clean_report()
+        self.assertTrue(self.check(report=clean, policy=self.clean_policy(), lock=self.lock.replace("#original", "#changed")))
+        self.assertTrue(self.check(report=clean, policy=self.clean_policy(), today=date(2026, 10, 28)))
+
+    def test_clean_policy_requires_review_for_every_git_package(self):
+        for source in ("git+https://example.test/pasion#different", "git+https://example.test/other#revision"):
+            with self.subTest(source=source):
+                lock = self.lock + '\n[[package]]\nname = "another-package"\nversion = "1.0.0"\nsource = "' + source + '"\n'
+                policy = self.clean_policy()
+                self.assertTrue(self.check(report=self.clean_report(), policy=policy, lock=lock))
+                policy["reviewed_sources"]["another-package"] = source
+                self.assertEqual(self.check(report=self.clean_report(), policy=policy, lock=lock), [])
+                self.assertTrue(self.check(report=self.clean_report(), policy=policy, lock=lock.replace(source, source + "changed")))
+
+    def test_clean_policy_does_not_require_git_review_for_registry_or_workspace_packages(self):
+        lock = self.lock + '\n[[package]]\nname = "registry-package"\nversion = "1.0.0"\nsource = "registry+https://example.test/index"\n\n[[package]]\nname = "workspace-package"\nversion = "1.0.0"\n'
+        self.assertEqual(self.check(report=self.clean_report(), policy=self.clean_policy(), lock=lock), [])
+
+    def test_malformed_empty_audit_cannot_pass_as_clean(self):
+        for field, value in (("list", {}), ("list", ""), ("count", False), ("count", 0.0),
+                             ("count", -1), ("found", True), ("found", 0)):
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                report = self.clean_report()
+                report["vulnerabilities"][field] = value
+                self.check(report=report, policy=self.clean_policy())
+        for warnings in ({"unsound": {}}, {"notice": ""}, [], None):
+            with self.subTest(warnings=warnings), self.assertRaises(ValueError):
+                report = self.clean_report()
+                report["warnings"] = warnings
+                self.check(report=report, policy=self.clean_policy())
+
+    def test_filtered_or_incomplete_scan_cannot_pass_as_clean(self):
+        for field, value in (("ignore", ["RUSTSEC-2023-0071"]), ("target_arch", ["aarch64"]),
+                             ("target_os", ["linux"]), ("severity", "critical"),
+                             ("informational_warnings", ["notice"]), ("unknown_filter", True)):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                report = self.clean_report()
+                report["settings"][field] = value
+                self.check(report=report, policy=self.clean_policy())
+        for field in ("settings", "vulnerabilities"):
+            with self.subTest(missing=field), self.assertRaises((ValueError, KeyError)):
+                report = self.clean_report()
+                del report[field]
+                self.check(report=report, policy=self.clean_policy())
+
+    def test_malformed_finding_identity_fails_closed(self):
+        for value in (None, {}, {"advisory": {}, "package": {}},
+                      {"advisory": {"id": []}, "package": {"name": "rsa", "version": "0.9.10"}}):
+            with self.subTest(value=value), self.assertRaises((ValueError, KeyError)):
+                report = self.clean_report()
+                report["warnings"] = {"unmaintained": [value]}
+                self.check(report=report, policy=self.clean_policy())
+
+    def test_clean_report_requires_successful_audit_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "security").mkdir()
+            (root / "Cargo.lock").write_text(self.lock)
+            policy = self.clean_policy() | {"timezone": "UTC"}
+            (root / "security/dependency-policy.json").write_text(json.dumps(policy))
+            for returncode in (0, 1):
+                with self.subTest(returncode=returncode):
+                    completed = subprocess.CompletedProcess([], returncode, json.dumps(self.clean_report()), "")
+                    output = io.StringIO()
+                    with patch.object(audit, "ROOT", root), patch.object(audit.sys, "argv", ["audit-dependencies.py"]), \
+                         patch.object(audit, "review_date", return_value=date(2026, 10, 29)), \
+                         patch.object(audit.subprocess, "run", return_value=completed), \
+                         patch.object(audit.sys, "stdout", output), patch.object(audit.sys, "stderr", io.StringIO()):
+                        self.assertEqual(audit.main(), bool(returncode))
+                    self.assertEqual("Clean dependency audit passed" in output.getvalue(), returncode == 0)
 
 
 if __name__ == "__main__":

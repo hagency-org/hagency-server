@@ -1,72 +1,37 @@
-# Dependency security review
+# Dependency security
 
-The 2026-10-30 hardening updates Rustls, WebPKI, root certificates, ctutils,
-pulldown-cmark, webpage, Tokio and the embedded Pasion/OpenDAL graph. Palpo and
-Pasion use reviewed upstream commits explicitly pinned in the manifest and Cargo.lock.
-The host OpenTelemetry version follows the embedded Pasion version.
+The security branch removes the two previously recorded cryptographic vulnerabilities and all five unmaintained-dependency warnings from the complete locked graph. `security/dependency-policy.json` checks the complete Cargo audit report and every Git package against its reviewed source.
 
-The 2026-11-18 integration pins Palpo at `36d5ab61` and Pasion at
-`22d3109c` to use Salvo 1.2.1 throughout the embedded server. Pasion includes
-the upstream JOSE and keystore migration. Cargo.lock now contains rsa 0.10.0
-and crypto-bigint 0.7.11, and the previous RSA and crypto-bigint advisories
-no longer appear in the full lockfile audit. The new Pasion dependency graph
-also removes async-std, unsafe-libyaml and smartstring.
+On 2026-11-18 the unfiltered audit reported zero vulnerabilities and two newly published maintenance warnings, for chrono 0.4.45 (RUSTSEC-2026-0543) and chrono-tz 0.10.4 (RUSTSEC-2026-0555). The existing reviews of those exact package versions and advisory fingerprints expire on 2026-11-29. Their original reasons and review records are in the policy file.
 
-The audit reports zero vulnerability records and four maintenance warnings:
-paste, pin-utils, chrono and chrono-tz. The existing dispositions and their
-2026-11-29 expiration still apply. The original review started with 14
-vulnerability records.
+| Previous finding | Remediation |
+| --- | --- |
+| [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html), rsa 0.9.10 | Pasion JOSE and keystore callers migrate to rsa 0.10.0 and the corresponding signature, digest and key-format APIs. |
+| [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html), crypto-bigint 0.5.5 | EC 0.14 / ECDSA 0.17 use crypto-bigint 0.7.11, above patched minimum 0.7.6. |
+| pin-utils | Published wasmtimer 0.4.5 uses maintained pin-project-lite. |
+| async-std | A lettre 0.11 maintenance backport fixes ownership of an optional runtime feature while retaining Tokio SMTP and sendmail. |
+| paste | Published EXR 1.74.3 removes Pulp; a rav1e 0.8 maintenance backport uses maintained pastey. EXR and AVIF encoding remain enabled. |
+| smartstring | The Prometheus exporter uses maintained CompactString for temporary label buffers, preserving escaped exposition output. |
+| unsafe-libyaml | Configuration parsing, export and the Figment provider use serde-saphyr; generated typed YAML is exported and reloaded in a regression. |
 
-## Automated review policy
+The Pasion changes are reviewed in [Pasion #169](https://github.com/meldry-com/pasion/pull/169). The exporter change is [upstream #15](https://github.com/sandhose/opentelemetry-prometheus-text-exporter/pull/15). The lettre backport preserves the original change from [#1145](https://github.com/lettre/lettre/pull/1145), with a separate [maintenance review](https://github.com/chrislearn/lettre/pull/1). The compatible rav1e backport is [upstream #3481](https://github.com/xiph/rav1e/pull/3481). Temporary Git sources use exact tested revisions. Replace them with compatible maintained releases when available, then review and update source pins. The embedded server uses Salvo 1.2.1 with Palpo `36d5ab61` and Pasion `22d3109c`. Both pins include the upstream fixes. The backend tests cover encoded Matrix identifiers.
 
-`python3 scripts/audit-dependencies.py` runs cargo-audit against a fresh RustSec
-database, preserves its complete JSON result, and compares every vulnerability
-and informational warning with `security/dependency-policy.json`. It rejects:
+Pasion preserves all 14 existing JWT algorithms, old strong-key fixtures and previously issued tokens. OpenSSL independently verifies old and new JWTs and rejects tampered signatures. No configured private key is rewritten, deleted or rotated. RSA keys below 1024 bits now produce an explicit import error, following the new library minimum; production generation remains 2048 bits. RFC 7518 requires at least 2048 bits for RS/PS JWT use, so operators of weaker existing keys must review them explicitly. See the upstream [migration notes](https://github.com/meldry-com/pasion/blob/badd27d5cec1e9f4dbc0bc2eaa74dce480f83844/docs/cryptography-migration.md) for key-format, RNG, unbalanced-prime, multiprime and P-521 compatibility details.
 
-- New advisory IDs, finding kinds, packages or affected versions.
-- Changed advisory content, affected operations or patched/unaffected ranges,
-  even when the advisory ID and locked version are unchanged. Version 2 policy
-  records pin a SHA-256 of the reviewed advisory, version ranges and affected
-  metadata; updating that fingerprint requires re-review, not automatic renewal.
-- Changes to the reviewed Pasion JOSE source commit.
-- Expired, future-dated, duplicated or longer-than-30-day review records.
-- Stale dispositions after a vulnerable dependency is fixed or removed.
-- Malformed reports or a disposition that calls a vulnerable version resolved.
+## Reproduce the gate
 
-It does not use `cargo audit --ignore`. Existing unresolved findings and warnings
-are printed on every run. The current review expires on **2026-11-29**. Updating
-that date requires rechecking the call paths, affected operations, upstream fixes
-and source revisions; it is not an automatic renewal.
-Review dates explicitly use Asia/Shanghai, including on UTC GitHub runners.
+Use the repository toolchain and cargo-audit 0.22.2:
 
-On 2026-11-03, the password registration continuation fix moved the locked
-Pasion revision from `881ae7a` to `7967064`. The Pasion JOSE and keystore trees
-and the resolved dependency graph are unchanged; the only upstream source
-changes are the registration handler and browser routing. The reviewed source
-pin follows that revision. Findings, dispositions, and the original expiration
-are unchanged.
+```sh
+cargo install --locked cargo-audit --version 0.22.2
+python3 -m unittest discover -s scripts -p 'test_*.py'
+python3 scripts/audit-dependencies.py
+```
 
-The subsequent update to Pasion main `83e52e5` keeps the same JOSE and
-keystore source trees. The Server lockfile updates `cron` to 0.17.0 and
-already contains `hyper-util` 0.1.21. The reviewed source pin follows the new
-revision without changing dispositions or the expiration.
+The script saves the full report to `.run/dependency-audit.json`. Every vulnerability fails the gate. Each informational warning must match a current maintenance disposition, including package version and advisory fingerprint. It rejects malformed or inconsistent reports, nonzero auditor exits, filtered targets or severities, advisory ignores, missing warning categories, future review dates and changes to reviewed Git sources or new unreviewed Git packages. It never passes `--ignore` to the auditor. An intentional source update requires a fresh audit and compatibility review before updating `reviewed_sources`.
 
-The `Dependency risk policy` workflow runs on PRs, main pushes, weekly and manual
-dispatch. Cargo Dependabot updates run weekly. Local offline reproduction may use
-`--no-fetch` only after the advisory database has already been fetched.
+`--no-fetch` uses a previously fetched advisory database; the default refreshes it. CI stores the full report as an artifact. A clean dependency audit does not establish absence of application bugs or prove side-channel resistance; cryptography, protocol, PostgreSQL and image regressions are separate checks.
 
-On 2026-11-04, upstream main advanced to `37d6e30`. Pasion's JOSE,
-keystore, registration handler and browser source trees remain identical to
-`83e52e5`. The Server graph updates the process/Tokio OpenTelemetry
-instrumentation to 0.3.0 and drops its unused OpenTelemetry 0.32 generation.
-The reviewed source pin follows the new revision; existing risk dispositions
-and their expiration remain unchanged.
+The real EXR-to-PNG regression also exposed an existing floating-point thumbnail failure. Palpo normalizes only float RGB/RGBA before sampling, preserving transparency and the existing integer 16-bit paths. Real EXR, nonfinite-channel, PNG color-depth and AVIF regressions cover the boundary. The Agent encrypted-ingress fixture now uses the actual host ingress clock; production future-timestamp rejection remains unchanged.
 
-On 2026-11-16, the repair review moved the Pasion source pin to
-`716abc5e684be44e7b2883c38f328fdae500f769`. Its JOSE and keystore source trees
-are identical to the prior `37d6e30` review. That graph still had two
-vulnerability records and five informational warnings; legacy rand 0.7.3 has
-left the graph and its stale disposition was removed. Fresh RustSec database
-commit `02e2517f457a359fc6d3440ea4560c8ea188fee8` confirms the RSA patched range.
-The review date and advisory fingerprints were updated explicitly; the
-expiration remains **2026-11-29**. No vulnerable package was relabeled fixed.
+Every Git package is recorded individually, including packages sharing a repository. Keeping one package at a reviewed revision cannot authorize a different package at another revision. All 23 Git packages currently resolve to five reviewed repository sources.

@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Reject new, changed, expired or stale dependency-risk dispositions.
-
-Reviewed unresolved findings stay visible. A successful policy check is not
-a clean cargo-audit result. No RustSec advisory is hidden with --ignore.
-"""
+"""Validate locked dependencies against their reviewed sources and advisory policy."""
 import argparse
 import hashlib
 from datetime import date, datetime, timedelta
@@ -23,15 +19,28 @@ def review_date(policy, now):
 
 
 def findings(report):
+    if not isinstance(report, dict) or not isinstance(report["vulnerabilities"], dict) or not isinstance(report["warnings"], dict):
+        raise ValueError("malformed audit report containers")
     vulnerabilities = report["vulnerabilities"]["list"]
-    if report["vulnerabilities"]["count"] != len(vulnerabilities):
+    count = report["vulnerabilities"]["count"]
+    if not isinstance(vulnerabilities, list) or type(count) is not int or count < 0 or count != len(vulnerabilities):
         raise ValueError("inconsistent audit vulnerability count")
+    if "found" in report["vulnerabilities"]:
+        found = report["vulnerabilities"]["found"]
+        if type(found) is not bool or found != bool(count):
+            raise ValueError("inconsistent audit vulnerability flag")
     records = [("vulnerability", entry) for entry in vulnerabilities]
     for kind, entries in report["warnings"].items():
+        if not isinstance(kind, str) or not isinstance(entries, list):
+            raise ValueError("malformed audit warning list")
         records.extend((kind, entry) for entry in entries)
     result = {}
     for kind, entry in records:
+        if not isinstance(entry, dict) or not isinstance(entry["advisory"], dict) or not isinstance(entry["package"], dict):
+            raise ValueError("malformed audit finding")
         key = (entry["advisory"]["id"], kind, entry["package"]["name"], entry["package"]["version"])
+        if any(not isinstance(value, str) or not value for value in key):
+            raise ValueError("malformed audit finding identity")
         if key in result:
             raise ValueError("duplicate audit finding")
         # An unchanged ID/version does not imply unchanged risk. RustSec can
@@ -42,13 +51,35 @@ def findings(report):
 
 
 def check(report, policy, lock, today):
+    actual = findings(report)
     errors = []
-    if policy["version"] != 2:
+    if policy["version"] not in (2, 3):
         raise ValueError("unsupported dependency policy")
     reviewed = date.fromisoformat(policy["reviewed_on"])
-    expires = date.fromisoformat(policy["expires_on"])
-    if not reviewed <= today <= expires or not reviewed <= expires <= reviewed + timedelta(days=30):
-        errors.append("dependency risk review is expired, future-dated or longer than 30 days")
+    if policy["version"] == 3:
+        mode = policy.get("mode")
+        if mode == "strict-clean":
+            if policy["findings"] != [] or "expires_on" in policy:
+                raise ValueError("strict-clean policy cannot contain exceptions or an exception expiry")
+        elif mode == "reviewed-maintenance":
+            if not policy["findings"] or any(row["kind"] != "unmaintained" or row["status"] != "reviewed_warning"
+                                             for row in policy["findings"]):
+                raise ValueError("only reviewed maintenance warnings may have a temporary disposition")
+        else:
+            raise ValueError("unsupported dependency policy mode")
+        expected_settings = {"target_arch": [], "target_os": [], "severity": None, "ignore": [],
+                             "informational_warnings": ["unmaintained", "unsound", "notice"]}
+        settings = report.get("settings")
+        if not isinstance(settings, dict) or settings != expected_settings:
+            raise ValueError("version 3 audit must include all targets, severities and informational warnings without ignores")
+        if "found" not in report["vulnerabilities"]:
+            raise ValueError("version 3 audit needs a vulnerability flag")
+        if reviewed > today:
+            errors.append("dependency source review is future-dated")
+    if policy["version"] == 2 or policy["mode"] == "reviewed-maintenance":
+        expires = date.fromisoformat(policy["expires_on"])
+        if not reviewed <= today <= expires or not reviewed <= expires <= reviewed + timedelta(days=30):
+            errors.append("dependency risk review is expired, future-dated or longer than 30 days")
     sources = {}
     for block in re.split(r"(?m)^\[\[package\]\]\s*$", lock)[1:]:
         fields = dict(re.findall(r'(?m)^(name|source) = "([^"\n]+)"$', block))
@@ -57,6 +88,10 @@ def check(report, policy, lock, today):
     for package, source in policy["reviewed_sources"].items():
         if sources.get(package) != {source}:
             errors.append("reviewed upstream source changed: " + package)
+    if policy["version"] == 3:
+        for package, package_sources in sources.items():
+            if any(source and source.startswith("git+") for source in package_sources) and package not in policy["reviewed_sources"]:
+                errors.append("unreviewed Git package: " + package)
     accepted = set()
     reviewed_details = {}
     for row in policy["findings"]:
@@ -70,7 +105,6 @@ def check(report, policy, lock, today):
             raise ValueError("dependency disposition needs reviewed advisory details")
         accepted.add(key)
         reviewed_details[key] = fingerprint
-    actual = findings(report)
     errors.extend("unreviewed finding: " + " / ".join(row) for row in sorted(set(actual) - accepted))
     errors.extend("remove stale disposition: " + " / ".join(row) for row in sorted(accepted - set(actual)))
     errors.extend("advisory details or affected/fixed ranges changed: " + " / ".join(row)
@@ -94,6 +128,8 @@ def main():
     args.report.write_text(json.dumps(report, indent=2) + "\n")
     policy = json.loads((ROOT / "security/dependency-policy.json").read_text())
     errors = check(report, policy, (ROOT / "Cargo.lock").read_text(), review_date(policy, datetime.now().astimezone()))
+    if policy["version"] == 3 and result.returncode != 0:
+        errors.append("cargo-audit process did not succeed")
     print("Audit: {} unresolved vulnerability records; {} informational warnings.".format(
         report["vulnerabilities"]["count"], sum(len(rows) for rows in report["warnings"].values())))
     for row in policy["findings"]:
@@ -101,7 +137,10 @@ def main():
     for error in errors:
         print("ERROR: " + error, file=sys.stderr)
     if not errors:
-        print("Dependency policy satisfied until {}; unresolved risks remain recorded.".format(policy["expires_on"]))
+        if policy.get("mode") == "strict-clean":
+            print("Clean dependency audit passed: no vulnerabilities, warnings or exceptions.")
+        else:
+            print("Dependency policy satisfied until {}; unresolved risks remain recorded.".format(policy["expires_on"]))
     return bool(errors)
 
 
