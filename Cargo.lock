@@ -1809,7 +1809,7 @@ dependencies = [
  "document-features",
  "futures-core",
  "mio",
- "parking_lot",
+ "parking_lot 0.12.5",
  "rustix",
  "signal-hook 0.3.18",
  "signal-hook-mio",
@@ -2159,6 +2159,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "derive-new"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cdc8d50f426189eef89dac62fabfa0abb27d5cc008f25bf4156a0203325becc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2551,7 +2562,7 @@ dependencies = [
  "generational-box",
  "http",
  "inventory",
- "parking_lot",
+ "parking_lot 0.12.5",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2721,7 +2732,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "generational-box",
- "parking_lot",
+ "parking_lot 0.12.5",
  "rustc-hash 2.1.3",
  "tracing",
  "warnings",
@@ -3110,16 +3121,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "etag"
-version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b3d0661a2ccddc26cba0b834e9b717959ed6fdd76c7129ee159c170a875bf44"
-dependencies = [
- "str-buf",
- "xxhash-rust",
-]
-
-[[package]]
 name = "euclid"
 version = "0.22.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3231,7 +3232,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8cb01cd46b0cf372153850f4c6c272d9cbea2da513e07538405148f95bd789f3"
 dependencies = [
  "atomic",
- "parking_lot",
+ "parking_lot 0.12.5",
  "pear",
  "serde",
  "serde_json",
@@ -3456,7 +3457,7 @@ version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8b2dc9b873cd1a8adb80aa5dcef9a8205f781a8a313d5ffb867248cb3bcb764"
 dependencies = [
- "parking_lot",
+ "parking_lot 0.12.5",
  "tracing",
 ]
 
@@ -3989,7 +3990,7 @@ dependencies = [
  "moka",
  "ndk-context",
  "once_cell",
- "parking_lot",
+ "parking_lot 0.12.5",
  "rand 0.10.3",
  "resolv-conf",
  "smallvec",
@@ -5019,10 +5020,28 @@ dependencies = [
  "base64 0.22.1",
  "getrandom 0.2.17",
  "js-sys",
- "pem",
+ "pem 3.0.6",
  "serde",
  "serde_json",
  "signature 2.2.0",
+ "simple_asn1",
+ "zeroize",
+]
+
+[[package]]
+name = "jsonwebtoken"
+version = "12.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f347a975eb5fa8f5c4eadce6c1152c11c326cf32cf839fb64ff12d5cb8f4ce8b"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.23.1",
+ "getrandom 0.4.3",
+ "js-sys",
+ "pem 4.0.0",
+ "serde",
+ "serde_json",
+ "signature 3.0.0",
  "simple_asn1",
  "zeroize",
 ]
@@ -5324,6 +5343,15 @@ name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
+dependencies = [
+ "scopeguard",
+]
+
+[[package]]
+name = "lock_api"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65d91b22da179613dcf4d6ec8349563f52a363f6849e03b00dd0a185ec4a59af"
 dependencies = [
  "scopeguard",
 ]
@@ -5636,7 +5664,7 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_json",
- "v_htmlescape",
+ "v_htmlescape 0.15.8",
 ]
 
 [[package]]
@@ -5703,7 +5731,7 @@ dependencies = [
  "equivalent",
  "event-listener",
  "futures-util",
- "parking_lot",
+ "parking_lot 0.12.5",
  "portable-atomic",
  "smallvec",
  "tagptr",
@@ -6018,7 +6046,7 @@ dependencies = [
 [[package]]
 name = "oauth2-types"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "base64ct",
  "chrono",
@@ -6584,7 +6612,7 @@ dependencies = [
 [[package]]
 name = "palpo"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=25888d76df7eef50c697f0fc82a241de4de6560d#25888d76df7eef50c697f0fc82a241de4de6560d"
+source = "git+https://github.com/palpo-im/palpo.git?rev=36d5ab61863845e3a3917b4efde5adf46aab07e6#36d5ab61863845e3a3917b4efde5adf46aab07e6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6621,7 +6649,7 @@ dependencies = [
  "indexmap 2.14.2",
  "ipaddress",
  "itertools 0.15.0",
- "jsonwebtoken",
+ "jsonwebtoken 11.1.0",
  "kdl",
  "lru-cache",
  "maplit",
@@ -6680,7 +6708,7 @@ dependencies = [
 [[package]]
 name = "palpo-core"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=25888d76df7eef50c697f0fc82a241de4de6560d#25888d76df7eef50c697f0fc82a241de4de6560d"
+source = "git+https://github.com/palpo-im/palpo.git?rev=36d5ab61863845e3a3917b4efde5adf46aab07e6#36d5ab61863845e3a3917b4efde5adf46aab07e6"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -6703,8 +6731,9 @@ dependencies = [
  "http-auth",
  "indexmap 2.14.2",
  "itertools 0.15.0",
+ "js_int",
  "js_option",
- "jsonwebtoken",
+ "jsonwebtoken 11.1.0",
  "konst 0.4.3",
  "maplit",
  "mime",
@@ -6744,7 +6773,7 @@ dependencies = [
 [[package]]
 name = "palpo-core-macros"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=25888d76df7eef50c697f0fc82a241de4de6560d#25888d76df7eef50c697f0fc82a241de4de6560d"
+source = "git+https://github.com/palpo-im/palpo.git?rev=36d5ab61863845e3a3917b4efde5adf46aab07e6#36d5ab61863845e3a3917b4efde5adf46aab07e6"
 dependencies = [
  "as_variant",
  "palpo-identifiers-validation",
@@ -6759,7 +6788,7 @@ dependencies = [
 [[package]]
 name = "palpo-data"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=25888d76df7eef50c697f0fc82a241de4de6560d#25888d76df7eef50c697f0fc82a241de4de6560d"
+source = "git+https://github.com/palpo-im/palpo.git?rev=36d5ab61863845e3a3917b4efde5adf46aab07e6#36d5ab61863845e3a3917b4efde5adf46aab07e6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6790,7 +6819,7 @@ dependencies = [
  "hyper-util",
  "image",
  "itertools 0.15.0",
- "jsonwebtoken",
+ "jsonwebtoken 11.1.0",
  "lru-cache",
  "maplit",
  "mime",
@@ -6829,7 +6858,7 @@ dependencies = [
 [[package]]
 name = "palpo-identifiers-validation"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=25888d76df7eef50c697f0fc82a241de4de6560d#25888d76df7eef50c697f0fc82a241de4de6560d"
+source = "git+https://github.com/palpo-im/palpo.git?rev=36d5ab61863845e3a3917b4efde5adf46aab07e6#36d5ab61863845e3a3917b4efde5adf46aab07e6"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -6837,7 +6866,7 @@ dependencies = [
 [[package]]
 name = "palpo-server-macros"
 version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=25888d76df7eef50c697f0fc82a241de4de6560d#25888d76df7eef50c697f0fc82a241de4de6560d"
+source = "git+https://github.com/palpo-im/palpo.git?rev=36d5ab61863845e3a3917b4efde5adf46aab07e6#36d5ab61863845e3a3917b4efde5adf46aab07e6"
 dependencies = [
  "palpo-identifiers-validation",
  "proc-macro-crate",
@@ -6860,8 +6889,18 @@ version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
 dependencies = [
- "lock_api",
- "parking_lot_core",
+ "lock_api 0.4.14",
+ "parking_lot_core 0.9.12",
+]
+
+[[package]]
+name = "parking_lot"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9cf937ca4e1d0b7578784559063422fc39ae7c5a00f02471f2614d5486fd226"
+dependencies = [
+ "lock_api 0.5.0",
+ "parking_lot_core 0.10.0",
 ]
 
 [[package]]
@@ -6872,7 +6911,19 @@ checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
 dependencies = [
  "cfg-if",
  "libc",
- "redox_syscall",
+ "redox_syscall 0.5.18",
+ "smallvec",
+ "windows-link",
+]
+
+[[package]]
+name = "parking_lot_core"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cfff060068cc18aa7815010fcaf80c68c7fb9e85fc7f5c0f9bf142c21d19826"
+dependencies = [
+ "libc",
+ "redox_syscall 0.9.5",
  "smallvec",
  "windows-link",
 ]
@@ -6880,7 +6931,7 @@ dependencies = [
 [[package]]
 name = "pasion-backend"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "anyhow",
  "argon2",
@@ -6989,7 +7040,7 @@ dependencies = [
 [[package]]
 name = "pasion-config"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "anyhow",
  "camino",
@@ -7021,7 +7072,7 @@ dependencies = [
 [[package]]
 name = "pasion-data"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7062,7 +7113,7 @@ dependencies = [
 [[package]]
 name = "pasion-i18n"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "camino",
  "fluent-bundle",
@@ -7082,7 +7133,7 @@ dependencies = [
 [[package]]
 name = "pasion-iana"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "schemars 1.2.2",
  "serde",
@@ -7091,7 +7142,7 @@ dependencies = [
 [[package]]
 name = "pasion-jose"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "base64ct",
  "chrono",
@@ -7122,7 +7173,7 @@ dependencies = [
 [[package]]
 name = "pasion-keystore"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "aead 0.5.2",
  "base64ct",
@@ -7150,7 +7201,7 @@ dependencies = [
 [[package]]
 name = "pasion-matrix"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7161,7 +7212,7 @@ dependencies = [
 [[package]]
 name = "pasion-matrix-palpo"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7178,7 +7229,7 @@ dependencies = [
 [[package]]
 name = "pasion-messaging"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7201,7 +7252,7 @@ dependencies = [
 [[package]]
 name = "pasion-policy"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7220,7 +7271,7 @@ dependencies = [
 [[package]]
 name = "pasion-tasks"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7253,7 +7304,7 @@ dependencies = [
 [[package]]
 name = "pasion-templates"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=badd27d5cec1e9f4dbc0bc2eaa74dce480f83844#badd27d5cec1e9f4dbc0bc2eaa74dce480f83844"
+source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7279,7 +7330,7 @@ dependencies = [
  "tracing",
  "ulid",
  "url",
- "v_htmlescape",
+ "v_htmlescape 1.0.0",
  "walkdir",
 ]
 
@@ -7365,6 +7416,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
 dependencies = [
  "base64 0.22.1",
+ "serde_core",
+]
+
+[[package]]
+name = "pem"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d354a98a3d1251555de99e8fdd8afda05573c31b82f59063a7b0a29b5527f120"
+dependencies = [
+ "base64 0.23.1",
  "serde_core",
 ]
 
@@ -8088,7 +8149,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51de85fb3fb6524929c8a2eb85e6b6d363de4e8c48f9e2c2eac4944abc181c93"
 dependencies = [
  "log",
- "parking_lot",
+ "parking_lot 0.12.5",
  "scheduled-thread-pool",
 ]
 
@@ -8257,6 +8318,15 @@ name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
+dependencies = [
+ "bitflags 2.13.2",
+]
+
+[[package]]
+name = "redox_syscall"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "580c875845b41ecb1564ad1ae4703044cef774145e3d7a94dc2b3fa7c97868fd"
 dependencies = [
  "bitflags 2.13.2",
 ]
@@ -8879,9 +8949,9 @@ dependencies = [
 
 [[package]]
 name = "salvo"
-version = "1.0.1"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5195b16bb9086c424f32fea95fc4e57617f68b494cd419c4839f36c4e52a6432"
+checksum = "eefb370a3b081da644e2794b5c44b5649793f859a5f1f75d6d0be5b81085aab3"
 dependencies = [
  "salvo-compression",
  "salvo-cors",
@@ -8897,9 +8967,9 @@ dependencies = [
 
 [[package]]
 name = "salvo-compression"
-version = "1.0.1"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67e9642e832b7d42fb6c6984def0dfa8d0f272ad3f802167aa251555d8d80d09"
+checksum = "a3c4d1161ca3bb02f7424064189c6717fabef92784dbf6903717e5e893305d6e"
 dependencies = [
  "brotli",
  "bytes",
@@ -8916,9 +8986,9 @@ dependencies = [
 
 [[package]]
 name = "salvo-cors"
-version = "1.0.1"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ce280b73f367ec1f363b5f34252f059ee0d1f28386afac1f253bce1b50dc1a3"
+checksum = "1f3f5e26b06e759a94e2ae30d48f98af21b45a8eb43315d6fe6e451846f1c2ab"
 dependencies = [
  "bytes",
  "salvo_core",
@@ -8927,16 +8997,16 @@ dependencies = [
 
 [[package]]
 name = "salvo-jwt-auth"
-version = "1.0.1"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20a5a1f82fd93c089c39dab995bec57e517e803d27161a28c9eb93587a39804d"
+checksum = "cd2b11210bc32c3bc1ba57cda4bec3dfcfccc5dffb142cc744e252bebe54feef"
 dependencies = [
  "base64 0.23.1",
  "bytes",
  "http-body-util",
  "hyper-rustls",
  "hyper-util",
- "jsonwebtoken",
+ "jsonwebtoken 12.0.0",
  "rustls",
  "salvo_core",
  "serde",
@@ -8948,9 +9018,9 @@ dependencies = [
 
 [[package]]
 name = "salvo-oapi"
-version = "1.0.1"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebcc93544364bd6565b4af675649b87c0dd80b16f7a6bb48c4da2426648358fd"
+checksum = "3ed25c14fc752a646c6fcedd9c8455697b6844c24bf1bcceeb03c53ee10a463c"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -8962,7 +9032,7 @@ dependencies = [
  "indexmap 2.14.2",
  "inventory",
  "mime-infer",
- "parking_lot",
+ "parking_lot 0.13.0",
  "regex",
  "rust-embed",
  "rust_decimal",
@@ -8983,9 +9053,9 @@ dependencies = [
 
 [[package]]
 name = "salvo-oapi-macros"
-version = "1.0.1"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0912f9eb1cb4d677d369030c59254720737250206af4b3d6094e0febc8883a1c"
+checksum = "ff6636d2c22b1b1f567d9b2dbeaf82e60e088dd9a0abceee592f98c02730b5c6"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -8997,9 +9067,9 @@ dependencies = [
 
 [[package]]
 name = "salvo-otel"
-version = "1.0.1"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d7239cbdad4c542d0a4ff4142b6af8c4637f44b7f405a31b132a456a6e5afc7"
+checksum = "b98a5f2af2e202031cc6783493921cf44d4e75b08243432677b00aabe3903216"
 dependencies = [
  "opentelemetry",
  "opentelemetry-http",
@@ -9011,9 +9081,9 @@ dependencies = [
 
 [[package]]
 name = "salvo-proxy"
-version = "1.0.1"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "878d6a044129b8f5749e6c1fb0e53ce462d7011422287bf1766b396210cb1940"
+checksum = "62f0fb1405d1d5f2f7dc872be1bf1a2a41447959b4f22c36300d87195bed6c79"
 dependencies = [
  "fastrand",
  "futures-util",
@@ -9030,9 +9100,9 @@ dependencies = [
 
 [[package]]
 name = "salvo-rate-limiter"
-version = "1.0.1"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f69e3fc0d174e3c4f8097dba85162869e9afec2bf19b4a487730944cdf2aba4b"
+checksum = "aa56567aceecbd630562153f17107596aa52839682db5723755fab60ae2fdc56"
 dependencies = [
  "moka",
  "salvo_core",
@@ -9044,9 +9114,9 @@ dependencies = [
 
 [[package]]
 name = "salvo-serde-util"
-version = "1.1.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99004231a9c34651e40eb5feecaebd824a51ed90d74bedb82c40fd2bc6c60c8a"
+checksum = "f8c0d983018a0c9ce6a182d72dac63bf4ef60436d0647fe7ce9934777d9b1f9b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -9055,9 +9125,9 @@ dependencies = [
 
 [[package]]
 name = "salvo-serve-static"
-version = "1.0.1"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23c5126955a1692b4c61aad7bab5a5d9114889c152033705460eb63b97e7edaa"
+checksum = "410af8ff1e5463e73cb8fbb2eb419fd6a6f36c81345836f2c94e4294bdec57dd"
 dependencies = [
  "hex",
  "mime",
@@ -9075,9 +9145,9 @@ dependencies = [
 
 [[package]]
 name = "salvo_core"
-version = "1.0.1"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e750d044c19994e42efd60f66ff502892dccf9e54eec50d63f4be4ca618e8a5a"
+checksum = "f8a316ecb26c99b489786f339fb7c1493e026faca5f6691aa12e8ab708c7cf2f"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -9103,12 +9173,13 @@ dependencies = [
  "mime-infer",
  "multimap",
  "multra",
- "parking_lot",
+ "parking_lot 0.13.0",
  "percent-encoding",
  "pin-project",
  "quinn",
  "rand 0.10.3",
  "regex",
+ "rustls",
  "salvo_macros",
  "serde",
  "serde-xml-rs",
@@ -9127,31 +9198,24 @@ dependencies = [
 
 [[package]]
 name = "salvo_extra"
-version = "1.0.1"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47b24484004640d521b656205eb5e7729698ca157a28b8738c2ebc493effa92b"
+checksum = "e0efa9b7704b69df848d616209acaeabb142ecc01fe9fcf58ac4794d6681d6b7"
 dependencies = [
- "base64 0.23.1",
- "etag",
  "futures-util",
- "http-body-util",
- "hyper",
  "pin-project",
  "salvo_core",
  "serde",
  "serde_json",
  "tokio",
- "tokio-tungstenite",
- "tower",
  "tracing",
- "ulid",
 ]
 
 [[package]]
 name = "salvo_macros"
-version = "1.1.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a106e0e9f7d50f5342a0d3442e9e1c634a042591fa801929ff9fc65c26af547b"
+checksum = "7b350922ce067d7f0a9bfa9f07a520ade9c849f3fb9f730ca28666bb53bc833d"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -9193,7 +9257,7 @@ version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3cbc66816425a074528352f5789333ecff06ca41b36b0b0efdfbb29edc391a19"
 dependencies = [
- "parking_lot",
+ "parking_lot 0.12.5",
 ]
 
 [[package]]
@@ -9975,12 +10039,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
-name = "str-buf"
-version = "3.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ceb97b7225c713c2fd4db0153cb6b3cab244eb37900c3f634ed4d43310d8c34"
-
-[[package]]
 name = "strict"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9993,7 +10051,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf776ba3fa74f83bf4b63c3dcbbf82173db2632ed8452cb2d891d33f459de70f"
 dependencies = [
  "new_debug_unreachable",
- "parking_lot",
+ "parking_lot 0.12.5",
  "phf_shared 0.11.3",
  "precomputed-hash",
 ]
@@ -10005,7 +10063,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a18596f8c785a729f2819c0f6a7eae6ebeebdfffbfe4214ae6b087f690e31901"
 dependencies = [
  "new_debug_unreachable",
- "parking_lot",
+ "parking_lot 0.12.5",
  "phf_shared 0.13.1",
  "precomputed-hash",
  "serde",
@@ -10018,7 +10076,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ffa8a5dbe8b3f0bbe29d4c3225daafaeead63afdc1b65fc4c01a1384166038e6"
 dependencies = [
  "new_debug_unreachable",
- "parking_lot",
+ "parking_lot 0.12.5",
  "phf_shared 0.14.0",
  "precomputed-hash",
 ]
@@ -10255,7 +10313,7 @@ version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "662b54ef6f7b4e71f683dadc787bbb2d8e8ef2f91b682ebed3164a5a7abca905"
 dependencies = [
- "parking_lot",
+ "parking_lot 0.12.5",
  "pin-project",
 ]
 
@@ -10419,7 +10477,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
+ "parking_lot 0.12.5",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -10451,7 +10509,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "log",
- "parking_lot",
+ "parking_lot 0.12.5",
  "percent-encoding",
  "phf 0.13.1",
  "pin-project-lite",
@@ -10484,18 +10542,6 @@ dependencies = [
  "pin-project-lite",
  "tokio",
  "tokio-util",
-]
-
-[[package]]
-name = "tokio-tungstenite"
-version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
-dependencies = [
- "futures-util",
- "log",
- "tokio",
- "tungstenite 0.30.0",
 ]
 
 [[package]]
@@ -10639,10 +10685,8 @@ dependencies = [
  "pin-project-lite",
  "sync_wrapper",
  "tokio",
- "tokio-util",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]
@@ -10822,18 +10866,6 @@ dependencies = [
  "sha1 0.10.7",
  "thiserror 2.0.21",
  "utf-8",
-]
-
-[[package]]
-name = "tungstenite"
-version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
-dependencies = [
- "bytes",
- "log",
- "rand 0.10.3",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -11090,6 +11122,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "v_escape-base"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be17d1ebd0a2a1acc817577248ebe21bad513adf35b5bad71ab6adfd74a6de35"
+dependencies = [
+ "derive-new",
+]
+
+[[package]]
 name = "v_frame"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11105,6 +11146,15 @@ name = "v_htmlescape"
 version = "0.15.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e8257fbc510f0a46eb602c10215901938b5c2a7d5e70fc11483b1d3c9b5b18c"
+
+[[package]]
+name = "v_htmlescape"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70210eadf6232ce4de5cc24c46500ba6f1ae59308ea445a865b1dff3396c4f7a"
+dependencies = [
+ "v_escape-base",
+]
 
 [[package]]
 name = "valuable"
@@ -11327,7 +11377,7 @@ checksum = "c62b7f338e4397a45d054c15a2b36a93d57cccdda7be11a7d7b045d47b5e70ce"
 dependencies = [
  "futures",
  "js-sys",
- "parking_lot",
+ "parking_lot 0.12.5",
  "pin-project-lite",
  "slab",
  "wasm-bindgen",

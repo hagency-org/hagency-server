@@ -2,6 +2,8 @@
 
 The security branch removes the two previously recorded cryptographic vulnerabilities and all five unmaintained-dependency warnings from the complete locked graph. `security/dependency-policy.json` uses a strict clean-audit policy: no accepted findings, ignore entries or expiring risk waivers.
 
+On 2026-11-18 the unfiltered audit reported zero vulnerabilities and two newly published maintenance warnings, for chrono 0.4.45 (RUSTSEC-2026-0543) and chrono-tz 0.10.4 (RUSTSEC-2026-0555). Both currently fail the strict gate.
+
 | Previous finding | Remediation |
 | --- | --- |
 | [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html), rsa 0.9.10 | Pasion JOSE and keystore callers migrate to rsa 0.10.0 and the corresponding signature, digest and key-format APIs. |
@@ -12,7 +14,7 @@ The security branch removes the two previously recorded cryptographic vulnerabil
 | smartstring | The Prometheus exporter uses maintained CompactString for temporary label buffers, preserving escaped exposition output. |
 | unsafe-libyaml | Configuration parsing, export and the Figment provider use serde-saphyr; generated typed YAML is exported and reloaded in a regression. |
 
-The Pasion changes are reviewed in [Pasion #169](https://github.com/meldry-com/pasion/pull/169). The exporter change is [upstream #15](https://github.com/sandhose/opentelemetry-prometheus-text-exporter/pull/15). The lettre backport preserves the original change from [#1145](https://github.com/lettre/lettre/pull/1145), with a separate [maintenance review](https://github.com/chrislearn/lettre/pull/1). The compatible rav1e backport is [upstream #3481](https://github.com/xiph/rav1e/pull/3481). Temporary Git sources use exact tested revisions. Replace them with compatible maintained releases when available, then review and update source pins. Salvo facade/core stay at exact 1.0.1 to preserve encoded Matrix identifiers.
+The Pasion changes are reviewed in [Pasion #169](https://github.com/meldry-com/pasion/pull/169). The exporter change is [upstream #15](https://github.com/sandhose/opentelemetry-prometheus-text-exporter/pull/15). The lettre backport preserves the original change from [#1145](https://github.com/lettre/lettre/pull/1145), with a separate [maintenance review](https://github.com/chrislearn/lettre/pull/1). The compatible rav1e backport is [upstream #3481](https://github.com/xiph/rav1e/pull/3481). Temporary Git sources use exact tested revisions. Replace them with compatible maintained releases when available, then review and update source pins. The embedded server uses Salvo 1.2.1 with Palpo `36d5ab61` and Pasion `22d3109c`. Both pins include the upstream fixes. The backend tests cover encoded Matrix identifiers.
 
 Pasion preserves all 14 existing JWT algorithms, old strong-key fixtures and previously issued tokens. OpenSSL independently verifies old and new JWTs and rejects tampered signatures. No configured private key is rewritten, deleted or rotated. RSA keys below 1024 bits now produce an explicit import error, following the new library minimum; production generation remains 2048 bits. RFC 7518 requires at least 2048 bits for RS/PS JWT use, so operators of weaker existing keys must review them explicitly. See the upstream [migration notes](https://github.com/meldry-com/pasion/blob/badd27d5cec1e9f4dbc0bc2eaa74dce480f83844/docs/cryptography-migration.md) for key-format, RNG, unbalanced-prime, multiprime and P-521 compatibility details.
 
