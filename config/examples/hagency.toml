@@ -16,3 +16,10 @@ public_dir = "../../resources/frontend/public"
 [queue]
 # Do not start stale offline requests; trusted server receipt time, 24h default.
 event_ttl_ms = 86400000
+
+# Management is enabled by default using active Pasion administrators.
+# [management]
+# administrator = "@reviewer:example.com" # Optional single-reviewer override.
+# enabled = false                        # Optional management opt-out.
+# enable_project_reservations = true     # Enable both flags for resource pools.
+# enable_agent_admission = true

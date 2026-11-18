@@ -106,11 +106,11 @@ impl DomainStore {
             let now=clock(db).await?;
             // The exact allocation ACL precedes both cursor and page bound.
             // Capacity coordination belongs to the resource owner, including historical grants.
-            let related=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_allocations a JOIN hagency_agent_v1.management_resource_grants g ON g.id=a.grant_id JOIN hagency_agent_v1.management_projects m ON m.id=a.project_id WHERE a.project_id=$1 AND (m.manager_user_id=$2 OR g.owner_user_id=$2 OR g.receipt::jsonb->>'ownerMxid'=$3 OR $3=$4)) AS matched")
-                .bind::<Text,_>(project).bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(policy.administrator()).get_result::<Flag>(db).await?.matched;
+            let related=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_allocations a JOIN hagency_agent_v1.management_resource_grants g ON g.id=a.grant_id JOIN hagency_agent_v1.management_projects m ON m.id=a.project_id WHERE a.project_id=$1 AND (m.manager_user_id=$2 OR g.owner_user_id=$2 OR g.receipt::jsonb->>'ownerMxid'=$3 OR $4)) AS matched")
+                .bind::<Text,_>(project).bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Bool,_>(policy.can_administer(p)).get_result::<Flag>(db).await?.matched;
             if !related {super::super::projects::project(db,project,p,policy,now).await?;}
-            let rows=sql_query("SELECT a.* FROM hagency_agent_v1.management_allocations a JOIN hagency_agent_v1.management_resource_grants g ON g.id=a.grant_id JOIN hagency_agent_v1.management_projects m ON m.id=a.project_id WHERE a.project_id=$1 AND (m.manager_user_id=$2 OR g.owner_user_id=$2 OR g.receipt::jsonb->>'ownerMxid'=$3 OR $3=$4) AND a.id>$5 ORDER BY a.id LIMIT $6")
-                .bind::<Text,_>(project).bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(policy.administrator()).bind::<Text,_>(query.after.as_deref().unwrap_or("")).bind::<BigInt,_>(i64::from(limit)+1).load::<AllocationRow>(db).await?;
+            let rows=sql_query("SELECT a.* FROM hagency_agent_v1.management_allocations a JOIN hagency_agent_v1.management_resource_grants g ON g.id=a.grant_id JOIN hagency_agent_v1.management_projects m ON m.id=a.project_id WHERE a.project_id=$1 AND (m.manager_user_id=$2 OR g.owner_user_id=$2 OR g.receipt::jsonb->>'ownerMxid'=$3 OR $4) AND a.id>$5 ORDER BY a.id LIMIT $6")
+                .bind::<Text,_>(project).bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Bool,_>(policy.can_administer(p)).bind::<Text,_>(query.after.as_deref().unwrap_or("")).bind::<BigInt,_>(i64::from(limit)+1).load::<AllocationRow>(db).await?;
             let mut more=rows.len()>usize::from(limit);
             let mut items=Vec::new();
             let mut bytes=512;

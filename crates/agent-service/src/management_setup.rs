@@ -192,7 +192,7 @@ async fn view(
             && !cancelled,
         can_cancel: setup.is_some()
             && !cancelled
-            && (plan.manager_user_id == p.user_id || p.mxid == policy.administrator()),
+            && (plan.manager_user_id == p.user_id || policy.can_administer(p)),
         can_rebase: setup.is_some()
             && plan.manager_user_id == p.user_id
             && plan.state == "approved"
@@ -223,7 +223,10 @@ async fn changed(
         .execute(db)
         .await?;
     let r = request(db, &plan.request_id, p, policy, now).await?;
-    let mut recipients = vec![plan.manager_mxid.clone(), policy.administrator().into()];
+    let mut recipients = policy
+        .administrator_recipients()
+        .chain([plan.manager_mxid.clone()])
+        .collect::<Vec<_>>();
     if let Some(a) = authority(db, &plan.id).await? {
         recipients.push(a.mxid);
     }
@@ -268,7 +271,7 @@ impl DomainStore {
             .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
-                if p.mxid != policy.administrator() {
+                if !policy.can_administer(p) {
                     return Err(Error::Unauthorized("management_administrator_required"));
                 }
                 if let Some(saved) = replay::<ProjectReadiness>(

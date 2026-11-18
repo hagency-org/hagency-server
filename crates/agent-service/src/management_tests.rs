@@ -678,13 +678,18 @@ async fn failed_outbox_write_rolls_back_resource_request_and_receipt_together() 
     assert_eq!(outbox(&f, &a.request.id, "pending").await, 1);
 }
 fn service(f: &Fixture, enabled: bool) -> Service {
-    let gateway = Gateway::new(
+    service_with_gateway(f, enabled, empty_gateway())
+}
+fn empty_gateway() -> Gateway {
+    Gateway::new(
         Arc::new(|_| Box::pin(async { Ok(vec![]) })),
         "@_hagency_service:example.test".into(),
-    );
-    service_with_gateway(f, enabled, gateway)
+    )
 }
 fn service_with_gateway(f: &Fixture, enabled: bool, gateway: Gateway) -> Service {
+    service_with_policy(f, enabled.then(|| f.policy.clone()), gateway)
+}
+fn service_with_policy(f: &Fixture, policy: Option<ManagementPolicy>, gateway: Gateway) -> Service {
     let issuer = Url::parse("https://example.test/auth/").unwrap();
     let origin = Url::parse("https://example.test/").unwrap();
     let verifier = Verifier::new(
@@ -704,8 +709,8 @@ fn service_with_gateway(f: &Fixture, enabled: bool, gateway: Gateway) -> Service
     )
     .with_domain(f.domain.clone(), gateway);
     Service::new(
-        if enabled {
-            app.with_management(f.policy.clone())
+        if let Some(policy) = policy {
+            app.with_management(policy)
         } else {
             app
         }
@@ -737,6 +742,114 @@ async fn post(s: &Service, path: &str, token: &str, body: Value, status: StatusC
         value.get("code").unwrap_or(&Value::Null)
     );
     value
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn pasion_administrators_can_review_requests_after_bootstrap_and_lose_access_on_revocation() {
+    let database = tokio::task::spawn_blocking(crate::upgrade_tests::IsolatedDatabase::create)
+        .await
+        .unwrap();
+    let f = fixture_at(database.url.clone()).await;
+    let administrators = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let roles = Arc::clone(&administrators);
+    let policy = ManagementPolicy::pasion(Arc::new(move || {
+        let members = roles.lock().unwrap().clone();
+        Box::pin(async move {
+            Ok(members
+                .into_iter()
+                .map(|(subject, mxid)| PasionAdministrator { subject, mxid })
+                .collect())
+        })
+    }));
+    let service = service_with_policy(&f, Some(policy), empty_gateway());
+    let mut discovery = TestClient::get("https://example.test/hagency/api/v1/discovery")
+        .add_header("host", "example.test", true)
+        .send(&service)
+        .await;
+    assert_eq!(
+        discovery.take_json::<Value>().await.unwrap()["managementProtocol"],
+        PROTOCOL
+    );
+
+    let offered = post(
+        &service,
+        "contributions",
+        &f.owner.token,
+        serde_json::to_value(offer(&f, "bootstrap_review")).unwrap(),
+        StatusCode::OK,
+    )
+    .await;
+    let request = &offered["admission"]["request"];
+    assert_eq!(request["approverMxid"], "");
+    let id = request["id"].as_str().unwrap();
+    assert_eq!(outbox(&f, id, "pending").await, 0);
+    let path = format!("requests/{id}/decide");
+    let decision = serde_json::to_value(approve("approve_bootstrap_offer", 1)).unwrap();
+    let query = json!({"needsMyAction": true});
+    assert_eq!(
+        post(
+            &service,
+            "inbox",
+            &f.admin.token,
+            query.clone(),
+            StatusCode::OK
+        )
+        .await["items"],
+        json!([])
+    );
+
+    *administrators.lock().unwrap() = vec![
+        (f.admin.p.subject.clone(), f.admin.p.mxid.clone()),
+        ("different-subject".into(), f.outsider.p.mxid.clone()),
+    ];
+    let mut session = TestClient::get("https://example.test/hagency/api/v1/management/session")
+        .add_header("host", "example.test", true)
+        .bearer_auth(&f.admin.token)
+        .send(&service)
+        .await;
+    let session: Value = session.take_json().await.unwrap();
+    assert_eq!(session["canAdmitResources"], true);
+    assert_eq!(session["administrator"], f.admin.p.mxid);
+    post(
+        &service,
+        &path,
+        &f.outsider.token,
+        decision.clone(),
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+
+    administrators.lock().unwrap()[1]
+        .0
+        .clone_from(&f.outsider.p.subject);
+    for reviewer in [&f.admin, &f.outsider] {
+        let inbox = post(
+            &service,
+            "inbox",
+            &reviewer.token,
+            query.clone(),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(inbox["items"][0]["id"], id);
+        assert_eq!(inbox["items"][0]["canDecide"], true);
+    }
+    administrators.lock().unwrap().remove(0);
+    assert_eq!(
+        post(&service, "inbox", &f.admin.token, query, StatusCode::OK).await["items"],
+        json!([])
+    );
+    post(
+        &service,
+        &path,
+        &f.admin.token,
+        decision.clone(),
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    let approved = post(&service, &path, &f.outsider.token, decision, StatusCode::OK).await;
+    assert_eq!(approved["admission"]["request"]["state"], "approved");
 }
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]

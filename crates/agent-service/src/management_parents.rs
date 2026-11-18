@@ -108,7 +108,7 @@ fn executor(w: &Work, p: &Principal) -> Result<()> {
     Ok(())
 }
 fn reducing_actor(p: &Principal, policy: &ManagementPolicy, g: &Grant) -> bool {
-    p.user_id == g.owner_user_id || p.mxid == policy.administrator()
+    p.user_id == g.owner_user_id || policy.can_administer(p)
 }
 #[derive(QueryableByName)]
 struct Amount {
@@ -271,7 +271,9 @@ async fn changed(
     notify(
         db,
         &request,
-        [original.owner_mxid, policy.administrator().into()],
+        policy
+            .administrator_recipients()
+            .chain([original.owner_mxid]),
         now,
     )
     .await

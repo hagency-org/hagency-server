@@ -3,15 +3,15 @@ use crate::{domain::DomainStore, identity::Identity, store::Store};
 use diesel::{Connection as _, PgConnection, QueryableByName, connection::SimpleConnection};
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
 
-struct IsolatedDatabase {
+pub(crate) struct IsolatedDatabase {
     admin_url: String,
-    url: String,
+    pub(crate) url: String,
     name: String,
 }
 impl IsolatedDatabase {
-    fn create() -> Self {
+    pub(crate) fn create() -> Self {
         let admin_url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-        let name = format!("hagency_server_upgrade_{}", crate::entity_id().unwrap());
+        let name = format!("hagency_server_test_{}", crate::entity_id().unwrap());
         let mut connection = PgConnection::establish(&admin_url).unwrap();
         connection
             .batch_execute(&format!("CREATE DATABASE {name}"))

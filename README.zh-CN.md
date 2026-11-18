@@ -64,6 +64,10 @@ Rust 修改会自动编译；前端修改后刷新页面即可。
 
 ## Docker 部署
 
+Agent 管理默认启用，当前有效的 Pasion 管理员共用资源准入待审列表。服务可以在没有管理员时启动，首管领取角色后即可审核已有申请。可将 `[management].administrator` 设为完整的本地 Matrix 用户 ID，以指定唯一审核人。设为 `[management].enabled = false` 可关闭管理协议。
+
+`HAGENCY_ENABLE_RESOURCE_POOLS=true` 默认开启 `enable_project_reservations` 和 `enable_agent_admission`。TOML 中显式设置的选项优先。
+
 全新部署使用相同的工具依赖，并先按上面的方式创建密码文件。
 将 `palpo.instance` 替换为你的域名：
 

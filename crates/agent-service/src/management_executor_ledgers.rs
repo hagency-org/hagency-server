@@ -235,11 +235,10 @@ async fn sweep(
         notify(
             db,
             &result.request,
-            [
+            policy.administrator_recipients().chain([
                 result.contribution.owner_mxid.clone(),
                 result.contribution.coordinator_mxid.clone(),
-                policy.administrator().to_owned(),
-            ],
+            ]),
             now,
         )
         .await?;
