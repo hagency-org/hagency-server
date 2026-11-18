@@ -48,6 +48,8 @@ pub(crate) async fn call(
     let p = store
         .authenticate(credential, crate::api::now_ms(), true)
         .await?;
+    let policy = policy.resolve().await?;
+    let policy = policy.as_ref();
     let parts = suffix.split('/').collect::<Vec<_>>();
     if req.method() == Method::POST
         && let Some(required) = crate::domain::shared_protocol::worker_route(&parts)

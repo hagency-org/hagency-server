@@ -1,16 +1,38 @@
 //! Versioned shared-resource management wire types. Authority is host supplied.
 use crate::{Error, Result, key};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 
 pub const PROTOCOL: &str = "hagency-management-v1";
 pub const MAX_BYTES: usize = 16 * 1024;
 pub const MAX_PAGE: i64 = 32;
 
+pub struct PasionAdministrator {
+    pub subject: String,
+    pub mxid: String,
+}
+
+type AdministratorLookup = dyn Fn() -> Pin<Box<dyn Future<Output = Result<Vec<PasionAdministrator>>> + Send>>
+    + Send
+    + Sync;
+
+#[derive(Clone)]
+enum Administrator {
+    Designated(String),
+    Pasion {
+        lookup: Arc<AdministratorLookup>,
+        members: Arc<[PasionAdministrator]>,
+    },
+}
+
 /// Constructed by the server configuration loader, never from an API body.
 #[derive(Clone)]
 pub struct ManagementPolicy {
-    administrator: String,
+    administrator: Administrator,
     project_reservations: bool,
     parent_settlement: bool,
     project_setup: bool,
@@ -30,7 +52,18 @@ pub struct ManagementPolicy {
 impl ManagementPolicy {
     pub fn new(administrator: String, server: &str) -> Result<Self> {
         local_user(&administrator, server)?;
-        Ok(Self {
+        Ok(Self::for_administrator(Administrator::Designated(
+            administrator,
+        )))
+    }
+    pub fn pasion(lookup: Arc<AdministratorLookup>) -> Self {
+        Self::for_administrator(Administrator::Pasion {
+            lookup,
+            members: Arc::from([]),
+        })
+    }
+    fn for_administrator(administrator: Administrator) -> Self {
+        Self {
             administrator,
             project_reservations: false,
             parent_settlement: false,
@@ -47,7 +80,7 @@ impl ManagementPolicy {
             agent_budget_deltas: false,
             shared_budget_execution: false,
             pool_grant_succession: false,
-        })
+        }
     }
     /// Renewal and amendment of pool grants, and Agent lifetime following the
     /// pool's capacity chain. Off: chains stay one grant long, as before.
@@ -128,8 +161,61 @@ impl ManagementPolicy {
     pub fn agent_executor(&self) -> bool {
         self.agent_executor
     }
-    pub fn administrator(&self) -> &str {
-        &self.administrator
+    pub(crate) async fn resolve(&self) -> Result<Cow<'_, Self>> {
+        let Administrator::Pasion { lookup, .. } = &self.administrator else {
+            return Ok(Cow::Borrowed(self));
+        };
+        let mut policy = self.clone();
+        policy.administrator = Administrator::Pasion {
+            lookup: lookup.clone(),
+            members: lookup().await?.into(),
+        };
+        Ok(Cow::Owned(policy))
+    }
+    pub(crate) fn can_administer(&self, principal: &crate::store::Principal) -> bool {
+        match &self.administrator {
+            Administrator::Designated(mxid) => mxid == &principal.mxid,
+            Administrator::Pasion { members, .. } => members.iter().any(|administrator| {
+                administrator.subject == principal.subject && administrator.mxid == principal.mxid
+            }),
+        }
+    }
+    pub(crate) fn can_review(&self, principal: &crate::store::Principal, assignee: &str) -> bool {
+        self.can_administer(principal)
+            && (self.uses_pasion_administrators()
+                || assignee.is_empty()
+                || assignee == principal.mxid)
+    }
+    pub(crate) fn uses_pasion_administrators(&self) -> bool {
+        matches!(self.administrator, Administrator::Pasion { .. })
+    }
+    pub(crate) fn assigned_administrator(&self) -> &str {
+        // An empty assignee denotes the shared administrator queue. Matrix IDs
+        // are always nonempty. The v1 wire field remains a string.
+        match &self.administrator {
+            Administrator::Designated(mxid) => mxid,
+            Administrator::Pasion { .. } => "",
+        }
+    }
+    pub(crate) fn session_administrator<'a>(
+        &'a self,
+        principal: &'a crate::store::Principal,
+    ) -> &'a str {
+        if self.can_administer(principal) {
+            &principal.mxid
+        } else {
+            self.assigned_administrator()
+        }
+    }
+    pub(crate) fn administrator_recipients(&self) -> impl Iterator<Item = String> + '_ {
+        let (designated, members) = match &self.administrator {
+            Administrator::Designated(mxid) => (Some(mxid), &[][..]),
+            Administrator::Pasion { members, .. } => (None, members.as_ref()),
+        };
+        designated
+            .into_iter()
+            .cloned()
+            .chain(members.iter().map(|member| member.mxid.clone()))
     }
     pub fn with_agent_admission(mut self, enabled: bool) -> Self {
         self.agent_admission = enabled;
@@ -336,6 +422,7 @@ pub struct ManagementRequest {
     #[serde(default)]
     pub resource_label: Option<String>,
     pub requester_mxid: String,
+    /// Empty for requests submitted to the shared Pasion administrator inbox.
     pub approver_mxid: String,
     pub state: String,
     pub revision: i64,

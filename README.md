@@ -54,6 +54,17 @@ For later starts, use `just db-up` and `just dev`, without initialization or boo
 
 ## Docker deployment
 
+Agent management is enabled by default. Active Pasion administrators share the
+resource admission inbox. A new deployment can start before an administrator
+exists. The first account to claim Pasion administration can review existing
+requests on its next management call. To designate one Matrix account, set
+`[management].administrator` to its full local MXID. Set `[management].enabled`
+to `false` to disable the management protocol.
+
+`HAGENCY_ENABLE_RESOURCE_POOLS=true` enables the defaults for
+`enable_project_reservations` and `enable_agent_admission`. An explicit TOML
+value takes precedence for each setting.
+
 For a fresh deployment, use the same prerequisites and create the protected
 password file above. Replace `palpo.instance` with your domain:
 

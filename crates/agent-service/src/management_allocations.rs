@@ -350,7 +350,7 @@ async fn view(
     if p.user_id != manager.manager_user_id
         && p.user_id != g.owner_user_id
         && p.mxid != r.owner_mxid
-        && p.mxid != policy.administrator()
+        && !policy.can_administer(p)
     {
         return Err(Error::NotFound("allocation_not_found"));
     }
@@ -394,7 +394,7 @@ async fn view(
         can_decide: actionable(db, id, p, policy, now).await?,
         can_release: (p.user_id == manager.manager_user_id
             || p.user_id == g.owner_user_id
-            || p.mxid == policy.administrator())
+            || policy.can_administer(p))
             && !matches!(a.state.as_str(), "released" | "rejected"),
         blocking_reason: if a.state == "pending_coordinator" {
             blocked(db, &a, &g, now).await?
@@ -772,9 +772,9 @@ impl DomainStore {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             // Keep recovery/history discoverable after revocation. This is protocol
             // support, not permission to make a new reservation.
-            if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_allocations a JOIN hagency_agent_v1.management_resource_grants g ON g.id=a.grant_id JOIN hagency_agent_v1.management_projects m ON m.id=a.project_id WHERE g.owner_user_id=$1 OR m.manager_user_id=$1 OR g.receipt::jsonb->>'ownerMxid'=$2 OR $2=$3) AS matched").bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(policy.administrator()).get_result::<Flag>(db).await?.matched{return Ok(true);}
-            let grants=sql_query("SELECT g.* FROM hagency_agent_v1.management_resource_grants g WHERE g.state='active' AND g.expires_at_ms>$1 AND (g.owner_user_id=$2 OR g.receipt::jsonb->>'ownerMxid'=$3 OR (g.receipt::jsonb->'eligibleManagers') ? $3 OR $3=$4) ORDER BY g.id")
-                .bind::<BigInt,_>(now).bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(policy.administrator()).load::<GrantRow>(db).await?;
+            if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_allocations a JOIN hagency_agent_v1.management_resource_grants g ON g.id=a.grant_id JOIN hagency_agent_v1.management_projects m ON m.id=a.project_id WHERE g.owner_user_id=$1 OR m.manager_user_id=$1 OR g.receipt::jsonb->>'ownerMxid'=$2 OR $3) AS matched").bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Bool,_>(policy.can_administer(p)).get_result::<Flag>(db).await?.matched{return Ok(true);}
+            let grants=sql_query("SELECT g.* FROM hagency_agent_v1.management_resource_grants g WHERE g.state='active' AND g.expires_at_ms>$1 AND (g.owner_user_id=$2 OR g.receipt::jsonb->>'ownerMxid'=$3 OR (g.receipt::jsonb->'eligibleManagers') ? $3 OR $4) ORDER BY g.id")
+                .bind::<BigInt,_>(now).bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Bool,_>(policy.can_administer(p)).load::<GrantRow>(db).await?;
             for grant in grants {if grant_live(db,&grant,now).await? {return Ok(true);}}
             Ok(false)
         }).await
@@ -796,7 +796,7 @@ impl DomainStore {
                 let r: NativeGrantReceipt = decode(&g.receipt)?;
                 if p.user_id != g.owner_user_id
                     && p.mxid != r.owner_mxid
-                    && p.mxid != policy.administrator()
+                    && !policy.can_administer(p)
                 {
                     return Err(Error::NotFound("resource_grant_not_found"));
                 }
@@ -909,7 +909,7 @@ impl DomainStore {
                 sql_query("UPDATE hagency_agent_v1.management_contributions SET state='pending_admission',revision=revision+1,updated_at_ms=$2 WHERE id=$1").bind::<Text,_>(id).bind::<BigInt,_>(now).execute(db).await?;
                 sql_query("UPDATE hagency_agent_v1.management_requests SET state='pending',created_at_ms=$2,expires_at_ms=$3 WHERE id=$1 AND state='draft'").bind::<Text,_>(&c.request_id).bind::<BigInt,_>(now).bind::<BigInt,_>(now+TTL).execute(db).await?;
                 let submitted=admission(db,id,p,policy,now).await?;
-                notify(db,&submitted.request,[policy.administrator().to_owned()],now).await?;
+                notify(db,&submitted.request,policy.administrator_recipients(),now).await?;
             }
             let rows=sql_query("SELECT m.id,m.contribution_id,m.manager_user_id,u.mxid AS manager_mxid,m.state,m.revision,m.requested_tokens,m.name,m.purpose FROM hagency_agent_v1.management_projects m JOIN hagency_agent_v1.users u ON u.id=m.manager_user_id WHERE m.contribution_id=$1 AND m.state='approved' ORDER BY m.id").bind::<Text,_>(id).load::<PlanRow>(db).await?;
             for m in rows {seed_for_project(db,policy,&m.id,now).await?;}
@@ -1110,7 +1110,7 @@ impl DomainStore {
                 let m = plan(db, &a.project_id).await?;
                 if p.user_id != g.owner_user_id
                     && p.user_id != m.manager_user_id
-                    && p.mxid != policy.administrator()
+                    && !policy.can_administer(p)
                 {
                     return Err(Error::Unauthorized("allocation_release_forbidden"));
                 }

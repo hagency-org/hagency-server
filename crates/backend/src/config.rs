@@ -32,16 +32,18 @@ pub struct HostConfig {
     pub pasion_config: Option<PathBuf>,
     pub palpo_config: PathBuf,
     #[serde(default)]
-    pub management: Option<ManagementConfig>,
+    pub management: ManagementConfig,
 }
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ManagementConfig {
-    /// One designated administrator; Room power does not confer this authority.
-    pub administrator: String,
+    /// Defaults to enabled when Pasion supplies the server's authentication.
+    pub enabled: Option<bool>,
+    /// Overrides the default Pasion administrator role with one local MXID.
+    pub administrator: Option<String>,
     /// Off until the native shared ledger and reservation capability are ready.
     #[serde(default)]
-    pub enable_project_reservations: bool,
+    pub enable_project_reservations: Option<bool>,
     /// Host-private only until the native parent settlement adapter is proven.
     #[serde(default)]
     pub enable_parent_settlement: bool,
@@ -50,7 +52,7 @@ pub struct ManagementConfig {
     pub enable_project_setup: bool,
     /// Admission-only, unadvertised until complete native managed execution.
     #[serde(default)]
-    pub enable_agent_admission: bool,
+    pub enable_agent_admission: Option<bool>,
     /// Host-private delivery only; does not enable shared model execution.
     #[serde(default)]
     pub enable_agent_executor: bool,
@@ -82,6 +84,12 @@ pub struct ManagementConfig {
     /// until the owners' desktops support succession.
     #[serde(default)]
     pub enable_pool_grant_succession: bool,
+}
+impl ManagementConfig {
+    fn apply_pool_defaults(&mut self, enabled: bool) {
+        self.enable_project_reservations.get_or_insert(enabled);
+        self.enable_agent_admission.get_or_insert(enabled);
+    }
 }
 /// Fully loaded runtime configuration; files stay owned by their components.
 #[derive(Clone)]
@@ -170,6 +178,16 @@ impl Config {
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref().canonicalize()?;
         let mut host = read_host(&path)?;
+        const ENABLE_RESOURCE_POOLS: &str = "HAGENCY_ENABLE_RESOURCE_POOLS";
+        match std::env::var(ENABLE_RESOURCE_POOLS) {
+            Ok(value) => host.management.apply_pool_defaults(
+                value
+                    .parse()
+                    .with_context(|| format!("{ENABLE_RESOURCE_POOLS} must be true or false"))?,
+            ),
+            Err(std::env::VarError::NotPresent) => {}
+            Err(error) => return Err(error).context(ENABLE_RESOURCE_POOLS),
+        }
         let base = path.parent().unwrap();
         for p in [&mut host.public_dir, &mut host.pasion_config]
             .into_iter()
@@ -260,9 +278,9 @@ impl Config {
         Ok(())
     }
     pub fn validate(&self) -> anyhow::Result<()> {
-        if let Some(management) = &self.management {
+        if let Some(administrator) = &self.management.administrator {
             hagency_agent_service::management_types::ManagementPolicy::new(
-                management.administrator.clone(),
+                administrator.clone(),
                 self.matrix.server_name.as_str(),
             )?;
         }
@@ -374,6 +392,30 @@ mod encrypted_delivery_tests {
     use hagency_agent_service::transport::EncryptedDelivery;
 
     use super::HostConfig;
+
+    #[test]
+    fn management_defaults_to_pasion_and_explicit_pool_settings_override_the_environment() {
+        let base = "listen='127.0.0.1:8088'\npublic_origin='http://127.0.0.1:8088'\ndatabase_url='postgres://localhost/hagency'\npalpo_config='palpo.toml'\n";
+        let mut config: HostConfig = toml::from_str(base).unwrap();
+        assert!(config.management.enabled.unwrap_or(true));
+        assert!(config.management.administrator.is_none());
+        assert!(!config.management.enable_agent_admission.unwrap_or(false));
+        config.management.apply_pool_defaults(true);
+        assert_eq!(config.management.enable_project_reservations, Some(true));
+        assert_eq!(config.management.enable_agent_admission, Some(true));
+
+        let mut config: HostConfig = toml::from_str(&format!(
+            "{base}[management]\nenabled=false\nadministrator='@reviewer:example.test'\nenable_agent_admission=false\n"
+        )).unwrap();
+        config.management.apply_pool_defaults(true);
+        assert_eq!(config.management.enabled, Some(false));
+        assert_eq!(
+            config.management.administrator.as_deref(),
+            Some("@reviewer:example.test")
+        );
+        assert_eq!(config.management.enable_project_reservations, Some(true));
+        assert_eq!(config.management.enable_agent_admission, Some(false));
+    }
 
     #[test]
     fn startup_and_check_config_share_browser_ttl_boundaries() {

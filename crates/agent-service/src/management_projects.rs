@@ -60,7 +60,7 @@ pub(super) async fn project(
         }
     }
     .into();
-    payload["canRevoke"] = ((row.manager_user_id == p.user_id || p.mxid == policy.administrator())
+    payload["canRevoke"] = ((row.manager_user_id == p.user_id || policy.can_administer(p))
         && matches!(
             payload["state"].as_str(),
             Some("pending_approval" | "approved")
@@ -105,11 +105,9 @@ pub(super) async fn revoke_contribution_projects(
         notify(
             db,
             &result.request,
-            [
-                result.manager_mxid,
-                result.coordinator_mxid,
-                policy.administrator().to_owned(),
-            ],
+            policy
+                .administrator_recipients()
+                .chain([result.manager_mxid, result.coordinator_mxid]),
             now,
         )
         .await?;
@@ -183,9 +181,9 @@ impl DomainStore {
             sql_query("INSERT INTO hagency_agent_v1.management_projects(id,manager_user_id,contribution_id,name,purpose,requested_tokens,state,request_id,created_at_ms,updated_at_ms) VALUES($1,$2,$3,$4,$5,$6,'pending_approval',$7,$8,$8)")
                 .bind::<Text,_>(&id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&c.id).bind::<Text,_>(input.name.trim()).bind::<Text,_>(input.purpose.trim()).bind::<BigInt,_>(input.requested_tokens).bind::<Text,_>(&request_id).bind::<BigInt,_>(now).execute(db).await?;
             sql_query("INSERT INTO hagency_agent_v1.management_requests(id,kind,contribution_id,project_id,requester_user_id,approver_mxid,state,created_at_ms,expires_at_ms) VALUES($1,'project_capacity',$2,$3,$4,$5,'pending',$6,$7)")
-                .bind::<Text,_>(&request_id).bind::<Text,_>(&c.id).bind::<Text,_>(&id).bind::<Text,_>(&p.user_id).bind::<Text,_>(policy.administrator()).bind::<BigInt,_>(now).bind::<BigInt,_>(now+TTL).execute(db).await?;
+                .bind::<Text,_>(&request_id).bind::<Text,_>(&c.id).bind::<Text,_>(&id).bind::<Text,_>(&p.user_id).bind::<Text,_>(policy.assigned_administrator()).bind::<BigInt,_>(now).bind::<BigInt,_>(now+TTL).execute(db).await?;
             let result=project(db,&id,p,policy,now).await?;
-            notify(db,&result.request,[policy.administrator().to_owned()],now).await?;
+            notify(db,&result.request,policy.administrator_recipients(),now).await?;
             Self::audit(db,p,"project.request",&id,now).await?;
             receipt(db,p,&input.command_id,"project.request",&payload_digest,&result).await?;
             Ok(result)
@@ -217,24 +215,57 @@ impl DomainStore {
     ) -> Result<ManagementPage<ProjectPlan>> {
         query.validate()?;
         let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::authorize(db,p,crate::api::now_ms()).await?;
-            let now=clock(db).await?;
-            let rows=sql_query(format!("{PROJECTS} JOIN hagency_agent_v1.management_requests r ON r.id=m.request_id WHERE (m.manager_user_id=$1 OR c.owner_user_id=$1 OR c.coordinator_mxid=$2 OR $2=$3 OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_project_authorities pa WHERE pa.plan_id=m.id AND pa.administrator_user_id=$1)) AND (NOT $4 OR r.approver_mxid=$2 AND $2=$3 AND r.state='pending' AND r.expires_at_ms>$5 AND c.state='admitted') AND m.id>$6 ORDER BY m.id LIMIT $7"))
-                .bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(policy.administrator()).bind::<Bool,_>(query.needs_my_action).bind::<BigInt,_>(now).bind::<Text,_>(query.after.as_deref().unwrap_or("")).bind::<BigInt,_>(MAX_PAGE+1).load::<ProjectRow>(db).await?;
-            let mut more=rows.len()>MAX_PAGE as usize;
-            let mut items=Vec::new();
-            let mut bytes=512;
-            for row in rows.into_iter().take(MAX_PAGE as usize) {
-                let item=project(db,&row.id,p,policy,now).await?;
-                let size=wire(&item)?.len()+1;
-                if bytes+size>MAX_PROJECT_PAGE_BYTES {more=true;break;}
-                bytes+=size;
-                items.push(item);
-            }
-            let next_after=if more {items.last().map(|v|v.id.clone())}else{None};
-            Ok(ManagementPage{protocol:PROTOCOL,observed_at_ms:now,items,next_after})
-        }).await
+        (*db)
+            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, crate::api::now_ms()).await?;
+                let now = clock(db).await?;
+                let rows = sql_query(format!(
+                    "{PROJECTS}
+                 JOIN hagency_agent_v1.management_requests r ON r.id=m.request_id
+                 WHERE (m.manager_user_id=$1 OR c.owner_user_id=$1 OR c.coordinator_mxid=$2 OR $3
+                     OR EXISTS (SELECT 1 FROM hagency_agent_v1.management_project_authorities pa
+                                WHERE pa.plan_id=m.id AND pa.administrator_user_id=$1))
+                   AND (NOT $4 OR $3 AND ($8 OR r.approver_mxid IN ('',$2))
+                        AND r.state='pending' AND r.expires_at_ms>$5 AND c.state='admitted')
+                   AND m.id>$6
+                 ORDER BY m.id LIMIT $7"
+                ))
+                .bind::<Text, _>(&p.user_id)
+                .bind::<Text, _>(&p.mxid)
+                .bind::<Bool, _>(policy.can_administer(p))
+                .bind::<Bool, _>(query.needs_my_action)
+                .bind::<BigInt, _>(now)
+                .bind::<Text, _>(query.after.as_deref().unwrap_or(""))
+                .bind::<BigInt, _>(MAX_PAGE + 1)
+                .bind::<Bool, _>(policy.uses_pasion_administrators())
+                .load::<ProjectRow>(db)
+                .await?;
+                let mut more = rows.len() > MAX_PAGE as usize;
+                let mut items = Vec::new();
+                let mut bytes = 512;
+                for row in rows.into_iter().take(MAX_PAGE as usize) {
+                    let item = project(db, &row.id, p, policy, now).await?;
+                    let size = wire(&item)?.len() + 1;
+                    if bytes + size > MAX_PROJECT_PAGE_BYTES {
+                        more = true;
+                        break;
+                    }
+                    bytes += size;
+                    items.push(item);
+                }
+                let next_after = if more {
+                    items.last().map(|v| v.id.clone())
+                } else {
+                    None
+                };
+                Ok(ManagementPage {
+                    protocol: PROTOCOL,
+                    observed_at_ms: now,
+                    items,
+                    next_after,
+                })
+            })
+            .await
     }
 
     pub async fn decide_management_project(
@@ -255,7 +286,7 @@ impl DomainStore {
         (*db)
             .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
-                if p.mxid != policy.administrator() {
+                if !policy.can_administer(p) {
                     return Err(Error::Unauthorized("management_administrator_required"));
                 }
                 let now = clock(db).await?;
@@ -333,7 +364,7 @@ impl DomainStore {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let row = project_row(db, id).await?;
-                if row.manager_user_id != p.user_id && p.mxid != policy.administrator() {
+                if row.manager_user_id != p.user_id && !policy.can_administer(p) {
                     return Err(Error::Unauthorized("project_manager_required"));
                 }
                 if let Some(saved) = replay::<ProjectPlan>(
@@ -360,11 +391,9 @@ impl DomainStore {
                 notify(
                     db,
                     &result.request,
-                    [
-                        result.manager_mxid.clone(),
-                        result.coordinator_mxid.clone(),
-                        policy.administrator().to_owned(),
-                    ],
+                    policy
+                        .administrator_recipients()
+                        .chain([result.manager_mxid.clone(), result.coordinator_mxid.clone()]),
                     now,
                 )
                 .await?;
