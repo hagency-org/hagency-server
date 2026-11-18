@@ -36,13 +36,13 @@ pub fn NotAuthorizedPage() -> Element {
                 div { class: "space-y-2",
                     h1 { class: "text-2xl font-bold tracking-tight", {t("auth.not_admin")} }
                     p { class: "text-muted-foreground text-sm",
-                        "This page requires server administrator privileges. You can continue using your own Projects and Agents."
+                        {t("hagency.auth.admin_notice")}
                     }
                 }
                 if !display_name.is_empty() || !user_id.is_empty() {
                     div { class: "rounded-lg border glass-panel p-4 text-left space-y-1",
                         p { class: "text-xs uppercase tracking-wide text-muted-foreground",
-                            "Signed in as"
+                            {t("hagency.auth.signed_in_as")}
                         }
                         if !display_name.is_empty() {
                             p { class: "font-medium", "{display_name}" }
@@ -58,7 +58,7 @@ pub fn NotAuthorizedPage() -> Element {
                     onclick: handle_logout,
                     {t("auth.sign_out")}
                 }
-                Link { to: Route::HagencyProjects {}, class: "text-primary hover:underline", "Go to your projects" }
+                Link { to: Route::HagencyProjects {}, class: "text-primary hover:underline", {t("hagency.auth.projects")} }
             }
         }
     }

@@ -74,8 +74,8 @@ pub fn AppHeader(collapsed: Signal<bool>, mobile_sidebar_open: Signal<bool>) -> 
         header { class: "flex h-14 items-center border-b px-4 lg:px-6",
             button {
                 class: "inline-flex h-9 w-9 items-center justify-center rounded-lg text-sm font-medium hover:bg-accent hover:text-accent-foreground touch-target",
-                title: "Toggle navigation",
-                aria_label: "Toggle navigation",
+                title: t("nav.toggle_navigation"),
+                aria_label: t("nav.toggle_navigation"),
                 onclick: move |_| {
                     let is_mobile_view = web_sys::window()
                         .and_then(|window| window.inner_width().ok())
@@ -107,7 +107,7 @@ pub fn AppHeader(collapsed: Signal<bool>, mobile_sidebar_open: Signal<bool>) -> 
             // Language selector + Theme toggle + Notification bell + User info
             div { class: "app-header-controls",
                 span {class:"hg-role", if crate::router::is_server_admin() {"Administrator"}else {"Personal account"}}
-                a {href:"/auth/",class:"text-xs text-muted-foreground hover:underline","Account center"}
+                a {href:"/auth/",class:"text-xs text-muted-foreground hover:underline",{t("home.account")}}
                 // Language selector
                 select {
                     class: "app-header-language h-9 rounded-lg border bg-background px-3 text-xs text-foreground touch-target",
