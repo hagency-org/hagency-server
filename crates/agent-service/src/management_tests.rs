@@ -747,7 +747,10 @@ async fn post(s: &Service, path: &str, token: &str, body: Value, status: StatusC
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn pasion_administrators_can_review_requests_after_bootstrap_and_lose_access_on_revocation() {
-    let f = fixture().await;
+    let database = tokio::task::spawn_blocking(crate::upgrade_tests::IsolatedDatabase::create)
+        .await
+        .unwrap();
+    let f = fixture_at(database.url.clone()).await;
     let administrators = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
     let roles = Arc::clone(&administrators);
     let policy = ManagementPolicy::pasion(Arc::new(move || {
