@@ -41,6 +41,7 @@ web-sys = { workspace = true, features = [
     "Crypto",
     "SubtleCrypto",
     "EventTarget",
+    "KeyboardEvent",
     "Event",
 ] }
 wasm-bindgen.workspace = true
