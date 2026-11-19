@@ -1,0 +1,40 @@
+name: CI change scope
+
+on:
+  workflow_call:
+    inputs:
+      check_spelling:
+        type: boolean
+        default: false
+    outputs:
+      smoke:
+        value: ${{ jobs.scope.outputs.smoke }}
+      restore:
+        value: ${{ jobs.scope.outputs.restore }}
+      docs_only:
+        value: ${{ jobs.scope.outputs.docs_only }}
+
+permissions:
+  contents: read
+
+jobs:
+  scope:
+    runs-on: ubuntu-24.04
+    outputs:
+      smoke: ${{ steps.diff.outputs.smoke }}
+      restore: ${{ steps.diff.outputs.restore }}
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Select PR checks
+        id: diff
+        if: github.event_name == 'pull_request'
+        run: python3 .github/scripts/ci_scope.py
+      - name: Test deployment routing
+        if: inputs.check_spelling
+        run: python3 -m unittest discover -s .github/scripts -p test_ci_scope.py
+      - uses: crate-ci/typos@v1.51.1
+        if: inputs.check_spelling

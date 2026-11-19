@@ -4,24 +4,35 @@
 
 Quality gates use Rust 1.99.0: rustfmt, strict Clippy for backend/Agent service/xtask,
 backend and development-tool tests, Agent tests including the normally ignored
-PostgreSQL cases (a disposable PostgreSQL 17 service, serialized fixtures),
+PostgreSQL cases (four test processes sharing a PostgreSQL 17 service, each with
+its own Agent and usage databases and serial fixtures),
 OpenAPI drift guard and its self-tests, and a wasm32 frontend compile check.
-CI overrides the local absolute Cargo target directory. A version tag must equal
+The Appservice identity upgrade runs in the regular backend test build against a
+dedicated empty database. A version tag must equal
 `v` plus `workspace.package.version` in Cargo.toml, including any prerelease suffix.
 
-In this workflow, PRs and manual dispatch run quality checks only; its publishing
-container jobs are skipped. The independent `Embedded Deployment` workflow
-builds a local amd64 image on every PR and runs real PKCE, AS delivery, worker
-health, SIGTERM drain and restart checks without publishing it. PR/weekly/manual
-backup drills also restore three new databases and private files from the same
-image's executable and assets. The `Dependency risk policy` workflow audits
+PRs run spelling and dependency policy. Documentation-only changes skip Rust
+quality checks. Ordinary Agent management, budget, board and unit-test changes
+run quality checks. Deployment inputs, dependencies, startup, authentication,
+Matrix integration and unclassified production paths also run an amd64 image
+smoke covering PKCE, AS delivery, drain and restart. Changes to schema migrations,
+backup/restore or the deployment gates additionally exercise the stopped
+three-database and private-file restore drill. Mixed PRs run the highest required
+level, including the old path of a rename.
+
+Main pushes smoke the publication candidate by digest. Version tags run both smoke
+and restore on the same candidate before tagging. Weekly runs exercise both. Use
+the Embedded Deployment manual dispatch to smoke any selected ref, with
+`backup_restore` enabled for the full drill.
+
+The `Dependency risk policy` workflow audits
 PRs/main and weekly, retaining full findings and rejecting unreviewed, changed,
 expired or stale risk dispositions; see [dependency security](DEPENDENCY_SECURITY.md).
-Only a push to main or a `v*` version tag can build/publish images, after quality
+Only a push to main or a `v*` version tag can publish image digests, after quality
 succeeds. Native amd64 and arm64 runners build the complete existing
-Dockerfile, including both browser applications. Each image is smoke-tested for
-executable startup (`--help`) and packaged browser assets. These packaging checks
-complement the separate running Matrix/Pasion/Appservice deployment gate.
+Dockerfile, including both browser applications. Both architectures check executable
+startup (`--help`) and packaged browser assets. The amd64 runner also executes the Matrix/Pasion/Appservice
+deployment smoke on its published candidate digest before exporting it for the manifest.
 
 Main/tag image builds push by digest to
 `ghcr.io/<repository-owner>/hagency-server`, with OCI source/revision labels,
