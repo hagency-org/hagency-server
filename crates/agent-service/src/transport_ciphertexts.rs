@@ -272,7 +272,7 @@ impl TransportStore {
     ) -> Result<Ciphertext> {
         key(id)?;
         self.db
-            .transaction(async |db: &mut AsyncPgConnection| {
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::current_ciphertext(db, p, lease, id, f, self.limits.event_ttl_ms, now)
                     .await
                     .map(|(event, _)| event)

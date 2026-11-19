@@ -338,7 +338,7 @@ impl DomainStore {
         protocol: WorkProtocol,
     ) -> Result<SharedWorkInputMode> {
         self.db
-            .transaction(async |db: &mut AsyncPgConnection| {
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 let (_, r, w) = owned(db, p, id, &input, &self.server).await?;
                 protocol.check(&r)?;
                 let mode = mode(db, id).await?;
@@ -371,7 +371,7 @@ impl DomainStore {
         input: SharedContextRecoverInput,
     ) -> Result<SharedContextRecord> {
         self.db
-            .transaction(async |db: &mut AsyncPgConnection| {
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 let (_, _, w) = owned(
                     db,
                     p,

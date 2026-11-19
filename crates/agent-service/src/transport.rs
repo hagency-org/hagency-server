@@ -443,17 +443,12 @@ impl TransportStore {
         .await?
         .now_ms)
     }
-    async fn lock(db: &mut AsyncPgConnection) -> Result<()> {
-        db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-            .await?;
-        Ok(())
-    }
     async fn authenticate(
         db: &mut AsyncPgConnection,
         p: &Principal,
         now: i64,
     ) -> Result<(i64, i64)> {
-        Self::lock(db).await?;
+        crate::database::require_domain_writer(db).await?;
         let auth=sql_query("SELECT s.valid_until_ms FROM hagency_agent_v1.sessions s JOIN hagency_agent_v1.users u ON u.id=s.user_id WHERE s.id=$1 AND u.id=$2 AND u.mxid=$3 AND u.subject=$4 AND s.client_id=$5 AND u.active AND NOT s.revoked FOR SHARE OF s,u")
             .bind::<Text,_>(&p.session_id).bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(&p.subject).bind::<Text,_>(&p.client_id).get_result::<Auth>(db).await.map_err(unauthorized)?;
         let (device, generation) = device(p)?;
@@ -1758,8 +1753,7 @@ impl TransportStore {
         }
         let ids: Vec<_> = ids.into_iter().map(|row| row.id).collect();
         self.db.transaction(async |db| {
-            let lock = sql_query("SELECT pg_try_advisory_xact_lock(5210750088328904) AS matched").get_result::<Flag>(db).await?;
-            if !lock.matched {return Ok(0);}
+            if !crate::database::try_domain_writer(db).await? {return Ok(0);}
             let sql = format!("UPDATE hagency_agent_v1.{table} SET {update} WHERE {alias}.id=ANY($2) AND ({predicate})");
             Ok(sql_query(sql).bind::<BigInt,_>(cutoff).bind::<diesel::sql_types::Array<Text>,_>(&ids).execute(db).await?)
         }).await

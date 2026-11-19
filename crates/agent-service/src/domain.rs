@@ -664,9 +664,7 @@ impl DomainStore {
     async fn authorize(db: &mut AsyncPgConnection, p: &Principal, now: i64) -> Result<()> {
         // The transaction lock serializes cross-process domain mutations. Identity/session
         // row locks prevent concurrent account or session revocation during a mutation.
-        db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-            .await?;
-
+        crate::database::require_domain_writer(db).await?;
         Self::authorize_identity(db, p, now).await
     }
 

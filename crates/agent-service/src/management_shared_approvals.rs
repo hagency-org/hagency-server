@@ -219,7 +219,7 @@ impl DomainStore {
         } else {
             None
         };
-        self.db.transaction(async|db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{
    let now=clock(db).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;
    let c=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
    if request_runtime.is_some_and(|runtime| runtime!=c.runtime)
@@ -309,7 +309,7 @@ impl DomainStore {
         ) {
             return Err(Error::Invalid("invalid_permission_decision"));
         }
-        self.db.transaction(async|db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{
    let a=row(db,&input.id).await?;
    let reviewed:Value=decode(&a.payload)?;
    if !may_decide(&a,&reviewed,p) {return Err(Error::Unauthorized(if requester_decides(&reviewed) {"approval_requester_required"} else {"resource_owner_required"}));}
@@ -324,7 +324,7 @@ impl DomainStore {
     }
     pub async fn take_shared_approval(&self, p: &Principal, input: TakeApproval) -> Result<Value> {
         key(&input.id)?;
-        self.db.transaction(async|db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{
    let a=row(db,&input.id).await?;let r=runtime(db,&a.runtime_id).await?;let now=clock(db).await?;
    require_activity(db,p,&r,&input.authority,&self.server,now).await?;
    if a.digest!=input.digest || a.owner_user_id!=p.user_id {return Err(Error::Unauthorized("approval_request_changed"));}

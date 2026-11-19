@@ -478,7 +478,7 @@ impl DomainStore {
             )
             .await?;
         self.db
-            .transaction(async |db| {
+            .write_transaction(async |db| {
                 // Recheck after the Matrix wait: revocation or a changed run fence must
                 // not authorize a late upload using the earlier snapshot.
                 let (current, latest) = native_send_scope(db, p, policy, id, &self.server).await?;

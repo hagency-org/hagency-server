@@ -5,6 +5,30 @@ use diesel_async::{
     AsyncConnection, AsyncPgConnection, SimpleAsyncConnection,
     pooled_connection::PoolableConnection,
 };
+/// Business transactions never queue on this lock inside PostgreSQL.
+pub(crate) async fn try_domain_writer(db: &mut AsyncPgConnection) -> diesel::QueryResult<bool> {
+    use diesel_async::RunQueryDsl;
+    #[derive(diesel::QueryableByName)]
+    struct Lock {
+        #[diesel(sql_type=diesel::sql_types::Bool)]
+        acquired: bool,
+    }
+    Ok(
+        diesel::sql_query("SELECT pg_try_advisory_xact_lock(5210750088328904) AS acquired")
+            .get_result::<Lock>(db)
+            .await?
+            .acquired,
+    )
+}
+
+/// Keep authorization helpers safe even if a caller omits writer admission.
+pub(crate) async fn require_domain_writer(db: &mut AsyncPgConnection) -> Result<()> {
+    if try_domain_writer(db).await? {
+        Ok(())
+    } else {
+        Err(Error::Unavailable("domain_writer_busy"))
+    }
+}
 /// Authorization writes may race a remote key operation. The trigger has already
 /// aborted the entire DB transaction before we retry. Sleep outside the pool.
 pub(crate) async fn retry_crypto_write<T, F: Future<Output = Result<T>> + Send>(
@@ -111,12 +135,6 @@ impl Database {
         'a: 'conn,
     {
         Box::pin(async move {
-            use diesel_async::RunQueryDsl;
-            #[derive(diesel::QueryableByName)]
-            struct Lock {
-                #[diesel(sql_type=diesel::sql_types::Bool)]
-                acquired: bool,
-            }
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
             let _writer = tokio::time::timeout_at(deadline, self.writer.lock())
                 .await
@@ -126,12 +144,7 @@ impl Database {
             loop {
                 let result = self
                     .transaction(async |conn| {
-                        let lock = diesel::sql_query(
-                            "SELECT pg_try_advisory_xact_lock(5210750088328904) AS acquired",
-                        )
-                        .get_result::<Lock>(conn)
-                        .await?;
-                        if lock.acquired {
+                        if try_domain_writer(conn).await? {
                             let run = callback.take().expect("writer callback runs once");
                             return run(conn).await.map(Some);
                         }
@@ -298,6 +311,11 @@ mod tests {
             while db.checkout_count() < 2 {
                 tokio::task::yield_now().await;
             }
+            assert!(matches!(
+                db.transaction(async |conn| require_domain_writer(conn).await)
+                    .await,
+                Err(Error::Unavailable("domain_writer_busy"))
+            ));
             db.transaction(async |conn| Ok(diesel::sql_query("SELECT 1").execute(conn).await?))
                 .await
                 .unwrap();
