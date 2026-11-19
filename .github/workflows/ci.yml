@@ -194,6 +194,11 @@ jobs:
           HAGENCY_TEST_IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
           HAGENCY_TEST_IMAGE_SOURCE: ${{ github.sha }}
         run: node tests/docker-smoke.mjs
+      - name: Validate release backup and restore
+        if: matrix.arch == 'amd64' && startsWith(github.ref, 'refs/tags/v')
+        uses: ./.github/actions/restore-drill
+        with:
+          image: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
       - name: Export digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}

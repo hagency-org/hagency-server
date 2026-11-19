@@ -7,6 +7,10 @@ on:
         type: boolean
         default: false
     outputs:
+      smoke:
+        value: ${{ jobs.scope.outputs.smoke }}
+      restore:
+        value: ${{ jobs.scope.outputs.restore }}
       docs_only:
         value: ${{ jobs.scope.outputs.docs_only }}
 
@@ -17,21 +21,20 @@ jobs:
   scope:
     runs-on: ubuntu-24.04
     outputs:
+      smoke: ${{ steps.diff.outputs.smoke }}
+      restore: ${{ steps.diff.outputs.restore }}
       docs_only: ${{ steps.diff.outputs.docs_only }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
           persist-credentials: false
-      - name: Identify documentation-only PRs
+      - name: Select PR checks
         id: diff
         if: github.event_name == 'pull_request'
-        run: |
-          # Compare the tested merge with its base parent, including deletions and renames.
-          if git diff --quiet --no-renames HEAD^1 HEAD -- . \
-              ':(exclude)README.md' ':(exclude)README.zh-CN.md' \
-              ':(exclude,glob)docs/**/*.md' ':(exclude,glob)dev-vibe/**/*.md'; then
-            echo "docs_only=true" >> "$GITHUB_OUTPUT"
-          fi
+        run: python3 .github/scripts/ci_scope.py
+      - name: Test deployment routing
+        if: inputs.check_spelling
+        run: python3 -m unittest discover -s .github/scripts -p test_ci_scope.py
       - uses: crate-ci/typos@v1.51.1
         if: inputs.check_spelling

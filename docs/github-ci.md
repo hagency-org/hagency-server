@@ -11,15 +11,20 @@ The Appservice identity upgrade runs in the regular backend test build against a
 dedicated empty database. A version tag must equal
 `v` plus `workspace.package.version` in Cargo.toml, including any prerelease suffix.
 
-In this workflow, PRs and manual dispatch run quality checks only; its publishing
-container jobs are skipped. The independent `Embedded Deployment` workflow
-builds a local amd64 image on code and configuration PRs and runs real PKCE, AS
-delivery, worker
-health, SIGTERM drain and restart checks without publishing it. PR/weekly/manual
-backup drills also restore three new databases and private files from the same
-image's executable and assets. PRs limited to Markdown in docs or dev-vibe, or
-the two top-level READMEs, run spelling and dependency policy and skip the
-Rust and deployment jobs. Changes to test scripts or workflows run the full checks.
+PRs run spelling and dependency policy. Documentation-only changes skip Rust
+quality checks. Ordinary Agent management, budget, board and unit-test changes
+run quality checks. Deployment inputs, dependencies, startup, authentication,
+Matrix integration and unclassified production paths also run an amd64 image
+smoke covering PKCE, AS delivery, drain and restart. Changes to schema migrations,
+backup/restore or the deployment gates additionally exercise the stopped
+three-database and private-file restore drill. Mixed PRs run the highest required
+level, including the old path of a rename.
+
+Main pushes smoke the publication candidate by digest. Version tags run both smoke
+and restore on the same candidate before tagging. Weekly runs exercise both. Use
+the Embedded Deployment manual dispatch to smoke any selected ref, with
+`backup_restore` enabled for the full drill.
+
 The `Dependency risk policy` workflow audits
 PRs/main and weekly, retaining full findings and rejecting unreviewed, changed,
 expired or stale risk dispositions; see [dependency security](DEPENDENCY_SECURITY.md).
