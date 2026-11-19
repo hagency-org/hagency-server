@@ -304,14 +304,147 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-channel"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81953c529336010edd6d8e358f886d9581267795c61b19475b71314bffa46d35"
+dependencies = [
+ "concurrent-queue",
+ "event-listener 2.5.3",
+ "futures-core",
+]
+
+[[package]]
+name = "async-channel"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "924ed96dd52d1b75e9c1a3e6275715fd320f5f9439fb5a4a11fa51f4221158d2"
+dependencies = [
+ "concurrent-queue",
+ "event-listener-strategy",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "async-executor"
+version = "1.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f426a31126c735126297bc5ea7a521263c9faff4f63ca415267ee625651c4f37"
+dependencies = [
+ "async-task",
+ "concurrent-queue",
+ "fastrand",
+ "futures-lite",
+ "pin-project-lite",
+ "slab",
+]
+
+[[package]]
+name = "async-global-executor"
+version = "2.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05b1b633a2115cd122d73b955eadd9916c18c8f510ec9cd1686404c60ad1c29c"
+dependencies = [
+ "async-channel 2.5.0",
+ "async-executor",
+ "async-io",
+ "async-lock",
+ "blocking",
+ "futures-lite",
+ "once_cell",
+]
+
+[[package]]
+name = "async-io"
+version = "2.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "456b8a8feb6f42d237746d4b3e9a178494627745c3c56c6ea55d92ba50d026fc"
+dependencies = [
+ "autocfg",
+ "cfg-if",
+ "concurrent-queue",
+ "futures-io",
+ "futures-lite",
+ "parking",
+ "polling",
+ "rustix",
+ "slab",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "async-lock"
 version = "3.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "290f7f2596bd5b78a9fec8088ccd89180d7f9f55b94b0576823bbbdc72ee8311"
 dependencies = [
- "event-listener",
+ "event-listener 5.4.2",
  "event-listener-strategy",
  "pin-project-lite",
+]
+
+[[package]]
+name = "async-process"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc50921ec0055cdd8a16de48773bfeec5c972598674347252c0399676be7da75"
+dependencies = [
+ "async-channel 2.5.0",
+ "async-io",
+ "async-lock",
+ "async-signal",
+ "async-task",
+ "blocking",
+ "cfg-if",
+ "event-listener 5.4.2",
+ "futures-lite",
+ "rustix",
+]
+
+[[package]]
+name = "async-signal"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52b5aaafa020cf5053a01f2a60e8ff5dccf550f0f77ec54a4e47285ac2bab485"
+dependencies = [
+ "async-io",
+ "async-lock",
+ "atomic-waker",
+ "cfg-if",
+ "futures-core",
+ "futures-io",
+ "rustix",
+ "signal-hook-registry",
+ "slab",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "async-std"
+version = "1.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c8e079a4ab67ae52b7403632e4618815d6db36d2a010cfe41b02c1b1578f93b"
+dependencies = [
+ "async-channel 1.9.0",
+ "async-global-executor",
+ "async-io",
+ "async-lock",
+ "async-process",
+ "crossbeam-utils",
+ "futures-channel",
+ "futures-core",
+ "futures-io",
+ "futures-lite",
+ "gloo-timers 0.3.0",
+ "kv-log-macro",
+ "log",
+ "memchr",
+ "once_cell",
+ "pin-project-lite",
+ "pin-utils",
+ "slab",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -335,6 +468,12 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "async-task"
+version = "4.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b75356056920673b02621b35afd0f7dda9306d03c79a30f5c56c44cf256e3de"
 
 [[package]]
 name = "async-trait"
@@ -686,6 +825,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
 dependencies = [
  "objc2",
+]
+
+[[package]]
+name = "blocking"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a70e4329df6cb94385eed412ec92375c3cdd8a6e502493d1229b6414e4036dfa"
+dependencies = [
+ "async-channel 2.5.0",
+ "async-task",
+ "futures-io",
+ "futures-lite",
+ "piper",
 ]
 
 [[package]]
@@ -1368,6 +1520,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "concurrent-queue"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "config"
 version = "0.15.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1385,6 +1546,18 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "winnow 1.0.4",
  "yaml-rust2",
+]
+
+[[package]]
+name = "const-hex"
+version = "1.19.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e59eef12462b0f9b0a3620219be5d639afd79fe39dff0a42c3997061f9298b4"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "proptest",
+ "serde_core",
 ]
 
 [[package]]
@@ -1727,18 +1900,6 @@ dependencies = [
  "quote",
  "strict",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "cron"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5dcd6f69605c2956916ce24e8af637b754964c9a83f4662d3a2361654cdba09"
-dependencies = [
- "chrono",
- "once_cell",
- "phf 0.11.3",
- "winnow 0.7.15",
 ]
 
 [[package]]
@@ -3117,7 +3278,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3128,6 +3289,12 @@ checksum = "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06"
 dependencies = [
  "num-traits",
 ]
+
+[[package]]
+name = "event-listener"
+version = "2.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
 
 [[package]]
 name = "event-listener"
@@ -3145,7 +3312,7 @@ version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
- "event-listener",
+ "event-listener 5.4.2",
  "pin-project-lite",
 ]
 
@@ -3411,6 +3578,19 @@ name = "futures-io"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "53c0fa8157de1303bfffdaa1cc2a673bfffb60102f76b0ef4441659124373fed"
+
+[[package]]
+name = "futures-lite"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f78e10609fe0e0b3f4157ffab1876319b5b0db102a2c60dc4626306dc46b44ad"
+dependencies = [
+ "fastrand",
+ "futures-core",
+ "futures-io",
+ "parking",
+ "pin-project-lite",
+]
 
 [[package]]
 name = "futures-macro"
@@ -4864,6 +5044,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "jiff-cron"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa4804a5e6441082f7b8f2e840c639e489902aba5533c1e95c2fb7f0ab23d96c"
+dependencies = [
+ "jiff",
+ "phf 0.13.1",
+ "winnow 1.0.4",
+]
+
+[[package]]
+name = "jiff-diesel"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3a17d80f23d2a3872a3aaef87c168a6e0442118e55b463ba7f864f82376eeee"
+dependencies = [
+ "diesel",
+ "jiff",
+]
+
+[[package]]
 name = "jiff-static"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5126,6 +5327,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e037a2e1d8d5fdbd49b16a4ea09d5d6401c1f29eca5ff29d03d3824dba16256a"
 
 [[package]]
+name = "kv-log-macro"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0de8b303297635ad57c9f5059fd9cee7a47f8e8daa09df0fcd07dd39fb22977f"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "lalrpop"
 version = "0.22.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5209,9 +5419,11 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 
 [[package]]
 name = "lettre"
-version = "0.11.23"
-source = "git+https://github.com/chrislearn/lettre.git?rev=388699bd167493a1fe88d51fd0a28e17ab1a6596#388699bd167493a1fe88d51fd0a28e17ab1a6596"
+version = "0.11.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f294f3d7cdb313e578acef7d7727d4e8d897e0fcd0d6d58c19959cec95073f19"
 dependencies = [
+ "async-std",
  "async-trait",
  "base64 0.23.1",
  "email-encoding",
@@ -5364,6 +5576,9 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+dependencies = [
+ "value-bag",
+]
 
 [[package]]
 name = "logos"
@@ -5732,7 +5947,7 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "equivalent",
- "event-listener",
+ "event-listener 5.4.2",
  "futures-util",
  "parking_lot 0.12.5",
  "portable-atomic",
@@ -6028,11 +6243,11 @@ dependencies = [
 [[package]]
 name = "oauth2-types"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "base64ct",
- "chrono",
  "indexmap 2.14.2",
+ "jiff",
  "language-tags",
  "pasion-iana",
  "pasion-jose",
@@ -6469,13 +6684,16 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-proto"
-version = "0.33.0"
+version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25da1ac11a0aeccf38d7f77ee0348715adaf8340f65ad46c94a02c6b20e2f65d"
+checksum = "d576f5dddc3299341bcd85a04be17b2564844c0c9563214f02d85f2524d1afae"
 dependencies = [
+ "base64 0.22.1",
+ "const-hex",
  "opentelemetry",
  "opentelemetry_sdk",
  "prost",
+ "serde",
 ]
 
 [[package]]
@@ -6496,21 +6714,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d288b1e1bc3590052fbb8f0f635ef248dd9022cf1fbaeb6582b7ad6081a17b87"
 
 [[package]]
-name = "opentelemetry-stdout"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f71803f481d3f5ccbe477edb42a78f473613712b2327835911a9ea0ab069824"
-dependencies = [
- "chrono",
- "opentelemetry",
- "opentelemetry_sdk",
-]
-
-[[package]]
 name = "opentelemetry_sdk"
-version = "0.33.0"
+version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb39533d9d1c912123efd7d41d7e0c29d16917b60ce15b4c8d87cb1af7f67520"
+checksum = "372a912db2974d1990207006fd0e3aa0ef3fd4ad3be43c65cfaadf2206866061"
 dependencies = [
  "futures-channel",
  "futures-executor",
@@ -6593,8 +6800,8 @@ dependencies = [
 
 [[package]]
 name = "palpo"
-version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=36d5ab61863845e3a3917b4efde5adf46aab07e6#36d5ab61863845e3a3917b4efde5adf46aab07e6"
+version = "0.6.0"
+source = "git+https://github.com/palpo-im/palpo.git?rev=3e036e82fc71285ed573de726d2e60779a4ea4b8#3e036e82fc71285ed573de726d2e60779a4ea4b8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6689,8 +6896,8 @@ dependencies = [
 
 [[package]]
 name = "palpo-core"
-version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=36d5ab61863845e3a3917b4efde5adf46aab07e6#36d5ab61863845e3a3917b4efde5adf46aab07e6"
+version = "0.6.0"
+source = "git+https://github.com/palpo-im/palpo.git?rev=3e036e82fc71285ed573de726d2e60779a4ea4b8#3e036e82fc71285ed573de726d2e60779a4ea4b8"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -6754,8 +6961,8 @@ dependencies = [
 
 [[package]]
 name = "palpo-core-macros"
-version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=36d5ab61863845e3a3917b4efde5adf46aab07e6#36d5ab61863845e3a3917b4efde5adf46aab07e6"
+version = "0.6.0"
+source = "git+https://github.com/palpo-im/palpo.git?rev=3e036e82fc71285ed573de726d2e60779a4ea4b8#3e036e82fc71285ed573de726d2e60779a4ea4b8"
 dependencies = [
  "as_variant",
  "palpo-identifiers-validation",
@@ -6769,8 +6976,8 @@ dependencies = [
 
 [[package]]
 name = "palpo-data"
-version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=36d5ab61863845e3a3917b4efde5adf46aab07e6#36d5ab61863845e3a3917b4efde5adf46aab07e6"
+version = "0.6.0"
+source = "git+https://github.com/palpo-im/palpo.git?rev=3e036e82fc71285ed573de726d2e60779a4ea4b8#3e036e82fc71285ed573de726d2e60779a4ea4b8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6839,16 +7046,16 @@ dependencies = [
 
 [[package]]
 name = "palpo-identifiers-validation"
-version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=36d5ab61863845e3a3917b4efde5adf46aab07e6#36d5ab61863845e3a3917b4efde5adf46aab07e6"
+version = "0.6.0"
+source = "git+https://github.com/palpo-im/palpo.git?rev=3e036e82fc71285ed573de726d2e60779a4ea4b8#3e036e82fc71285ed573de726d2e60779a4ea4b8"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "palpo-server-macros"
-version = "0.5.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=36d5ab61863845e3a3917b4efde5adf46aab07e6#36d5ab61863845e3a3917b4efde5adf46aab07e6"
+version = "0.6.0"
+source = "git+https://github.com/palpo-im/palpo.git?rev=3e036e82fc71285ed573de726d2e60779a4ea4b8#3e036e82fc71285ed573de726d2e60779a4ea4b8"
 dependencies = [
  "palpo-identifiers-validation",
  "proc-macro-crate",
@@ -6913,7 +7120,7 @@ dependencies = [
 [[package]]
 name = "pasion-backend"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "anyhow",
  "argon2",
@@ -6922,7 +7129,6 @@ dependencies = [
  "bcrypt",
  "bytes",
  "camino",
- "chrono",
  "cookie",
  "data-encoding",
  "deadpool",
@@ -6945,6 +7151,7 @@ dependencies = [
  "icu_normalizer",
  "indexmap 2.14.2",
  "ipnetwork",
+ "jiff",
  "language-tags",
  "lettre",
  "listenfd",
@@ -6959,9 +7166,9 @@ dependencies = [
  "opentelemetry-instrumentation-tokio",
  "opentelemetry-otlp",
  "opentelemetry-prometheus-text-exporter",
+ "opentelemetry-proto",
  "opentelemetry-resource-detectors",
  "opentelemetry-semantic-conventions",
- "opentelemetry-stdout",
  "opentelemetry_sdk",
  "p256",
  "pasion-config",
@@ -6988,6 +7195,7 @@ dependencies = [
  "rustls",
  "rustls-platform-verifier",
  "salvo",
+ "salvo-oapi",
  "salvo_core",
  "schemars 1.2.2",
  "sd-notify",
@@ -7022,16 +7230,16 @@ dependencies = [
 [[package]]
 name = "pasion-config"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "anyhow",
  "camino",
- "chrono",
  "figment",
  "futures-util",
  "hex",
  "indoc",
  "ipnetwork",
+ "jiff",
  "lettre",
  "pasion-iana",
  "pasion-jose",
@@ -7054,18 +7262,19 @@ dependencies = [
 [[package]]
 name = "pasion-data"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "anyhow",
  "async-trait",
  "base64ct",
- "chrono",
  "crc",
  "diesel",
  "diesel-async",
  "diesel_migrations",
  "futures-util",
  "ipnetwork",
+ "jiff",
+ "jiff-diesel",
  "language-tags",
  "lettre",
  "oauth2-types",
@@ -7095,7 +7304,7 @@ dependencies = [
 [[package]]
 name = "pasion-i18n"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "camino",
  "fluent-bundle",
@@ -7115,7 +7324,7 @@ dependencies = [
 [[package]]
 name = "pasion-iana"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "schemars 1.2.2",
  "serde",
@@ -7124,15 +7333,15 @@ dependencies = [
 [[package]]
 name = "pasion-jose"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "base64ct",
- "chrono",
  "digest 0.11.3",
  "ecdsa",
  "ed25519-dalek",
  "elliptic-curve",
  "hmac 0.13.0",
+ "jiff",
  "k256",
  "p256",
  "p384",
@@ -7155,7 +7364,7 @@ dependencies = [
 [[package]]
 name = "pasion-keystore"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "aead 0.5.2",
  "base64ct",
@@ -7183,7 +7392,7 @@ dependencies = [
 [[package]]
 name = "pasion-matrix"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7194,7 +7403,7 @@ dependencies = [
 [[package]]
 name = "pasion-matrix-palpo"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7211,13 +7420,13 @@ dependencies = [
 [[package]]
 name = "pasion-messaging"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
- "chrono",
  "hex",
  "hmac 0.13.0",
+ "jiff",
  "lettre",
  "pasion-templates",
  "reqwest 0.13.5",
@@ -7234,12 +7443,12 @@ dependencies = [
 [[package]]
 name = "pasion-policy"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "anyhow",
  "async-trait",
  "cedar-policy",
- "chrono",
+ "jiff",
  "oauth2-types",
  "pasion-data",
  "schemars 1.2.2",
@@ -7253,14 +7462,14 @@ dependencies = [
 [[package]]
 name = "pasion-tasks"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "anyhow",
  "async-trait",
- "chrono",
- "cron",
  "diesel",
  "diesel-async",
+ "jiff",
+ "jiff-cron",
  "oauth2-types",
  "opentelemetry",
  "opentelemetry-semantic-conventions",
@@ -7286,14 +7495,14 @@ dependencies = [
 [[package]]
 name = "pasion-templates"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
 dependencies = [
  "anyhow",
  "arc-swap",
  "camino",
- "chrono",
  "fluent-bundle",
  "http",
+ "jiff",
  "minijinja",
  "minijinja-contrib",
  "oauth2-types",
@@ -7444,16 +7653,6 @@ dependencies = [
 
 [[package]]
 name = "phf"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
-dependencies = [
- "phf_macros 0.11.3",
- "phf_shared 0.11.3",
-]
-
-[[package]]
-name = "phf"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
@@ -7467,6 +7666,7 @@ version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf"
 dependencies = [
+ "phf_macros 0.13.1",
  "phf_shared 0.13.1",
  "serde",
 ]
@@ -7504,16 +7704,6 @@ dependencies = [
 
 [[package]]
 name = "phf_generator"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
-dependencies = [
- "phf_shared 0.11.3",
- "rand 0.8.8",
-]
-
-[[package]]
-name = "phf_generator"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "135ace3a761e564ec88c03a77317a7c6b80bb7f7135ef2544dbe054243b89737"
@@ -7534,12 +7724,12 @@ dependencies = [
 
 [[package]]
 name = "phf_macros"
-version = "0.11.3"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f84ac04429c13a7ff43785d75ad27569f2951ce0ffd30a3321230db2fc727216"
+checksum = "812f032b54b1e759ccd5f8b6677695d5268c588701effba24601f6932f8269ef"
 dependencies = [
- "phf_generator 0.11.3",
- "phf_shared 0.11.3",
+ "phf_generator 0.13.1",
+ "phf_shared 0.13.1",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -7633,6 +7823,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13bee6c73da26345c729282832b60b0363cf3dd9f4bfd81d8551b7a1c889a113"
 
 [[package]]
+name = "piper"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c835479a4443ded371d6c535cbfd8d31ad92c5d23ae9770a61bc155e4992a3c1"
+dependencies = [
+ "atomic-waker",
+ "fastrand",
+ "futures-io",
+]
+
+[[package]]
 name = "pkcs1"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7688,6 +7889,20 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide 0.8.9",
+]
+
+[[package]]
+name = "polling"
+version = "3.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d0e4f59085d47d8241c88ead0f274e8a0cb551f3625263c05eb8dd897c34218"
+dependencies = [
+ "cfg-if",
+ "concurrent-queue",
+ "hermit-abi",
+ "pin-project-lite",
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7764,8 +7979,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "851ca9db4932932d69f3ea811b1abe63087a0f740a47692619dd40d4899b68be"
 dependencies = [
  "bytes",
- "chrono",
  "fallible-iterator",
+ "jiff",
  "postgres-protocol",
  "serde_core",
  "serde_json",
@@ -7933,6 +8148,22 @@ checksum = "4488a4a36b9a4ba6b9334a32a39971f77c1436ec82c38707bce707699cc3bbcb"
 dependencies = [
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "proptest"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8530004ccb15eae51c7e40009fbe317f341f804db54dc033eec1c50be28cfa0"
+dependencies = [
+ "bitflags 2.13.2",
+ "chacha20 0.10.2",
+ "core_detect",
+ "num-traits",
+ "rand 0.10.3",
+ "rand_xorshift",
+ "regex-syntax",
+ "unarray",
 ]
 
 [[package]]
@@ -8129,7 +8360,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8251,6 +8482,15 @@ name = "rand_pcg"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+dependencies = [
+ "rand_core 0.10.1",
+]
+
+[[package]]
+name = "rand_xorshift"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60aa6af80be32871323012e02e6e65f8a7cc7890931ae421d217ad8fe0df2ccf"
 dependencies = [
  "rand_core 0.10.1",
 ]
@@ -8863,7 +9103,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8922,7 +9162,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9311,8 +9551,8 @@ version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
 dependencies = [
- "chrono",
  "dyn-clone",
+ "jiff",
  "ref-cast",
  "schemars_derive",
  "serde",
@@ -10294,10 +10534,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -10956,6 +11196,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "unarray"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
+
+[[package]]
 name = "uncased"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11188,6 +11434,12 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+
+[[package]]
+name = "value-bag"
+version = "1.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2799ffb329a792ecfd902b71306c8a815a6ef1c0470fa9953a6aa4d4cecbe511"
 
 [[package]]
 name = "vcpkg"
@@ -11537,7 +11789,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
