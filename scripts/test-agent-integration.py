@@ -877,7 +877,17 @@ try:
                 if sql(DBS[0],"SELECT state FROM hagency_agent_v1.reply_outbox WHERE id='"+resumed_reply["id"]+"'",True)=="sent":break
                 time.sleep(0.5)
             else:raise RuntimeError("fresh resumed-generation reply did not reach Matrix")
-            assert sql(DBS[0],"SELECT state FROM hagency_agent_v1.owner_events WHERE id='"+membership_dispatch["id"]+"'",True)=="unknown"
+            # The generation fence above takes effect immediately. Its running
+            # dispatch is marked unknown by the periodic, contention-aware sweep.
+            state_query = "SELECT state FROM hagency_agent_v1.owner_events WHERE id='" + membership_dispatch["id"] + "'"
+            deadline = time.monotonic() + 15
+            while True:
+                state = sql(DBS[0], state_query, True)
+                if state == "unknown":
+                    break
+                if state != "running" or time.monotonic() >= deadline:
+                    raise AssertionError(f"fenced running dispatch did not converge to unknown: {state!r}")
+                time.sleep(0.25)
             print("PASS: actual puppet kick persisted departure through denied tool authorization; rejoin and resume did not restore authority, explicit owner rebind fenced old dispatch, independent binding remained active and fresh request replied")
             request(origin,"POST","/hagency/api/v1/sessions/current/renew",{"accessToken":matrix_token},user_token)
             request(origin,"POST","/hagency/api/v1/execution/leases/renew",{"lease":reference,"ttlMs":60000},device_token)
