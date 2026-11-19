@@ -1,15 +1,30 @@
 # syntax=docker/dockerfile:1
+# Cargo resolves the whole workspace even for a single package. Supply just its
+# manifests and target paths until a stage needs the corresponding source.
+FROM rust:1.99-bookworm AS workspace
+WORKDIR /workspace
+COPY --parents Cargo.toml Cargo.lock crates/*/Cargo.toml xtask/Cargo.toml ./
+RUN set -eu; \
+    for package in crates/* xtask; do mkdir -p "$package/src"; done; \
+    touch crates/backend/src/lib.rs crates/agent-service/src/lib.rs crates/db-runtime/src/lib.rs; \
+    for bin in crates/backend crates/frontend xtask; do echo 'fn main() {}' > "$bin/src/main.rs"; done; \
+    mkdir -p crates/db-runtime/tests && touch crates/db-runtime/tests/postgres.rs
+
 FROM rust:1.99-bookworm AS build
 RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev cmake clang && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
-COPY xtask ./xtask
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/target \
-    cargo build --release --locked --jobs 1 --bin hagency-server \
-    && cp target/release/hagency-server /build/hagency-server
+COPY --from=workspace /workspace/ ./
+ARG SERVER_BUILD_JOBS=1
+# Store the dependency artifacts and their source paths in an exportable image
+# layer. Remove every locally compiled placeholder before copying real inputs.
+RUN cargo build --release --locked --jobs "$SERVER_BUILD_JOBS" --bin hagency-server \
+    && cargo clean --release -p hagency-server -p hagency-agent-service -p hagency-db-runtime
+COPY crates/backend ./crates/backend
+COPY crates/agent-service ./crates/agent-service
+COPY crates/db-runtime ./crates/db-runtime
+RUN cargo build --release --locked --jobs "$SERVER_BUILD_JOBS" --bin hagency-server \
+    && cp target/release/hagency-server /build/hagency-server \
+    && cargo clean --release -p hagency-server -p hagency-agent-service -p hagency-db-runtime
 
 # Build the Dioxus WASM app with the same pinned Pasion source as the backend.
 FROM rust:1.99-trixie AS web-tools
@@ -23,11 +38,13 @@ RUN case "$TARGETARCH" in arm64) dx_arch=aarch64 ;; amd64) dx_arch=x86_64 ;; *) 
     && curl -fsSL "https://github.com/DioxusLabs/dioxus/releases/download/v0.7.5/dx-$dx_arch-unknown-linux-gnu.sha256" -o /tmp/dx.sha256 \
     && sed -n '1s/  .*/  \/tmp\/dx.tar.gz/p' /tmp/dx.sha256 | sha256sum -c - \
     && tar -xzf /tmp/dx.tar.gz -C /usr/local/bin && rm /tmp/dx.tar.gz /tmp/dx.sha256
-FROM web-tools AS frontend-assets
 WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
+COPY --from=workspace /workspace/ ./
 COPY xtask ./xtask
+COPY crates/frontend/branding ./crates/frontend/branding
+
+FROM web-tools AS frontend-assets
+COPY crates/frontend ./crates/frontend
 RUN --mount=type=cache,id=hagency-frontend-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=hagency-frontend-git,target=/usr/local/cargo/git \
     --mount=type=cache,id=hagency-frontend-target,target=/build/.run/frontend-target \
@@ -35,10 +52,6 @@ RUN --mount=type=cache,id=hagency-frontend-registry,target=/usr/local/cargo/regi
     cargo run --quiet --locked --manifest-path xtask/Cargo.toml -- prepare-frontend --output /frontend-resources
 
 FROM web-tools AS pasion-assets
-WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
-COPY xtask ./xtask
 RUN --mount=type=cache,id=hagency-pasion-wasm-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=hagency-pasion-wasm-git,target=/usr/local/cargo/git \
     --mount=type=cache,id=hagency-pasion-wasm-target,target=/build/.run/pasion-source/target \

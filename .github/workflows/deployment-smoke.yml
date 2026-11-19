@@ -3,8 +3,6 @@ name: Embedded Deployment
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       backup_restore:
@@ -22,7 +20,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    uses: ./.github/workflows/ci-scope.yml
+
   deployment:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     name: Embedded deployment smoke
     runs-on: ubuntu-24.04
     # Cold image builds can take ~88 minutes before smoke and restore checks.
@@ -65,7 +68,7 @@ jobs:
         run: node tests/docker-smoke.mjs
 
       # Every PR also validates the longer stopped backup/restore drill against
-      # this exact image. Main pushes run smoke; weekly/manual runs add the drill.
+      # this exact image. Weekly and opt-in manual runs also exercise the drill.
       # It uses the same freshly built executable/assets, three new databases and
       # private directories; no production service or external model is contacted.
       - uses: actions/setup-python@v7

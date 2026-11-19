@@ -37,6 +37,8 @@ fn los_angeles_autumn_day_has_25_hours_and_one_allowance() {
     let first = c.period_at(ms("2026-11-01T01:30:00-07:00")).unwrap();
     let repeated = c.period_at(ms("2026-11-01T01:30:00-08:00")).unwrap();
     assert_eq!(first, repeated);
+    assert_eq!(first.start_ms, ms("2026-11-01T07:00:00Z"));
+    assert_eq!(first.end_ms, ms("2026-11-02T08:00:00Z"));
     assert_eq!(first.end_ms - first.start_ms, 25 * 3_600_000);
 }
 

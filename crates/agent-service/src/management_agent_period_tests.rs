@@ -374,17 +374,6 @@ async fn calendar_boundary_daily_spring_renews_exactly_23_hours_in_both_modes() 
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL"]
-async fn calendar_boundary_daily_autumn_renews_exactly_25_hours_in_both_modes() {
-    calendar_boundary_renewal(
-        Cadence::Daily,
-        "2026-11-01T07:00:00Z",
-        "2026-11-02T08:00:00Z",
-    )
-    .await;
-}
-
-#[tokio::test]
-#[ignore = "requires dedicated PostgreSQL"]
 async fn calendar_boundary_weekly_renews_monday_through_dst_in_both_modes() {
     calendar_boundary_renewal(
         Cadence::Weekly,
