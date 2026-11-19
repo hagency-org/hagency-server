@@ -134,8 +134,21 @@ impl Database {
         T: Send + 'a,
         'a: 'conn,
     {
+        self.write_transaction_with_wait(std::time::Duration::from_secs(5), callback)
+    }
+
+    pub(crate) fn write_transaction_with_wait<'a, 'conn, T, F>(
+        &'conn self,
+        wait: std::time::Duration,
+        callback: F,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<T>> + Send + 'conn>>
+    where
+        for<'r> F: horme::TransactionCallback<&'r mut AsyncPgConnection, Result<T>> + Send + 'a,
+        T: Send + 'a,
+        'a: 'conn,
+    {
         Box::pin(async move {
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = tokio::time::Instant::now() + wait;
             let _writer = tokio::time::timeout_at(deadline, self.writer.lock())
                 .await
                 .map_err(|_| Error::Unavailable("domain_writer_busy"))?;
@@ -157,7 +170,7 @@ impl Database {
                 if tokio::time::Instant::now() >= deadline {
                     return Err(Error::Unavailable("domain_writer_busy"));
                 }
-                tokio::time::sleep(delay).await;
+                tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + delay)).await;
                 delay = (delay * 2).min(std::time::Duration::from_millis(100));
             }
         })

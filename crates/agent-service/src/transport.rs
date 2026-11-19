@@ -1662,8 +1662,8 @@ impl TransportStore {
     }
 
     /// Discover candidates without taking the cross-domain writer lock. Under the lock
-    /// revalidate the same predicate on at most 64 indexed primary keys. Busy writers
-    /// take precedence; the next worker tick rediscovers outstanding work.
+    /// revalidate the same predicate on at most 64 indexed primary keys. Allow
+    /// short writers on the same worker tick to finish before deferring the batch.
     async fn clean_dispatch_batch(
         &self,
         table: &'static str,
@@ -1694,11 +1694,23 @@ impl TransportStore {
             return Ok(0);
         }
         let ids: Vec<_> = ids.into_iter().map(|row| row.id).collect();
-        self.db.transaction(async |db| {
-            if !crate::database::try_domain_writer(db).await? {return Ok(0);}
-            let sql = format!("UPDATE hagency_agent_v1.{table} SET {update} WHERE {alias}.id=ANY($2) AND ({predicate})");
-            Ok(sql_query(sql).bind::<BigInt,_>(cutoff).bind::<diesel::sql_types::Array<Text>,_>(&ids).execute(db).await?)
-        }).await
+        let sql = format!(
+            "UPDATE hagency_agent_v1.{table} SET {update} WHERE {alias}.id=ANY($2) AND ({predicate})"
+        );
+        let result = self
+            .db
+            .write_transaction_with_wait(std::time::Duration::from_millis(250), async |db| {
+                Ok(sql_query(sql)
+                    .bind::<BigInt, _>(cutoff)
+                    .bind::<diesel::sql_types::Array<Text>, _>(&ids)
+                    .execute(db)
+                    .await?)
+            })
+            .await;
+        match result {
+            Err(Error::Unavailable("domain_writer_busy")) => Ok(0),
+            outcome => outcome,
+        }
     }
     /// Trusted sender worker only: retrieve metadata then fetch live gateway facts.
     /// Do not expose this endpoint to user/device credentials.
