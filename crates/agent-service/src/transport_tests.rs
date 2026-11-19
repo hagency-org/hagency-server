@@ -3841,5 +3841,23 @@ async fn dispatch_cleanup_under_contention_skips_and_then_resumes_in_batches() {
         assert_eq!(f.transport.invalidate_stale_dispatches(now).await.unwrap(), 64);
         assert_eq!(f.transport.invalidate_stale_dispatches(now).await.unwrap(), 6);
         assert_eq!(f.transport.invalidate_stale_dispatches(now).await.unwrap(), 0);
+
+        let lease = f.transport.acquire_for_test(&f.p, &f.agent, 60_000, false, now).await.unwrap();
+        let reference = LeaseRef { agent_id: f.agent.clone(), epoch: lease.epoch };
+        running(&f, &reference, &original, "membership-fence").await;
+        let scope = f.transport.binding_scope(&f.binding).await.unwrap();
+        let mut lost = room_facts(&f.facts);
+        lost.puppet_in_room = false;
+        assert!(f.domain.retire_membership_loss_trusted(&f.binding, scope.binding_generation, &lost, now).await.unwrap());
+
+        // A short competing write must not cost the entire sweep. Keep polling
+        // the same future after releasing the independent writer's lock.
+        conn.batch_execute("BEGIN; SELECT pg_advisory_xact_lock(5210750088328904)").await.unwrap();
+        let mut sweep = Box::pin(f.transport.invalidate_stale_dispatches(now));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(40), &mut sweep).await.is_err());
+        conn.batch_execute("COMMIT").await.unwrap();
+        assert_eq!(sweep.await.unwrap(), 1);
+        let event = TransportStore::dispatch(&mut conn, &f.p, &original).await.unwrap();
+        assert_eq!(event.state, "unknown");
     }).await;
 }

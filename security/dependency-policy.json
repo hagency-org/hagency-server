@@ -1,9 +1,9 @@
 {
   "version": 2,
-  "reviewed_on": "2026-11-18",
+  "reviewed_on": "2026-11-20",
   "expires_on": "2026-11-29",
   "reviewed_sources": {
-    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?rev=22d3109cf8901149173f9ffc9cdd338a9b4a7aee#22d3109cf8901149173f9ffc9cdd338a9b4a7aee"
+    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
   },
   "findings": [
     {
@@ -45,6 +45,16 @@
       "reason": "Reviewed 2026-11-17: chrono-tz is unmaintained across all versions, with no patched release. The Agent service uses its timezone and DST gap APIs to calculate recurring quota periods. Replacement requires a coordinated chrono/timezone API migration. Retain this maintenance warning visibly and re-review before the existing policy expiry.",
       "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0555.html",
       "advisory_fingerprint": "14d83969469c2427c08281b0f2c79f1e5f5e9c8e4890d5763b164f8dcef30d23"
+    },
+    {
+      "advisory": "RUSTSEC-2025-0052",
+      "kind": "unmaintained",
+      "package": "async-std",
+      "version": "1.13.2",
+      "status": "reviewed_warning",
+      "reason": "Reviewed 2026-11-20. Lettre 0.11.24 records async-std as an optional dependency. The embedded Pasion mail transport selects Tokio. The server's resolved feature graph across all targets contains no active async-std dependency. Keep this lockfile maintenance warning visible until the existing review expires.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2025-0052.html",
+      "advisory_fingerprint": "6f88a311a3c794daeec6de01f43ed312aae7428d2ce99b146fa53ca2b6c03b05"
     }
   ],
   "timezone": "Asia/Shanghai"

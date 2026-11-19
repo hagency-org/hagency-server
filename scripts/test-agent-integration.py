@@ -110,6 +110,18 @@ def request(origin, method, path, body=None, token=None, expected_status=None):
             code = "request_failed"
         raise RuntimeError("HTTP " + str(e.code) + " at " + path.split("?")[0] + ": " + str(code)) from None
 
+def dispatch_expiry_health(origin):
+    try:
+        try:
+            response = urlopen(origin + "/workers-healthz", timeout=2)
+        except HTTPError as error:
+            response = error  # 503 also carries the worker health snapshot.
+        with response:
+            queues = json.load(response)["workers"]["queues"]
+        return next((q for q in queues if q["name"] == "dispatch_expiry"), None)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
 def native_oauth(origin, password):
     class NoRedirect(HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -886,7 +898,8 @@ try:
                 if state == "unknown":
                     break
                 if state != "running" or time.monotonic() >= deadline:
-                    raise AssertionError(f"fenced running dispatch did not converge to unknown: {state!r}")
+                    queue = dispatch_expiry_health(origin)
+                    raise AssertionError(f"fenced running dispatch did not converge to unknown: {state!r}; dispatch_expiry={queue}")
                 time.sleep(0.25)
             print("PASS: actual puppet kick persisted departure through denied tool authorization; rejoin and resume did not restore authority, explicit owner rebind fenced old dispatch, independent binding remained active and fresh request replied")
             request(origin,"POST","/hagency/api/v1/sessions/current/renew",{"accessToken":matrix_token},user_token)

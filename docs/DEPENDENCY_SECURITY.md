@@ -9,12 +9,18 @@ The 2026-11-18 integration pins Palpo at `36d5ab61` and Pasion at
 `22d3109c` to use Salvo 1.2.1 throughout the embedded server. Pasion includes
 the upstream JOSE and keystore migration. Cargo.lock now contains rsa 0.10.0
 and crypto-bigint 0.7.11, and the previous RSA and crypto-bigint advisories
-no longer appear in the full lockfile audit. The new Pasion dependency graph
-also removes async-std, unsafe-libyaml and smartstring.
+no longer appear in the full lockfile audit. That revision also removed
+async-std, unsafe-libyaml and smartstring.
 
-The audit reports zero vulnerability records and four maintenance warnings:
-paste, pin-utils, chrono and chrono-tz. The existing dispositions and their
-2026-11-29 expiration still apply. The original review started with 14
+The 2026-11-20 update pins Palpo 0.6.0 at `3e036e82` and Pasion 1.8.0 at
+`591aa3b5`. Pasion's reviewed JOSE change uses Jiff for claim time checks and
+retains integer epoch seconds on the wire. Pasion now uses the crates.io Lettre
+release. Its optional async-std dependency appears in Cargo.lock, while the
+server uses Tokio for email.
+
+The updated audit reports zero vulnerability records and five maintenance warnings
+covering paste, pin-utils, chrono, chrono-tz and async-std. The review still
+expires on 2026-11-29. The original review started with 14
 vulnerability records.
 
 ## Automated review policy

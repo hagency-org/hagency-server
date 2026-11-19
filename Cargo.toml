@@ -35,11 +35,11 @@ hex = "0.4"
 js-sys = "0.3.95"
 libc = "0.2"
 log = "0.4.29"
-palpo = { git = "https://github.com/palpo-im/palpo.git", rev = "36d5ab61863845e3a3917b4efde5adf46aab07e6" }
-palpo-core = { git = "https://github.com/palpo-im/palpo.git", rev = "36d5ab61863845e3a3917b4efde5adf46aab07e6", features = ["markdown", "html"] }
-pasion-backend = { git = "https://github.com/meldry-com/pasion.git", rev = "22d3109cf8901149173f9ffc9cdd338a9b4a7aee", features = ["cedar"] }
-pasion-config = { git = "https://github.com/meldry-com/pasion.git", rev = "22d3109cf8901149173f9ffc9cdd338a9b4a7aee" }
-pasion-data = { git = "https://github.com/meldry-com/pasion.git", rev = "22d3109cf8901149173f9ffc9cdd338a9b4a7aee" }
+palpo = { git = "https://github.com/palpo-im/palpo.git", rev = "3e036e82fc71285ed573de726d2e60779a4ea4b8" }
+palpo-core = { git = "https://github.com/palpo-im/palpo.git", rev = "3e036e82fc71285ed573de726d2e60779a4ea4b8", features = ["markdown", "html"] }
+pasion-backend = { git = "https://github.com/meldry-com/pasion.git", rev = "591aa3b59c8bb991c46f2b3f2a20facdf652085c", features = ["cedar"] }
+pasion-config = { git = "https://github.com/meldry-com/pasion.git", rev = "591aa3b59c8bb991c46f2b3f2a20facdf652085c" }
+pasion-data = { git = "https://github.com/meldry-com/pasion.git", rev = "591aa3b59c8bb991c46f2b3f2a20facdf652085c" }
 percent-encoding = "2.3"
 rand = "0.10"
 rand_chacha = { version = "0.9", features = ["os_rng"] }

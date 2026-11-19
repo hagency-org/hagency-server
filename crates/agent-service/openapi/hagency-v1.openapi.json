@@ -22448,7 +22448,7 @@
     "crates/agent-service/src/workers.rs": "cc1c1f6c9484f0cb6e72f079fcaa8ab02c53d0fde9bf2b3e35a5e5605eff6582",
     "crates/agent-service/src/encrypted_dispatches.rs": "2ee988178d38df5e86208abcf8d17f6d2d81b14128a21ed5db208bee954640cb",
     "crates/agent-service/migrations/transport/2026-11-19-000404_encrypted_dispatches/up.sql": "10680dabf305c284e4051e0f2da2575fdc52b48350753e410c1a4c9ea3f0b177",
-    "crates/agent-service/src/transport.rs": "51f0cb0a0be727970b1e46e85d86c16494d5e6de056faaf0998d90b053a2ac03",
+    "crates/agent-service/src/transport.rs": "dc894c8647cee4703316ba2ce2a48d9bdb0b41807a600cc192f81f566971b728",
     "crates/agent-service/src/encrypted_execution.rs": "680006eb1e664ca7a0212b5383ba09c2e37f53ab5e53025683d646547cd7597b",
     "crates/agent-service/migrations/transport/2026-11-19-000405_encrypted_execution/up.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "8b00c34274b1cc100c347cb46f96fd88dbee9f1611aa6eedfe3501dc31bf58fa",
