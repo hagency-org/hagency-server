@@ -42,9 +42,12 @@ fn load_or_create(
         file.write_all(&serde_json::to_vec(&body)?)?;
         file.as_file().sync_all()?;
         match file.persist_noclobber(path) {
-            Ok(_) => {
-                std::fs::File::open(path.parent().unwrap())?.sync_all()?;
-            }
+            // Windows cannot open a directory with File::open. Flush the
+            // persisted credential through its existing writable handle.
+            #[cfg(windows)]
+            Ok(persisted) => persisted.sync_all()?,
+            #[cfg(not(windows))]
+            Ok(_) => std::fs::File::open(path.parent().unwrap())?.sync_all()?,
             Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error.error.into()),
         }
