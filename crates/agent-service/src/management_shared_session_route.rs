@@ -106,9 +106,8 @@ impl DomainStore {
         key(id)?;
         input.validate()?;
         let found = {
-            let mut guard = self.db.lock().await?;
-            (*guard)
-                .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+            self.db
+                .write_transaction(async |db: &mut AsyncPgConnection| {
                     Self::authorize(db, p, 0).await?;
                     candidate(db, p, policy, id, &input, &self.server).await
                 })
@@ -126,9 +125,8 @@ impl DomainStore {
                 &membership.puppet_mxid,
             )
             .await?;
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, 0).await?;
                 let Some((current, membership)) =
                     candidate(db, p, policy, id, &input, &self.server).await?

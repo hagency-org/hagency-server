@@ -59,8 +59,7 @@ impl DomainStore {
     ) -> Result<Option<SharedBudgetWorkRefusalRecord>> {
         key(id)?;
         input.validate()?;
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{
             Self::authorize(db,p,0).await?;
             let w=work_row(db,id).await?;let r=runtime(db,&w.runtime_id).await?;
             let original=original(db,&r).await?;owner(&original,p)?;

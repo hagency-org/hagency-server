@@ -47,7 +47,7 @@ DO $$ BEGIN
   ALTER TABLE hagency_agent_v1.management_executor_commands DROP COLUMN receipt_ledger_epoch;
   ALTER TABLE hagency_agent_v1.management_parent_commands DROP COLUMN receipt_ledger_epoch;
   ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;
-  UPDATE hagency_agent_v1.management_deployment SET version=34 WHERE singleton AND version IN(35,36);
+  DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=34 WHERE singleton AND version IN(35,36);
   ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=34);
  END IF;
 END $$;

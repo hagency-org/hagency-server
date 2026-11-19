@@ -83,10 +83,8 @@ impl TransportStore {
         cursor: &str,
         now: i64,
     ) -> Result<Vec<RequestNotice>> {
-        self.db.with_connection(async |db| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
 
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?;
             let now=Self::clock(db,now).await?;
             // The derived view evaluates age on the database clock. A faster
             // API host must not consume a scheduled row before that view is due.
@@ -105,7 +103,6 @@ impl TransportStore {
             Ok(sql_query(format!("{SELECT} WHERE n.state IN ('pending','unknown','sending') AND n.worker_until_ms<=$1 ORDER BY (n.id<=$2),n.id LIMIT 20"))
                 .bind::<BigInt,_>(now).bind::<Text,_>(cursor).load(db).await?)
         }).await
-    }).await
     }
     #[cfg(test)]
     pub(crate) async fn claim_request_notice(
@@ -123,10 +120,7 @@ impl TransportStore {
         now: i64,
         gate: Option<&crate::worker_runtime::ClaimGate>,
     ) -> Result<RequestNotice> {
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?;
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             {
                 use crate::schema::agent_tables::request_notice_outbox as q;
                 let params = (id,);
@@ -185,7 +179,6 @@ impl TransportStore {
             sql_query("UPDATE hagency_agent_v1.request_notice_outbox SET content=coalesce(content,$2) WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(&content).execute(db).await?;
             Ok(Some(sql_query(format!("{SELECT} WHERE n.id=$1")).bind::<Text,_>(id).get_result::<RequestNotice>(db).await?))
         }).await?.ok_or(Error::Conflict("request_notice_not_sendable"))
-    }).await
     }
     pub(crate) async fn confirm_request_notice(
         &self,

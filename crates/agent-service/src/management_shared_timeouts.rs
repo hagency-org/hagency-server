@@ -54,31 +54,53 @@ pub(super) async fn sweep(
     executor: Option<(&str, &str)>,
     now: i64,
 ) -> Result<()> {
-    let ids = sql_query(format!("UPDATE hagency_agent_v1.management_shared_runtimes SET state='stopped',permanent_fence=true,activity_until_ms=0 WHERE id IN (SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE r.payload::jsonb->>'version' IN ('2','3') AND r.state IN ('pending','issued','qualified','unknown') AND ($1::text IS NULL OR (a.executor_owner_user_id=$1 AND a.executor_device_id=$2)) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_result_tickets t WHERE t.runtime_id=r.id AND t.mode='execute' AND t.expires_at_ms>$3) AND {LAST_EVIDENCE}+$4<=$3 ORDER BY r.id LIMIT 64) RETURNING id"))
-        .bind::<Nullable<Text>, _>(executor.map(|e| e.0))
-        .bind::<Nullable<Text>, _>(executor.map(|e| e.1))
-        .bind::<BigInt, _>(now)
-        .bind::<BigInt, _>(UNCERTAIN_GRACE_MS)
-        .load::<Id>(db)
-        .await?;
+    let ids = candidates(db, executor, now).await?;
     for id in ids {
-        demands::interrupt(db, &id.id).await?;
+        stop(db, &id.id).await?;
     }
     Ok(())
+}
+
+async fn candidates(
+    db: &mut AsyncPgConnection,
+    executor: Option<(&str, &str)>,
+    now: i64,
+) -> Result<Vec<Id>> {
+    Ok(sql_query(format!("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE r.payload::jsonb->>'version' IN ('2','3') AND r.state IN ('pending','issued','qualified','unknown') AND ($1::text IS NULL OR (a.executor_owner_user_id=$1 AND a.executor_device_id=$2)) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_result_tickets t WHERE t.runtime_id=r.id AND t.mode='execute' AND t.expires_at_ms>$3) AND {LAST_EVIDENCE}+$4<=$3 ORDER BY r.id LIMIT 64"))
+        .bind::<Nullable<Text>,_>(executor.map(|e| e.0))
+        .bind::<Nullable<Text>,_>(executor.map(|e| e.1))
+        .bind::<BigInt,_>(now).bind::<BigInt,_>(UNCERTAIN_GRACE_MS)
+        .load::<Id>(db).await?)
+}
+
+async fn stop(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
+    sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET state='stopped',permanent_fence=true,activity_until_ms=0 WHERE id=$1")
+        .bind::<Text,_>(id).execute(db).await?;
+    demands::interrupt(db, id).await
 }
 
 impl DomainStore {
     /// Background enforcement: no executor poll or healthy client is needed
     /// to stop an uncertain attempt and release its Agent's queue.
     pub(crate) async fn sweep_shared_attempt_timeouts(&self) -> Result<()> {
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-                    .await?;
+        let ids = self
+            .db
+            .transaction(async |db| {
                 let now = clock(db).await?;
-                sweep(db, None, now).await
+                candidates(db, None, now).await
             })
-            .await
+            .await?;
+        for id in ids {
+            self.db
+                .write_transaction(async |db| {
+                    let now = clock(db).await?;
+                    if due(db, &id.id, now).await? {
+                        stop(db, &id.id).await?;
+                    }
+                    Ok(())
+                })
+                .await?;
+        }
+        Ok(())
     }
 }

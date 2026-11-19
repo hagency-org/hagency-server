@@ -1752,7 +1752,7 @@ async fn pool_schema_upgrade_preserves_existing_capacity_and_rolls_back_atomical
     db.batch_execute(include_str!("management_pool_agents_remove_test.sql"))
         .await
         .unwrap();
-    db.batch_execute("ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=23;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=23);CREATE INDEX pool_agent_room_unique ON hagency_agent_v1.management_requests(id)").await.unwrap();
+    db.batch_execute("ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=23;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=23);CREATE INDEX pool_agent_room_unique ON hagency_agent_v1.management_requests(id)").await.unwrap();
     assert!(
         DomainStore::open(&f.url, "example.test", "_hagency_test_")
             .await
@@ -1805,7 +1805,7 @@ pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
     db.batch_execute("DROP TABLE IF EXISTS hagency_agent_v1.management_shared_demand_retry_starts,hagency_agent_v1.management_shared_demand_retries;DROP FUNCTION IF EXISTS hagency_agent_v1.validate_shared_demand_retry()").await.unwrap();
     work::remove_migration(db).await;
 
-    db.batch_execute("DROP TRIGGER fence_shared_runtime ON hagency_agent_v1.management_shared_assignments;DROP TRIGGER exclude_shared_runtime_v1 ON hagency_agent_v1.management_agent_runtime_commands;DROP TABLE hagency_agent_v1.management_shared_activity_renewals,hagency_agent_v1.management_shared_process_receipts,hagency_agent_v1.management_shared_runtimes;DROP FUNCTION hagency_agent_v1.fence_shared_runtime(),hagency_agent_v1.exclude_shared_runtime_v1(),hagency_agent_v1.retain_shared_runtime(),hagency_agent_v1.validate_shared_runtime();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=11;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=11)").await.unwrap();
+    db.batch_execute("DROP TRIGGER fence_shared_runtime ON hagency_agent_v1.management_shared_assignments;DROP TRIGGER exclude_shared_runtime_v1 ON hagency_agent_v1.management_agent_runtime_commands;DROP TABLE hagency_agent_v1.management_shared_activity_renewals,hagency_agent_v1.management_shared_process_receipts,hagency_agent_v1.management_shared_runtimes;DROP FUNCTION hagency_agent_v1.fence_shared_runtime(),hagency_agent_v1.exclude_shared_runtime_v1(),hagency_agent_v1.retain_shared_runtime(),hagency_agent_v1.validate_shared_runtime();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=11;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=11)").await.unwrap();
 }
 async fn prepared() -> (
     Fixture,
@@ -3487,4 +3487,45 @@ async fn direct_pool_qualification_and_stop_are_delivered_after_a_command_cursor
         crate::management_agent_runtime_types::ManagedRuntimeCommand::Stop(_)
     ));
     assert_eq!(stop.command.original().assignment_id, assignment.id);
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_device_login_releases_only_slot_and_rechecks_after_revocation() {
+    use crate::Error;
+    let (mut f, _, assignment, _) = Box::pin(prepared_pool(true)).await;
+    let pool = f.domain.use_single_slot_pool(&f.url);
+    let server = crate::transport::LoginServer::new().await;
+    let input = || serde_json::from_value(json!({"assignmentId":assignment.id})).unwrap();
+    let mut login = Box::pin(
+        f.domain
+            .shared_crypto_device(&f.owner.p, input(), &server.matrix),
+    );
+    tokio::select! {
+        _ = server.wait_login() => (),
+        result = &mut login => panic!("login did not reach Matrix: {result:?}"),
+    }
+    assert_eq!(pool.status().available, 1);
+    assert!(matches!(
+        f.domain
+            .shared_crypto_device(&f.owner.p, input(), &server.matrix)
+            .await,
+        Err(Error::Conflict("matrix_device_issuance_pending"))
+    ));
+    let mut other = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("UPDATE hagency_agent_v1.devices SET revoked=true WHERE id=$1")
+        .bind::<Text, _>(f.owner.p.device_id.as_deref().unwrap())
+        .execute(&mut other)
+        .await
+        .unwrap();
+    server.resume.notify_one();
+    assert!(matches!(login.await, Err(Error::Unauthorized(_))));
+    #[derive(QueryableByName)]
+    struct Retired {
+        #[diesel(sql_type=Bool)]
+        matched: bool,
+    }
+    let retired = sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.executor_matrix_devices WHERE scope_id=$1 AND kind='shared' AND revoked AND retiring AND issuance_nonce IS NULL) AS matched")
+        .bind::<Text,_>(&assignment.id).get_result::<Retired>(&mut other).await.unwrap();
+    assert!(retired.matched);
 }

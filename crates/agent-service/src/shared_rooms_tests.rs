@@ -693,9 +693,14 @@ async fn audience_upgrade_keeps_pool_agents_listed_and_bindable() {
         .unwrap();
 
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
-    db.batch_execute("DROP TABLE hagency_agent_v1.agent_crypto_identities;ALTER TABLE hagency_agent_v1.agents DROP COLUMN visibility")
-        .await
-        .unwrap();
+    // Recreate the deployment from before audience support and Diesel adoption.
+    db.batch_execute(
+        "DROP TABLE public.__diesel_schema_migrations;
+        DROP TABLE hagency_agent_v1.agent_crypto_identities;
+        ALTER TABLE hagency_agent_v1.agents DROP COLUMN visibility",
+    )
+    .await
+    .unwrap();
     let upgraded = DomainStore::open(&f.url, "example.test", "_hagency_test_")
         .await
         .unwrap();
@@ -1028,7 +1033,10 @@ async fn shared_room_reconcile_rejects_observation_aged_by_a_database_lock_wait(
             let reads = reads.clone();
             Box::pin(async move {
                 let state = states.lock().unwrap().get(&room).cloned().unwrap();
-                if reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                // The third read is the invite check, after room facts were stamped.
+                // Bring those facts near expiry before the bounded writer wait begins.
+                if reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(28_000)).await;
                     seen.notify_one();
                 }
                 Ok(state)
@@ -1049,11 +1057,11 @@ async fn shared_room_reconcile_rejects_observation_aged_by_a_database_lock_wait(
             .reconcile_shared_room(&binding, &gateway, &client)
             .await
     });
-    tokio::time::timeout(std::time::Duration::from_secs(3), read_done.notified())
+    tokio::time::timeout(std::time::Duration::from_secs(35), read_done.notified())
         .await
         .expect("facts read before waiting on DB authorization");
     let calls = matrix.calls.lock().unwrap().len();
-    tokio::time::sleep(std::time::Duration::from_millis(31_050)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(2_200)).await;
     blocker
         .batch_execute("SELECT pg_advisory_unlock(5210750088328904)")
         .await

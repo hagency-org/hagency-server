@@ -2922,7 +2922,7 @@ async fn delivery_feedback_uses_reply_age(url: &str) {
     let id = enqueue(&f, "delivery-after-slow-model").await;
     running(&f, &lease, &id, "slow-model-run").await;
     {
-        let mut db = f.transport.db.lock().await.unwrap();
+        let mut db = f.transport.db.test_connection().await.unwrap();
         sql_query("UPDATE hagency_agent_v1.owner_events SET created_at_ms=$1 WHERE id=$2")
             .bind::<BigInt, _>(now - 60_000)
             .bind::<Text, _>(&id)
@@ -2935,8 +2935,9 @@ async fn delivery_feedback_uses_reply_age(url: &str) {
             .await
             .unwrap();
         // Exercise an upgrade of the already initialized transport too.
-        let old = include_str!("request_notice_needed.sql")
-            .replace("AND r.created_at_ms<=", "AND e.created_at_ms<=");
+        let old =
+            include_str!("../migrations/transport/2026-11-19-000412_request_notice_needed/up.sql")
+                .replace("AND r.created_at_ms<=", "AND e.created_at_ms<=");
         db.batch_execute(&old).await.unwrap();
     }
     TransportStore::open(url, Limits::default()).await.unwrap();
@@ -2965,7 +2966,7 @@ async fn delivery_feedback_uses_reply_age(url: &str) {
         "model time must not make a newly created answer look undeliverable"
     );
     {
-        let mut db = f.transport.db.lock().await.unwrap();
+        let mut db = f.transport.db.test_connection().await.unwrap();
         sql_query("UPDATE hagency_agent_v1.reply_outbox SET created_at_ms=$1 WHERE id=$2")
             .bind::<BigInt, _>(now - 31_000)
             .bind::<Text, _>(&reply.id)
@@ -3819,4 +3820,26 @@ async fn request_notice_backlog_progress(url: &str) {
 }
 
 #[path = "transport_e2ee_issuance_tests.rs"]
-mod issuance_tests;
+pub(super) mod issuance_tests;
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn dispatch_cleanup_under_contention_skips_and_then_resumes_in_batches() {
+    isolated_notice_fixture("cleanup_contention", |url| async move {
+        let f = fixture_at(&url).await;
+        let original = enqueue(&f, "maintenance-batch").await;
+        let mut conn = AsyncPgConnection::establish(&url).await.unwrap();
+        // Clone valid pending events into the same live binding with expired receipt times.
+        sql_query("INSERT INTO hagency_agent_v1.owner_events(id,binding_id,agent_id,owner_user_id,event_id,room_id,requester_mxid,thread_root,body,digest,binding_generation,state,created_at_ms)
+            SELECT e.id||n,e.binding_id,e.agent_id,e.owner_user_id,e.event_id||n,e.room_id,e.requester_mxid,e.thread_root,e.body,e.digest,e.binding_generation,'pending',0
+            FROM hagency_agent_v1.owner_events e CROSS JOIN generate_series(1,70) n WHERE e.id=$1")
+            .bind::<Text,_>(&original).execute(&mut conn).await.unwrap();
+        conn.batch_execute("BEGIN; SELECT pg_advisory_xact_lock(5210750088328904)").await.unwrap();
+        let now = crate::api::now_ms();
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(2), f.transport.invalidate_stale_dispatches(now)).await.unwrap().unwrap(), 0);
+        conn.batch_execute("ROLLBACK").await.unwrap();
+        assert_eq!(f.transport.invalidate_stale_dispatches(now).await.unwrap(), 64);
+        assert_eq!(f.transport.invalidate_stale_dispatches(now).await.unwrap(), 6);
+        assert_eq!(f.transport.invalidate_stale_dispatches(now).await.unwrap(), 0);
+    }).await;
+}

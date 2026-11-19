@@ -61,9 +61,7 @@ impl TransportStore {
         if let Some(root) = &b.projection.thread_root {
             matrix_id(root, '$')?;
         }
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
    let(c,now)=Self::current_ciphertext(db,p,&b.lease,&b.inbox_id,f,self.limits.event_ttl_ms,now).await?;
    if c.source_digest!=b.source_digest{return Err(Error::Conflict("ciphertext_changed"));}
    let scope=Self::scope(db,&c.binding_id).await?;let owner_direct=scope.space_id.is_empty();
@@ -172,7 +170,6 @@ impl TransportStore {
    let current=Self::clock(db,now).await?;Self::lease(db,p,&b.lease,current).await?;
    Ok(Admission{inbox_id:c.id,source_digest:c.source_digest,agent_generation:c.agent_generation,owner_direct,dispatch:Self::dispatch(db,p,&id).await?})
   }).await
-    }).await
     }
     pub(crate) async fn ciphertext_admission(
         &self,
@@ -184,66 +181,61 @@ impl TransportStore {
     ) -> Result<Admission> {
         key(&b.inbox_id)?;
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                    let (c, now) = Self::current_ciphertext(
-                        db,
-                        p,
-                        &b.lease,
-                        &b.inbox_id,
-                        f,
-                        self.limits.event_ttl_ms,
-                        now,
-                    )
-                    .await?;
-                    if c.source_digest != b.source_digest {
-                        return Err(Error::Conflict("ciphertext_changed"));
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                let (c, now) = Self::current_ciphertext(
+                    db,
+                    p,
+                    &b.lease,
+                    &b.inbox_id,
+                    f,
+                    self.limits.event_ttl_ms,
+                    now,
+                )
+                .await?;
+                if c.source_digest != b.source_digest {
+                    return Err(Error::Conflict("ciphertext_changed"));
+                }
+                let m = {
+                    use crate::schema::agent_tables::encrypted_dispatches as q;
+                    let params = (&c.id, &c.source_digest);
+                    q::table
+                        .select((q::dispatch_id, q::source_digest, q::projection))
+                        .filter(((q::inbox_id).eq(&params.0)).and((q::source_digest).eq(&params.1)))
+                        .get_result::<Mapping>(db)
+                        .await
+                }
+                .map_err(unauthorized)?;
+                let e = Self::dispatch(db, p, &m.dispatch_id).await?;
+                if ack {
+                    fenced(&e, p, &b.lease)?;
+                    if !matches!(
+                        e.state.as_str(),
+                        "encrypted_offered" | "encrypted_acknowledged"
+                    ) {
+                        return Err(Error::Conflict("encrypted_dispatch_not_offered"));
                     }
-                    let m = {
-                        use crate::schema::agent_tables::encrypted_dispatches as q;
-                        let params = (&c.id, &c.source_digest);
-                        q::table
-                            .select((q::dispatch_id, q::source_digest, q::projection))
-                            .filter(
-                                ((q::inbox_id).eq(&params.0)).and((q::source_digest).eq(&params.1)),
-                            )
-                            .get_result::<Mapping>(db)
-                            .await
+                    if e.state == "encrypted_offered" {
+                        {
+                            use crate::schema::agent_tables::owner_events as q;
+                            let params = (&e.id,);
+                            diesel::update(q::table)
+                                .filter((q::id).eq(&params.0))
+                                .set((q::state.eq("encrypted_acknowledged"),))
+                                .execute(db)
+                                .await
+                        }?;
                     }
-                    .map_err(unauthorized)?;
-                    let e = Self::dispatch(db, p, &m.dispatch_id).await?;
-                    if ack {
-                        fenced(&e, p, &b.lease)?;
-                        if !matches!(
-                            e.state.as_str(),
-                            "encrypted_offered" | "encrypted_acknowledged"
-                        ) {
-                            return Err(Error::Conflict("encrypted_dispatch_not_offered"));
-                        }
-                        if e.state == "encrypted_offered" {
-                            {
-                                use crate::schema::agent_tables::owner_events as q;
-                                let params = (&e.id,);
-                                diesel::update(q::table)
-                                    .filter((q::id).eq(&params.0))
-                                    .set((q::state.eq("encrypted_acknowledged"),))
-                                    .execute(db)
-                                    .await
-                            }?;
-                        }
-                    }
-                    let current = Self::clock(db, now).await?;
-                    Self::lease(db, p, &b.lease, current).await?;
-                    let scope = Self::scope(db, &c.binding_id).await?;
-                    Ok(Admission {
-                        inbox_id: c.id,
-                        source_digest: c.source_digest,
-                        agent_generation: c.agent_generation,
-                        owner_direct: scope.space_id.is_empty(),
-                        dispatch: Self::dispatch(db, p, &e.id).await?,
-                    })
+                }
+                let current = Self::clock(db, now).await?;
+                Self::lease(db, p, &b.lease, current).await?;
+                let scope = Self::scope(db, &c.binding_id).await?;
+                Ok(Admission {
+                    inbox_id: c.id,
+                    source_digest: c.source_digest,
+                    agent_generation: c.agent_generation,
+                    owner_direct: scope.space_id.is_empty(),
+                    dispatch: Self::dispatch(db, p, &e.id).await?,
                 })
-                .await
             })
             .await
     }

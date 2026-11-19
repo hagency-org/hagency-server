@@ -141,10 +141,8 @@ impl TransportStore {
         cursor: &str,
         now: i64,
     ) -> Result<Vec<PauseNotice>> {
-        self.db.with_connection(async |db| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
 
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?;
             let now = Self::clock(db,now).await?;
             sql_query("UPDATE hagency_agent_v1.pause_notice_outbox n SET state='cancelled' WHERE n.state IN ('pending','sending','unknown') AND (n.created_at_ms<=$1 OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id LEFT JOIN hagency_agent_v1.rooms r ON r.room_id=b.room_id AND r.project_id=b.project_id WHERE b.id=n.binding_id AND b.generation=n.binding_generation AND b.state='suspended' AND b.owner_service_paused AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND a.state='active' AND u.active AND ((b.scope_kind='project' AND p.active AND r.active) OR (b.scope_kind='owner_direct' AND a.owner_direct_room_id=b.room_id))))")
                 .bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).execute(db).await?;
@@ -164,7 +162,6 @@ impl TransportStore {
             Ok(sql_query(format!("{SELECT} WHERE state IN ('pending','unknown','sending') AND worker_until_ms<=$1 ORDER BY (id<=$2),id LIMIT 20"))
                 .bind::<BigInt,_>(now).bind::<Text,_>(cursor).load(db).await?)
         }).await
-    }).await
     }
     pub(crate) async fn pause_notice_scope(&self, binding: &str) -> Result<RoutingScope> {
         self.db
@@ -193,10 +190,7 @@ impl TransportStore {
         now: i64,
         gate: Option<&crate::worker_runtime::ClaimGate>,
     ) -> Result<PauseNotice> {
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?;
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             {
                 use crate::schema::agent_tables::pause_notice_outbox as q;
                 let params = (id,);
@@ -242,7 +236,6 @@ impl TransportStore {
                 .bind::<Text,_>(id).bind::<Text,_>(worker).bind::<BigInt,_>(now+self.limits.worker_lease_ms).bind::<BigInt,_>(now)
                 .get_result::<PauseNotice>(db).await.optional()?)
         }).await?.ok_or(Error::Conflict("pause_notice_not_sendable"))
-    }).await
     }
     pub(crate) async fn confirm_pause_notice(
         &self,

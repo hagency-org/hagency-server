@@ -31,8 +31,9 @@ pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
         .await
         .unwrap();
     }
-    db.batch_execute("DROP INDEX hagency_agent_v1.original_shared_runtime,hagency_agent_v1.active_shared_runtime_head;ALTER TABLE hagency_agent_v1.management_shared_runtimes ADD CONSTRAINT management_shared_runtimes_assignment_id_key UNIQUE(assignment_id);ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=13;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=13)").await.unwrap();
-    let sql = include_str!("management_shared_execution_schema.sql");
+    db.batch_execute("DROP INDEX hagency_agent_v1.original_shared_runtime,hagency_agent_v1.active_shared_runtime_head;ALTER TABLE hagency_agent_v1.management_shared_runtimes ADD CONSTRAINT management_shared_runtimes_assignment_id_key UNIQUE(assignment_id);ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=13;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=13)").await.unwrap();
+    let sql =
+        include_str!("../migrations/domain/2026-11-19-000115_management_shared_execution/up.sql");
     let sql = sql
         .split_once("CREATE FUNCTION hagency_agent_v1.validate_shared_runtime()")
         .unwrap()

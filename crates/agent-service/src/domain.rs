@@ -7,7 +7,9 @@ use diesel::sql_types::{BigInt, Bool, Nullable, Text};
 use diesel::{
     BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl, SelectableHelper, sql_query,
 };
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
+#[cfg(test)]
+use diesel_async::SimpleAsyncConnection;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use serde::{Deserialize, Serialize};
 
 use crate::store::Principal;
@@ -451,13 +453,18 @@ struct Flag {
 pub struct DomainStore {
     pub(crate) board: project_board::BoardStore,
     db: Arc<crate::database::Database>,
-    crypto_db: Arc<crate::database::DedicatedDatabase>,
     controller_db: Arc<crate::database::DedicatedDatabase>,
     server: String,
     namespace: String,
 }
 
 impl DomainStore {
+    #[cfg(test)]
+    pub(crate) fn use_single_slot_pool(&mut self, url: &str) -> Arc<crate::database::Database> {
+        self.db = Arc::new(crate::database::Database::connect(url, 1).unwrap());
+        self.db.clone()
+    }
+
     /// [management] enable_pool_grant_succession: a reserved pool Agent's
     /// lifetime follows its pool's capacity chain instead of its reserve
     /// command's expiry. Applied to every database session of this store.
@@ -491,168 +498,13 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_agent_namespace"));
         }
 
-        let mut db = AsyncPgConnection::establish(url)
+        let db = AsyncPgConnection::establish(url)
             .await
             .map_err(|_| Error::Unavailable("database_unavailable"))?;
 
-        db.transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection| {
+        let db = crate::migrations::domain(db, server, namespace).await?;
 
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328902)")
-                .await?;
-
-            let fixed={
-                use crate::schema::agent_tables::deployment as q;
-                let params = (server,);
-                q::table
-                    .select(((((q::version).eq(1)).and((q::server_name).eq(&params.0))),))
-                    .filter(q::singleton)
-                    .get_result::<Flag>(db)
-                    .await
-            }?;
-
-            if !fixed.matched {
-                return Err(Error::Conflict("deployment_identity_mismatch"));
-            }
-
-            let initialized = sql_query(
-                "SELECT to_regclass('hagency_agent_v1.domain_deployment') IS NOT NULL AS matched",
-            )
-            .get_result::<Flag>(db)
-            .await?;
-
-            if !initialized.matched {
-                db.batch_execute(include_str!("domain_schema.sql")).await?;
-                db.batch_execute(include_str!("owner_direct_schema.sql")).await?;
-            }
-            db.batch_execute(include_str!("configuration_schema.sql")).await?;
-            let management=sql_query("SELECT to_regclass('hagency_agent_v1.management_deployment') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
-            if !management.matched { db.batch_execute(include_str!("management_schema.sql")).await?; }
-            let management=sql_query("SELECT version=1 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_verification_schema.sql")).await?; }
-            let management=sql_query("SELECT version=2 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_projects_schema.sql")).await?; }
-            let management=sql_query("SELECT version=3 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_allocations_schema.sql")).await?; }
-            let management=sql_query("SELECT version=4 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_parents_schema.sql")).await?; }
-            let management=sql_query("SELECT version=5 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_setup_schema.sql")).await?; }
-            let management=sql_query("SELECT version=6 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_setup_recovery_schema.sql")).await?; }
-            let management=sql_query("SELECT version=7 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_agents_schema.sql")).await?; }
-            let management=sql_query("SELECT version=8 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_agent_executor_schema.sql")).await?; }
-            let management=sql_query("SELECT version=9 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_agent_matrix_schema.sql")).await?; }
-            let management=sql_query("SELECT version=10 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_agent_runtime_schema.sql")).await?; }
-            let management=sql_query("SELECT version=11 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_execution_schema.sql")).await?; }
-            let management=sql_query("SELECT version=12 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_work_schema.sql")).await?; }
-            let management=sql_query("SELECT version=13 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_attempts_schema.sql")).await?; }
-            let management=sql_query("SELECT version=14 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_ticket_schema.sql")).await?; }
-            let management=sql_query("SELECT version=15 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_intake_schema.sql")).await?; }
-            let management=sql_query("SELECT version=16 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_demand_schema.sql")).await?; }
-            let management=sql_query("SELECT version=17 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_context_schema.sql")).await?; }
-            let management=sql_query("SELECT version=18 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_agent_budget_schema.sql")).await?; }
-            let management=sql_query("SELECT version=19 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_budget_schema.sql")).await?; }
-            let management=sql_query("SELECT version=20 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_agent_settlement_schema.sql")).await?; }
-            let management=sql_query("SELECT version=21 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_project_manager_schema.sql")).await?; }
-            let management=sql_query("SELECT version=22 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_owner_coordinator_schema.sql")).await?; }
-            let management=sql_query("SELECT version=23 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_pool_agents_schema.sql")).await?; }
-            let management=sql_query("SELECT version=24 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_approvals_schema.sql")).await?;}
-            let management=sql_query("SELECT version=25 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_block_proof_schema.sql")).await?;}
-            let management=sql_query("SELECT version=26 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_unstarted_schema.sql")).await?;}
-            let management=sql_query("SELECT version=27 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_room_members_schema.sql")).await?;}
-            let management=sql_query("SELECT version=28 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_pool_succession_schema.sql")).await?;}
-            let management=sql_query("SELECT version=29 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_agent_periods_schema.sql")).await?;}
-            let management=sql_query("SELECT version=30 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_publication_first_schema.sql")).await?;}
-            let management=sql_query("SELECT version=31 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_context_v2_schema.sql")).await?;}
-            let management=sql_query("SELECT version=32 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_claude_schema.sql")).await?;}
-            let management=sql_query("SELECT version=33 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_protocol_schema.sql")).await?;}
-            let management=sql_query("SELECT version=34 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_executor_ledgers_schema.sql")).await?;}
-            let management=sql_query("SELECT version=35 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_octos_schema.sql")).await?;}
-            let management=sql_query("SELECT version=36 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if !management.matched { return Err(Error::Conflict("management_schema_incompatible")); }
-            db.batch_execute(include_str!("management_pool_limits_validation.sql")).await?;
-            db.batch_execute(include_str!("management_agent_periods_recovery.sql")).await?;
-            db.batch_execute(include_str!("audit_recovery_schema.sql")).await?;
-            db.batch_execute(include_str!("management_shared_e2ee_schema.sql")).await?;
-            db.batch_execute(include_str!("management_shared_native_context_schema.sql")).await?;
-            db.batch_execute(include_str!("shared_rooms_schema.sql")).await?;
-            db.batch_execute(include_str!("management_shared_demand_retry_schema.sql")).await?;
-            db.batch_execute("CREATE INDEX IF NOT EXISTS management_command_recovery ON hagency_agent_v1.management_commands(actor_user_id,device_id,command_id)").await?;
-            db.batch_execute(include_str!("visibility_schema.sql")).await?;
-            db.batch_execute(include_str!("project_folders_schema.sql")).await?;
-            db.batch_execute(include_str!("agent_crypto_schema.sql")).await?;
-
-            let pause_initialized=sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='bindings' AND column_name='owner_service_paused') AS matched").get_result::<Flag>(db).await?;
-            if !pause_initialized.matched {
-                db.batch_execute("ALTER TABLE hagency_agent_v1.bindings ADD COLUMN owner_service_paused boolean NOT NULL DEFAULT false").await?;
-            }
-            db.batch_execute("ALTER TABLE hagency_agent_v1.bindings ADD COLUMN IF NOT EXISTS thread_auto_reply boolean NOT NULL DEFAULT false").await?;
-            {
-                use crate::schema::agent_tables::domain_deployment as q;
-                let params = (namespace,);
-                diesel::insert_into(q::table)
-                    .values((
-                        q::singleton.eq(true),
-                        q::version.eq(4),
-                        q::namespace.eq(&params.0),
-                    ))
-                    .on_conflict((q::singleton,))
-                    .do_nothing()
-                    .execute(db)
-                    .await
-            }?;
-            let fixed={
-                use crate::schema::agent_tables::domain_deployment as q;
-                let params = (namespace,);
-                q::table
-                    .select(((((q::version).eq(4)).and((q::namespace).eq(&params.0))),))
-                    .filter(q::singleton)
-                    .get_result::<Flag>(db)
-                    .await
-            }?;
-            if !fixed.matched {return Err(Error::Conflict("domain_schema_incompatible"));}
-            let schema=sql_query("SELECT to_regclass('hagency_agent_v1.scope_pauses') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='agents' AND column_name='execution_device_id') AS matched").get_result::<Flag>(db).await?;
-            if !schema.matched {return Err(Error::Conflict("domain_schema_incompatible"));}
-            Ok(())
-        }
-).await?;
-
-        // Crypto HTTP holds only its own connection while actual authorization
-        // rows stay locked; unrelated domain work must not queue behind it.
-        let crypto_db = AsyncPgConnection::establish(url)
-            .await
-            .map_err(|_| Error::Unavailable("database_unavailable"))?;
         Ok(Self {
-            crypto_db: Arc::new(crate::database::DedicatedDatabase::new(crypto_db, url)),
             controller_db: Arc::new(crate::database::DedicatedDatabase::new(db, url)),
             board: project_board::BoardStore::open(url).await?,
             db: Arc::new(crate::database::Database::business(url)?),
@@ -664,9 +516,7 @@ impl DomainStore {
     async fn authorize(db: &mut AsyncPgConnection, p: &Principal, now: i64) -> Result<()> {
         // The transaction lock serializes cross-process domain mutations. Identity/session
         // row locks prevent concurrent account or session revocation during a mutation.
-        db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-            .await?;
-
+        crate::database::require_domain_writer(db).await?;
         Self::authorize_identity(db, p, now).await
     }
 
@@ -881,20 +731,17 @@ impl DomainStore {
         }
 
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    administer(p, f, space, now)?;
-                    let project = Self::register_project_transaction(db, p, space, now).await?;
-                    let folder = match folder {
-                        Some(folder) => {
-                            Some(Self::keep_project_folder(db, p, &project.id, folder, now).await?)
-                        }
-                        None => None,
-                    };
-                    Ok((project, folder))
-                })
-                .await
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                administer(p, f, space, now)?;
+                let project = Self::register_project_transaction(db, p, space, now).await?;
+                let folder = match folder {
+                    Some(folder) => {
+                        Some(Self::keep_project_folder(db, p, &project.id, folder, now).await?)
+                    }
+                    None => None,
+                };
+                Ok((project, folder))
             })
             .await
     }
@@ -911,24 +758,21 @@ impl DomainStore {
         matrix_id(room, '!')?;
 
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    let project = Self::project_db(db, project_id).await?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                let project = Self::project_db(db, project_id).await?;
 
-                    administer(p, sf, &project.space_id, now)?;
-                    administer(p, rf, room, now)?;
+                administer(p, sf, &project.space_id, now)?;
+                administer(p, rf, room, now)?;
 
-                    if !sf.is_space
-                        || rf.is_space
-                        || rf.linked_space_id.as_deref() != Some(&project.space_id)
-                    {
-                        return Err(Error::Invalid("room_requires_space_child"));
-                    }
+                if !sf.is_space
+                    || rf.is_space
+                    || rf.linked_space_id.as_deref() != Some(&project.space_id)
+                {
+                    return Err(Error::Invalid("room_requires_space_child"));
+                }
 
-                    Self::register_room_transaction(db, p, project_id, room, now).await
-                })
-                .await
+                Self::register_room_transaction(db, p, project_id, room, now).await
             })
             .await
     }
@@ -1000,30 +844,27 @@ impl DomainStore {
         let encoded = encode(&policy)?;
 
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    let project = Self::project_db(db, id).await?;
-                    administer(p, f, &project.space_id, now)?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                let project = Self::project_db(db, id).await?;
+                administer(p, f, &project.space_id, now)?;
 
-                    let updated = {
-                        use crate::schema::agent_tables::projects as q;
-                        let params = (encoded, id, expected);
-                        diesel::update(q::table)
-                            .filter(((q::id).eq(&params.1)).and((q::revision).eq(&params.2)))
-                            .set((
-                                q::creation_policy.eq(&params.0),
-                                q::revision.eq(q::revision + 1),
-                            ))
-                            .returning(crate::domain::Project::as_select())
-                            .get_result(db)
-                            .await
-                    }
-                    .map_err(revision)?;
-                    Self::audit(db, p, "project.creation_policy", id, now).await?;
-                    Ok(updated)
-                })
-                .await
+                let updated = {
+                    use crate::schema::agent_tables::projects as q;
+                    let params = (encoded, id, expected);
+                    diesel::update(q::table)
+                        .filter(((q::id).eq(&params.1)).and((q::revision).eq(&params.2)))
+                        .set((
+                            q::creation_policy.eq(&params.0),
+                            q::revision.eq(q::revision + 1),
+                        ))
+                        .returning(crate::domain::Project::as_select())
+                        .get_result(db)
+                        .await
+                }
+                .map_err(revision)?;
+                Self::audit(db, p, "project.creation_policy", id, now).await?;
+                Ok(updated)
             })
             .await
     }
@@ -1044,33 +885,30 @@ impl DomainStore {
         let encoded = encode(&policy)?;
 
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    Self::room_db(db, room, project_id).await?;
-                    administer(p, f, room, now)?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                Self::room_db(db, room, project_id).await?;
+                administer(p, f, room, now)?;
 
-                    let updated = {
-                        use crate::schema::agent_tables::rooms as q;
-                        let params = (encoded, room, project_id, expected);
-                        diesel::update(q::table)
-                            .filter(
-                                (((q::room_id).eq(&params.1)).and((q::project_id).eq(&params.2)))
-                                    .and((q::revision).eq(&params.3)),
-                            )
-                            .set((
-                                q::creation_policy.eq(&params.0),
-                                q::revision.eq(q::revision + 1),
-                            ))
-                            .returning(crate::domain::Room::as_select())
-                            .get_result(db)
-                            .await
-                    }
-                    .map_err(revision)?;
-                    Self::audit(db, p, "room.creation_policy", room, now).await?;
-                    Ok(updated)
-                })
-                .await
+                let updated = {
+                    use crate::schema::agent_tables::rooms as q;
+                    let params = (encoded, room, project_id, expected);
+                    diesel::update(q::table)
+                        .filter(
+                            (((q::room_id).eq(&params.1)).and((q::project_id).eq(&params.2)))
+                                .and((q::revision).eq(&params.3)),
+                        )
+                        .set((
+                            q::creation_policy.eq(&params.0),
+                            q::revision.eq(q::revision + 1),
+                        ))
+                        .returning(crate::domain::Room::as_select())
+                        .get_result(db)
+                        .await
+                }
+                .map_err(revision)?;
+                Self::audit(db, p, "room.creation_policy", room, now).await?;
+                Ok(updated)
             })
             .await
     }
@@ -1087,38 +925,34 @@ impl DomainStore {
         }
         key(command_key)?;
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    if operation == "agent.bind"
-                        && let Some(saved) = Self::shared_room_command(db, p, command_key).await?
-                    {
-                        return Ok(saved);
-                    }
-                    let command = {
-                        use crate::schema::agent_tables::domain_commands as q;
-                        let params = (&p.user_id, operation, command_key);
-                        q::table
-                            .select((q::digest, q::agent_id, q::binding_id))
-                            .filter(
-                                (((q::actor_user_id).eq(&params.0))
-                                    .and((q::operation).eq(&params.1)))
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                if operation == "agent.bind"
+                    && let Some(saved) = Self::shared_room_command(db, p, command_key).await?
+                {
+                    return Ok(saved);
+                }
+                let command = {
+                    use crate::schema::agent_tables::domain_commands as q;
+                    let params = (&p.user_id, operation, command_key);
+                    q::table
+                        .select((q::digest, q::agent_id, q::binding_id))
+                        .filter(
+                            (((q::actor_user_id).eq(&params.0)).and((q::operation).eq(&params.1)))
                                 .and((q::key).eq(&params.2)),
-                            )
-                            .get_result::<Command>(db)
-                            .await
-                    }
-                    .optional()?
-                    .ok_or(Error::NotFound("command_not_found"))?;
-                    Ok(AgentCommand {
-                        agent: Self::agent_db(db, p, &command.agent_id).await?,
-                        binding: match command.binding_id {
-                            Some(id) => Some(Self::binding_db(db, p, &id).await?),
-                            None => None,
-                        },
-                    })
+                        )
+                        .get_result::<Command>(db)
+                        .await
+                }
+                .optional()?
+                .ok_or(Error::NotFound("command_not_found"))?;
+                Ok(AgentCommand {
+                    agent: Self::agent_db(db, p, &command.agent_id).await?,
+                    binding: match command.binding_id {
+                        Some(id) => Some(Self::binding_db(db, p, &id).await?),
+                        None => None,
+                    },
                 })
-                .await
             })
             .await
     }
@@ -1208,9 +1042,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_agent_name"));
         }
         let digest = hash(&encode(&request)?);
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;
             if let Some(command)={
                 use crate::schema::agent_tables::domain_commands as q;
@@ -1269,7 +1101,6 @@ impl DomainStore {
             sql_query("INSERT INTO hagency_agent_v1.domain_commands(actor_user_id,operation,key,digest,agent_id,binding_id) VALUES($1,'agent.create',$2,$3,$4,NULL)").bind::<Text,_>(&p.user_id).bind::<Text,_>(&request.idempotency_key).bind::<Text,_>(digest).bind::<Text,_>(&id).execute(db).await?;
             Self::audit(db,p,"agent.create",&id,now).await?;Ok(agent)
         }).await
-    }).await
     }
     pub async fn identity_provisioning_candidates(
         &self,
@@ -1286,14 +1117,11 @@ impl DomainStore {
     }
     /// Only after the trusted worker verified the exact puppet through Matrix.
     pub async fn confirm_identity_provisioned(&self, id: &str, generation: i64) -> Result<()> {
-        self.db.with_connection(async |db| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
 
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             let n=sql_query("UPDATE hagency_agent_v1.agents a SET state='active' WHERE id=$1 AND generation=$2 AND state='creating' AND execution_kind='personal' AND EXISTS(SELECT 1 FROM hagency_agent_v1.users u WHERE u.id=a.owner_user_id AND u.active)").bind::<Text,_>(id).bind::<BigInt,_>(generation).execute(db).await?;
             if n!=1 {return Err(Error::Conflict("provisioning_intent_stale"));}Ok(())
         }).await
-    }).await
     }
 
     async fn require_unmanaged_binding(
@@ -1351,127 +1179,115 @@ impl DomainStore {
         let digest = hash(&format!("{agent_id}:{}", encode(&request)?));
 
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
 
+                {
+                    use crate::schema::agent_tables::agents as q;
+                    let params = (agent_id, &p.user_id);
+                    q::table
+                        .select((true.into_sql::<diesel::sql_types::Bool>(),))
+                        .filter(((q::id).eq(&params.0)).and((q::owner_user_id).eq(&params.1)))
+                        .for_update()
+                        .get_result::<Flag>(db)
+                        .await
+                }
+                .map_err(hidden)?;
+                let agent = Self::agent_db(db, p, agent_id).await?;
+                if agent.visibility != AgentVisibility::Public {
+                    return Err(Error::Unauthorized("private_agent_owner_direct_only"));
+                }
+                if let Some(replay) =
+                    Self::replay(db, p, "agent.bind", &request.idempotency_key, &digest).await?
+                {
+                    return Ok(replay);
+                }
+
+                if !matches!(agent.state.as_str(), "creating" | "active" | "suspended") {
+                    return Err(Error::Conflict("agent_retired"));
+                }
+
+                let (project, pp, rp) =
+                    Self::policies(db, &request.project_id, &request.room_id).await?;
+                creating(
+                    p,
+                    f,
+                    &request.room_id,
+                    &project.space_id,
+                    &pp,
+                    &rp,
+                    Some(&agent.puppet_mxid),
+                    now,
+                )?;
+
+                let existing = {
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (agent_id, &request.room_id);
+                    q::table
+                        .select(crate::domain::Binding::as_select())
+                        .filter(((q::agent_id).eq(&params.0)).and((q::room_id).eq(&params.1)))
+                        .get_result::<Binding>(db)
+                        .await
+                }
+                .optional()?;
+
+                if let Some(b) = &existing {
+                    if b.scope_kind != "project"
+                        || b.project_id.as_deref() != Some(request.project_id.as_str())
                     {
-                        use crate::schema::agent_tables::agents as q;
-                        let params = (agent_id, &p.user_id);
+                        return Err(Error::Conflict("room_binding_scope_conflict"));
+                    }
+                    let pause = {
+                        use crate::schema::agent_tables::bindings as q;
+                        let params = (&b.id,);
                         q::table
-                            .select((true.into_sql::<diesel::sql_types::Bool>(),))
-                            .filter(((q::id).eq(&params.0)).and((q::owner_user_id).eq(&params.1)))
-                            .for_update()
+                            .select((diesel::dsl::not(
+                                (q::admin_project_paused).or(q::admin_room_paused),
+                            ),))
+                            .filter((q::id).eq(&params.0))
                             .get_result::<Flag>(db)
                             .await
+                    }?;
+                    if !pause.matched {
+                        return Err(Error::Unauthorized("administrator_pause_active"));
                     }
-                    .map_err(hidden)?;
-                    let agent = Self::agent_db(db, p, agent_id).await?;
-                    if agent.visibility != AgentVisibility::Public {
-                        return Err(Error::Unauthorized("private_agent_owner_direct_only"));
-                    }
-                    if let Some(replay) =
-                        Self::replay(db, p, "agent.bind", &request.idempotency_key, &digest).await?
-                    {
-                        return Ok(replay);
-                    }
+                }
 
-                    if !matches!(agent.state.as_str(), "creating" | "active" | "suspended") {
-                        return Err(Error::Conflict("agent_retired"));
-                    }
-
-                    let (project, pp, rp) =
-                        Self::policies(db, &request.project_id, &request.room_id).await?;
-                    creating(
-                        p,
-                        f,
-                        &request.room_id,
-                        &project.space_id,
-                        &pp,
-                        &rp,
-                        Some(&agent.puppet_mxid),
-                        now,
-                    )?;
-
-                    let existing = {
+                let binding = match existing {
+                    Some(b) if matches!(b.state.as_str(), "joining" | "active" | "suspended") => b,
+                    Some(b) if b.state == "left" => {
                         use crate::schema::agent_tables::bindings as q;
-                        let params = (agent_id, &request.room_id);
-                        q::table
-                            .select(crate::domain::Binding::as_select())
-                            .filter(((q::agent_id).eq(&params.0)).and((q::room_id).eq(&params.1)))
-                            .get_result::<Binding>(db)
+                        let params = (&b.id,);
+                        diesel::update(q::table)
+                            .filter((q::id).eq(&params.0))
+                            .set((
+                                q::state.eq("joining"),
+                                q::owner_service_paused.eq(false),
+                                q::generation.eq(q::generation + 1),
+                            ))
+                            .returning(crate::domain::Binding::as_select())
+                            .get_result(db)
                             .await
-                    }
-                    .optional()?;
-
-                    if let Some(b) = &existing {
-                        if b.scope_kind != "project"
-                            || b.project_id.as_deref() != Some(request.project_id.as_str())
-                        {
-                            return Err(Error::Conflict("room_binding_scope_conflict"));
-                        }
-                        let pause = {
-                            use crate::schema::agent_tables::bindings as q;
-                            let params = (&b.id,);
-                            q::table
-                                .select((diesel::dsl::not(
-                                    (q::admin_project_paused).or(q::admin_room_paused),
-                                ),))
-                                .filter((q::id).eq(&params.0))
-                                .get_result::<Flag>(db)
-                                .await
-                        }?;
-                        if !pause.matched {
-                            return Err(Error::Unauthorized("administrator_pause_active"));
-                        }
-                    }
-
-                    let binding = match existing {
-                        Some(b)
-                            if matches!(b.state.as_str(), "joining" | "active" | "suspended") =>
-                        {
-                            b
-                        }
-                        Some(b) if b.state == "left" => {
-                            use crate::schema::agent_tables::bindings as q;
-                            let params = (&b.id,);
-                            diesel::update(q::table)
-                                .filter((q::id).eq(&params.0))
-                                .set((
-                                    q::state.eq("joining"),
-                                    q::owner_service_paused.eq(false),
-                                    q::generation.eq(q::generation + 1),
-                                ))
-                                .returning(crate::domain::Binding::as_select())
-                                .get_result(db)
-                                .await
-                        }?,
-                        Some(_) => return Err(Error::Conflict("binding_not_bindable")),
-                        None => {
-                            Self::insert_binding(
-                                db,
-                                agent_id,
-                                &request.project_id,
-                                &request.room_id,
-                            )
+                    }?,
+                    Some(_) => return Err(Error::Conflict("binding_not_bindable")),
+                    None => {
+                        Self::insert_binding(db, agent_id, &request.project_id, &request.room_id)
                             .await?
-                        }
-                    };
+                    }
+                };
 
-                    Self::command(
-                        db,
-                        p,
-                        "agent.bind",
-                        &request.idempotency_key,
-                        &digest,
-                        agent_id,
-                        &binding.id,
-                    )
-                    .await?;
-                    Self::audit(db, p, "agent.bind", &binding.id, now).await?;
-                    Ok(AgentBinding { agent, binding })
-                })
-                .await
+                Self::command(
+                    db,
+                    p,
+                    "agent.bind",
+                    &request.idempotency_key,
+                    &digest,
+                    agent_id,
+                    &binding.id,
+                )
+                .await?;
+                Self::audit(db, p, "agent.bind", &binding.id, now).await?;
+                Ok(AgentBinding { agent, binding })
             })
             .await
     }
@@ -1491,13 +1307,10 @@ impl DomainStore {
         if limit == 0 || limit > 1000 {
             return Err(Error::Invalid("invalid_cleanup_limit"));
         }
-        self.db.with_connection(async |db| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
 
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             Ok(sql_query("SELECT a.id AS agent_id,a.owner_user_id,u.mxid AS owner_mxid,a.puppet_mxid,a.state AS agent_state,a.generation AS agent_generation,b.id AS binding_id,b.state AS binding_state,b.generation AS binding_generation,b.room_id,coalesce(p.space_id,'') AS space_id FROM hagency_agent_v1.agents a JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id LEFT JOIN hagency_agent_v1.bindings b ON b.agent_id=a.id AND b.state IN ('leaving','revoked') LEFT JOIN hagency_agent_v1.projects p ON p.id=b.project_id WHERE (b.id IS NOT NULL OR (a.state='retiring' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.bindings pending WHERE pending.agent_id=a.id AND pending.state<>'left'))) AND (a.id,coalesce(b.id,''))>($2,$3) ORDER BY a.id,coalesce(b.id,'') LIMIT $1").bind::<BigInt,_>(limit as i64).bind::<Text,_>(agent_cursor).bind::<Text,_>(binding_cursor).load(db).await?)
         }).await
-    }).await
     }
     /// Session-scoped PostgreSQL lock elects one Matrix membership controller
     /// across replicas. Recheck after connection replacement without stacking
@@ -1550,21 +1363,9 @@ impl DomainStore {
         now: i64,
     ) -> Result<bool> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                    db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-                        .await?;
-                    Self::fence_membership_loss(
-                        db,
-                        id,
-                        Some(generation),
-                        facts,
-                        require_joined,
-                        now,
-                    )
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::fence_membership_loss(db, id, Some(generation), facts, require_joined, now)
                     .await
-                })
-                .await
             })
             .await
     }
@@ -1577,22 +1378,12 @@ impl DomainStore {
         now: i64,
     ) -> Result<()> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    let binding = Self::binding_db(db, p, id).await?;
-                    Self::fence_membership_loss(
-                        db,
-                        id,
-                        Some(binding.generation),
-                        facts,
-                        false,
-                        now,
-                    )
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                let binding = Self::binding_db(db, p, id).await?;
+                Self::fence_membership_loss(db, id, Some(binding.generation), facts, false, now)
                     .await?;
-                    Ok(())
-                })
-                .await
+                Ok(())
             })
             .await
     }
@@ -1697,123 +1488,118 @@ impl DomainStore {
         self.retire_membership_loss(id, generation, f, activate, now)
             .await?;
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                    db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-                        .await?;
-                    let b = {
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                let b = {
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (id,);
+                    q::table
+                        .select(crate::domain::Binding::as_select())
+                        .filter((q::id).eq(&params.0))
+                        .get_result::<Binding>(db)
+                        .await
+                }
+                .map_err(hidden)?;
+                let a = {
+                    use crate::schema::agent_tables::agents as q;
+                    let params = (&b.agent_id,);
+                    q::table
+                        .select(crate::domain::Agent::as_select())
+                        .filter((q::id).eq(&params.0))
+                        .get_result::<Agent>(db)
+                        .await
+                }?;
+                let (space, pp, rp) = Self::binding_policies(db, &b).await?;
+                #[derive(diesel::Queryable, diesel::QueryableByName)]
+                struct Owner {
+                    #[diesel(sql_type=Text)]
+                    mxid: String,
+                    #[diesel(sql_type=Bool)]
+                    active: bool,
+                }
+                let owner = {
+                    use crate::schema::agent_tables::users as q;
+                    let params = (&a.owner_user_id,);
+                    q::table
+                        .select((q::mxid, q::active))
+                        .filter((q::id).eq(&params.0))
+                        .get_result::<Owner>(db)
+                        .await
+                }?;
+                fresh(f.observed_at_ms, now)?;
+                let enabled = {
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (id,);
+                    q::table
+                        .select((diesel::dsl::not(
+                            (q::admin_project_paused).or(q::admin_room_paused),
+                        ),))
+                        .filter((q::id).eq(&params.0))
+                        .get_result::<Flag>(db)
+                        .await
+                }?;
+                if b.generation != generation
+                    || b.state != "joining"
+                    || !matches!(a.state.as_str(), "creating" | "active" | "suspended")
+                    || !owner.active
+                    || !enabled.matched
+                {
+                    return Err(Error::Conflict("provisioning_intent_stale"));
+                }
+                if f.owner_mxid != owner.mxid
+                    || f.room_id != b.room_id
+                    || f.space_id != space
+                    || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid)
+                    || !f.owner_in_room
+                    || (if space.is_empty() {
+                        !f.owner_direct_valid
+                    } else {
+                        !f.owner_in_space || !f.room_in_space
+                    })
+                    || !pp.permits(&owner.mxid)
+                    || !rp.permits(&owner.mxid)
+                {
+                    return Err(Error::Unauthorized("provisioning_authority_revoked"));
+                }
+                if !f.puppet_in_room && !f.service_can_invite && !f.owner_direct_valid {
+                    return Err(Error::Unauthorized("service_invitation_denied"));
+                }
+                if activate {
+                    if !f.puppet_in_room {
+                        return Err(Error::Conflict("puppet_join_not_confirmed"));
+                    }
+                    {
                         use crate::schema::agent_tables::bindings as q;
                         let params = (id,);
-                        q::table
-                            .select(crate::domain::Binding::as_select())
+                        diesel::update(q::table)
                             .filter((q::id).eq(&params.0))
-                            .get_result::<Binding>(db)
+                            .set((q::state.eq("active"), q::owner_service_paused.eq(false)))
+                            .execute(db)
                             .await
-                    }
-                    .map_err(hidden)?;
-                    let a = {
+                    }?;
+                    {
                         use crate::schema::agent_tables::agents as q;
-                        let params = (&b.agent_id,);
-                        q::table
-                            .select(crate::domain::Agent::as_select())
-                            .filter((q::id).eq(&params.0))
-                            .get_result::<Agent>(db)
+                        let params = (&a.id,);
+                        diesel::update(q::table)
+                            .filter(((q::id).eq(&params.0)).and((q::state).eq("creating")))
+                            .set((q::state.eq("active"),))
+                            .execute(db)
                             .await
                     }?;
-                    let (space, pp, rp) = Self::binding_policies(db, &b).await?;
-                    #[derive(diesel::Queryable, diesel::QueryableByName)]
-                    struct Owner {
-                        #[diesel(sql_type=Text)]
-                        mxid: String,
-                        #[diesel(sql_type=Bool)]
-                        active: bool,
-                    }
-                    let owner = {
-                        use crate::schema::agent_tables::users as q;
-                        let params = (&a.owner_user_id,);
-                        q::table
-                            .select((q::mxid, q::active))
-                            .filter((q::id).eq(&params.0))
-                            .get_result::<Owner>(db)
-                            .await
-                    }?;
-                    fresh(f.observed_at_ms, now)?;
-                    let enabled = {
-                        use crate::schema::agent_tables::bindings as q;
-                        let params = (id,);
-                        q::table
-                            .select((diesel::dsl::not(
-                                (q::admin_project_paused).or(q::admin_room_paused),
-                            ),))
-                            .filter((q::id).eq(&params.0))
-                            .get_result::<Flag>(db)
-                            .await
-                    }?;
-                    if b.generation != generation
-                        || b.state != "joining"
-                        || !matches!(a.state.as_str(), "creating" | "active" | "suspended")
-                        || !owner.active
-                        || !enabled.matched
                     {
-                        return Err(Error::Conflict("provisioning_intent_stale"));
-                    }
-                    if f.owner_mxid != owner.mxid
-                        || f.room_id != b.room_id
-                        || f.space_id != space
-                        || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid)
-                        || !f.owner_in_room
-                        || (if space.is_empty() {
-                            !f.owner_direct_valid
-                        } else {
-                            !f.owner_in_space || !f.room_in_space
-                        })
-                        || !pp.permits(&owner.mxid)
-                        || !rp.permits(&owner.mxid)
-                    {
-                        return Err(Error::Unauthorized("provisioning_authority_revoked"));
-                    }
-                    if !f.puppet_in_room && !f.service_can_invite && !f.owner_direct_valid {
-                        return Err(Error::Unauthorized("service_invitation_denied"));
-                    }
-                    if activate {
-                        if !f.puppet_in_room {
-                            return Err(Error::Conflict("puppet_join_not_confirmed"));
-                        }
-                        {
-                            use crate::schema::agent_tables::bindings as q;
-                            let params = (id,);
-                            diesel::update(q::table)
-                                .filter((q::id).eq(&params.0))
-                                .set((q::state.eq("active"), q::owner_service_paused.eq(false)))
-                                .execute(db)
-                                .await
-                        }?;
-                        {
-                            use crate::schema::agent_tables::agents as q;
-                            let params = (&a.id,);
-                            diesel::update(q::table)
-                                .filter(((q::id).eq(&params.0)).and((q::state).eq("creating")))
-                                .set((q::state.eq("active"),))
-                                .execute(db)
-                                .await
-                        }?;
-                        {
-                            use crate::schema::agent_tables::domain_audit as q;
-                            let params = (&a.owner_user_id, id, now.max(crate::api::now_ms()));
-                            diesel::insert_into(q::table)
-                                .values((
-                                    q::actor_user_id.eq(&params.0),
-                                    q::operation.eq("worker.binding.activate"),
-                                    q::object_id.eq(&params.1),
-                                    q::at_ms.eq(&params.2),
-                                ))
-                                .execute(db)
-                                .await
-                        }?;
-                    }
-                    Ok(a)
-                })
-                .await
+                        use crate::schema::agent_tables::domain_audit as q;
+                        let params = (&a.owner_user_id, id, now.max(crate::api::now_ms()));
+                        diesel::insert_into(q::table)
+                            .values((
+                                q::actor_user_id.eq(&params.0),
+                                q::operation.eq("worker.binding.activate"),
+                                q::object_id.eq(&params.1),
+                                q::at_ms.eq(&params.2),
+                            ))
+                            .execute(db)
+                            .await
+                    }?;
+                }
+                Ok(a)
             })
             .await
     }
@@ -1827,89 +1613,84 @@ impl DomainStore {
         now: i64,
     ) -> Result<Binding> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                    db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-                        .await?;
-                    let b = {
-                        use crate::schema::agent_tables::bindings as q;
-                        let params = (id,);
-                        q::table
-                            .select(crate::domain::Binding::as_select())
-                            .filter((q::id).eq(&params.0))
-                            .get_result::<Binding>(db)
-                            .await
-                    }
-                    .map_err(hidden)?;
-                    let a = {
-                        use crate::schema::agent_tables::agents as q;
-                        let params = (&b.agent_id,);
-                        q::table
-                            .select(crate::domain::Agent::as_select())
-                            .filter((q::id).eq(&params.0))
-                            .get_result::<Agent>(db)
-                            .await
-                    }?;
-                    let space = match &b.project_id {
-                        Some(project) => Self::project_db(db, project).await?.space_id,
-                        None => String::new(),
-                    };
-                    #[derive(diesel::Queryable, diesel::QueryableByName)]
-                    struct Owner {
-                        #[diesel(sql_type=Text)]
-                        mxid: String,
-                    }
-                    let owner = {
-                        use crate::schema::agent_tables::users as q;
-                        let params = (&a.owner_user_id,);
-                        q::table
-                            .select((q::mxid,))
-                            .filter((q::id).eq(&params.0))
-                            .get_result::<Owner>(db)
-                            .await
-                    }?;
-                    fresh(f.observed_at_ms, now)?;
-                    if b.generation != generation
-                        || f.room_id != b.room_id
-                        || f.space_id != space
-                        || f.owner_mxid != owner.mxid
-                        || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid)
-                        || f.puppet_in_room
-                    {
-                        return Err(Error::Conflict("puppet_departure_not_confirmed"));
-                    }
-                    if b.state == "left" {
-                        return Ok(b);
-                    }
-                    if !matches!(b.state.as_str(), "leaving" | "revoked") {
-                        return Err(Error::Conflict("binding_not_leaving"));
-                    }
-                    let result = {
-                        use crate::schema::agent_tables::bindings as q;
-                        let params = (id,);
-                        diesel::update(q::table)
-                            .filter((q::id).eq(&params.0))
-                            .set((q::state.eq("left"), q::owner_service_paused.eq(false)))
-                            .returning(crate::domain::Binding::as_select())
-                            .get_result(db)
-                            .await
-                    }?;
-                    {
-                        use crate::schema::agent_tables::domain_audit as q;
-                        let params = (&a.owner_user_id, id, now.max(crate::api::now_ms()));
-                        diesel::insert_into(q::table)
-                            .values((
-                                q::actor_user_id.eq(&params.0),
-                                q::operation.eq("worker.binding.left"),
-                                q::object_id.eq(&params.1),
-                                q::at_ms.eq(&params.2),
-                            ))
-                            .execute(db)
-                            .await
-                    }?;
-                    Ok(result)
-                })
-                .await
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                let b = {
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (id,);
+                    q::table
+                        .select(crate::domain::Binding::as_select())
+                        .filter((q::id).eq(&params.0))
+                        .get_result::<Binding>(db)
+                        .await
+                }
+                .map_err(hidden)?;
+                let a = {
+                    use crate::schema::agent_tables::agents as q;
+                    let params = (&b.agent_id,);
+                    q::table
+                        .select(crate::domain::Agent::as_select())
+                        .filter((q::id).eq(&params.0))
+                        .get_result::<Agent>(db)
+                        .await
+                }?;
+                let space = match &b.project_id {
+                    Some(project) => Self::project_db(db, project).await?.space_id,
+                    None => String::new(),
+                };
+                #[derive(diesel::Queryable, diesel::QueryableByName)]
+                struct Owner {
+                    #[diesel(sql_type=Text)]
+                    mxid: String,
+                }
+                let owner = {
+                    use crate::schema::agent_tables::users as q;
+                    let params = (&a.owner_user_id,);
+                    q::table
+                        .select((q::mxid,))
+                        .filter((q::id).eq(&params.0))
+                        .get_result::<Owner>(db)
+                        .await
+                }?;
+                fresh(f.observed_at_ms, now)?;
+                if b.generation != generation
+                    || f.room_id != b.room_id
+                    || f.space_id != space
+                    || f.owner_mxid != owner.mxid
+                    || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid)
+                    || f.puppet_in_room
+                {
+                    return Err(Error::Conflict("puppet_departure_not_confirmed"));
+                }
+                if b.state == "left" {
+                    return Ok(b);
+                }
+                if !matches!(b.state.as_str(), "leaving" | "revoked") {
+                    return Err(Error::Conflict("binding_not_leaving"));
+                }
+                let result = {
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (id,);
+                    diesel::update(q::table)
+                        .filter((q::id).eq(&params.0))
+                        .set((q::state.eq("left"), q::owner_service_paused.eq(false)))
+                        .returning(crate::domain::Binding::as_select())
+                        .get_result(db)
+                        .await
+                }?;
+                {
+                    use crate::schema::agent_tables::domain_audit as q;
+                    let params = (&a.owner_user_id, id, now.max(crate::api::now_ms()));
+                    diesel::insert_into(q::table)
+                        .values((
+                            q::actor_user_id.eq(&params.0),
+                            q::operation.eq("worker.binding.left"),
+                            q::object_id.eq(&params.1),
+                            q::at_ms.eq(&params.2),
+                        ))
+                        .execute(db)
+                        .await
+                }?;
+                Ok(result)
             })
             .await
     }
@@ -1921,10 +1702,8 @@ impl DomainStore {
         generation: i64,
         now: i64,
     ) -> Result<Agent> {
-        self.db.with_connection(async |db| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
 
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             let a={
                 use crate::schema::agent_tables::agents as q;
                 let params = (id,);
@@ -1963,7 +1742,6 @@ impl DomainStore {
                     .await
             }?;Ok(result)
         }).await
-    }).await
     }
     /// Called after trusted gateway has provisioned the exact puppet and confirmed join.
     /// expected_generation fences stale lifecycle jobs after pause, leave, or retirement.
@@ -1976,81 +1754,78 @@ impl DomainStore {
         now: i64,
     ) -> Result<Binding> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    let b = Self::binding_db(db, p, id).await?;
-                    let a = Self::agent_db(db, p, &b.agent_id).await?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                let b = Self::binding_db(db, p, id).await?;
+                let a = Self::agent_db(db, p, &b.agent_id).await?;
 
-                    if b.generation != expected_generation {
-                        return Err(Error::Conflict("stale_binding_generation"));
-                    }
+                if b.generation != expected_generation {
+                    return Err(Error::Conflict("stale_binding_generation"));
+                }
 
-                    if b.state == "active" {
-                        return Ok(b);
-                    }
+                if b.state == "active" {
+                    return Ok(b);
+                }
 
-                    let pause = {
-                        use crate::schema::agent_tables::bindings as q;
-                        let params = (id,);
-                        q::table
-                            .select((diesel::dsl::not(
-                                (q::admin_project_paused).or(q::admin_room_paused),
-                            ),))
-                            .filter((q::id).eq(&params.0))
-                            .get_result::<Flag>(db)
-                            .await
-                    }?;
-                    if !pause.matched {
-                        return Err(Error::Unauthorized("administrator_pause_active"));
-                    }
+                let pause = {
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (id,);
+                    q::table
+                        .select((diesel::dsl::not(
+                            (q::admin_project_paused).or(q::admin_room_paused),
+                        ),))
+                        .filter((q::id).eq(&params.0))
+                        .get_result::<Flag>(db)
+                        .await
+                }?;
+                if !pause.matched {
+                    return Err(Error::Unauthorized("administrator_pause_active"));
+                }
 
-                    if b.state != "joining"
-                        || !matches!(a.state.as_str(), "creating" | "active" | "suspended")
-                    {
-                        return Err(Error::Conflict("binding_not_joining"));
-                    }
+                if b.state != "joining"
+                    || !matches!(a.state.as_str(), "creating" | "active" | "suspended")
+                {
+                    return Err(Error::Conflict("binding_not_joining"));
+                }
 
-                    let (space, pp, rp) = Self::binding_policies(db, &b).await?;
-                    creating(
-                        p,
-                        f,
-                        &b.room_id,
-                        &space,
-                        &pp,
-                        &rp,
-                        Some(&a.puppet_mxid),
-                        now,
-                    )?;
+                let (space, pp, rp) = Self::binding_policies(db, &b).await?;
+                creating(
+                    p,
+                    f,
+                    &b.room_id,
+                    &space,
+                    &pp,
+                    &rp,
+                    Some(&a.puppet_mxid),
+                    now,
+                )?;
 
-                    if !f.puppet_in_room || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid) {
-                        return Err(Error::Conflict("puppet_join_not_confirmed"));
-                    }
+                if !f.puppet_in_room || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid) {
+                    return Err(Error::Conflict("puppet_join_not_confirmed"));
+                }
 
-                    let b = {
-                        use crate::schema::agent_tables::bindings as q;
-                        let params = (id,);
-                        diesel::update(q::table)
-                            .filter((q::id).eq(&params.0))
-                            .set((q::state.eq("active"), q::owner_service_paused.eq(false)))
-                            .returning(crate::domain::Binding::as_select())
-                            .get_result(db)
-                            .await
-                    }?;
+                let b = {
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (id,);
+                    diesel::update(q::table)
+                        .filter((q::id).eq(&params.0))
+                        .set((q::state.eq("active"), q::owner_service_paused.eq(false)))
+                        .returning(crate::domain::Binding::as_select())
+                        .get_result(db)
+                        .await
+                }?;
 
-                    {
-                        use crate::schema::agent_tables::agents as q;
-                        let params = (&a.id,);
-                        diesel::update(q::table)
-                            .filter(((q::id).eq(&params.0)).and((q::state).eq("creating")))
-                            .set((q::state.eq("active"),))
-                            .execute(db)
-                            .await
-                    }?;
-                    Self::audit(db, p, "binding.activate", id, now).await?;
-                    Ok(b)
-                })
-                .await
+                {
+                    use crate::schema::agent_tables::agents as q;
+                    let params = (&a.id,);
+                    diesel::update(q::table)
+                        .filter(((q::id).eq(&params.0)).and((q::state).eq("creating")))
+                        .set((q::state.eq("active"),))
+                        .execute(db)
+                        .await
+                }?;
+                Self::audit(db, p, "binding.activate", id, now).await?;
+                Ok(b)
             })
             .await
     }
@@ -2064,32 +1839,29 @@ impl DomainStore {
     ) -> Result<AgentBinding> {
         self.observe_owner_membership(p, id, f, now).await?;
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
 
-                    let b = Self::binding_db(db, p, id).await?;
+                let b = Self::binding_db(db, p, id).await?;
 
-                    let a = Self::agent_db(db, p, &b.agent_id).await?;
+                let a = Self::agent_db(db, p, &b.agent_id).await?;
 
-                    if b.state != "active" || a.state != "active" {
-                        return Err(Error::Unauthorized("agent_not_running"));
-                    }
+                if b.state != "active" || a.state != "active" {
+                    return Err(Error::Unauthorized("agent_not_running"));
+                }
 
-                    let (space, ..) = Self::binding_policies(db, &b).await?;
+                let (space, ..) = Self::binding_policies(db, &b).await?;
 
-                    membership(p, f, &b.room_id, &space, now)?;
+                membership(p, f, &b.room_id, &space, now)?;
 
-                    if !f.puppet_in_room || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid) {
-                        return Err(Error::Unauthorized("puppet_not_joined"));
-                    }
+                if !f.puppet_in_room || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid) {
+                    return Err(Error::Unauthorized("puppet_not_joined"));
+                }
 
-                    Ok(AgentBinding {
-                        agent: a,
-                        binding: b,
-                    })
+                Ok(AgentBinding {
+                    agent: a,
+                    binding: b,
                 })
-                .await
             })
             .await
     }
@@ -2098,13 +1870,10 @@ impl DomainStore {
     /// before exposing project metadata or policy exception lists.
     pub async fn project(&self, p: &Principal, id: &str, now: i64) -> Result<Project> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
 
-                    Self::project_db(db, id).await
-                })
-                .await
+                Self::project_db(db, id).await
             })
             .await
     }
@@ -2118,13 +1887,10 @@ impl DomainStore {
         now: i64,
     ) -> Result<Room> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
 
-                    Self::room_db(db, room_id, project_id).await
-                })
-                .await
+                Self::room_db(db, room_id, project_id).await
             })
             .await
     }
@@ -2133,46 +1899,37 @@ impl DomainStore {
     /// before returning it to clients; authentication alone is not discoverability.
     pub async fn projects(&self, p: &Principal, now: i64) -> Result<Vec<Project>> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    Ok({
-                        use crate::schema::agent_tables::projects as q;
-                        q::table
-                            .select(crate::domain::Project::as_select())
-                            .filter(q::active)
-                            .order((q::id.asc(),))
-                            .load(db)
-                            .await
-                    }?)
-                })
-                .await
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                Ok({
+                    use crate::schema::agent_tables::projects as q;
+                    q::table
+                        .select(crate::domain::Project::as_select())
+                        .filter(q::active)
+                        .order((q::id.asc(),))
+                        .load(db)
+                        .await
+                }?)
             })
             .await
     }
 
     pub async fn agent(&self, p: &Principal, id: &str, now: i64) -> Result<Agent> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
 
-                    Self::agent_db(db, p, id).await
-                })
-                .await
+                Self::agent_db(db, p, id).await
             })
             .await
     }
 
     pub async fn binding(&self, p: &Principal, id: &str, now: i64) -> Result<Binding> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
 
-                    Self::binding_db(db, p, id).await
-                })
-                .await
+                Self::binding_db(db, p, id).await
             })
             .await
     }
@@ -2186,53 +1943,47 @@ impl DomainStore {
         now: i64,
     ) -> Result<Binding> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    let binding = Self::binding_db(db, p, id).await?;
-                    if binding.scope_kind != "project" {
-                        return Err(Error::Invalid("project_binding_required"));
-                    }
-                    if !matches!(binding.state.as_str(), "active" | "suspended") {
-                        return Err(Error::Conflict("binding_not_active"));
-                    }
-                    Self::audit(db, p, "binding.reply_policy", id, now).await?;
-                    Ok({
-                        use crate::schema::agent_tables::bindings as q;
-                        let params = (enabled, id);
-                        diesel::update(q::table)
-                            .filter((q::id).eq(&params.1))
-                            .set((q::thread_auto_reply.eq(&params.0),))
-                            .returning(crate::domain::Binding::as_select())
-                            .get_result(db)
-                            .await
-                    }?)
-                })
-                .await
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                let binding = Self::binding_db(db, p, id).await?;
+                if binding.scope_kind != "project" {
+                    return Err(Error::Invalid("project_binding_required"));
+                }
+                if !matches!(binding.state.as_str(), "active" | "suspended") {
+                    return Err(Error::Conflict("binding_not_active"));
+                }
+                Self::audit(db, p, "binding.reply_policy", id, now).await?;
+                Ok({
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (enabled, id);
+                    diesel::update(q::table)
+                        .filter((q::id).eq(&params.1))
+                        .set((q::thread_auto_reply.eq(&params.0),))
+                        .returning(crate::domain::Binding::as_select())
+                        .get_result(db)
+                        .await
+                }?)
             })
             .await
     }
 
     pub async fn agents(&self, p: &Principal, now: i64) -> Result<Vec<Agent>> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    Ok({
-                        use crate::schema::agent_tables::agents as q;
-                        let params = (&p.user_id,);
-                        q::table
-                            .select(crate::domain::Agent::as_select())
-                            .filter(
-                                ((q::owner_user_id).eq(&params.0))
-                                    .and((q::execution_kind).eq("personal")),
-                            )
-                            .order((q::id.asc(),))
-                            .load(db)
-                            .await
-                    }?)
-                })
-                .await
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                Ok({
+                    use crate::schema::agent_tables::agents as q;
+                    let params = (&p.user_id,);
+                    q::table
+                        .select(crate::domain::Agent::as_select())
+                        .filter(
+                            ((q::owner_user_id).eq(&params.0))
+                                .and((q::execution_kind).eq("personal")),
+                        )
+                        .order((q::id.asc(),))
+                        .load(db)
+                        .await
+                }?)
             })
             .await
     }
@@ -2246,9 +1997,7 @@ impl DomainStore {
         now: i64,
     ) -> Result<Agent> {
         key(id)?;
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db, p, now).await?;
             {
                 use crate::schema::agent_tables::agents as q;
@@ -2278,27 +2027,23 @@ impl DomainStore {
             Self::audit(db, p, "agent.visibility", id, now).await?;
             Self::agent_db(db, p, id).await
         }).await
-    }).await
     }
 
     pub async fn bindings(&self, p: &Principal, agent_id: &str, now: i64) -> Result<Vec<Binding>> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    Self::agent_db(db, p, agent_id).await?;
-                    Ok({
-                        use crate::schema::agent_tables::bindings as q;
-                        let params = (agent_id,);
-                        q::table
-                            .select(crate::domain::Binding::as_select())
-                            .filter((q::agent_id).eq(&params.0))
-                            .order((q::id.asc(),))
-                            .load(db)
-                            .await
-                    }?)
-                })
-                .await
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                Self::agent_db(db, p, agent_id).await?;
+                Ok({
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (agent_id,);
+                    q::table
+                        .select(crate::domain::Binding::as_select())
+                        .filter((q::agent_id).eq(&params.0))
+                        .order((q::id.asc(),))
+                        .load(db)
+                        .await
+                }?)
             })
             .await
     }
@@ -2321,58 +2066,55 @@ impl DomainStore {
         now: i64,
     ) -> Result<Agent> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    let a = Self::agent_db(db, p, id).await?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                let a = Self::agent_db(db, p, id).await?;
 
-                    if a.state == target {
-                        return Ok(a);
-                    }
-                    if !matches!(a.state.as_str(), "active" | "suspended") {
-                        return Err(Error::Conflict("agent_transition_denied"));
-                    }
+                if a.state == target {
+                    return Ok(a);
+                }
+                if !matches!(a.state.as_str(), "active" | "suspended") {
+                    return Err(Error::Conflict("agent_transition_denied"));
+                }
 
-                    let a = {
-                        use crate::schema::agent_tables::agents as q;
-                        let params = (target, id);
-                        diesel::update(q::table)
-                            .filter((q::id).eq(&params.1))
-                            .set((q::state.eq(&params.0), q::generation.eq(q::generation + 1)))
-                            .returning(crate::domain::Agent::as_select())
-                            .get_result(db)
-                            .await
-                    }?;
+                let a = {
+                    use crate::schema::agent_tables::agents as q;
+                    let params = (target, id);
+                    diesel::update(q::table)
+                        .filter((q::id).eq(&params.1))
+                        .set((q::state.eq(&params.0), q::generation.eq(q::generation + 1)))
+                        .returning(crate::domain::Agent::as_select())
+                        .get_result(db)
+                        .await
+                }?;
 
-                    {
-                        use crate::schema::agent_tables::bindings as q;
-                        let params = (id,);
-                        diesel::update(q::table)
-                            .filter(((q::agent_id).eq(&params.0)).and(q::state.eq_any(vec![
-                                "joining",
-                                "active",
-                                "suspended",
-                            ])))
-                            .set((q::generation.eq(q::generation + 1),))
-                            .execute(db)
-                            .await
-                    }?;
+                {
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (id,);
+                    diesel::update(q::table)
+                        .filter(((q::agent_id).eq(&params.0)).and(q::state.eq_any(vec![
+                            "joining",
+                            "active",
+                            "suspended",
+                        ])))
+                        .set((q::generation.eq(q::generation + 1),))
+                        .execute(db)
+                        .await
+                }?;
 
-                    Self::audit(
-                        db,
-                        p,
-                        if target == "active" {
-                            "agent.resume"
-                        } else {
-                            "agent.suspend"
-                        },
-                        id,
-                        now,
-                    )
-                    .await?;
-                    Ok(a)
-                })
-                .await
+                Self::audit(
+                    db,
+                    p,
+                    if target == "active" {
+                        "agent.resume"
+                    } else {
+                        "agent.suspend"
+                    },
+                    id,
+                    now,
+                )
+                .await?;
+                Ok(a)
             })
             .await
     }
@@ -2393,62 +2135,59 @@ impl DomainStore {
         now: i64,
     ) -> Result<Binding> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    let b = Self::binding_db(db, p, id).await?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                let b = Self::binding_db(db, p, id).await?;
 
-                    if target == "suspended" && b.state == "suspended" {
-                        {
-                            use crate::schema::agent_tables::bindings as q;
-                            let params = (id,);
-                            diesel::update(q::table)
-                                .filter((q::id).eq(&params.0))
-                                .set((q::owner_service_paused.eq(true),))
-                                .execute(db)
-                                .await
-                        }?;
-                        return Self::binding_db(db, p, id).await;
-                    }
-                    if b.state == target
-                        || (target == "leaving" && matches!(b.state.as_str(), "left" | "revoked"))
+                if target == "suspended" && b.state == "suspended" {
                     {
-                        return Ok(b);
-                    }
-
-                    if !matches!(b.state.as_str(), "joining" | "active" | "suspended") {
-                        return Err(Error::Conflict("binding_transition_denied"));
-                    }
-
-                    let updated = {
                         use crate::schema::agent_tables::bindings as q;
-                        let params = (target, id);
+                        let params = (id,);
                         diesel::update(q::table)
-                            .filter((q::id).eq(&params.1))
-                            .set((
-                                q::state.eq(&params.0),
-                                q::owner_service_paused.eq(params.0 == "suspended"),
-                                q::generation.eq(q::generation + 1),
-                            ))
-                            .returning(crate::domain::Binding::as_select())
-                            .get_result(db)
+                            .filter((q::id).eq(&params.0))
+                            .set((q::owner_service_paused.eq(true),))
+                            .execute(db)
                             .await
                     }?;
-                    Self::audit(
-                        db,
-                        p,
-                        if target == "suspended" {
-                            "binding.suspend"
-                        } else {
-                            "binding.leave"
-                        },
-                        id,
-                        now,
-                    )
-                    .await?;
-                    Ok(updated)
-                })
-                .await
+                    return Self::binding_db(db, p, id).await;
+                }
+                if b.state == target
+                    || (target == "leaving" && matches!(b.state.as_str(), "left" | "revoked"))
+                {
+                    return Ok(b);
+                }
+
+                if !matches!(b.state.as_str(), "joining" | "active" | "suspended") {
+                    return Err(Error::Conflict("binding_transition_denied"));
+                }
+
+                let updated = {
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (target, id);
+                    diesel::update(q::table)
+                        .filter((q::id).eq(&params.1))
+                        .set((
+                            q::state.eq(&params.0),
+                            q::owner_service_paused.eq(params.0 == "suspended"),
+                            q::generation.eq(q::generation + 1),
+                        ))
+                        .returning(crate::domain::Binding::as_select())
+                        .get_result(db)
+                        .await
+                }?;
+                Self::audit(
+                    db,
+                    p,
+                    if target == "suspended" {
+                        "binding.suspend"
+                    } else {
+                        "binding.leave"
+                    },
+                    id,
+                    now,
+                )
+                .await?;
+                Ok(updated)
             })
             .await
     }
@@ -2464,58 +2203,55 @@ impl DomainStore {
     ) -> Result<Binding> {
         self.observe_owner_membership(p, id, f, now).await?;
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    let b = Self::binding_db(db, p, id).await?;
-                    let a = Self::agent_db(db, p, &b.agent_id).await?;
-                    if b.state == "active" {
-                        return Ok(b);
-                    }
-                    if b.state != "suspended" || a.state != "active" {
-                        return Err(Error::Conflict("binding_not_resumable"));
-                    }
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                let b = Self::binding_db(db, p, id).await?;
+                let a = Self::agent_db(db, p, &b.agent_id).await?;
+                if b.state == "active" {
+                    return Ok(b);
+                }
+                if b.state != "suspended" || a.state != "active" {
+                    return Err(Error::Conflict("binding_not_resumable"));
+                }
 
-                    let pause = {
-                        use crate::schema::agent_tables::bindings as q;
-                        let params = (id,);
-                        q::table
-                            .select((diesel::dsl::not(
-                                (q::admin_project_paused).or(q::admin_room_paused),
-                            ),))
-                            .filter((q::id).eq(&params.0))
-                            .get_result::<Flag>(db)
-                            .await
-                    }?;
-                    if !pause.matched {
-                        return Err(Error::Unauthorized("administrator_pause_active"));
-                    }
+                let pause = {
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (id,);
+                    q::table
+                        .select((diesel::dsl::not(
+                            (q::admin_project_paused).or(q::admin_room_paused),
+                        ),))
+                        .filter((q::id).eq(&params.0))
+                        .get_result::<Flag>(db)
+                        .await
+                }?;
+                if !pause.matched {
+                    return Err(Error::Unauthorized("administrator_pause_active"));
+                }
 
-                    let (space, ..) = Self::binding_policies(db, &b).await?;
-                    membership(p, f, &b.room_id, &space, now)?;
+                let (space, ..) = Self::binding_policies(db, &b).await?;
+                membership(p, f, &b.room_id, &space, now)?;
 
-                    if !f.puppet_in_room || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid) {
-                        return Err(Error::Conflict("puppet_join_not_confirmed"));
-                    }
+                if !f.puppet_in_room || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid) {
+                    return Err(Error::Conflict("puppet_join_not_confirmed"));
+                }
 
-                    let result = {
-                        use crate::schema::agent_tables::bindings as q;
-                        let params = (id,);
-                        diesel::update(q::table)
-                            .filter((q::id).eq(&params.0))
-                            .set((
-                                q::state.eq("active"),
-                                q::owner_service_paused.eq(false),
-                                q::generation.eq(q::generation + 1),
-                            ))
-                            .returning(crate::domain::Binding::as_select())
-                            .get_result(db)
-                            .await
-                    }?;
-                    Self::audit(db, p, "binding.resume", id, now).await?;
-                    Ok(result)
-                })
-                .await
+                let result = {
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (id,);
+                    diesel::update(q::table)
+                        .filter((q::id).eq(&params.0))
+                        .set((
+                            q::state.eq("active"),
+                            q::owner_service_paused.eq(false),
+                            q::generation.eq(q::generation + 1),
+                        ))
+                        .returning(crate::domain::Binding::as_select())
+                        .get_result(db)
+                        .await
+                }?;
+                Self::audit(db, p, "binding.resume", id, now).await?;
+                Ok(result)
             })
             .await
     }
@@ -2527,9 +2263,7 @@ impl DomainStore {
         room_id: Option<&str>,
         now: i64,
     ) -> Result<serde_json::Value> {
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;
             let project=Self::project_db(db,project_id).await?;
             let mut revision=project.revision;
@@ -2539,7 +2273,6 @@ impl DomainStore {
             let room_paused=match room_id {Some(room)=>sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.scope_pauses WHERE kind='room' AND scope_id=$1 AND paused) AS matched").bind::<Text,_>(room).get_result::<Flag>(db).await?.matched,None=>false};
             Ok(serde_json::json!({"projectId":project_id,"roomId":room_id,"projectPaused":project_paused,"roomPaused":room_paused,"servicePaused":project_paused||room_paused,"revision":revision,"creationPolicy":creation_policy}))
         }).await
-    }).await
     }
     pub async fn suspend_project_bindings(
         &self,
@@ -2548,10 +2281,7 @@ impl DomainStore {
         f: &AdminFacts,
         now: i64,
     ) -> Result<usize> {
-        self.db.with_connection(async |db| {
-
-
-        db.transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async move |db:&mut AsyncPgConnection|{
 
             Self::authorize(db, p, now).await?;
             let project = Self::project_db(db, project_id).await?;
@@ -2567,7 +2297,6 @@ impl DomainStore {
             Ok(count)
         }
 ).await
-    }).await
     }
 
     pub async fn suspend_room_bindings(
@@ -2578,10 +2307,7 @@ impl DomainStore {
         f: &AdminFacts,
         now: i64,
     ) -> Result<usize> {
-        self.db.with_connection(async |db| {
-
-
-        db.transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async move |db:&mut AsyncPgConnection|{
 
             Self::authorize(db, p, now).await?;
             Self::room_db(db, room_id, project_id).await?;
@@ -2610,7 +2336,6 @@ impl DomainStore {
             Ok(count)
         }
 ).await
-    }).await
     }
 
     /// Administrator releases their pause without implicitly restarting local execution.
@@ -2621,10 +2346,7 @@ impl DomainStore {
         f: &AdminFacts,
         now: i64,
     ) -> Result<usize> {
-        self.db.with_connection(async |db| {
-
-
-        db.transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async move |db:&mut AsyncPgConnection|{
 
             Self::authorize(db, p, now).await?;
             let project = Self::project_db(db, project_id).await?;
@@ -2644,7 +2366,6 @@ impl DomainStore {
             Ok(count)
         }
 ).await
-    }).await
     }
 
     pub async fn clear_room_pause(
@@ -2655,10 +2376,7 @@ impl DomainStore {
         f: &AdminFacts,
         now: i64,
     ) -> Result<usize> {
-        self.db.with_connection(async |db| {
-
-
-        db.transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async move |db:&mut AsyncPgConnection|{
 
             Self::authorize(db, p, now).await?;
             Self::room_db(db, room_id, project_id).await?;
@@ -2681,13 +2399,12 @@ impl DomainStore {
             Ok(count)
         }
 ).await
-    }).await
     }
 
     pub async fn retire_agent(&self, p: &Principal, id: &str, now: i64) -> Result<Agent> {
-        self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
+        crate::database::retry_crypto_write(|| {
+            self.db
+                .write_transaction(async |db: &mut AsyncPgConnection| {
                     Self::authorize(db, p, now).await?;
                     let a = Self::agent_db(db, p, id).await?;
                     if matches!(a.state.as_str(), "retiring" | "retired") {
@@ -2725,9 +2442,8 @@ impl DomainStore {
                     Self::audit(db, p, "agent.retire", id, now).await?;
                     Ok(a)
                 })
-                .await
-            })
-            .await
+        })
+        .await
     }
 
     /// Trusted lifecycle worker uses observed departure of the exact puppet; no
@@ -2741,42 +2457,39 @@ impl DomainStore {
         now: i64,
     ) -> Result<Binding> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    let b = Self::binding_db(db, p, id).await?;
-                    let a = Self::agent_db(db, p, &b.agent_id).await?;
-                    fresh(f.observed_at_ms, now)?;
+            .write_transaction(async move |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                let b = Self::binding_db(db, p, id).await?;
+                let a = Self::agent_db(db, p, &b.agent_id).await?;
+                fresh(f.observed_at_ms, now)?;
 
-                    if b.generation != generation
-                        || f.room_id != b.room_id
-                        || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid)
-                        || f.puppet_in_room
-                    {
-                        return Err(Error::Conflict("puppet_departure_not_confirmed"));
-                    }
+                if b.generation != generation
+                    || f.room_id != b.room_id
+                    || f.puppet_mxid.as_deref() != Some(&a.puppet_mxid)
+                    || f.puppet_in_room
+                {
+                    return Err(Error::Conflict("puppet_departure_not_confirmed"));
+                }
 
-                    if b.state == "left" {
-                        return Ok(b);
-                    }
-                    if !matches!(b.state.as_str(), "leaving" | "revoked") {
-                        return Err(Error::Conflict("binding_not_leaving"));
-                    }
+                if b.state == "left" {
+                    return Ok(b);
+                }
+                if !matches!(b.state.as_str(), "leaving" | "revoked") {
+                    return Err(Error::Conflict("binding_not_leaving"));
+                }
 
-                    let b = {
-                        use crate::schema::agent_tables::bindings as q;
-                        let params = (id,);
-                        diesel::update(q::table)
-                            .filter((q::id).eq(&params.0))
-                            .set((q::state.eq("left"), q::owner_service_paused.eq(false)))
-                            .returning(crate::domain::Binding::as_select())
-                            .get_result(db)
-                            .await
-                    }?;
-                    Self::audit(db, p, "binding.left", id, now).await?;
-                    Ok(b)
-                })
-                .await
+                let b = {
+                    use crate::schema::agent_tables::bindings as q;
+                    let params = (id,);
+                    diesel::update(q::table)
+                        .filter((q::id).eq(&params.0))
+                        .set((q::state.eq("left"), q::owner_service_paused.eq(false)))
+                        .returning(crate::domain::Binding::as_select())
+                        .get_result(db)
+                        .await
+                }?;
+                Self::audit(db, p, "binding.left", id, now).await?;
+                Ok(b)
             })
             .await
     }
@@ -2788,10 +2501,7 @@ impl DomainStore {
         generation: i64,
         now: i64,
     ) -> Result<Agent> {
-        self.db.with_connection(async |db| {
-
-
-        db.transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async move |db:&mut AsyncPgConnection|{
 
             Self::authorize(db, p, now).await?;
             let a = Self::agent_db(db, p, id).await?;
@@ -2824,7 +2534,6 @@ impl DomainStore {
             Ok(a)
         }
 ).await
-    }).await
     }
 }
 
@@ -2865,39 +2574,36 @@ impl DomainStore {
     ) -> Result<Project> {
         key(id)?;
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db| {
-                    Self::authorize(db, p, crate::api::now_ms()).await?;
-                    let project = {
-                        use crate::schema::agent_tables::projects as q;
-                        let params = (id,);
-                        q::table
-                            .select(crate::domain::Project::as_select())
-                            .filter((q::id).eq(&params.0))
-                            .for_update()
-                            .get_result::<Project>(db)
-                            .await
-                    }
-                    .map_err(hidden)?;
-                    administer(p, facts, &project.space_id, now)?;
-                    if !facts.is_space {
-                        return Err(Error::Unauthorized("project_administration_required"));
-                    }
-                    // Live membership/permission observations expire while waiting for storage too.
-                    administer(p, facts, &project.space_id, crate::api::now_ms())?;
-                    {
-                        use crate::schema::agent_tables::projects as q;
-                        let params = (archived, id, expected);
-                        diesel::update(q::table)
-                            .filter(((q::id).eq(&params.1)).and((q::revision).eq(&params.2)))
-                            .set((q::archived.eq(&params.0), q::revision.eq(q::revision + 1)))
-                            .returning(crate::domain::Project::as_select())
-                            .get_result(db)
-                            .await
-                    }
-                    .map_err(revision)
-                })
-                .await
+            .write_transaction(async |db| {
+                Self::authorize(db, p, crate::api::now_ms()).await?;
+                let project = {
+                    use crate::schema::agent_tables::projects as q;
+                    let params = (id,);
+                    q::table
+                        .select(crate::domain::Project::as_select())
+                        .filter((q::id).eq(&params.0))
+                        .for_update()
+                        .get_result::<Project>(db)
+                        .await
+                }
+                .map_err(hidden)?;
+                administer(p, facts, &project.space_id, now)?;
+                if !facts.is_space {
+                    return Err(Error::Unauthorized("project_administration_required"));
+                }
+                // Live membership/permission observations expire while waiting for storage too.
+                administer(p, facts, &project.space_id, crate::api::now_ms())?;
+                {
+                    use crate::schema::agent_tables::projects as q;
+                    let params = (archived, id, expected);
+                    diesel::update(q::table)
+                        .filter(((q::id).eq(&params.1)).and((q::revision).eq(&params.2)))
+                        .set((q::archived.eq(&params.0), q::revision.eq(q::revision + 1)))
+                        .returning(crate::domain::Project::as_select())
+                        .get_result(db)
+                        .await
+                }
+                .map_err(revision)
             })
             .await
     }

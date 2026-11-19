@@ -91,7 +91,7 @@ async fn owner_coordination_upgrade_preserves_grant_bytes_and_moves_pending_deci
         db.batch_execute(include_str!("management_shared_context_v2_down.sql")).await.unwrap();
         db.batch_execute(include_str!("management_pool_agents_remove_test.sql")).await.unwrap();
     db.batch_execute(include_str!("management_owner_coordinator_remove_test.sql")).await.unwrap();
-        db.batch_execute("ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=22;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=22)").await.unwrap();
+        db.batch_execute("ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=22;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=22)").await.unwrap();
         sql_query("UPDATE hagency_agent_v1.management_contributions SET coordinator_mxid=$2 WHERE id=$1").bind::<Text,_>(&c.contribution.id).bind::<Text,_>(&former.p.mxid).execute(&mut db).await.unwrap();
         sql_query("UPDATE hagency_agent_v1.management_resource_grants SET receipt=$2,receipt_digest=$3 WHERE id=$1").bind::<Text,_>(&legacy.grant_id).bind::<Text,_>(&raw).bind::<Text,_>(&digest).execute(&mut db).await.unwrap();
         sql_query("UPDATE hagency_agent_v1.management_requests SET approver_mxid=$2 WHERE id=$1").bind::<Text,_>(&a.request_id).bind::<Text,_>(&former.p.mxid).execute(&mut db).await.unwrap();

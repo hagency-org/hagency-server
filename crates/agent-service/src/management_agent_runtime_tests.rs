@@ -9,7 +9,7 @@ struct Revision {
 }
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
     shared::remove_migration(db).await;
-    db.batch_execute("DROP TRIGGER queue_managed_runtime_stop ON hagency_agent_v1.management_shared_assignments;DROP TABLE hagency_agent_v1.management_agent_runtime_observations,hagency_agent_v1.management_agent_runtime_commands;DROP FUNCTION hagency_agent_v1.queue_managed_runtime_stop(),hagency_agent_v1.retain_managed_runtime(),hagency_agent_v1.validate_managed_runtime();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=10;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=10)").await.unwrap();
+    db.batch_execute("DROP TRIGGER queue_managed_runtime_stop ON hagency_agent_v1.management_shared_assignments;DROP TABLE hagency_agent_v1.management_agent_runtime_observations,hagency_agent_v1.management_agent_runtime_commands;DROP FUNCTION hagency_agent_v1.queue_managed_runtime_stop(),hagency_agent_v1.retain_managed_runtime(),hagency_agent_v1.validate_managed_runtime();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=10;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=10)").await.unwrap();
 }
 async fn ready() -> (
     Fixture,

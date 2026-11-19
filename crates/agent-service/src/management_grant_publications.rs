@@ -74,8 +74,7 @@ impl DomainStore {
             return Err(Error::Unauthorized("contribution_executor_required"));
         }
         let receipt_digest = allocation_digest(&receipt)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async|db:&mut AsyncPgConnection| {
             // authorize takes the same transaction advisory lock as publication.
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             if receipt.period_end_ms.min(receipt.delegation_expires_at_ms)>now {return Err(Error::Conflict("grant_publication_not_expired"))}

@@ -70,20 +70,20 @@ impl DomainStore {
     ) -> Result<SharedBudgetAttemptDelivery> {
         key(id)?;
         let scope = {
-            let mut g = self.db.lock().await?;
-            (*g).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                Self::authorize(db, p, 0).await?;
-                let d = load(db, id).await?;
-                let q = queued(db, &d.intake_id).await?;
-                if let Some(v) = saved(db, p, policy, &d, &input, &self.server).await? {
-                    return Ok(Err(v));
-                }
-                enabled_budget(policy)?;
-                let now = clock(db).await?;
-                let (r, _) = fresh(db, p, &d, &q, &input, &self.server, now).await?;
-                Ok(Ok(membership(db, &r).await?))
-            })
-            .await?
+            self.db
+                .write_transaction(async |db: &mut AsyncPgConnection| {
+                    Self::authorize(db, p, 0).await?;
+                    let d = load(db, id).await?;
+                    let q = queued(db, &d.intake_id).await?;
+                    if let Some(v) = saved(db, p, policy, &d, &input, &self.server).await? {
+                        return Ok(Err(v));
+                    }
+                    enabled_budget(policy)?;
+                    let now = clock(db).await?;
+                    let (r, _) = fresh(db, p, &d, &q, &input, &self.server, now).await?;
+                    Ok(Ok(membership(db, &r).await?))
+                })
+                .await?
         };
         let m = match scope {
             Err(v) => return Ok(v),
@@ -98,8 +98,7 @@ impl DomainStore {
                 &m.puppet_mxid,
             )
             .await?;
-        let mut g = self.db.lock().await?;
-        (*g).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,0).await?;let d=load(db,id).await?;let q=queued(db,&d.intake_id).await?;if let Some(v)=saved(db,p,policy,&d,&input,&self.server).await?{return Ok(v)}enabled_budget(policy)?;let now=clock(db).await?;let prepared=fresh(db,p,&d,&q,&input,&self.server,now).await?;facts(&membership(db,&prepared.0).await?,&observed)?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,0).await?;let d=load(db,id).await?;let q=queued(db,&d.intake_id).await?;if let Some(v)=saved(db,p,policy,&d,&input,&self.server).await?{return Ok(v)}enabled_budget(policy)?;let now=clock(db).await?;let prepared=fresh(db,p,&d,&q,&input,&self.server,now).await?;facts(&membership(db,&prepared.0).await?,&observed)?;
  let delivery=budget_attempts::commit_start(db,p,policy,&input.start,prepared,&self.server,now).await?;
  sql_query("INSERT INTO hagency_agent_v1.management_shared_budget_demand_starts(demand_id,start_intent_id,runtime_id,payload,digest,budget_revision) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(id).bind::<Text,_>(&input.start.start_intent_id).bind::<Text,_>(&delivery.command.command_id).bind::<Text,_>(wire(&input)?).bind::<Text,_>(allocation_digest(&input)?).bind::<BigInt,_>(input.start.execution_budget.budget_revision).execute(db).await?;Ok(delivery)}).await
     }
@@ -110,8 +109,7 @@ impl DomainStore {
         input: SharedBudgetDemandBlockInput,
     ) -> Result<SharedBudgetDemandStatus> {
         key(id)?;
-        let mut g = self.db.lock().await?;
-        (*g).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db, p, 0).await?;
             let d = load(db, id).await?;
             let q = queued(db, &d.intake_id).await?;

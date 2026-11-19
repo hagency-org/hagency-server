@@ -63,9 +63,12 @@ async fn meta(db: &mut AsyncPgConnection, b: &SharedRoom) -> Result<RoomMeta> {
 }
 impl DomainStore {
     pub(crate) async fn room_agent(&self, p: &Principal, id: &str, now: i64) -> Result<Agent> {
-        let mut db = self.db.lock().await?;
-        Self::authorize(&mut db, p, now).await?;
-        Self::room_agent_db(&mut db, p, id).await
+        self.db
+            .write_transaction(async |db| {
+                Self::authorize(db, p, now).await?;
+                Self::room_agent_db(db, p, id).await
+            })
+            .await
     }
 
     // A pool Agent has no audience setting: it is admitted room by room, so
@@ -75,13 +78,14 @@ impl DomainStore {
             .bind::<Text,_>(id).bind::<Text,_>(&p.user_id).get_result(db).await.map_err(hidden)
     }
     pub(crate) async fn room_agents(&self, p: &Principal, now: i64) -> Result<Vec<Agent>> {
-        let mut db = self.db.lock().await?;
-        Self::authorize(&mut db, p, now).await?;
-        let agents:Vec<Agent>=sql_query("SELECT a.id,a.owner_user_id,a.puppet_mxid,a.display_name,CASE WHEN a.execution_kind='shared_project' THEN 'active' ELSE a.state END AS state,a.generation,a.owner_direct_room_id,a.execution_device_id,CASE WHEN a.execution_kind='shared_project' THEN 'public' ELSE a.visibility END AS visibility FROM hagency_agent_v1.agents a WHERE a.owner_user_id=$1 AND (a.execution_kind='personal' OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments s JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=s.id JOIN hagency_agent_v1.management_agent_requests r ON r.id=s.request_id WHERE s.agent_id=a.id AND s.state='pending_native' AND m.state='matrix_verified' AND r.pool_contribution_id IS NOT NULL)) ORDER BY a.id")
-            .bind::<Text,_>(&p.user_id).load(&mut *db).await?;
-        // Shared agents intentionally keep their identity suspended for the
-        // personal execution protocol; this picker projects room availability.
-        Ok(agents)
+        self.db.write_transaction(async |db| {
+            Self::authorize(db, p, now).await?;
+            let agents:Vec<Agent>=sql_query("SELECT a.id,a.owner_user_id,a.puppet_mxid,a.display_name,CASE WHEN a.execution_kind='shared_project' THEN 'active' ELSE a.state END AS state,a.generation,a.owner_direct_room_id,a.execution_device_id,CASE WHEN a.execution_kind='shared_project' THEN 'public' ELSE a.visibility END AS visibility FROM hagency_agent_v1.agents a WHERE a.owner_user_id=$1 AND (a.execution_kind='personal' OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments s JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=s.id JOIN hagency_agent_v1.management_agent_requests r ON r.id=s.request_id WHERE s.agent_id=a.id AND s.state='pending_native' AND m.state='matrix_verified' AND r.pool_contribution_id IS NOT NULL)) ORDER BY a.id")
+                .bind::<Text,_>(&p.user_id).load(db).await?;
+            // Shared agents intentionally keep their identity suspended for the
+            // personal execution protocol; this picker projects room availability.
+            Ok(agents)
+        }).await
     }
     pub(crate) async fn shared_room_command(
         db: &mut AsyncPgConnection,
@@ -115,25 +119,29 @@ impl DomainStore {
         key(&input.project_id)?;
         key(&input.idempotency_key)?;
         matrix_id(&input.room_id, '!')?;
-        let (a, project, assignment) = {
-            let mut db = self.db.lock().await?;
-            Self::authorize(&mut db, p, crate::api::now_ms()).await?;
-            let shared=sql_query("SELECT execution_kind='shared_project' AS matched FROM hagency_agent_v1.agents WHERE id=$1 AND owner_user_id=$2").bind::<Text,_>(agent).bind::<Text,_>(&p.user_id).get_result::<Flag>(&mut *db).await.map_err(hidden)?;
-            if !shared.matched {
-                return Ok(None);
-            }
-            #[derive(QueryableByName)]
-            struct Id {
-                #[diesel(sql_type=Text)]
-                id: String,
-            }
-            let assignment=sql_query("SELECT s.id FROM hagency_agent_v1.management_shared_assignments s JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=s.id JOIN hagency_agent_v1.management_agent_requests r ON r.id=s.request_id WHERE s.agent_id=$1 AND s.manager_user_id=$2 AND s.state='pending_native' AND m.state='matrix_verified' AND r.pool_contribution_id IS NOT NULL AND m.room_id<>$3")
-                .bind::<Text,_>(agent).bind::<Text,_>(&p.user_id).bind::<Text,_>(&input.room_id).get_result::<Id>(&mut *db).await.map_err(hidden)?;
-            (
-                Self::room_agent_db(&mut db, p, agent).await?,
-                Self::project_db(&mut db, &input.project_id).await?,
-                assignment.id,
-            )
+        let Some((a, project, assignment)) = ({
+            self.db.write_transaction(async |db| {
+                Self::authorize(db, p, crate::api::now_ms()).await?;
+                let shared=sql_query("SELECT execution_kind='shared_project' AS matched FROM hagency_agent_v1.agents WHERE id=$1 AND owner_user_id=$2").bind::<Text,_>(agent).bind::<Text,_>(&p.user_id).get_result::<Flag>(db).await.map_err(hidden)?;
+                if !shared.matched {
+                    return Ok(None);
+                }
+                #[derive(QueryableByName)]
+                struct Id {
+                    #[diesel(sql_type=Text)]
+                    id: String,
+                }
+                let assignment=sql_query("SELECT s.id FROM hagency_agent_v1.management_shared_assignments s JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=s.id JOIN hagency_agent_v1.management_agent_requests r ON r.id=s.request_id WHERE s.agent_id=$1 AND s.manager_user_id=$2 AND s.state='pending_native' AND m.state='matrix_verified' AND r.pool_contribution_id IS NOT NULL AND m.room_id<>$3")
+                    .bind::<Text,_>(agent).bind::<Text,_>(&p.user_id).bind::<Text,_>(&input.room_id).get_result::<Id>(db).await.map_err(hidden)?;
+
+                Ok(Some((
+                    Self::room_agent_db(db, p, agent).await?,
+                    Self::project_db(db, &input.project_id).await?,
+                    assignment.id,
+                )))
+            }).await?
+        }) else {
+            return Ok(None);
         };
         let f = g
             .room(
@@ -145,9 +153,8 @@ impl DomainStore {
             .await?;
         let digest = hash(&format!("{agent}:{}", encode(input)?));
         let b = {
-            let mut guard = self.db.lock().await?;
-            (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
+            self.db.write_transaction(async|db:&mut AsyncPgConnection|{
+
             Self::authorize(db,p,crate::api::now_ms()).await?;
             Self::room_agent_db(db,p,agent).await?;
             let live=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments s JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=s.id WHERE s.id=$1 AND s.agent_id=$2 AND s.manager_user_id=$3 AND s.state='pending_native' AND m.state='matrix_verified') AS matched").bind::<Text,_>(&assignment).bind::<Text,_>(agent).bind::<Text,_>(&p.user_id).get_result::<Flag>(db).await?;
@@ -169,12 +176,15 @@ impl DomainStore {
         }).await?
         };
         self.reconcile_shared_room(&b.id, g, matrix).await?;
-        let mut db = self.db.lock().await?;
-        Self::authorize(&mut db, p, crate::api::now_ms()).await?;
-        Ok(Some(AgentBinding {
-            agent: a,
-            binding: row(&mut db, &b.id).await?.binding(),
-        }))
+        self.db
+            .write_transaction(async |db| {
+                Self::authorize(db, p, crate::api::now_ms()).await?;
+                Ok(Some(AgentBinding {
+                    agent: a,
+                    binding: row(db, &b.id).await?.binding(),
+                }))
+            })
+            .await
     }
     pub(crate) async fn shared_room_candidates(&self, after: &str) -> Result<Vec<String>> {
         #[derive(QueryableByName)]
@@ -182,16 +192,19 @@ impl DomainStore {
             #[diesel(sql_type=Text)]
             id: String,
         }
-        let mut db = self.db.lock().await?;
-        Ok(sql_query(
+        self.db
+            .transaction(async |db| {
+                Ok(sql_query(
             "SELECT id FROM hagency_agent_v1.shared_agent_rooms WHERE id>$1 ORDER BY id LIMIT 20",
         )
         .bind::<Text, _>(after)
-        .load::<Id>(&mut *db)
+        .load::<Id>(db)
         .await?
         .into_iter()
         .map(|r| r.id)
         .collect())
+            })
+            .await
     }
     pub(crate) async fn reconcile_shared_room(
         &self,
@@ -202,17 +215,17 @@ impl DomainStore {
         // Each call performs at most one remote mutation. The worker retries
         // uncertain outcomes and observes membership before advancing state.
         let (b, a, scope) = {
-            let mut db = self.db.lock().await?;
-            let b = row(&mut db, id).await?;
-            let a:Agent=sql_query("SELECT id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id,visibility FROM hagency_agent_v1.agents WHERE id=$1 AND execution_kind='shared_project'").bind::<Text,_>(&b.agent_id).get_result(&mut *db).await?;
-            let scope = meta(&mut db, &b).await?;
-            (b, a, scope)
+            self.db.transaction(async |db| {
+                let b = row(db, id).await?;
+                let a:Agent=sql_query("SELECT id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id,visibility FROM hagency_agent_v1.agents WHERE id=$1 AND execution_kind='shared_project'").bind::<Text,_>(&b.agent_id).get_result(db).await?;
+                let scope = meta(db, &b).await?;
+                Ok((b, a, scope))
+            }).await?
         };
         // A recovered binding waits for its new assignment's original room
         // verification. Lack of that proof is temporary, not a room removal.
         if b.state == "joining" {
-            let mut db = self.db.lock().await?;
-            let waiting=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id WHERE a.id=$1 AND a.state='pending_native' AND m.state IN ('waiting_native','authorized')) AS matched").bind::<Text,_>(&b.assignment_id).get_result::<Flag>(&mut *db).await?.matched;
+            let waiting = self.db.transaction(async |db| Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id WHERE a.id=$1 AND a.state='pending_native' AND m.state IN ('waiting_native','authorized')) AS matched").bind::<Text,_>(&b.assignment_id).get_result::<Flag>(db).await?.matched)).await?;
             if waiting {
                 return Ok(());
             }
@@ -226,9 +239,8 @@ impl DomainStore {
             g.puppet_invited(&b.room_id, &a.puppet_mxid).await?
         };
         let effect = {
-            let mut guard = self.db.lock().await?;
-            (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
-                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
+            self.db.write_transaction(async|db:&mut AsyncPgConnection|{
+
                 let current=row(db,id).await?;
                 if current.generation!=b.generation||current.state!=b.state{return Ok(None);}
                 let fresh=meta(db,&current).await?;
@@ -260,17 +272,18 @@ impl DomainStore {
         if let Some((generation, effect)) = effect {
             // Fence stale observations immediately before a remote effect.
             let valid = {
-                let mut db = self.db.lock().await?;
-                let current = row(&mut db, id).await?;
-                let valid = current.generation == generation
-                    && if effect == "leave" {
-                        let replacement=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.shared_agent_rooms b JOIN hagency_agent_v1.management_shared_assignments a ON a.id=b.assignment_id WHERE b.agent_id=$1 AND b.room_id=$2 AND b.assignment_id<>$3 AND b.state IN ('joining','active') AND a.state='pending_native') AS matched").bind::<Text,_>(&current.agent_id).bind::<Text,_>(&current.room_id).bind::<Text,_>(&current.assignment_id).get_result::<Flag>(&mut *db).await?.matched;
-                        matches!(current.state.as_str(), "leaving" | "left") && !replacement
-                    } else {
-                        current.state == "joining" && meta(&mut db, &current).await?.live
-                    };
-                super::fresh(f.observed_at_ms, crate::api::now_ms())?;
-                valid
+                self.db.transaction(async |db| {
+                    let current = row(db, id).await?;
+                    let valid = current.generation == generation
+                        && if effect == "leave" {
+                            let replacement=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.shared_agent_rooms b JOIN hagency_agent_v1.management_shared_assignments a ON a.id=b.assignment_id WHERE b.agent_id=$1 AND b.room_id=$2 AND b.assignment_id<>$3 AND b.state IN ('joining','active') AND a.state='pending_native') AS matched").bind::<Text,_>(&current.agent_id).bind::<Text,_>(&current.room_id).bind::<Text,_>(&current.assignment_id).get_result::<Flag>(db).await?.matched;
+                            matches!(current.state.as_str(), "leaving" | "left") && !replacement
+                        } else {
+                            current.state == "joining" && meta(db, &current).await?.live
+                        };
+                    super::fresh(f.observed_at_ms, crate::api::now_ms())?;
+                    Ok(valid)
+                }).await?
             };
             if valid {
                 super::fresh(f.observed_at_ms, crate::api::now_ms())?;

@@ -767,8 +767,7 @@ impl DomainStore {
         if !policy.project_reservations() {
             return Ok(false);
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             // Keep recovery/history discoverable after revocation. This is protocol
             // support, not permission to make a new reservation.
@@ -787,9 +786,8 @@ impl DomainStore {
     ) -> Result<ResourceGrantView> {
         enabled(policy)?;
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let g = grant(db, id).await?;
@@ -824,8 +822,7 @@ impl DomainStore {
         ) {
             return Err(Error::Invalid("invalid_management_operation"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let rows=sql_query("SELECT operation,digest,result FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND device_id=$2 AND command_id=$3 ORDER BY device_generation LIMIT 2")
                 .bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<Text,_>(id).load::<Receipt>(db).await?;
@@ -865,8 +862,7 @@ impl DomainStore {
         }
         let payload_digest = digest(id, &input)?;
         let receipt_digest = allocation_digest(&input.receipt)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let (owner,c)=contribution(db,id).await?;
             if owner!=p.user_id || executor!=c.executor_device_id || generation!=c.executor_generation{return Err(Error::Unauthorized("contribution_executor_required"));}
@@ -949,8 +945,7 @@ impl DomainStore {
         }
         let payload_digest = digest(id, &input)?;
         let receipt_digest = allocation_digest(&input.receipt)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let pred=sql_query("SELECT * FROM hagency_agent_v1.management_resource_grants WHERE id=$1").bind::<Text,_>(id).get_result::<GrantRow>(db).await.optional()?
                 .filter(|g| g.owner_user_id==p.user_id).ok_or(Error::NotFound("resource_grant_not_found"))?;
@@ -1038,8 +1033,7 @@ impl DomainStore {
     ) -> Result<Option<ProjectAllocation>> {
         enabled(policy)?;
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             // Validate project visibility even when no grant/allocation exists.
             super::projects::project(db,id,p,policy,now).await?;
@@ -1063,8 +1057,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload_digest = digest(request_id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             if let Some(saved)=replay::<ProjectAllocation>(db,p,&input.command_id,"allocation.decide",&payload_digest).await? {return view(db,&saved.id,p,policy,now).await;}
             let a=sql_query("SELECT * FROM hagency_agent_v1.management_allocations WHERE request_id=$1").bind::<Text,_>(request_id).get_result::<AllocationRow>(db).await.map_err(hidden)?;
@@ -1100,9 +1093,8 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let a = allocation(db, id).await?;
@@ -1160,9 +1152,8 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let g = grant(db, id).await?;
@@ -1266,8 +1257,7 @@ impl DomainStore {
         if let Some(after) = &input.after {
             key(after)?;
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let w=sql_query("SELECT w.* FROM hagency_agent_v1.management_executor_commands w JOIN hagency_agent_v1.management_allocations a ON a.id=w.allocation_id WHERE w.owner_user_id=$1 AND w.executor_device_id=$2 AND w.state<>'recorded' AND w.lease_until_ms<=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_grant(a.grant_id) ORDER BY (w.id<=$4),w.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(now).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<WorkRow>(db).await.optional()?;
             match w {Some(w)=>Ok(Some(delivery(db,p,&w,now,false).await?)),None=>Ok(None)}
@@ -1286,9 +1276,8 @@ impl DomainStore {
         if !valid_digest(&input.command_digest) {
             return Err(Error::Invalid("invalid_command_digest"));
         }
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let w = work(db, id).await?;
@@ -1318,8 +1307,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_executor_result"));
         }
         let result_digest = allocation_digest(&input.receipt)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;let w=work(db,id).await?;
             if w.owner_user_id!=p.user_id || w.executor_device_id!=executor{return Err(Error::NotFound("executor_command_not_found"));}
             if input.command_digest!=w.digest{return Err(Error::Conflict("executor_command_conflict"));}

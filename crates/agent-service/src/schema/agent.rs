@@ -117,6 +117,15 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
+        hagency_agent_v1.crypto_io_leases (resource, resource_id) {
+            resource -> Text,
+            resource_id -> Text,
+            nonce -> Text,
+            until_ms -> Int8,
+        }
+    }
+
+    diesel::table! {
         hagency_agent_v1.deployment (singleton) {
             singleton -> Bool,
             version -> Int4,
@@ -284,6 +293,14 @@ pub mod hagency_agent_v1 {
             digest -> Text,
             body -> Jsonb,
             received_at_ms -> Int8,
+        }
+    }
+
+    diesel::table! {
+        hagency_agent_v1.inbox_capacity (singleton) {
+            singleton -> Bool,
+            records -> Int8,
+            bytes -> Int8,
         }
     }
 
@@ -1699,6 +1716,7 @@ pub mod hagency_agent_v1 {
         configuration_observations,
         configuration_presence,
         configuration_requests,
+        crypto_io_leases,
         deployment,
         devices,
         domain_audit,
@@ -1714,6 +1732,7 @@ pub mod hagency_agent_v1 {
         file_delivery_denials,
         file_outbox,
         inbound_transactions,
+        inbox_capacity,
         management_agent_budget_cancellations,
         management_agent_budget_commands,
         management_agent_budget_issuance,

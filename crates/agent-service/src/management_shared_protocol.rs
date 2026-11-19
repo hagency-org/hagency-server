@@ -101,8 +101,7 @@ impl DomainStore {
         p: &Principal,
         qualified: bool,
     ) -> Result<()> {
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db,p,0).await?;
             let device = p.device_id.as_deref().ok_or(Error::Unauthorized("device_required"))?;
             let generation = p.device_generation.ok_or(Error::Unauthorized("device_required"))?;

@@ -3,7 +3,7 @@ mod budget_usage;
 use super::*;
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
     attempts::remove_migration(db).await;
-    db.batch_execute("DROP TRIGGER fence_shared_work ON hagency_agent_v1.management_shared_runtimes;DROP TABLE hagency_agent_v1.management_shared_replies,hagency_agent_v1.management_shared_work_receipts,hagency_agent_v1.management_shared_work;DROP FUNCTION hagency_agent_v1.fence_shared_work(),hagency_agent_v1.retain_shared_work(),hagency_agent_v1.validate_shared_work();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=12;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=12)").await.unwrap();
+    db.batch_execute("DROP TRIGGER fence_shared_work ON hagency_agent_v1.management_shared_runtimes;DROP TABLE hagency_agent_v1.management_shared_replies,hagency_agent_v1.management_shared_work_receipts,hagency_agent_v1.management_shared_work;DROP FUNCTION hagency_agent_v1.fence_shared_work(),hagency_agent_v1.retain_shared_work(),hagency_agent_v1.validate_shared_work();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=12;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=12)").await.unwrap();
 }
 use crate::{management_shared_work_types::*, transport::RoutedEvent};
 use std::collections::BTreeSet;

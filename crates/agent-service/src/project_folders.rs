@@ -107,17 +107,14 @@ impl DomainStore {
     ) -> Result<Option<ProjectFolder>> {
         matrix_id(room, '!').map_err(|_| Error::Invalid("invalid_room_id"))?;
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    Ok(sql_query(ROOM_FOLDER)
-                        .bind::<Text, _>(room)
-                        .bind::<Text, _>(&p.user_id)
-                        .get_result::<ProjectFolder>(db)
-                        .await
-                        .optional()?)
-                })
-                .await
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                Ok(sql_query(ROOM_FOLDER)
+                    .bind::<Text, _>(room)
+                    .bind::<Text, _>(&p.user_id)
+                    .get_result::<ProjectFolder>(db)
+                    .await
+                    .optional()?)
             })
             .await
     }

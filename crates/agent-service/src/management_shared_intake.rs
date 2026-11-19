@@ -215,9 +215,8 @@ impl DomainStore {
         id: &str,
     ) -> Result<crate::management_shared_demand_types::SharedRunControlReadiness> {
         key(id)?;
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, 0).await?;
                 let w = assignment(db, id).await?;
                 let (run, stop, _) = rights(db, p, &w).await?;
@@ -253,9 +252,8 @@ impl DomainStore {
     }
     pub async fn shared_run_control(&self, p: &Principal, id: &str) -> Result<SharedRunControl> {
         key(id)?;
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, 0).await?;
                 let w = assignment(db, id).await?;
                 rights(db, p, &w).await?;
@@ -276,9 +274,9 @@ impl DomainStore {
         let digest = allocation_digest(&input)?;
         let observed = if input.mode == "running" {
             let m = {
-                let mut guard = self.db.lock().await?;
-                let prepared = (*guard)
-                    .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+                let prepared = self
+                    .db
+                    .write_transaction(async |db: &mut AsyncPgConnection| {
                         Self::authorize(db, p, 0).await?;
                         let w = assignment(db, id).await?;
                         let (start, ..) = rights(db, p, &w).await?;
@@ -319,8 +317,7 @@ impl DomainStore {
         } else {
             None
         };
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{
    Self::authorize(db,p,0).await?;let w=assignment(db,id).await?;let (start,stop,origin)=rights(db,p,&w).await?;
    if let Some(saved)=replay(db,p,id,&input,&digest).await?{return Ok(saved);}
    if input.mode=="running"&&!start||input.mode=="paused"&&!stop{return Err(Error::Unauthorized("shared_run_control_forbidden"));}
@@ -343,8 +340,7 @@ impl DomainStore {
         if let Some(after) = &q.after {
             key(after)?;
         }
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,0).await?;let w=assignment(db,id).await?;rights(db,p,&w).await?;let now=clock(db).await?;expire(db,id,now).await?;let mut rows=sql_query("SELECT * FROM hagency_agent_v1.management_shared_intake WHERE assignment_id=$1 AND ($2::text IS NULL OR id>$2) ORDER BY id LIMIT 17").bind::<Text,_>(id).bind::<Nullable<Text>,_>(q.after.as_deref()).load::<Intake>(db).await?;let more=rows.len()>16;rows.truncate(16);let next_after=more.then(||rows.last().unwrap().id.clone());let reason=worker_protocol::assignment_reason(db,id,now).await?;Ok(SharedIntakePage{items:rows.into_iter().map(|row| {let mut item=row.view();if item.state=="pending" && reason.is_some(){item.state="blocked".into();item.reason=reason.clone();}item}).collect(),next_after})}).await
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,0).await?;let w=assignment(db,id).await?;rights(db,p,&w).await?;let now=clock(db).await?;expire(db,id,now).await?;let mut rows=sql_query("SELECT * FROM hagency_agent_v1.management_shared_intake WHERE assignment_id=$1 AND ($2::text IS NULL OR id>$2) ORDER BY id LIMIT 17").bind::<Text,_>(id).bind::<Nullable<Text>,_>(q.after.as_deref()).load::<Intake>(db).await?;let more=rows.len()>16;rows.truncate(16);let next_after=more.then(||rows.last().unwrap().id.clone());let reason=worker_protocol::assignment_reason(db,id,now).await?;Ok(SharedIntakePage{items:rows.into_iter().map(|row| {let mut item=row.view();if item.state=="pending" && reason.is_some(){item.state="blocked".into();item.reason=reason.clone();}item}).collect(),next_after})}).await
     }
     pub(crate) async fn retain_shared_event(
         &self,
@@ -390,17 +386,18 @@ impl DomainStore {
         let mut retry = false;
         loop {
             let ids = {
-                let mut db = self.db.lock().await?;
-                let conflict=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake WHERE event_id=$1 AND event_digest<>$2 AND ($3::text IS NULL OR assignment_id=$3)) AS matched").bind::<Text,_>(&event.event_id).bind::<Text,_>(&digest).bind::<Nullable<Text>,_>(target).get_result::<Flag>(&mut *db).await?.matched;
-                if conflict {
-                    return Err(Error::Conflict("shared_event_changed"));
-                }
-                let mentions = event
-                    .mentioned_mxids
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>();
-                sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.shared_room_memberships m ON m.assignment_id=a.id JOIN hagency_agent_v1.management_agent_requests r ON r.id=a.request_id JOIN hagency_agent_v1.users u ON u.id=a.manager_user_id JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.id>$5 AND ($6::text IS NULL OR a.id=$6) AND m.room_id=$1 AND (m.puppet_mxid=ANY($3) OR (r.pool_contribution_id IS NOT NULL AND m.space_id='' AND u.mxid=$2)) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.event_id=$4) ORDER BY a.id LIMIT 32").bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.sender_mxid).bind::<Array<Text>,_>(mentions).bind::<Text,_>(&event.event_id).bind::<Text,_>(&after).bind::<Nullable<Text>,_>(target).load::<Id>(&mut *db).await?
+                self.db.transaction(async |db| {
+                    let conflict=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake WHERE event_id=$1 AND event_digest<>$2 AND ($3::text IS NULL OR assignment_id=$3)) AS matched").bind::<Text,_>(&event.event_id).bind::<Text,_>(&digest).bind::<Nullable<Text>,_>(target).get_result::<Flag>(db).await?.matched;
+                    if conflict {
+                        return Err(Error::Conflict("shared_event_changed"));
+                    }
+                    let mentions = event
+                        .mentioned_mxids
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>();
+                    Ok(sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.shared_room_memberships m ON m.assignment_id=a.id JOIN hagency_agent_v1.management_agent_requests r ON r.id=a.request_id JOIN hagency_agent_v1.users u ON u.id=a.manager_user_id JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.id>$5 AND ($6::text IS NULL OR a.id=$6) AND m.room_id=$1 AND (m.puppet_mxid=ANY($3) OR (r.pool_contribution_id IS NOT NULL AND m.space_id='' AND u.mxid=$2)) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.event_id=$4) ORDER BY a.id LIMIT 32").bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.sender_mxid).bind::<Array<Text>,_>(mentions).bind::<Text,_>(&event.event_id).bind::<Text,_>(&after).bind::<Nullable<Text>,_>(target).load::<Id>(db).await?)
+                }).await?
             };
             let more = ids.len() == 32;
             if let Some(last) = ids.last() {
@@ -408,14 +405,17 @@ impl DomainStore {
             }
             for id in &ids {
                 let (m, expired_before_observation, control_revision) = {
-                    let mut db = self.db.lock().await?;
-                    let expired = received <= clock(&mut db).await? - TTL;
-                    let revision = control(&mut db, &id.id).await?.revision;
-                    (
-                        member_for(&mut db, &id.id, &event.room_id).await,
-                        expired,
-                        revision,
-                    )
+                    self.db
+                        .transaction(async |db| {
+                            let expired = received <= clock(db).await? - TTL;
+                            let revision = control(db, &id.id).await?.revision;
+                            Ok((
+                                member_for(db, &id.id, &event.room_id).await,
+                                expired,
+                                revision,
+                            ))
+                        })
+                        .await?
                 };
                 // An already-expired original event needs no remote room proof.
                 // Persist expiry even during an extended Matrix outage.
@@ -443,9 +443,8 @@ impl DomainStore {
                         Err(e) => return Err(e),
                     }
                 };
-                let mut guard = self.db.lock().await?;
-                let result=(*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
-    db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;let now=clock(db).await?;if received>now{return Err(Error::Unavailable("shared_intake_clock_changed"));}
+                let result = self.db.write_transaction(async|db:&mut AsyncPgConnection|{
+    let now=clock(db).await?;if received>now{return Err(Error::Unavailable("shared_intake_clock_changed"));}
     if expired_before_observation && received>now-TTL { return Err(Error::Unavailable("shared_intake_clock_changed")); }
     if sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake WHERE event_id=$1 AND event_digest<>$2 AND ($3::text IS NULL OR assignment_id=$3)) AS matched").bind::<Text,_>(&event.event_id).bind::<Text,_>(&digest).bind::<Nullable<Text>,_>(target).get_result::<Flag>(db).await?.matched { return Err(Error::Conflict("shared_event_changed")); }
     let old=sql_query("SELECT * FROM hagency_agent_v1.management_shared_intake WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&id.id).bind::<Text,_>(&event.event_id).get_result::<Intake>(db).await.optional()?;

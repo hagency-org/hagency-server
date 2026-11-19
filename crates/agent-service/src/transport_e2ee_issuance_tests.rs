@@ -28,10 +28,10 @@ async fn fixture() -> Fixture {
     fixture_at(url.as_str()).await
 }
 
-struct LoginServer {
-    matrix: crate::matrix_client::MatrixClient,
+pub(crate) struct LoginServer {
+    pub(crate) matrix: crate::matrix_client::MatrixClient,
     started: Arc<Notify>,
-    resume: Arc<Notify>,
+    pub(crate) resume: Arc<Notify>,
     fail_logout: Arc<AtomicBool>,
     hold_first_logout: Arc<AtomicBool>,
     logout_started: Arc<Notify>,
@@ -48,7 +48,7 @@ impl Drop for LoginServer {
     }
 }
 impl LoginServer {
-    async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let started = Arc::new(Notify::new());
@@ -167,7 +167,7 @@ impl LoginServer {
             task,
         }
     }
-    async fn wait_login(&self) {
+    pub(crate) async fn wait_login(&self) {
         timeout(Duration::from_secs(3), self.started.notified())
             .await
             .expect("login must start");

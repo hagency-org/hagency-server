@@ -1659,12 +1659,16 @@ async fn split_limit_sql_constraint_and_recovery_migration_are_idempotent() {
     let (f, _, g, _, _, _) = recurring_with_limits(RenewalMode::Owner, Some(1000)).await;
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     for _ in 0..2 {
-        db.batch_execute(include_str!("management_pool_limits_validation.sql"))
-            .await
-            .unwrap();
-        db.batch_execute(include_str!("management_agent_periods_recovery.sql"))
-            .await
-            .unwrap();
+        db.batch_execute(include_str!(
+            "../migrations/domain/2026-11-19-000140_management_pool_limits_validation/up.sql"
+        ))
+        .await
+        .unwrap();
+        db.batch_execute(include_str!(
+            "../migrations/domain/2026-11-19-000141_management_agent_periods_recovery/up.sql"
+        ))
+        .await
+        .unwrap();
     }
     let mut receipt = g.receipt.clone();
     for limit in [0, receipt.allocated_tokens + 1] {

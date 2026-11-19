@@ -340,9 +340,8 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let r = row(db, id).await?;
@@ -428,8 +427,7 @@ impl DomainStore {
         key(&input.command_id)?;
         device(p)?;
         let payload = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let old=row(db,id).await?;
             if old.administrator_user_id!=p.user_id {return Err(Error::Unauthorized("pool_resource_owner_required"))}
@@ -464,18 +462,11 @@ impl DomainStore {
 #[cfg(test)]
 impl DomainStore {
     pub(crate) async fn reset_management_test_clock(&self) -> Result<()> {
-        let mut db = self.db.lock().await?;
-        sql_query("SELECT set_config('hagency.test_clock_ms','',false)")
-            .execute(&mut *db)
-            .await?;
+        self.db.set_test_clock(0);
         Ok(())
     }
     pub(crate) async fn set_management_test_clock(&self, now: i64) -> Result<()> {
-        let mut db = self.db.lock().await?;
-        sql_query("SELECT set_config('hagency.test_clock_ms',$1,false)")
-            .bind::<Text, _>(now.to_string())
-            .execute(&mut *db)
-            .await?;
+        self.db.set_test_clock(now);
         Ok(())
     }
 }

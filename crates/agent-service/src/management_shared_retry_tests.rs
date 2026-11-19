@@ -574,7 +574,9 @@ async fn shared_demand_validator_owner_refuses_to_undo_a_later_change() {
         "startup refuses to silently undo it"
     );
     // Back to this file's own body: startup accepts and keeps it.
-    let sql = include_str!("management_shared_demand_retry_schema.sql");
+    let sql = include_str!(
+        "../migrations/domain/2026-11-19-000146_management_shared_demand_retry/up.sql"
+    );
     let own = &sql[sql
         .find("CREATE OR REPLACE FUNCTION hagency_agent_v1.validate_shared_demand()")
         .unwrap()..];

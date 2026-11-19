@@ -168,7 +168,7 @@ async fn postgres_v6_attachment_migration_retains_metadata_and_discards_only_rem
                 .bind::<Binary,_>(bytes.as_slice()).bind::<Text,_>(&alice.mxid).bind::<Nullable<BigInt>,_>(removed)
                 .execute(db).await?;
         }
-        db.batch_execute(include_str!("schema_v7.sql")).await?;
+        db.batch_execute(include_str!("../../migrations/board/2026-11-19-000207_schema_v7/up.sql")).await?;
         let rows = sql_query("SELECT jsonb_build_object('id',id,'size',byte_size,'digest',content_sha256,'bytes',octet_length(data),'removed',removed_at) AS value FROM hagency_project_v1.attachments ORDER BY id")
             .load::<Row>(db).await?;
         assert_eq!(rows.len(), 2);

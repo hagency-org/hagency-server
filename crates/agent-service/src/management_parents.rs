@@ -347,9 +347,8 @@ impl DomainStore {
     ) -> Result<ParentSettlement> {
         enabled(policy)?;
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 view(db, id, p, policy, now).await
@@ -371,9 +370,8 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let g = grant(db, id).await?;
@@ -425,8 +423,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;let g=grant(db,id).await?;
             if !reducing_actor(p,policy,&g){return Err(Error::Unauthorized("parent_close_forbidden"));}
             if let Some(saved)=replay::<ParentSettlement>(db,p,&input.command_id,"parent.settle",&digest).await?{return view(db,&saved.grant_id,p,policy,now).await;}
@@ -453,8 +450,7 @@ impl DomainStore {
         if !matches!(input.operation.as_str(), "parent.close" | "parent.settle") {
             return Err(Error::Invalid("invalid_management_operation"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let rows=sql_query("SELECT operation,digest,result FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND device_id=$2 AND command_id=$3 ORDER BY device_generation LIMIT 2").bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<Text,_>(id).load::<Receipt>(db).await?;
             if rows.len()>1{return Err(Error::Conflict("management_command_conflict"));}
@@ -499,8 +495,7 @@ impl DomainStore {
         if let Some(id) = &input.after {
             key(id)?;
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let w=sql_query("SELECT * FROM hagency_agent_v1.management_parent_commands WHERE owner_user_id=$1 AND executor_device_id=$2 AND state<>'recorded' AND lease_until_ms<=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_grant(grant_id) ORDER BY (id<=$4),id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(now).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<Work>(db).await.optional()?;
             match w{Some(w)=>Ok(Some(deliver(db,p,&w,now,false).await?)),None=>Ok(None)}
@@ -519,9 +514,8 @@ impl DomainStore {
         if !valid_digest(&input.command_digest) {
             return Err(Error::Invalid("invalid_command_digest"));
         }
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let w = work(db, id).await?;
@@ -547,8 +541,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_parent_result"));
         }
         let result_digest = allocation_digest(&input.receipt)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;let w=work(db,id).await?;executor(&w,p)?;
             if input.command_digest!=w.digest{return Err(Error::Conflict("executor_command_conflict"));}
             if let Some(previous)=&w.receipt_digest {
