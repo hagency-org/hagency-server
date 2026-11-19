@@ -6,12 +6,13 @@ pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
     // ADR-193 amendment retry tables depend on the tables below.
     db.batch_execute("DROP TABLE IF EXISTS hagency_agent_v1.management_shared_demand_retry_starts,hagency_agent_v1.management_shared_demand_retries;DROP FUNCTION IF EXISTS hagency_agent_v1.validate_shared_demand_retry()").await.unwrap();
     context_tests::remove_migration(db).await;
-    db.batch_execute("DROP TABLE hagency_agent_v1.management_shared_demand_bindings,hagency_agent_v1.management_shared_demand_starts,hagency_agent_v1.management_shared_demand_blocks,hagency_agent_v1.management_shared_demands;DROP FUNCTION hagency_agent_v1.validate_shared_demand(),hagency_agent_v1.retain_shared_demand();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=16;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=16)").await.unwrap();
+    db.batch_execute("DROP TABLE hagency_agent_v1.management_shared_demand_bindings,hagency_agent_v1.management_shared_demand_starts,hagency_agent_v1.management_shared_demand_blocks,hagency_agent_v1.management_shared_demands;DROP FUNCTION hagency_agent_v1.validate_shared_demand(),hagency_agent_v1.retain_shared_demand();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=16;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=16)").await.unwrap();
     // This disposable test DB can contain newer rows from earlier test cases.
     // Remove only schema17-only intake states before restoring schema16 checks.
     db.batch_execute("ALTER TABLE hagency_agent_v1.management_shared_intake DISABLE TRIGGER USER;DELETE FROM hagency_agent_v1.management_shared_intake WHERE state='bound' OR reason IN('head_changed','budget_blocked','usage_unrepresentable');ALTER TABLE hagency_agent_v1.management_shared_intake ENABLE TRIGGER USER").await.unwrap();
     // Reinstall the exact previous function/constraints for a real16 source.
-    let sql = include_str!("management_shared_intake_schema.sql");
+    let sql =
+        include_str!("../migrations/domain/2026-11-19-000119_management_shared_intake/up.sql");
     let f = sql
         .split_once("CREATE FUNCTION hagency_agent_v1.retain_shared_intake()")
         .unwrap()

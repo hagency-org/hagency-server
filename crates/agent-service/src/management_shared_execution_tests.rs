@@ -1752,7 +1752,7 @@ async fn pool_schema_upgrade_preserves_existing_capacity_and_rolls_back_atomical
     db.batch_execute(include_str!("management_pool_agents_remove_test.sql"))
         .await
         .unwrap();
-    db.batch_execute("ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=23;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=23);CREATE INDEX pool_agent_room_unique ON hagency_agent_v1.management_requests(id)").await.unwrap();
+    db.batch_execute("ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=23;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=23);CREATE INDEX pool_agent_room_unique ON hagency_agent_v1.management_requests(id)").await.unwrap();
     assert!(
         DomainStore::open(&f.url, "example.test", "_hagency_test_")
             .await
@@ -1805,7 +1805,7 @@ pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
     db.batch_execute("DROP TABLE IF EXISTS hagency_agent_v1.management_shared_demand_retry_starts,hagency_agent_v1.management_shared_demand_retries;DROP FUNCTION IF EXISTS hagency_agent_v1.validate_shared_demand_retry()").await.unwrap();
     work::remove_migration(db).await;
 
-    db.batch_execute("DROP TRIGGER fence_shared_runtime ON hagency_agent_v1.management_shared_assignments;DROP TRIGGER exclude_shared_runtime_v1 ON hagency_agent_v1.management_agent_runtime_commands;DROP TABLE hagency_agent_v1.management_shared_activity_renewals,hagency_agent_v1.management_shared_process_receipts,hagency_agent_v1.management_shared_runtimes;DROP FUNCTION hagency_agent_v1.fence_shared_runtime(),hagency_agent_v1.exclude_shared_runtime_v1(),hagency_agent_v1.retain_shared_runtime(),hagency_agent_v1.validate_shared_runtime();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=11;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=11)").await.unwrap();
+    db.batch_execute("DROP TRIGGER fence_shared_runtime ON hagency_agent_v1.management_shared_assignments;DROP TRIGGER exclude_shared_runtime_v1 ON hagency_agent_v1.management_agent_runtime_commands;DROP TABLE hagency_agent_v1.management_shared_activity_renewals,hagency_agent_v1.management_shared_process_receipts,hagency_agent_v1.management_shared_runtimes;DROP FUNCTION hagency_agent_v1.fence_shared_runtime(),hagency_agent_v1.exclude_shared_runtime_v1(),hagency_agent_v1.retain_shared_runtime(),hagency_agent_v1.validate_shared_runtime();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=11;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=11)").await.unwrap();
 }
 async fn prepared() -> (
     Fixture,

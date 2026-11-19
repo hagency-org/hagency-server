@@ -151,62 +151,10 @@ impl Store {
     }
 
     pub async fn open(url: &str, server: &str, issuer: &str) -> Result<Self> {
-        let mut db = AsyncPgConnection::establish(url)
+        let db = AsyncPgConnection::establish(url)
             .await
             .map_err(|_| Error::Unavailable("database_unavailable"))?;
-        db.transaction::<_, Error, _>(async move |db: &mut AsyncPgConnection| {
-            // Serialize initialization across processes; never rewrite deployment identity.
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328902)")
-                .await?;
-            #[derive(diesel::Queryable, diesel::QueryableByName)]
-            struct Exists {
-                #[diesel(sql_type=Bool)]
-                initialized: bool,
-            }
-            let exists = sql_query(
-                "SELECT to_regclass('hagency_agent_v1.deployment') IS NOT NULL AS initialized",
-            )
-            .get_result::<Exists>(db)
-            .await?;
-            if !exists.initialized {
-                db.batch_execute(include_str!("schema.sql")).await?;
-            }
-            {
-                use crate::schema::agent_tables::deployment as q;
-                let params = (server, issuer);
-                diesel::insert_into(q::table)
-                    .values((
-                        q::singleton.eq(true),
-                        q::version.eq(1),
-                        q::server_name.eq(&params.0),
-                        q::issuer.eq(&params.1),
-                    ))
-                    .on_conflict((q::singleton,))
-                    .do_nothing()
-                    .execute(db)
-                    .await
-            }?;
-            #[derive(diesel::Queryable, diesel::QueryableByName)]
-            struct Match {
-                #[diesel(sql_type=Bool)]
-                matched: bool,
-            }
-            let matched = {
-                use crate::schema::agent_tables::deployment as q;
-                let params = (server, issuer);
-                q::table
-                    .select((((((q::version).eq(1)).and((q::server_name).eq(&params.0)))
-                        .and((q::issuer).eq(&params.1))),))
-                    .filter(q::singleton)
-                    .get_result::<Match>(db)
-                    .await
-            }?;
-            if !matched.matched {
-                return Err(Error::Conflict("deployment_identity_mismatch"));
-            }
-            Ok(())
-        })
-        .await?;
+        crate::migrations::identity(db, server, issuer).await?;
         Ok(Self {
             db: Arc::new(crate::database::Database::business(url)?),
             issuer: issuer.into(),

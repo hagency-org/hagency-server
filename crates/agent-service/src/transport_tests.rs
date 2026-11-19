@@ -2935,8 +2935,9 @@ async fn delivery_feedback_uses_reply_age(url: &str) {
             .await
             .unwrap();
         // Exercise an upgrade of the already initialized transport too.
-        let old = include_str!("request_notice_needed.sql")
-            .replace("AND r.created_at_ms<=", "AND e.created_at_ms<=");
+        let old =
+            include_str!("../migrations/transport/2026-11-19-000412_request_notice_needed/up.sql")
+                .replace("AND r.created_at_ms<=", "AND e.created_at_ms<=");
         db.batch_execute(&old).await.unwrap();
     }
     TransportStore::open(url, Limits::default()).await.unwrap();

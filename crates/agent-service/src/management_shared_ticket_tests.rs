@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
     intake_tests::remove_migration(db).await;
-    db.batch_execute("DROP TABLE hagency_agent_v1.management_shared_result_tickets;DROP FUNCTION hagency_agent_v1.retain_shared_result_ticket();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=14;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=14)").await.unwrap();
+    db.batch_execute("DROP TABLE hagency_agent_v1.management_shared_result_tickets;DROP FUNCTION hagency_agent_v1.retain_shared_result_ticket();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=14;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=14)").await.unwrap();
 }
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]

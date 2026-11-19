@@ -837,7 +837,8 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         .unwrap();
     // Recreate the deployed v25 validator around a retained v2 block. Upgrade
     // through DomainStore::open, including rollback and a second idempotent open.
-    let legacy_schema = include_str!("management_shared_budget_schema.sql");
+    let legacy_schema =
+        include_str!("../migrations/domain/2026-11-19-000123_management_shared_budget/up.sql");
     let legacy_validator = legacy_schema
         .split("CREATE FUNCTION hagency_agent_v1.validate_shared_budget_demand()")
         .nth(1)
@@ -858,7 +859,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
     db.batch_execute(include_str!("management_agent_periods_down.sql"))
         .await
         .unwrap();
-    db.batch_execute("DROP FUNCTION hagency_agent_v1.canonical_shared_block_json(jsonb); ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check; UPDATE hagency_agent_v1.management_deployment SET version=25; ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=25)").await.unwrap();
+    db.batch_execute("DROP FUNCTION hagency_agent_v1.canonical_shared_block_json(jsonb); ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check; DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=25; ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=25)").await.unwrap();
     db.batch_execute("CREATE FUNCTION hagency_agent_v1.canonical_shared_block_json(jsonb) RETURNS text LANGUAGE sql AS 'SELECT ''migration_collision''' ").await.unwrap();
     assert!(
         DomainStore::open(&f.url, "example.test", "_hagency_test_")

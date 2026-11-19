@@ -1013,11 +1013,11 @@ async fn v5_setup_migration_is_atomic_and_preserves_grants_parent_receipts_and_p
         let policy = ManagementPolicy::new(owner.p.mxid.clone(), "example.test").unwrap().with_project_reservations(true).with_parent_settlement(true);
         let mut db = AsyncPgConnection::establish(url.as_str()).await.unwrap();
         for schema in [
-            include_str!("management_schema.sql"),
-            include_str!("management_verification_schema.sql"),
-            include_str!("management_projects_schema.sql"),
-            include_str!("management_allocations_schema.sql"),
-            include_str!("management_parents_schema.sql"),
+            include_str!("../migrations/domain/2026-11-19-000104_management/up.sql"),
+            include_str!("../migrations/domain/2026-11-19-000105_management_verification/up.sql"),
+            include_str!("../migrations/domain/2026-11-19-000106_management_projects/up.sql"),
+            include_str!("../migrations/domain/2026-11-19-000107_management_allocations/up.sql"),
+            include_str!("../migrations/domain/2026-11-19-000108_management_parents/up.sql"),
         ] {
             db.batch_execute(schema).await.unwrap();
         }
@@ -1040,7 +1040,7 @@ async fn v5_setup_migration_is_atomic_and_preserves_grants_parent_receipts_and_p
                 .bind::<Text,_>(&native.grant_id).bind::<Text,_>(&native.contribution_id).bind::<Text,_>(&owner.p.user_id).bind::<Text,_>(&native.executor_device_id).bind::<BigInt,_>(native.executor_generation).bind::<Text,_>(&bytes).bind::<Text,_>(&digest).bind::<Text,_>(&native.period_key).bind::<BigInt,_>(native.period_end_ms).bind::<BigInt,_>(now).execute(db).await?;
             Ok(())
         }).await.unwrap();
-        db.batch_execute(include_str!("domain_schema.sql")).await.unwrap();
+        db.batch_execute(include_str!("../migrations/domain/2026-11-19-000101_domain/up.sql")).await.unwrap();
         db.batch_execute("INSERT INTO hagency_agent_v1.projects(id,space_id,creation_policy) VALUES('legacy_personal','!legacy:example.test','{}')").await.unwrap();
         sql_query("INSERT INTO hagency_agent_v1.agents(id,owner_user_id,execution_device_id,puppet_mxid,display_name,state) VALUES('legacy_agent',$1,$2,'@legacy_agent:example.test','Personal','active')").bind::<Text,_>(&owner.p.user_id).bind::<Text,_>(&native.executor_device_id).execute(&mut db).await.unwrap();
         let parent:Value=serde_json::from_str(include_str!("../tests/fixtures/management-parent-settlement-v1.json")).unwrap();

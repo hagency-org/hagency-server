@@ -16,6 +16,7 @@ mod device_resume_tests;
 pub mod domain;
 mod executor_matrix_device;
 pub mod file_delivery;
+mod migrations;
 mod schema;
 pub use domain::project_board;
 mod api_project_board;

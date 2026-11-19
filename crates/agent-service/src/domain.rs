@@ -7,7 +7,9 @@ use diesel::sql_types::{BigInt, Bool, Nullable, Text};
 use diesel::{
     BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl, SelectableHelper, sql_query,
 };
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
+#[cfg(test)]
+use diesel_async::SimpleAsyncConnection;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use serde::{Deserialize, Serialize};
 
 use crate::store::Principal;
@@ -496,161 +498,11 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_agent_namespace"));
         }
 
-        let mut db = AsyncPgConnection::establish(url)
+        let db = AsyncPgConnection::establish(url)
             .await
             .map_err(|_| Error::Unavailable("database_unavailable"))?;
 
-        db.transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection| {
-
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328902)")
-                .await?;
-
-            let fixed={
-                use crate::schema::agent_tables::deployment as q;
-                let params = (server,);
-                q::table
-                    .select(((((q::version).eq(1)).and((q::server_name).eq(&params.0))),))
-                    .filter(q::singleton)
-                    .get_result::<Flag>(db)
-                    .await
-            }?;
-
-            if !fixed.matched {
-                return Err(Error::Conflict("deployment_identity_mismatch"));
-            }
-
-            let initialized = sql_query(
-                "SELECT to_regclass('hagency_agent_v1.domain_deployment') IS NOT NULL AS matched",
-            )
-            .get_result::<Flag>(db)
-            .await?;
-
-            if !initialized.matched {
-                db.batch_execute(include_str!("domain_schema.sql")).await?;
-                db.batch_execute(include_str!("owner_direct_schema.sql")).await?;
-            }
-            db.batch_execute(include_str!("configuration_schema.sql")).await?;
-            let management=sql_query("SELECT to_regclass('hagency_agent_v1.management_deployment') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
-            if !management.matched { db.batch_execute(include_str!("management_schema.sql")).await?; }
-            let management=sql_query("SELECT version=1 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_verification_schema.sql")).await?; }
-            let management=sql_query("SELECT version=2 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_projects_schema.sql")).await?; }
-            let management=sql_query("SELECT version=3 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_allocations_schema.sql")).await?; }
-            let management=sql_query("SELECT version=4 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_parents_schema.sql")).await?; }
-            let management=sql_query("SELECT version=5 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_setup_schema.sql")).await?; }
-            let management=sql_query("SELECT version=6 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_setup_recovery_schema.sql")).await?; }
-            let management=sql_query("SELECT version=7 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_agents_schema.sql")).await?; }
-            let management=sql_query("SELECT version=8 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_agent_executor_schema.sql")).await?; }
-            let management=sql_query("SELECT version=9 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_agent_matrix_schema.sql")).await?; }
-            let management=sql_query("SELECT version=10 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_agent_runtime_schema.sql")).await?; }
-            let management=sql_query("SELECT version=11 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_execution_schema.sql")).await?; }
-            let management=sql_query("SELECT version=12 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_work_schema.sql")).await?; }
-            let management=sql_query("SELECT version=13 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_attempts_schema.sql")).await?; }
-            let management=sql_query("SELECT version=14 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_ticket_schema.sql")).await?; }
-            let management=sql_query("SELECT version=15 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_intake_schema.sql")).await?; }
-            let management=sql_query("SELECT version=16 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_demand_schema.sql")).await?; }
-            let management=sql_query("SELECT version=17 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_context_schema.sql")).await?; }
-            let management=sql_query("SELECT version=18 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_agent_budget_schema.sql")).await?; }
-            let management=sql_query("SELECT version=19 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_shared_budget_schema.sql")).await?; }
-            let management=sql_query("SELECT version=20 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_agent_settlement_schema.sql")).await?; }
-            let management=sql_query("SELECT version=21 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_project_manager_schema.sql")).await?; }
-            let management=sql_query("SELECT version=22 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_owner_coordinator_schema.sql")).await?; }
-            let management=sql_query("SELECT version=23 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched { db.batch_execute(include_str!("management_pool_agents_schema.sql")).await?; }
-            let management=sql_query("SELECT version=24 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_approvals_schema.sql")).await?;}
-            let management=sql_query("SELECT version=25 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_block_proof_schema.sql")).await?;}
-            let management=sql_query("SELECT version=26 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_unstarted_schema.sql")).await?;}
-            let management=sql_query("SELECT version=27 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_room_members_schema.sql")).await?;}
-            let management=sql_query("SELECT version=28 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_pool_succession_schema.sql")).await?;}
-            let management=sql_query("SELECT version=29 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_agent_periods_schema.sql")).await?;}
-            let management=sql_query("SELECT version=30 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_publication_first_schema.sql")).await?;}
-            let management=sql_query("SELECT version=31 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_context_v2_schema.sql")).await?;}
-            let management=sql_query("SELECT version=32 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_claude_schema.sql")).await?;}
-            let management=sql_query("SELECT version=33 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_protocol_schema.sql")).await?;}
-            let management=sql_query("SELECT version=34 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_executor_ledgers_schema.sql")).await?;}
-            let management=sql_query("SELECT version=35 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if management.matched {db.batch_execute(include_str!("management_shared_octos_schema.sql")).await?;}
-            let management=sql_query("SELECT version=36 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton").get_result::<Flag>(db).await?;
-            if !management.matched { return Err(Error::Conflict("management_schema_incompatible")); }
-            db.batch_execute(include_str!("management_pool_limits_validation.sql")).await?;
-            db.batch_execute(include_str!("management_agent_periods_recovery.sql")).await?;
-            db.batch_execute(include_str!("audit_recovery_schema.sql")).await?;
-            db.batch_execute(include_str!("management_shared_e2ee_schema.sql")).await?;
-            db.batch_execute(include_str!("management_shared_native_context_schema.sql")).await?;
-            db.batch_execute(include_str!("shared_rooms_schema.sql")).await?;
-            db.batch_execute(include_str!("management_shared_demand_retry_schema.sql")).await?;
-            db.batch_execute("CREATE INDEX IF NOT EXISTS management_command_recovery ON hagency_agent_v1.management_commands(actor_user_id,device_id,command_id)").await?;
-            db.batch_execute(include_str!("visibility_schema.sql")).await?;
-            db.batch_execute(include_str!("project_folders_schema.sql")).await?;
-            db.batch_execute(include_str!("agent_crypto_schema.sql")).await?;
-            db.batch_execute(include_str!("crypto_io_lease.sql")).await?;
-
-            let pause_initialized=sql_query("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='bindings' AND column_name='owner_service_paused') AS matched").get_result::<Flag>(db).await?;
-            if !pause_initialized.matched {
-                db.batch_execute("ALTER TABLE hagency_agent_v1.bindings ADD COLUMN owner_service_paused boolean NOT NULL DEFAULT false").await?;
-            }
-            db.batch_execute("ALTER TABLE hagency_agent_v1.bindings ADD COLUMN IF NOT EXISTS thread_auto_reply boolean NOT NULL DEFAULT false").await?;
-            {
-                use crate::schema::agent_tables::domain_deployment as q;
-                let params = (namespace,);
-                diesel::insert_into(q::table)
-                    .values((
-                        q::singleton.eq(true),
-                        q::version.eq(4),
-                        q::namespace.eq(&params.0),
-                    ))
-                    .on_conflict((q::singleton,))
-                    .do_nothing()
-                    .execute(db)
-                    .await
-            }?;
-            let fixed={
-                use crate::schema::agent_tables::domain_deployment as q;
-                let params = (namespace,);
-                q::table
-                    .select(((((q::version).eq(4)).and((q::namespace).eq(&params.0))),))
-                    .filter(q::singleton)
-                    .get_result::<Flag>(db)
-                    .await
-            }?;
-            if !fixed.matched {return Err(Error::Conflict("domain_schema_incompatible"));}
-            let schema=sql_query("SELECT to_regclass('hagency_agent_v1.scope_pauses') IS NOT NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='hagency_agent_v1' AND table_name='agents' AND column_name='execution_device_id') AS matched").get_result::<Flag>(db).await?;
-            if !schema.matched {return Err(Error::Conflict("domain_schema_incompatible"));}
-            Ok(())
-        }
-).await?;
+        let db = crate::migrations::domain(db, server, namespace).await?;
 
         Ok(Self {
             controller_db: Arc::new(crate::database::DedicatedDatabase::new(db, url)),

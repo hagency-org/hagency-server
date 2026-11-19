@@ -12,5 +12,5 @@ ALTER TABLE hagency_agent_v1.management_requests
  DROP CONSTRAINT management_requests_state_check,
  ADD CONSTRAINT management_requests_state_check CHECK(state IN ('pending','approved','rejected','revoked'));
 ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;
-UPDATE hagency_agent_v1.management_deployment SET version=30 WHERE singleton AND version=31;
+DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=30 WHERE singleton AND version=31;
 ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=30);

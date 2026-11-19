@@ -3,7 +3,7 @@ use crate::management_shared_intake_types::*;
 
 pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
     demand_tests::remove_migration(db).await;
-    db.batch_execute("DROP TRIGGER guard_shared_pause ON hagency_agent_v1.management_shared_runtimes;DROP TABLE hagency_agent_v1.management_shared_control_commands,hagency_agent_v1.management_shared_intake,hagency_agent_v1.management_shared_controls;DROP FUNCTION hagency_agent_v1.guard_shared_pause(),hagency_agent_v1.apply_shared_pause(),hagency_agent_v1.retain_shared_intake();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=15;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=15)").await.unwrap();
+    db.batch_execute("DROP TRIGGER guard_shared_pause ON hagency_agent_v1.management_shared_runtimes;DROP TABLE hagency_agent_v1.management_shared_control_commands,hagency_agent_v1.management_shared_intake,hagency_agent_v1.management_shared_controls;DROP FUNCTION hagency_agent_v1.guard_shared_pause(),hagency_agent_v1.apply_shared_pause(),hagency_agent_v1.retain_shared_intake();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=15;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=15)").await.unwrap();
 }
 pub(super) fn change(command: &str, revision: i64, mode: &str) -> SharedControlInput {
     SharedControlInput {

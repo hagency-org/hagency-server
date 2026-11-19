@@ -1003,8 +1003,8 @@ async fn management_v2_upgrade_preserves_admission_verification_and_legacy_comma
         let policy=ManagementPolicy::new(admin.p.mxid.clone(),"example.test").unwrap();
         let now=now_ms();
         let mut db=AsyncPgConnection::establish(url.as_str()).await.unwrap();
-        db.batch_execute(include_str!("management_schema.sql")).await.unwrap();
-        db.batch_execute(include_str!("management_verification_schema.sql")).await.unwrap();
+        db.batch_execute(include_str!("../migrations/domain/2026-11-19-000104_management/up.sql")).await.unwrap();
+        db.batch_execute(include_str!("../migrations/domain/2026-11-19-000105_management_verification/up.sql")).await.unwrap();
         db.transaction::<_,diesel::result::Error,_>(async |db:&mut AsyncPgConnection| {
             sql_query("INSERT INTO hagency_agent_v1.management_contributions(id,owner_user_id,executor_device_id,executor_generation,resource_id,resource_revision,label,runtime,capabilities,coordinator_mxid,state,revision,request_id,created_at_ms,updated_at_ms) VALUES('legacy_contribution',$1,$2,$3,'legacy_resource',$4,'Legacy MacBook','codex','[\"coding\"]',$5,'admitted',2,'legacy_request',$6,$6)")
                 .bind::<Text,_>(&owner.p.user_id).bind::<Text,_>(owner.p.device_id.as_ref().unwrap()).bind::<BigInt,_>(owner.p.device_generation.unwrap()).bind::<Text,_>("a".repeat(64)).bind::<Text,_>(&owner.p.mxid).bind::<BigInt,_>(now).execute(db).await?;

@@ -110,5 +110,5 @@ ALTER TABLE hagency_agent_v1.management_agent_executor_commands
  ADD CONSTRAINT management_agent_executor_commands_operation_check CHECK(operation IN ('agent.reserve','agent.fence')),
  ADD CONSTRAINT management_agent_executor_commands_intent_id_operation_key UNIQUE(intent_id,operation);
 ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;
-UPDATE hagency_agent_v1.management_deployment SET version=29 WHERE singleton AND version=30;
+DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=29 WHERE singleton AND version=30;
 ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=29);

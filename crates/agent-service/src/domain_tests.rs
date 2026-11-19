@@ -2372,7 +2372,8 @@ async fn postgres_agent_audience_migration_preserves_private_defaults_and_saved_
     let mut db = AsyncPgConnection::establish(&url).await.unwrap();
     let schema = format!("audience_migration_{}", &secret_token()[..16]);
     db.batch_execute(&format!("CREATE SCHEMA {schema}; CREATE TABLE {schema}.agents(id text PRIMARY KEY); CREATE TABLE {schema}.bindings(agent_id text,scope_kind text,state text); INSERT INTO {schema}.agents VALUES ('shared'),('direct'),('left'); INSERT INTO {schema}.bindings VALUES ('shared','project','suspended'),('direct','owner_direct','active'),('left','project','left');")).await.unwrap();
-    let migration = include_str!("visibility_schema.sql").replace("hagency_agent_v1", &schema);
+    let migration = include_str!("../migrations/domain/2026-11-19-000148_visibility/up.sql")
+        .replace("hagency_agent_v1", &schema);
     db.batch_execute(&migration).await.unwrap();
     db.batch_execute(&format!("INSERT INTO {schema}.agents(id) VALUES ('new'); UPDATE {schema}.agents SET visibility='public' WHERE id='direct';")).await.unwrap();
     db.batch_execute(&migration).await.unwrap();

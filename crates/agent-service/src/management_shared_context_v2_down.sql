@@ -48,7 +48,7 @@ DO $$ BEGIN
  END IF;
  IF EXISTS(SELECT 1 FROM hagency_agent_v1.management_deployment WHERE singleton AND version=32) THEN
   ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;
-  UPDATE hagency_agent_v1.management_deployment SET version=31 WHERE singleton AND version=32;
+  DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=31 WHERE singleton AND version=32;
   ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=31);
  END IF;
 END $$;

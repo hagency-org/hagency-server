@@ -5,7 +5,9 @@ use diesel::{
     sql_query,
     sql_types::{BigInt, Bool, Jsonb, Text},
 };
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
+#[cfg(test)]
+use diesel_async::SimpleAsyncConnection;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use salvo::prelude::*;
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin, sync::Arc};
@@ -127,24 +129,10 @@ impl Inbox {
         if hs_token.len() < 32 {
             return Err(Error::Invalid("invalid_appservice_credential"));
         }
-        let mut db = AsyncPgConnection::establish(url)
+        let db = AsyncPgConnection::establish(url)
             .await
             .map_err(|_| Error::Unavailable("database_unavailable"))?;
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            // PostgreSQL IF NOT EXISTS alone does not serialize concurrent
-            // catalog/type creation. Use the same inbox transaction lock as
-            // acceptance/compaction before creating this fresh schema subset.
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
-            db.batch_execute("CREATE TABLE IF NOT EXISTS hagency_agent_v1.inbound_transactions (id text PRIMARY KEY,digest text NOT NULL,body jsonb NOT NULL,received_at_ms bigint NOT NULL); CREATE TABLE IF NOT EXISTS hagency_agent_v1.routing_jobs (transaction_id text PRIMARY KEY REFERENCES hagency_agent_v1.inbound_transactions(id),state text NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','routed')),received_at_ms bigint NOT NULL)").await?;
-            // Routed transaction witnesses are permanent. Keep queue reads
-            // proportional to pending work rather than the lifetime history.
-            db.batch_execute("CREATE INDEX IF NOT EXISTS routing_jobs_pending_time ON hagency_agent_v1.routing_jobs(received_at_ms,transaction_id) WHERE state='pending'; CREATE INDEX IF NOT EXISTS routing_jobs_pending_id ON hagency_agent_v1.routing_jobs(transaction_id) WHERE state='pending'").await?;
-            db.batch_execute("CREATE TABLE IF NOT EXISTS hagency_agent_v1.routing_rejections (transaction_id text NOT NULL REFERENCES hagency_agent_v1.inbound_transactions(id) ON DELETE CASCADE,event_id text NOT NULL,binding_id text NOT NULL,reason text NOT NULL,PRIMARY KEY(transaction_id,event_id,binding_id))").await?;
-            db.batch_execute("CREATE TABLE IF NOT EXISTS hagency_agent_v1.readiness_room (singleton boolean PRIMARY KEY CHECK(singleton),room_id text NOT NULL)").await?;
-            db.batch_execute("CREATE TABLE IF NOT EXISTS hagency_agent_v1.readiness_receipts (event_id text PRIMARY KEY,received_at_ms bigint NOT NULL)").await?;
-            db.batch_execute(include_str!("inbox_capacity.sql")).await?;
-            Ok(())
-        }).await?;
+        crate::migrations::inbox(db).await?;
         Ok(Self {
             db: Arc::new(crate::database::Database::business(url)?),
             hs_token,
@@ -509,7 +497,7 @@ mod tests {
         let mut observer = AsyncPgConnection::establish(url.as_str()).await.unwrap();
         let body = json!({"events":[{"body":"an existing payload"}]});
         first.accept("legacy", body.clone(), 1).await.unwrap();
-        observer.batch_execute("DROP TRIGGER update_inbox_capacity ON hagency_agent_v1.routing_jobs; DROP TABLE hagency_agent_v1.inbox_capacity").await.unwrap();
+        observer.batch_execute("DROP TABLE public.__diesel_schema_migrations; DROP TRIGGER update_inbox_capacity ON hagency_agent_v1.routing_jobs; DROP TABLE hagency_agent_v1.inbox_capacity").await.unwrap();
         let restored = Inbox::open(url.as_str(), "h".repeat(64)).await.unwrap();
         #[derive(diesel::QueryableByName)]
         struct Usage {

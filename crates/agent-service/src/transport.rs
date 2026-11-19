@@ -8,7 +8,9 @@ use diesel::sql_types::{BigInt, Bool, Nullable, Text};
 use diesel::{
     BoolExpressionMethods, ExpressionMethods, IntoSql, OptionalExtension, QueryDsl, sql_query,
 };
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
+#[cfg(test)]
+use diesel_async::SimpleAsyncConnection;
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use serde::{Deserialize, Serialize};
 
 use crate::store::Principal;
@@ -357,70 +359,10 @@ impl TransportStore {
     /// Initialize only new transport tables in the fixed new-domain database.
     pub async fn open(url: &str, limits: Limits) -> Result<Self> {
         limits.validate()?;
-        let mut db = AsyncPgConnection::establish(url)
+        let db = AsyncPgConnection::establish(url)
             .await
             .map_err(|_| Error::Unavailable("database_unavailable"))?;
-        db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328902)")
-                .await?;
-            let domain = sql_query(
-                "SELECT to_regclass('hagency_agent_v1.domain_deployment') IS NOT NULL AS matched",
-            )
-            .get_result::<Flag>(db)
-            .await?;
-            if !domain.matched {
-                return Err(Error::Conflict("agent_domain_not_initialized"));
-            }
-            let compatible = { use crate::schema::agent_tables::domain_deployment as q; q::table.select((((q::version).eq(4)),)).filter(q::singleton)
-                .get_result::<Flag>(db).await }?;
-            if !compatible.matched { return Err(Error::Conflict("domain_schema_incompatible")); }
-            let initialized = sql_query(
-                "SELECT to_regclass('hagency_agent_v1.execution_leases') IS NOT NULL AS matched",
-            )
-            .get_result::<Flag>(db)
-            .await?;
-            if !initialized.matched {
-                db.batch_execute(include_str!("transport_schema.sql"))
-                    .await?;
-                db.batch_execute(include_str!("processing_schema.sql")).await?;
-            }
-            let cipher_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.ciphertext_inbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
-            if !cipher_initialized.matched {db.batch_execute(include_str!("ciphertext_schema.sql")).await?;}
-            db.batch_execute("SELECT id,source_digest,event,agent_generation,binding_generation,state FROM hagency_agent_v1.ciphertext_inbox LIMIT 0").await.map_err(|_|Error::Conflict("ciphertext_schema_incompatible"))?;
-            let encrypted_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.encrypted_dispatches') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
-            if !encrypted_initialized.matched {db.batch_execute(include_str!("encrypted_dispatches_schema.sql")).await?;}
-            db.batch_execute("SELECT dispatch_id,inbox_id,source_digest,projection,seal_digest FROM hagency_agent_v1.encrypted_dispatches LIMIT 0").await.map_err(|_|Error::Conflict("encrypted_admission_schema_incompatible"))?;
-            db.batch_execute(include_str!("encrypted_execution_schema.sql")).await?;
-            let pause_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.pause_notice_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
-            if !pause_initialized.matched {
-                db.batch_execute(include_str!("pause_notices_schema.sql")).await?;
-            }
-            let notices_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.request_notice_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
-            if !notices_initialized.matched {
-                db.batch_execute(include_str!("request_notices_schema.sql")).await?;
-            }
-            let files_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.event_attachments') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
-            if !files_initialized.matched {db.batch_execute(include_str!("attachment_schema.sql")).await?;}
-            let delivery_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_outbox') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
-            if !delivery_initialized.matched {db.batch_execute(include_str!("file_delivery/schema.sql")).await?;}
-            let chunks_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_chunks') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
-            if !chunks_initialized.matched {db.batch_execute(include_str!("file_delivery/chunks.sql")).await?;}
-            let denial_initialized=sql_query("SELECT to_regclass('hagency_agent_v1.file_delivery_denials') IS NOT NULL AS matched").get_result::<Flag>(db).await?;
-            if !denial_initialized.matched {db.batch_execute(include_str!("file_delivery/denials.sql")).await?;}
-            db.batch_execute("SELECT id FROM hagency_agent_v1.file_sendable LIMIT 0").await.map_err(|_|Error::Conflict("file_delivery_schema_incompatible"))?;
-            db.batch_execute("SELECT dispatch_id,descriptor,descriptor_digest FROM hagency_agent_v1.event_attachments LIMIT 0").await
-                .map_err(|_| Error::Conflict("attachment_schema_incompatible"))?;
-            // Refresh the derived view for existing installations without changing journals.
-            db.batch_execute(include_str!("request_notice_needed.sql")).await?;
-            db.batch_execute(include_str!("transport_recovery_schema.sql")).await?;
-            db.batch_execute("SELECT id FROM hagency_agent_v1.processing_sendable LIMIT 0").await
-                .map_err(|_| Error::Conflict("processing_schema_incompatible"))?;
-            db.batch_execute("SELECT delivery_epoch FROM hagency_agent_v1.reply_outbox LIMIT 0")
-                .await
-                .map_err(|_| Error::Conflict("transport_schema_incompatible"))?;
-            Ok(())
-        })
-        .await?;
+        crate::migrations::transport(db).await?;
         Ok(Self {
             db: Arc::new(crate::database::Database::business(url)?),
             limits,
