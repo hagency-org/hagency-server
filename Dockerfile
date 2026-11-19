@@ -19,6 +19,7 @@ ARG SERVER_BUILD_JOBS=1
 # layer. Remove every locally compiled placeholder before copying real inputs.
 RUN cargo build --release --locked --jobs "$SERVER_BUILD_JOBS" --bin hagency-server \
     && cargo clean --release -p hagency-server -p hagency-agent-service -p hagency-db-runtime
+COPY crates/login_readiness.rs ./crates/
 COPY crates/backend ./crates/backend
 COPY crates/agent-service ./crates/agent-service
 COPY crates/db-runtime ./crates/db-runtime
@@ -44,6 +45,7 @@ COPY xtask ./xtask
 COPY crates/frontend/branding ./crates/frontend/branding
 
 FROM web-tools AS frontend-assets
+COPY crates/login_readiness.rs ./crates/
 COPY crates/frontend ./crates/frontend
 RUN --mount=type=cache,id=hagency-frontend-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=hagency-frontend-git,target=/usr/local/cargo/git \
