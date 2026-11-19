@@ -354,9 +354,8 @@ impl DomainStore {
         id: &str,
     ) -> Result<AgentSettlementProgress> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let r = row(db, id).await?;
                 visible(db, &r, p).await?;
@@ -374,9 +373,8 @@ impl DomainStore {
         input.validate()?;
         device(p)?;
         let digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let r = row(db, id).await?;
                 visible(db, &r, p).await?;
@@ -426,8 +424,7 @@ impl DomainStore {
         if let Some(id) = &input.after {
             key(id)?
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;
             // Only agents already explicitly enrolled by a new fence/request are
             // candidates. New source evidence drives one new observation, not time.
             let candidate=sql_query("SELECT c.request_id AS id FROM hagency_agent_v1.management_agent_settlement_commands c JOIN hagency_agent_v1.management_agent_settlement_results r ON r.command_id=c.id JOIN hagency_agent_v1.management_agent_settlement_evidence e ON e.request_id=c.request_id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND c.executor_generation<=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_request(c.request_id) AND e.ledger_revision>r.ledger_revision AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_settlement_commands nc JOIN hagency_agent_v1.management_agent_settlement_results nr ON nr.command_id=nc.id WHERE nc.request_id=c.request_id AND nr.ledger_revision>r.ledger_revision) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_settlement_commands nc WHERE nc.request_id=c.request_id AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_settlement_results nr WHERE nr.command_id=nc.id)) ORDER BY c.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(dev).bind::<BigInt,_>(p.device_generation.unwrap()).get_result::<Key>(db).await.optional()?;
@@ -446,9 +443,8 @@ impl DomainStore {
         if !valid_digest(&input.command_digest) {
             return Err(Error::Invalid("invalid_agent_settlement_digest"));
         }
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let w = command(db, id).await?;
                 owner(&w, p)?;
@@ -470,8 +466,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_agent_settlement_result"));
         }
         wire(&input.receipt)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let w=command(db,id).await?;owner(&w,p)?;let c=checked(&w,&self.server)?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let w=command(db,id).await?;owner(&w,p)?;let c=checked(&w,&self.server)?;
             if w.digest!=input.command_digest{return Err(Error::Conflict("agent_settlement_command_changed"))}input.receipt.validate_for(&c)?;
             if let Some(old)=saved(db,id).await?{if allocation_digest(&old)?!=allocation_digest(&input.receipt)?{return Err(Error::Conflict("agent_settlement_result_changed"))}return Ok(old)}
             let now=clock(db).await?;

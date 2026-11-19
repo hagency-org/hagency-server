@@ -201,9 +201,7 @@ impl TransportStore {
         if let Some(expected) = expected {
             expected.validate()?;
         }
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authenticate(db,p,now).await?;
             let current=snapshot(db,p,agent).await?;
             if expected.is_some_and(|value|value!=&current){return Err(Error::Conflict("execution_history_changed"));}
@@ -215,7 +213,6 @@ impl TransportStore {
             Self::authenticate(db,p,now).await?;
             Ok(ExecutionHistoryPage{agent_id:agent.into(),snapshot:current,executions,next_cursor})
         }).await
-    }).await
     }
     #[cfg(test)]
     pub(crate) async fn acquire_for_test(

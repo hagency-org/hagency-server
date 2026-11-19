@@ -75,9 +75,8 @@ impl DomainStore {
     ) -> Result<ProjectAllocationDetail> {
         enabled(policy)?;
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 detail(db, id, p, policy, now).await
@@ -100,8 +99,7 @@ impl DomainStore {
         if !(1..=16).contains(&limit) {
             return Err(Error::Invalid("invalid_allocation_query"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             // The exact allocation ACL precedes both cursor and page bound.

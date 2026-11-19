@@ -355,9 +355,25 @@ impl DomainStore {
         let _permit = REQUESTS
             .try_acquire()
             .map_err(|_| Error::Unavailable("agent_crypto_busy"))?;
-        let mut db = self.crypto_db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            let s=Self::crypto_scope(db,p,agent,generation).await?;
+        let nonce = crate::secret_token();
+        let (s, deadline) = self.db.transaction(async |db| {
+            let mut s = Self::crypto_scope(db,p,agent,generation).await?;
+            // Capture the monotonic start before reading the DB clock. Commit and network
+            // scheduling use up the same twelve seconds even if a pool checkout was slow.
+            let start = tokio::time::Instant::now();
+            let db_now = sql_query("SELECT (extract(epoch FROM clock_timestamp())*1000)::bigint AS valid_until_ms")
+                .get_result::<Deadline>(db).await?.valid_until_ms;
+            let until = db_now + 15_000;
+            let remaining = (s.valid_until_ms - db_now).clamp(0, 12_000);
+            if remaining == 0 { return Err(Error::Unauthorized("authorization_expired")); }
+            let reserved = sql_query("INSERT INTO hagency_agent_v1.crypto_io_leases AS lease(resource,resource_id,nonce,until_ms)
+                VALUES ('users',$1,$5,$6),('sessions',$2,$5,$6),('devices',$3,$5,$6),('agents',$4,$5,$6)
+                ON CONFLICT(resource,resource_id) DO UPDATE SET nonce=EXCLUDED.nonce, until_ms=EXCLUDED.until_ms
+                WHERE lease.until_ms <= (extract(epoch FROM clock_timestamp())*1000)::bigint")
+                .bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.session_id).bind::<Text,_>(&s.execution_device)
+                .bind::<Text,_>(agent).bind::<Text,_>(&nonce).bind::<BigInt,_>(until).execute(db).await?;
+            if reserved != 4 {return Err(Error::Unavailable("agent_crypto_busy"));}
+            s.valid_until_ms = s.valid_until_ms.min(until);
             let pins=receive::fingerprints(op,&body,&s.agent.puppet_mxid,&s.matrix_device,&p.mxid)?;
             if let Some(expected)=receive::signing_digest(op,&body,&s.agent.puppet_mxid,&p.mxid)? {
                 let pins={
@@ -408,78 +424,93 @@ impl DomainStore {
                 sql_query(format!("UPDATE hagency_agent_v1.agent_crypto_identities SET {column}=coalesce({column},$2) WHERE matrix_device_id=$1"))
                     .bind::<Text,_>(&s.matrix_device).bind::<Text,_>(digest).execute(db).await?;
             }
-            Ok(())
+            Ok((s, start + std::time::Duration::from_millis(remaining as u64)))
         }).await?;
-        // Keep actual session/device/Agent rows locked through this bounded IO.
-        // Assignment, logout and revocation serialize against their real rows;
-        // no global domain advisory lock is held over HTTP.
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                let s = Self::crypto_scope(db, p, agent, generation).await?;
-                tokio::time::timeout(std::time::Duration::from_secs(12), async {
-                    if matches!(op, Operation::Provision) {
-                        let (status, versions) = matrix
-                            .crypto_identity_request(
-                                &s.agent.puppet_mxid,
-                                &s.matrix_device,
-                                Operation::Versions,
-                                Value::Null,
-                                s.valid_until_ms,
-                            )
-                            .await?;
-                        if !(200..300).contains(&status) {
-                            return Ok((status, versions, s.matrix_device));
-                        }
-                        if versions["versions"].as_array().is_none_or(|v| {
-                            v.is_empty()
-                                || v.len() > 64
-                                || v.iter().any(|s| s.as_str().is_none_or(|s| s.len() > 32))
-                        }) {
-                            return Err(Error::Unavailable("invalid_agent_crypto_response"));
-                        }
-                        Self::authorize_identity(db, p, crate::api::now_ms()).await?;
-                        let (status, value) = matrix
-                            .crypto_identity_request(
-                                &s.agent.puppet_mxid,
-                                &s.matrix_device,
-                                op,
-                                body,
-                                s.valid_until_ms,
-                            )
-                            .await?;
-                        if !(200..300).contains(&status) {
-                            return Ok((status, value, s.matrix_device));
-                        }
-                        Self::authorize_identity(db, p, crate::api::now_ms()).await?;
-                        let (status, who) = matrix
-                            .crypto_identity_request(
-                                &s.agent.puppet_mxid,
-                                &s.matrix_device,
-                                Operation::Whoami,
-                                Value::Null,
-                                s.valid_until_ms,
-                            )
-                            .await?;
-                        if !(200..300).contains(&status) {
-                            return Ok((status, who, s.matrix_device));
-                        }
-                        return Ok((200, versions, s.matrix_device));
-                    }
-                    let (status, value) = matrix
-                        .crypto_identity_request(
-                            &s.agent.puppet_mxid,
-                            &s.matrix_device,
-                            op,
-                            body,
-                            s.valid_until_ms,
-                        )
-                        .await?;
-                    Ok((status, value, s.matrix_device))
-                })
-                .await
-                .map_err(|_| Error::Unavailable("agent_crypto_outcome_unknown"))?
-            })
+        let valid_until_ms = s.valid_until_ms;
+        let operation = async {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(Error::Unauthorized("authorization_expired"));
+            }
+            if matches!(op, Operation::Provision) {
+                let (status, versions) = matrix
+                    .crypto_identity_request(
+                        &s.agent.puppet_mxid,
+                        &s.matrix_device,
+                        Operation::Versions,
+                        Value::Null,
+                        s.valid_until_ms,
+                    )
+                    .await?;
+                if !(200..300).contains(&status) {
+                    return Ok((status, versions, s.matrix_device));
+                }
+                if versions["versions"].as_array().is_none_or(|v| {
+                    v.is_empty()
+                        || v.len() > 64
+                        || v.iter().any(|s| s.as_str().is_none_or(|s| s.len() > 32))
+                }) {
+                    return Err(Error::Unavailable("invalid_agent_crypto_response"));
+                }
+                let (status, value) = matrix
+                    .crypto_identity_request(
+                        &s.agent.puppet_mxid,
+                        &s.matrix_device,
+                        op,
+                        body,
+                        s.valid_until_ms,
+                    )
+                    .await?;
+                if !(200..300).contains(&status) {
+                    return Ok((status, value, s.matrix_device));
+                }
+                let (status, who) = matrix
+                    .crypto_identity_request(
+                        &s.agent.puppet_mxid,
+                        &s.matrix_device,
+                        Operation::Whoami,
+                        Value::Null,
+                        s.valid_until_ms,
+                    )
+                    .await?;
+                if !(200..300).contains(&status) {
+                    return Ok((status, who, s.matrix_device));
+                }
+                return Ok((200, versions, s.matrix_device));
+            }
+            let (status, value) = matrix
+                .crypto_identity_request(
+                    &s.agent.puppet_mxid,
+                    &s.matrix_device,
+                    op,
+                    body,
+                    s.valid_until_ms,
+                )
+                .await?;
+            Ok((status, value, s.matrix_device))
+        };
+        // Cancellation or an ambiguous HTTP result leaves the durable reservation to
+        // expire. A late cleanup cannot release a replacement request's reservation.
+        let result = tokio::time::timeout_at(deadline, operation)
             .await
+            .map_err(|_| Error::Unavailable("agent_crypto_outcome_unknown"))?;
+        if !matches!(
+            result,
+            Err(Error::Unavailable("agent_crypto_outcome_unknown"))
+        ) {
+            let released = self.db
+                .transaction(async |db| {
+                    Ok(sql_query("DELETE FROM hagency_agent_v1.crypto_io_leases WHERE nonce=$1 AND least(until_ms,$2) > (extract(epoch FROM clock_timestamp())*1000)::bigint")
+                        .bind::<Text, _>(&nonce)
+                        .bind::<BigInt, _>(valid_until_ms)
+                        .execute(db)
+                        .await?)
+                })
+                .await?;
+            if released != 4 && result.is_ok() {
+                return Err(Error::Unauthorized("authorization_expired"));
+            }
+        }
+        result
     }
 }
 

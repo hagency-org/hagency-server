@@ -278,9 +278,7 @@ impl DomainStore {
     ) -> Result<ExecutorLedger> {
         input.validate()?;
         let (device, _) = device(p)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
                 // The domain transaction lock serializes concurrent declarations
                 // and every receipt of this device. The table's unique keys
                 // are the backstop.

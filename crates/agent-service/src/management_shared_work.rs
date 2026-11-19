@@ -137,25 +137,30 @@ impl DomainStore {
             return Ok(());
         }
         let ids = {
-            let mut db = self.db.lock().await?;
-            // Select the dedicated pool conversation or exact mention scope
-            // before bounding the page. Group siblings cannot consume its slots.
-            let mentions = event
-                .mentioned_mxids
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            sql_query("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.shared_room_memberships m ON m.assignment_id=r.assignment_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id JOIN hagency_agent_v1.management_agent_requests q ON q.id=a.request_id JOIN hagency_agent_v1.users u ON u.id=a.manager_user_id WHERE r.state='qualified' AND NOT r.permanent_fence AND r.activity_until_ms>(extract(epoch from clock_timestamp())*1000)::bigint AND m.state='matrix_verified' AND m.room_id=$1 AND (m.puppet_mxid=ANY($3) OR (q.pool_contribution_id IS NOT NULL AND m.space_id='' AND u.mxid=$2)) ORDER BY r.id LIMIT $4").bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.sender_mxid).bind::<Array<Text>,_>(mentions).bind::<BigInt,_>(page_limit.clamp(1,32)).load::<Id>(&mut *db).await?
+            self.db.transaction(async |db| {
+                // Select the dedicated pool conversation or exact mention scope
+                // before bounding the page. Group siblings cannot consume its slots.
+                let mentions = event
+                    .mentioned_mxids
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>();
+                Ok(sql_query("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.shared_room_memberships m ON m.assignment_id=r.assignment_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id JOIN hagency_agent_v1.management_agent_requests q ON q.id=a.request_id JOIN hagency_agent_v1.users u ON u.id=a.manager_user_id WHERE r.state='qualified' AND NOT r.permanent_fence AND r.activity_until_ms>(extract(epoch from clock_timestamp())*1000)::bigint AND m.state='matrix_verified' AND m.room_id=$1 AND (m.puppet_mxid=ANY($3) OR (q.pool_contribution_id IS NOT NULL AND m.space_id='' AND u.mxid=$2)) ORDER BY r.id LIMIT $4").bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.sender_mxid).bind::<Array<Text>,_>(mentions).bind::<BigInt,_>(page_limit.clamp(1,32)).load::<Id>(db).await?)
+            }).await?
         };
         for id in ids {
             let (scope, deferred) = {
-                let mut db = self.db.lock().await?;
-                let r = runtime(&mut db, &id.id).await?;
-                let now = clock(&mut db).await?;
-                let deferred = worker_protocol::assignment_reason(&mut db, &r.assignment_id, now)
+                self.db
+                    .transaction(async |db| {
+                        let r = runtime(db, &id.id).await?;
+                        let now = clock(db).await?;
+                        let deferred =
+                            worker_protocol::assignment_reason(db, &r.assignment_id, now)
+                                .await?
+                                .map(|_| r.assignment_id.clone());
+                        Ok((membership_for(db, &r, &event.room_id).await?, deferred))
+                    })
                     .await?
-                    .map(|_| r.assignment_id.clone());
-                (membership_for(&mut db, &r, &event.room_id).await?, deferred)
             };
             if let Some(assignment) = deferred {
                 // Retain the original event without issuing native work. A
@@ -181,9 +186,8 @@ impl DomainStore {
             ) {
                 continue;
             }
-            let mut guard = self.db.lock().await?;
-            (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {
-                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
+            self.db.write_transaction(async|db:&mut AsyncPgConnection| {
+
                 let r=runtime(db,&id.id).await?;let w=original(db,&r).await?;let c=command(&r,&self.server)?;let now=clock(db).await?;
                 if !runtime_issuing(db,policy,&r).await? || r.state!="qualified" || r.activity_until_ms<=now || received<c.issued_at_ms || received>now || now-received>86_400_000 || !current(db,&r,&w,&c,now).await? {return Ok(());}
                 let m=membership_for(db,&r,&event.room_id).await?;facts(&m,&observed)?;
@@ -216,9 +220,8 @@ impl DomainStore {
             return Err(Error::Unavailable("shared_execution_issuance_unavailable"));
         }
         let (m, requester) = {
-            let mut guard = self.db.lock().await?;
-            (*guard)
-                .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+            self.db
+                .write_transaction(async |db: &mut AsyncPgConnection| {
                     Self::authorize(db, p, 0).await?;
                     let r = runtime(db, &a.runtime_command_id).await?;
                     protocol.check(&r)?;
@@ -283,8 +286,7 @@ impl DomainStore {
         let observed = self
             .shared_work_facts(p, policy, &a, gateway, protocol, None)
             .await?;
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&a.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}worker_protocol::require(db,p,now).await?;require_activity(db,p,&r,&a,&self.server,now).await?;facts(&membership(db,&r).await?,&observed)?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&a.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}worker_protocol::require(db,p,now).await?;require_activity(db,p,&r,&a,&self.server,now).await?;facts(&membership(db,&r).await?,&observed)?;
             if matches!(protocol,WorkProtocol::Assignment) { demands::promote(db,p,policy,&r,&self.server,now).await?; } else {demands::budget::promote(db,p,policy,&r,&self.server,now).await?;}
             let scope=command(&r,&self.server)?;
             if let Some(calendar)=scope.reserve_command.pool_grant.as_ref().and_then(|g|g.calendar.as_ref()) {
@@ -339,8 +341,7 @@ impl DomainStore {
                 Some(&input.work_id),
             )
             .await?;
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}worker_protocol::require(db,p,now).await?;require_activity(db,p,&r,&input.authority,&self.server,now).await?;let w=work_row(db,&input.work_id).await?;let v=item(&w,&r)?;facts(&work_membership(db,&r,&v).await?,&observed)?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}worker_protocol::require(db,p,now).await?;require_activity(db,p,&r,&input.authority,&self.server,now).await?;let w=work_row(db,&input.work_id).await?;let v=item(&w,&r)?;facts(&work_membership(db,&r,&v).await?,&observed)?;
             if w.digest!=input.work_digest {return Err(Error::Conflict("shared_work_changed"));}
             let scope=command(&r,&self.server)?;
             if let Some(calendar)=scope.reserve_command.pool_grant.as_ref().and_then(|g|g.calendar.as_ref()) {
@@ -389,8 +390,7 @@ impl DomainStore {
                 Some(&input.work_id),
             )
             .await?;
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}worker_protocol::require(db,p,now).await?;require_activity(db,p,&r,&input.authority,&self.server,now).await?;let w=work_row(db,&input.work_id).await?;let v=item(&w,&r)?;facts(&work_membership(db,&r,&v).await?,&observed)?;context::require_plain(db,&w.id).await?;refusals::ensure_unfenced(db,&w.id).await?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}worker_protocol::require(db,p,now).await?;require_activity(db,p,&r,&input.authority,&self.server,now).await?;let w=work_row(db,&input.work_id).await?;let v=item(&w,&r)?;facts(&work_membership(db,&r,&v).await?,&observed)?;context::require_plain(db,&w.id).await?;refusals::ensure_unfenced(db,&w.id).await?;
             if w.digest!=input.work_digest {return Err(Error::Conflict("shared_work_changed"));}
             let scope=command(&r,&self.server)?;
             if let Some(calendar)=scope.reserve_command.pool_grant.as_ref().and_then(|g|g.calendar.as_ref()) {
@@ -464,8 +464,9 @@ impl DomainStore {
     ) -> Result<()> {
         key(id)?;
         let (membership, work) = {
-            let mut db = self.db.lock().await?;
-            native_send_scope(&mut db, p, policy, id, &self.server).await?
+            self.db
+                .transaction(async |db| native_send_scope(db, p, policy, id, &self.server).await)
+                .await?
         };
         let observed = gateway
             .shared_delivery(
@@ -476,18 +477,21 @@ impl DomainStore {
                 &membership.puppet_mxid,
             )
             .await?;
-        let mut db = self.db.lock().await?;
-        // Recheck after the Matrix wait: revocation or a changed run fence must
-        // not authorize a late upload using the earlier snapshot.
-        let (current, latest) = native_send_scope(&mut db, p, policy, id, &self.server).await?;
-        facts(&current, &observed)?;
-        if allocation_digest(&work)? != allocation_digest(&latest)?
-            || observed.requester_mxid != latest.requester_mxid
-            || observed.encrypted != latest.encrypted
-        {
-            return Err(Error::Unauthorized("shared_room_send_authority_changed"));
-        }
-        Ok(())
+        self.db
+            .transaction(async |db| {
+                // Recheck after the Matrix wait: revocation or a changed run fence must
+                // not authorize a late upload using the earlier snapshot.
+                let (current, latest) = native_send_scope(db, p, policy, id, &self.server).await?;
+                facts(&current, &observed)?;
+                if allocation_digest(&work)? != allocation_digest(&latest)?
+                    || observed.requester_mxid != latest.requester_mxid
+                    || observed.encrypted != latest.encrypted
+                {
+                    return Err(Error::Unauthorized("shared_room_send_authority_changed"));
+                }
+                Ok(())
+            })
+            .await
     }
     pub async fn recover_shared_work_result(
         &self,
@@ -501,8 +505,7 @@ impl DomainStore {
         if let Some(v) = &input.observation_id {
             key(v)?;
         }
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let w=work_row(db,id).await?;let r=runtime(db,&w.runtime_id).await?;owner(&original(db,&r).await?,p)?;item(&w,&r)?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let w=work_row(db,id).await?;let r=runtime(db,&w.runtime_id).await?;owner(&original(db,&r).await?,p)?;item(&w,&r)?;
             if r.digest!=input.runtime_command_digest || w.digest!=input.work_digest || w.started_at_ms.is_none() && !refusals::exists(db,id).await? {return Err(Error::Conflict("shared_work_changed"));}
             let now=clock(db).await?;let token=secret_token();let expiry=until(db,p,now).await?;
             sql_query("UPDATE hagency_agent_v1.management_shared_work SET lease_hash=$2,lease_until_ms=$3 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(hash(&token)).bind::<BigInt,_>(expiry).execute(db).await?;
@@ -518,8 +521,7 @@ impl DomainStore {
     ) -> Result<SharedWorkAcknowledgement> {
         enabled(policy)?;
         key(id)?;
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let w=work_row(db,id).await?;let r=runtime(db,&w.runtime_id).await?;let original=original(db,&r).await?;owner(&original,p)?;let c=command(&r,&self.server)?;let v=item(&w,&r)?;let now=clock(db).await?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let w=work_row(db,id).await?;let r=runtime(db,&w.runtime_id).await?;let original=original(db,&r).await?;owner(&original,p)?;let c=command(&r,&self.server)?;let v=item(&w,&r)?;let now=clock(db).await?;
             if w.digest!=input.work_digest || w.started_at_ms.is_none() && !refusals::exists(db,id).await? || w.lease_hash.as_deref()!=Some(hash(&input.token).as_str()) || w.lease_until_ms<=now {return Err(Error::Conflict("shared_work_result_ticket_changed"));}
             if w.started_at_ms.is_none() {refusals::validate_zero(&input.receipt)?;}
             if v.encrypted && let Some(body)=&input.receipt.body {e2ee::receipt(body,&v.room_id)?;}
@@ -558,8 +560,7 @@ impl DomainStore {
         if !(1..=16).contains(&limit) {
             return Err(Error::Invalid("invalid_shared_work_query"));
         }
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async|db:&mut AsyncPgConnection| {
             Self::authorize(db,p,0).await?;
             // Pool requests deliberately have no project. Keep legacy queries
             // project-only; opted-in readers receive explicit pool metadata.
@@ -607,8 +608,7 @@ impl DomainStore {
         if !(1..=16).contains(&limit) {
             return Err(Error::Invalid("invalid_shared_work_query"));
         }
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let request=super::super::super::row(db,request).await?;super::super::super::visible(db,&request,p).await?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let request=super::super::super::row(db,request).await?;super::super::super::visible(db,&request,p).await?;
             let mut rows=sql_query("SELECT w.* FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE a.request_id=$1 AND w.id>$2 ORDER BY w.id LIMIT $3").bind::<Text,_>(&request.id).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<BigInt,_>(i64::from(limit)+1).load::<WorkRow>(db).await?;
             let more=rows.len()>usize::from(limit);rows.truncate(usize::from(limit));let next_after=more.then(||rows.last().unwrap().id.clone());let mut items=Vec::new();
             for w in rows {let r=runtime(db,&w.runtime_id).await?;let c=command(&r,&self.server)?;let v=item(&w,&r)?;let reply=sql_query("SELECT state AS payload FROM hagency_agent_v1.management_shared_replies WHERE work_id=$1").bind::<Text,_>(&w.id).get_result::<Json>(db).await.optional()?;
@@ -725,30 +725,37 @@ impl DomainStore {
             return Ok(());
         }
         let ids = {
-            let mut db = self.db.lock().await?;
-            sql_query("SELECT work_id AS id FROM hagency_agent_v1.management_shared_replies WHERE state IN('pending','issued','unknown') AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w WHERE w.id=work_id AND coalesce((w.payload::jsonb->>'encrypted')::boolean,false)) AND lease_until_ms<=(extract(epoch from clock_timestamp())*1000)::bigint ORDER BY (work_id<=$1),work_id LIMIT 16").bind::<Text,_>(&*cursor).load::<Id>(&mut *db).await?
+            self.db.transaction(async |db| {
+
+                Ok(sql_query("SELECT work_id AS id FROM hagency_agent_v1.management_shared_replies WHERE state IN('pending','issued','unknown') AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w WHERE w.id=work_id AND coalesce((w.payload::jsonb->>'encrypted')::boolean,false)) AND lease_until_ms<=(extract(epoch from clock_timestamp())*1000)::bigint ORDER BY (work_id<=$1),work_id LIMIT 16").bind::<Text,_>(&*cursor).load::<Id>(db).await?)
+            }).await?
         };
         for id in ids {
             *cursor = id.id.clone();
             let scope = {
-                let mut db = self.db.lock().await?;
-                let w = work_row(&mut db, &id.id).await?;
-                let r = runtime(&mut db, &w.runtime_id).await?;
-                let now = clock(&mut db).await?;
-                if !reply_live(&mut db, policy, &r, &self.server, now).await? {
-                    None
-                } else {
-                    {
-                        let item = item(&w, &r)?;
-                        match work_membership(&mut db, &r, &item).await {
-                            Ok(m) => Some((m, item.requester_mxid)),
-                            Err(
-                                Error::NotFound(_) | Error::Unauthorized(_) | Error::Conflict(_),
-                            ) => None,
-                            Err(e) => return Err(e),
-                        }
-                    }
-                }
+                self.db
+                    .transaction(async |db| {
+                        let w = work_row(db, &id.id).await?;
+                        let r = runtime(db, &w.runtime_id).await?;
+                        let now = clock(db).await?;
+                        Ok(if !reply_live(db, policy, &r, &self.server, now).await? {
+                            None
+                        } else {
+                            {
+                                let item = item(&w, &r)?;
+                                match work_membership(db, &r, &item).await {
+                                    Ok(m) => Some((m, item.requester_mxid)),
+                                    Err(
+                                        Error::NotFound(_)
+                                        | Error::Unauthorized(_)
+                                        | Error::Conflict(_),
+                                    ) => None,
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                        })
+                    })
+                    .await?
             };
             let observed = match scope {
                 Some((m, requester)) => match tokio::time::timeout(
@@ -769,9 +776,8 @@ impl DomainStore {
                 None => None,
             };
             let claim = {
-                let mut guard = self.db.lock().await?;
-                (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {
-                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;let now=clock(db).await?;let w=work_row(db,&id.id).await?;let r=runtime(db,&w.runtime_id).await?;item(&w,&r)?;
+                self.db.write_transaction(async|db:&mut AsyncPgConnection| {
+                let now=clock(db).await?;let w=work_row(db,&id.id).await?;let r=runtime(db,&w.runtime_id).await?;item(&w,&r)?;
                 let reply=sql_query("SELECT * FROM hagency_agent_v1.management_shared_replies WHERE work_id=$1").bind::<Text,_>(&id.id).get_result::<Reply>(db).await?;
                 if !matches!(reply.state.as_str(),"pending"|"issued"|"unknown") || reply.lease_until_ms>now {return Ok(None);}
                 let m=match work_membership(db,&r,&item(&w,&r)?).await {
@@ -800,9 +806,8 @@ impl DomainStore {
                 .await;
             // A send may complete after revocation. Preserve the observed event
             // under its original transaction instead of claiming it was unsent.
-            let mut guard = self.db.lock().await?;
-            (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {
-                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
+            self.db.write_transaction(async|db:&mut AsyncPgConnection| {
+
                 let saved=sql_query("SELECT * FROM hagency_agent_v1.management_shared_replies WHERE work_id=$1").bind::<Text,_>(&claim.work_id).get_result::<Reply>(db).await?;
                 if saved.content_digest!=claim.content_digest || saved.matrix_txn_id!=claim.transaction {return Err(Error::Conflict("shared_reply_changed"));}
                 match outcome {

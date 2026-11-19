@@ -344,9 +344,8 @@ impl DomainStore {
     ) -> Result<AgentRequestReadiness> {
         enabled(policy)?;
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 // Apply existing project visibility before exposing even a blocker.
@@ -428,9 +427,8 @@ impl DomainStore {
     ) -> Result<ManagedAgentRequest> {
         enabled(policy)?;
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 view(db, id, p, now).await
@@ -445,8 +443,7 @@ impl DomainStore {
     ) -> Result<ManagementPage<ManagedAgentRequest>> {
         enabled(policy)?;
         input.validate()?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             if let Some(project) = &input.project_id {
                 let allowed = sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_projects p WHERE p.id=$1 AND (p.manager_user_id=$2 OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_project_authorities a WHERE a.plan_id=p.id AND a.administrator_user_id=$2))) AS matched").bind::<Text,_>(project).bind::<Text,_>(&p.user_id).get_result::<Flag>(db).await?.matched;
@@ -471,9 +468,8 @@ impl DomainStore {
         device(p)?;
         let digest = digest(plan, &input)?;
         let pre = {
-            let mut db = self.db.lock().await?;
-            (*db)
-                .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+            self.db
+                .write_transaction(async |db: &mut AsyncPgConnection| {
                     Self::authorize(db, p, crate::api::now_ms()).await?;
                     let now = clock(db).await?;
                     if let Some(saved) = replay::<ManagedAgentRequest>(
@@ -519,8 +515,7 @@ impl DomainStore {
             Ok(c) => c,
         };
         let observed = pre.observe(gateway).await?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             if let Some(saved)=replay::<ManagedAgentRequest>(db,p,&input.command_id,"agent.request",&digest).await?{return view(db,&saved.id,p,now).await;}
             let c=context(db,plan,now).await?;if c.pin()!=pre.pin(){return Err(Error::Conflict("management_revision_changed"));}fresh(observed,now)?;
@@ -548,9 +543,8 @@ impl DomainStore {
         }
         let digest = digest(id, &input)?;
         let pre = {
-            let mut db = self.db.lock().await?;
-            (*db)
-                .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+            self.db
+                .write_transaction(async |db: &mut AsyncPgConnection| {
                     Self::authorize(db, p, crate::api::now_ms()).await?;
                     let now = clock(db).await?;
                     if let Some(saved) = replay::<ManagedAgentRequest>(
@@ -588,8 +582,7 @@ impl DomainStore {
         } else {
             None
         };
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             if let Some(saved)=replay::<ManagedAgentRequest>(db,p,&input.command_id,"agent.decide",&digest).await?{return view(db,&saved.id,p,now).await;}
             let r=row(db,id).await?;decision_ready(db,&r,p,&input,now).await?;
@@ -619,8 +612,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             if let Some(saved)=replay::<ManagedAgentRequest>(db,p,&input.command_id,"agent.cancel",&digest).await?{return view(db,&saved.id,p,now).await;}
             let r=row(db,id).await?;if r.manager_user_id!=p.user_id{return Err(Error::Unauthorized("project_manager_required"));}
@@ -649,8 +641,7 @@ impl DomainStore {
         ) {
             return Err(Error::Invalid("invalid_management_operation"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let rows=sql_query("SELECT operation,digest,result FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND device_id=$2 AND command_id=$3 ORDER BY device_generation LIMIT 2").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(id).load::<Receipt>(db).await?;
             if rows.len()>1{return Err(Error::Conflict("management_command_conflict"));}let Some(r)=rows.as_slice().first()else{return Ok(json!({"recorded":false,"agentRequest":null}))};if r.operation!=input.operation{return Err(Error::Conflict("management_command_conflict"));}let saved:ManagedAgentRequest=decode(&r.result)?;Ok(json!({"recorded":true,"agentRequest":view(db,&saved.id,p,now).await?}))

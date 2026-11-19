@@ -44,6 +44,10 @@ struct Device {
     executor_generation: i64,
     #[diesel(sql_type=Bool)]
     retiring: bool,
+    #[diesel(sql_type=Nullable<Text>)]
+    issuance_nonce: Option<String>,
+    #[diesel(sql_type=BigInt)]
+    issuance_until_ms: i64,
 }
 async fn authorized(
     db: &mut AsyncPgConnection,
@@ -104,89 +108,92 @@ impl DomainStore {
             return Err(Error::Invalid("ciphertext_reference_required"));
         }
         let payload = serde_json::to_string(event).map_err(|_| Error::Invalid("invalid_event"))?;
-        let mut db = self.db.lock().await?;
-        let now = clock(&mut db).await?;
-        if received <= now - 86_400_000 {
-            return Ok(());
-        }
-        // `received` is stamped by this server's ingress clock. PostgreSQL may
-        // lag that host clock slightly; comparing the two silently drops valid
-        // encrypted events. Keep the original timestamp and validate future
-        // input against its source clock; later authorization still uses the
-        // database's period, control-generation, and expiry checks.
-        if received > crate::api::now_ms() {
-            return Err(Error::Unavailable("shared_intake_clock_changed"));
-        }
-        if event.sender_mxid.starts_with("@_hagency_") {
-            return Ok(());
-        }
-        sql_query("DELETE FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE received_at_ms<=$1").bind::<BigInt,_>(now-86_400_000).execute(&mut *db).await?;
-        let full=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_e2ee_candidates c JOIN hagency_agent_v1.shared_room_memberships m ON m.assignment_id=c.assignment_id WHERE m.room_id=$1 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_e2ee_candidates old WHERE old.assignment_id=c.assignment_id AND old.event_id=$2) GROUP BY c.assignment_id HAVING count(*)>=10000) AS matched").bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.event_id).get_result::<Flag>(&mut *db).await?.matched;
-        if full {
-            return Err(Error::Unavailable("encrypted_candidate_capacity"));
-        }
-        // Binding identity, not a model process, selects the candidate. The
-        // executor must confirm addressing before durable demand intake.
-        sql_query("INSERT INTO hagency_agent_v1.management_shared_e2ee_candidates(assignment_id,event_id,payload,received_at_ms,room_binding_id,room_binding_generation) SELECT m.assignment_id,$2,$3,$4,m.binding_id,m.binding_generation FROM hagency_agent_v1.shared_room_memberships m JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=m.assignment_id WHERE m.room_id=$1 AND m.state='matrix_verified' AND c.mode='running' AND m.puppet_mxid<>$5 ON CONFLICT DO NOTHING")
-            .bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.event_id).bind::<Text,_>(&payload).bind::<BigInt,_>(received).bind::<Text,_>(&event.sender_mxid).execute(&mut *db).await?;
-        Ok(())
+        self.db.write_transaction(async |db| {
+            let now = clock(db).await?;
+            if received <= now - 86_400_000 {
+                return Ok(());
+            }
+            // `received` is stamped by this server's ingress clock. PostgreSQL may
+            // lag that host clock slightly; comparing the two silently drops valid
+            // encrypted events. Keep the original timestamp and validate future
+            // input against its source clock; later authorization still uses the
+            // database's period, control-generation, and expiry checks.
+            if received > crate::api::now_ms() {
+                return Err(Error::Unavailable("shared_intake_clock_changed"));
+            }
+            if event.sender_mxid.starts_with("@_hagency_") {
+                return Ok(());
+            }
+            sql_query("DELETE FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE received_at_ms<=$1").bind::<BigInt,_>(now-86_400_000).execute(db).await?;
+            let full=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_e2ee_candidates c JOIN hagency_agent_v1.shared_room_memberships m ON m.assignment_id=c.assignment_id WHERE m.room_id=$1 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_e2ee_candidates old WHERE old.assignment_id=c.assignment_id AND old.event_id=$2) GROUP BY c.assignment_id HAVING count(*)>=10000) AS matched").bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.event_id).get_result::<Flag>(db).await?.matched;
+            if full {
+                return Err(Error::Unavailable("encrypted_candidate_capacity"));
+            }
+            // Binding identity, not a model process, selects the candidate. The
+            // executor must confirm addressing before durable demand intake.
+            sql_query("INSERT INTO hagency_agent_v1.management_shared_e2ee_candidates(assignment_id,event_id,payload,received_at_ms,room_binding_id,room_binding_generation) SELECT m.assignment_id,$2,$3,$4,m.binding_id,m.binding_generation FROM hagency_agent_v1.shared_room_memberships m JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=m.assignment_id WHERE m.room_id=$1 AND m.state='matrix_verified' AND c.mode='running' AND m.puppet_mxid<>$5 ON CONFLICT DO NOTHING")
+                .bind::<Text,_>(&event.room_id).bind::<Text,_>(&event.event_id).bind::<Text,_>(&payload).bind::<BigInt,_>(received).bind::<Text,_>(&event.sender_mxid).execute(db).await?;
+            Ok(())
+        }).await
     }
     pub(crate) async fn shared_crypto_poll(
         &self,
         p: &Principal,
         after: Option<&str>,
     ) -> Result<Value> {
-        let mut db = self.db.lock().await?;
-        Self::authorize(&mut db, p, 0).await?;
-        let (device, generation) = device(p)?;
-        sql_query("UPDATE hagency_agent_v1.management_shared_e2ee_candidates c SET state='ignored' WHERE state<>'ignored' AND room_binding_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m WHERE m.binding_id=c.room_binding_id AND m.binding_generation=c.room_binding_generation)").execute(&mut *db).await?;
-        let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND a.state='pending_native' AND m.state='matrix_verified' AND a.id>$4 ORDER BY a.id LIMIT 17")
-            .bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(after.unwrap_or("")).load::<Id>(&mut *db).await?;
-        let next = (ids.len() == 17).then(|| ids[15].id.clone());
-        let mut scopes = Vec::new();
-        for id in ids.iter().take(16) {
-            let m = match authorized(&mut db, p, &id.id, &self.server).await {
-                Ok(m) => m,
-                Err(Error::Unauthorized(_) | Error::NotFound(_) | Error::Conflict(_)) => continue,
-                Err(e) => return Err(e),
-            };
-            let rows=sql_query("SELECT * FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE assignment_id=$1 AND state<>'ignored' AND received_at_ms>$2 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake i WHERE i.assignment_id=$1 AND i.event_id=management_shared_e2ee_candidates.event_id) ORDER BY last_polled_ms,received_at_ms,event_id LIMIT 16")
-                .bind::<Text,_>(&id.id).bind::<BigInt,_>(clock(&mut db).await?-86_400_000).load::<Candidate>(&mut *db).await?;
-            for row in &rows {
-                sql_query("UPDATE hagency_agent_v1.management_shared_e2ee_candidates SET last_polled_ms=$3 WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&id.id).bind::<Text,_>(&row.event_id).bind::<BigInt,_>(clock(&mut db).await?).execute(&mut *db).await?;
-            }
-            let mut by_room = std::collections::BTreeMap::<String, Vec<RoutedEvent>>::new();
-            for row in &rows {
-                let event: RoutedEvent = decode(&row.payload)?;
-                by_room
-                    .entry(event.room_id.clone())
-                    .or_default()
-                    .push(event);
-            }
-            if by_room.is_empty() {
-                by_room.insert(m.room_id.clone(), Vec::new());
-            }
-            for (room, events) in by_room {
-                let m = match intake::member_for(&mut db, &id.id, &room).await {
+        self.db.write_transaction(async |db| {
+            Self::authorize(db, p, 0).await?;
+            let (device, generation) = device(p)?;
+            sql_query("UPDATE hagency_agent_v1.management_shared_e2ee_candidates c SET state='ignored' WHERE state<>'ignored' AND room_binding_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m WHERE m.binding_id=c.room_binding_id AND m.binding_generation=c.room_binding_generation)").execute(db).await?;
+            let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND a.state='pending_native' AND m.state='matrix_verified' AND a.id>$4 ORDER BY a.id LIMIT 17")
+                .bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(after.unwrap_or("")).load::<Id>(db).await?;
+            let next = (ids.len() == 17).then(|| ids[15].id.clone());
+            let mut scopes = Vec::new();
+            for id in ids.iter().take(16) {
+                let m = match authorized(db, p, &id.id, &self.server).await {
                     Ok(m) => m,
-                    Err(Error::NotFound(_)) => continue,
+                    Err(Error::Unauthorized(_) | Error::NotFound(_) | Error::Conflict(_)) => continue,
                     Err(e) => return Err(e),
                 };
-                scopes.push(json!({"assignmentId":id.id,"puppetMxid":m.puppet_mxid,"roomId":m.room_id,"managerMxid":m.manager_mxid,"direct":m.pool_agent&&m.space_id.is_empty(),"events":events}));
+                let rows=sql_query("SELECT * FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE assignment_id=$1 AND state<>'ignored' AND received_at_ms>$2 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake i WHERE i.assignment_id=$1 AND i.event_id=management_shared_e2ee_candidates.event_id) ORDER BY last_polled_ms,received_at_ms,event_id LIMIT 16")
+                    .bind::<Text,_>(&id.id).bind::<BigInt,_>(clock(db).await?-86_400_000).load::<Candidate>(db).await?;
+                for row in &rows {
+                    sql_query("UPDATE hagency_agent_v1.management_shared_e2ee_candidates SET last_polled_ms=$3 WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&id.id).bind::<Text,_>(&row.event_id).bind::<BigInt,_>(clock(db).await?).execute(db).await?;
+                }
+                let mut by_room = std::collections::BTreeMap::<String, Vec<RoutedEvent>>::new();
+                for row in &rows {
+                    let event: RoutedEvent = decode(&row.payload)?;
+                    by_room
+                        .entry(event.room_id.clone())
+                        .or_default()
+                        .push(event);
+                }
+                if by_room.is_empty() {
+                    by_room.insert(m.room_id.clone(), Vec::new());
+                }
+                for (room, events) in by_room {
+                    let m = match intake::member_for(db, &id.id, &room).await {
+                        Ok(m) => m,
+                        Err(Error::NotFound(_)) => continue,
+                        Err(e) => return Err(e),
+                    };
+                    scopes.push(json!({"assignmentId":id.id,"puppetMxid":m.puppet_mxid,"roomId":m.room_id,"managerMxid":m.manager_mxid,"direct":m.pool_agent&&m.space_id.is_empty(),"events":events}));
+                }
             }
-        }
-        Ok(json!({"scopes":scopes,"nextAfter":next}))
+            Ok(json!({"scopes":scopes,"nextAfter":next}))
+        }).await
     }
     pub(crate) async fn shared_crypto_thread(
         &self,
         p: &Principal,
         input: CryptoInput,
     ) -> Result<Value> {
-        let mut db = self.db.lock().await?;
-        authorized(&mut db, p, &input.assignment_id, &self.server).await?;
-        let thread = input.thread_root.ok_or(Error::Invalid("thread_required"))?;
-        let known=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1 AND w.payload::jsonb->>'threadRoot'=$2) AS matched").bind::<Text,_>(&input.assignment_id).bind::<Text,_>(thread).get_result::<Flag>(&mut *db).await?.matched;
-        Ok(json!({"known":known}))
+        self.db.write_transaction(async |db| {
+            authorized(db, p, &input.assignment_id, &self.server).await?;
+            let thread = input.thread_root.ok_or(Error::Invalid("thread_required"))?;
+            let known=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1 AND w.payload::jsonb->>'threadRoot'=$2) AS matched").bind::<Text,_>(&input.assignment_id).bind::<Text,_>(thread).get_result::<Flag>(db).await?.matched;
+            Ok(json!({"known":known}))
+        }).await
     }
     pub(crate) async fn shared_crypto_device(
         &self,
@@ -195,24 +202,44 @@ impl DomainStore {
         matrix: &MatrixClient,
     ) -> Result<Value> {
         key(&input.assignment_id)?;
-        let mut db = self.db.lock().await?;
-        let m = authorized(&mut db, p, &input.assignment_id, &self.server).await?;
-        let (device, generation) = device(p)?;
-        let initial = device_id(&input.assignment_id, device, generation);
-        let id = crate::executor_matrix_device::select(
-            &mut db,
-            &input.assignment_id,
-            device,
-            generation,
-            &initial,
-        )
-        .await?;
-        // Persist intent before login. A crash after login still leaves a
-        // revocation obligation. Serialize issue/revoke using this same lock.
-        sql_query("INSERT INTO hagency_agent_v1.executor_matrix_devices VALUES($1,$2,$3,$4,$5,'shared',false) ON CONFLICT(scope_id,device_id) DO UPDATE SET revoked=false")
-            .bind::<Text,_>(&input.assignment_id).bind::<Text,_>(&m.puppet_mxid).bind::<Text,_>(&id).bind::<Text,_>(device).bind::<BigInt,_>(generation).execute(&mut *db).await?;
-        let token = matrix.login_device(&m.puppet_mxid, &id).await?;
-        Ok(json!({"userId":m.puppet_mxid,"deviceId":id,"accessToken":token}))
+        let (executor, generation) = device(p)?;
+        let scope = &input.assignment_id;
+        let initial = device_id(scope, executor, generation);
+        let (claim, id) = self
+            .db
+            .write_transaction(async |db| {
+                let membership = authorized(db, p, scope, &self.server).await?;
+                let claim = crate::executor_matrix_device::Issuance::new(
+                    scope,
+                    &membership.puppet_mxid,
+                    executor,
+                    generation,
+                    "shared",
+                );
+                let id = claim.reserve(db, &initial, crate::api::now_ms()).await?;
+                Ok((claim, id))
+            })
+            .await?;
+        let issued = matrix.login_device(&claim.puppet, &id).await;
+        let received = issued.is_ok();
+        let result = async {
+            let token = issued?;
+            self.db
+                .write_transaction(async |db| {
+                    let membership = authorized(db, p, scope, &self.server).await?;
+                    if membership.puppet_mxid != claim.puppet {
+                        return Err(Error::Conflict("matrix_device_identity_changed"));
+                    }
+                    claim.confirm(db, &id, crate::api::now_ms()).await
+                })
+                .await?;
+            Ok(json!({"userId":claim.puppet,"deviceId":id,"accessToken":token}))
+        }
+        .await;
+        if result.is_err() {
+            claim.retire(&self.db, matrix, &id, received).await;
+        }
+        result
     }
     pub(crate) async fn shared_crypto_confirm(
         &self,
@@ -228,27 +255,31 @@ impl DomainStore {
         let addressed = input
             .addressed
             .ok_or(Error::Invalid("addressing_required"))?;
-        let (mut event, received, m) = {
-            let mut db = self.db.lock().await?;
-            authorized(&mut db, p, &input.assignment_id, &self.server).await?;
-            let c=sql_query("SELECT * FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE assignment_id=$1 AND event_id=$2")
-                .bind::<Text,_>(&input.assignment_id).bind::<Text,_>(event_id).get_result::<Candidate>(&mut *db).await.map_err(hidden)?;
-            if c.received_at_ms <= clock(&mut db).await? - 86_400_000 {
-                return Err(Error::Conflict("encrypted_candidate_expired"));
-            }
-            let current=sql_query("SELECT (room_binding_id IS NULL OR EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m WHERE m.binding_id=c.room_binding_id AND m.binding_generation=c.room_binding_generation)) AS matched FROM hagency_agent_v1.management_shared_e2ee_candidates c WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&input.assignment_id).bind::<Text,_>(event_id).get_result::<Flag>(&mut *db).await?.matched;
-            if !current {
-                return Err(Error::Conflict("shared_room_binding_changed"));
-            }
-            if c.state == "ignored" {
-                return Ok(json!({"confirmed":false}));
-            }
-            {
-                let event = decode::<RoutedEvent>(&c.payload)?;
-                let room =
-                    intake::member_for(&mut db, &input.assignment_id, &event.room_id).await?;
-                (event, c.received_at_ms, room)
-            }
+        let Some((mut event, received, m)) = ({
+            self.db.write_transaction(async |db| {
+                authorized(db, p, &input.assignment_id, &self.server).await?;
+                let c=sql_query("SELECT * FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE assignment_id=$1 AND event_id=$2")
+                    .bind::<Text,_>(&input.assignment_id).bind::<Text,_>(event_id).get_result::<Candidate>(db).await.map_err(hidden)?;
+                if c.received_at_ms <= clock(db).await? - 86_400_000 {
+                    return Err(Error::Conflict("encrypted_candidate_expired"));
+                }
+                let current=sql_query("SELECT (room_binding_id IS NULL OR EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m WHERE m.binding_id=c.room_binding_id AND m.binding_generation=c.room_binding_generation)) AS matched FROM hagency_agent_v1.management_shared_e2ee_candidates c WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&input.assignment_id).bind::<Text,_>(event_id).get_result::<Flag>(db).await?.matched;
+                if !current {
+                    return Err(Error::Conflict("shared_room_binding_changed"));
+                }
+                if c.state == "ignored" {
+                    return Ok(None);
+                }
+
+                Ok({
+                    let event = decode::<RoutedEvent>(&c.payload)?;
+                    let room =
+                        intake::member_for(db, &input.assignment_id, &event.room_id).await?;
+                    Some((event, c.received_at_ms, room))
+                })
+            }).await?
+        }) else {
+            return Ok(json!({"confirmed":false}));
         };
         let f = gateway
             .shared_delivery(
@@ -284,21 +315,27 @@ impl DomainStore {
         }
         let confirmed_payload =
             serde_json::to_string(&event).map_err(|_| Error::Invalid("invalid_event"))?;
-        {
-            let mut db = self.db.lock().await?;
-            authorized(&mut db, p, &input.assignment_id, &self.server).await?;
-            let prior=sql_query("SELECT * FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&input.assignment_id).bind::<Text,_>(event_id).get_result::<Candidate>(&mut *db).await?;
-            if prior.state == "ignored" {
-                return Ok(json!({"confirmed":false}));
-            }
-            if prior.state == "confirmed" && (!addressed || prior.payload != confirmed_payload) {
-                return Err(Error::Conflict("encrypted_confirmation_changed"));
-            }
-            let pinned=sql_query("UPDATE hagency_agent_v1.management_shared_e2ee_candidates SET state=$3,payload=$4 WHERE assignment_id=$1 AND event_id=$2 AND (state='pending' OR (state=$3 AND payload=$4))")
-                .bind::<Text,_>(&input.assignment_id).bind::<Text,_>(event_id).bind::<Text,_>(if addressed {"confirmed"}else{"ignored"}).bind::<Text,_>(&confirmed_payload).execute(&mut *db).await?;
-            if pinned != 1 {
-                return Err(Error::Conflict("encrypted_confirmation_changed"));
-            }
+        let accepted = {
+            self.db.write_transaction(async |db| {
+                authorized(db, p, &input.assignment_id, &self.server).await?;
+                let prior=sql_query("SELECT * FROM hagency_agent_v1.management_shared_e2ee_candidates WHERE assignment_id=$1 AND event_id=$2").bind::<Text,_>(&input.assignment_id).bind::<Text,_>(event_id).get_result::<Candidate>(db).await?;
+                if prior.state == "ignored" {
+                    return Ok(false);
+                }
+                if prior.state == "confirmed" && (!addressed || prior.payload != confirmed_payload) {
+                    return Err(Error::Conflict("encrypted_confirmation_changed"));
+                }
+                let pinned=sql_query("UPDATE hagency_agent_v1.management_shared_e2ee_candidates SET state=$3,payload=$4 WHERE assignment_id=$1 AND event_id=$2 AND (state='pending' OR (state=$3 AND payload=$4))")
+                    .bind::<Text,_>(&input.assignment_id).bind::<Text,_>(event_id).bind::<Text,_>(if addressed {"confirmed"}else{"ignored"}).bind::<Text,_>(&confirmed_payload).execute(db).await?;
+                if pinned != 1 {
+                    return Err(Error::Conflict("encrypted_confirmation_changed"));
+                }
+
+                Ok(true)
+            }).await?
+        };
+        if !accepted {
+            return Ok(json!({"confirmed":false}));
         }
         if addressed {
             self.retain_shared_event_for(&event, received, gateway, Some(&input.assignment_id))
@@ -311,51 +348,55 @@ impl DomainStore {
         // DomainStore guard and block unrelated management and work requests.
         let mut failure = None;
         let retiring = {
-            let mut db = self.db.lock().await?;
-            let devices=sql_query("SELECT * FROM hagency_agent_v1.executor_matrix_devices WHERE kind='shared' AND NOT revoked ORDER BY last_checked_ms,scope_id,device_id LIMIT 8").load::<Device>(&mut *db).await?;
-            let mut retiring = Vec::new();
-            for d in devices {
-                let now = clock(&mut db).await?;
-                sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET last_checked_ms=greatest(last_checked_ms+1,$3) WHERE scope_id=$1 AND device_id=$2").bind::<Text,_>(&d.scope_id).bind::<Text,_>(&d.device_id).bind::<BigInt,_>(now).execute(&mut *db).await?;
-                let live: Result<bool> = async {
-                    let assignment = match intake::assignment(&mut db, &d.scope_id).await {
-                        Ok(w) => Some(w),
-                        Err(Error::NotFound(_)) => None,
-                        Err(e) => return Err(e),
-                    };
-                    if let Some(w) = assignment {
-                        Ok(!d.retiring
-                            && w.executor_device_id == d.executor_device_id
-                            && w.executor_generation == d.executor_generation
-                            && intake::member(&mut db, &d.scope_id).await.is_ok()
-                            && intake::running(&mut db, &d.scope_id).await?
-                            && intake::retainable(&mut db, &d.scope_id, &w, &self.server, now)
-                                .await?)
-                    } else {
-                        Ok(false)
+            self.db.transaction(async |db| {
+                let devices=sql_query("SELECT * FROM hagency_agent_v1.executor_matrix_devices WHERE kind='shared' AND NOT revoked ORDER BY last_checked_ms,scope_id,device_id LIMIT 8 FOR UPDATE SKIP LOCKED").load::<Device>(db).await?;
+                let mut retiring = Vec::new();
+                for d in devices {
+                    let now = clock(db).await?;
+                    sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET last_checked_ms=greatest(last_checked_ms+1,$3) WHERE scope_id=$1 AND device_id=$2").bind::<Text,_>(&d.scope_id).bind::<Text,_>(&d.device_id).bind::<BigInt,_>(now).execute(db).await?;
+                    let live: Result<bool> = async {
+                        let assignment = match intake::assignment(db, &d.scope_id).await {
+                            Ok(w) => Some(w),
+                            Err(Error::NotFound(_)) => None,
+                            Err(e) => return Err(e),
+                        };
+                        if let Some(w) = assignment {
+                            Ok(!d.retiring
+                                && (d.issuance_nonce.is_none() || d.issuance_until_ms > crate::api::now_ms())
+                                && w.executor_device_id == d.executor_device_id
+                                && w.executor_generation == d.executor_generation
+                                && intake::member(db, &d.scope_id).await.is_ok()
+                                && intake::running(db, &d.scope_id).await?
+                                && intake::retainable(db, &d.scope_id, &w, &self.server, now)
+                                    .await?)
+                        } else {
+                            Ok(false)
+                        }
+                    }
+                    .await;
+                    match live {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET retiring=true WHERE scope_id=$1 AND device_id=$2").bind::<Text,_>(&d.scope_id).bind::<Text,_>(&d.device_id).execute(db).await?;
+                            retiring.push(d);
+                        }
+                        Err(e) => {
+                            failure.get_or_insert(e);
+                        }
                     }
                 }
-                .await;
-                match live {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET retiring=true WHERE scope_id=$1 AND device_id=$2").bind::<Text,_>(&d.scope_id).bind::<Text,_>(&d.device_id).execute(&mut *db).await?;
-                        retiring.push(d);
-                    }
-                    Err(e) => {
-                        failure.get_or_insert(e);
-                    }
-                }
-            }
-            retiring
+
+                Ok(retiring)
+            }).await?
         };
         for d in retiring {
             let result:Result<()>=async {
                 matrix.logout_device(&d.puppet_mxid,&d.device_id).await?;
-                let mut db=self.db.lock().await?;
-                sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET revoked=true WHERE scope_id=$1 AND device_id=$2 AND retiring AND NOT revoked").bind::<Text,_>(&d.scope_id).bind::<Text,_>(&d.device_id).execute(&mut *db).await?;
-                Ok(())
-            }.await;
+                self.db.transaction(async |db| {
+                    sql_query("UPDATE hagency_agent_v1.executor_matrix_devices SET revoked=true WHERE scope_id=$1 AND device_id=$2 AND retiring AND NOT revoked AND issuance_nonce IS NOT DISTINCT FROM $3 AND (issuance_nonce IS NULL OR issuance_until_ms<=(extract(epoch from clock_timestamp())*1000)::bigint)").bind::<Text,_>(&d.scope_id).bind::<Text,_>(&d.device_id).bind::<Nullable<Text>,_>(&d.issuance_nonce).execute(db).await?;
+                    Ok(())
+                }).await
+}.await;
             if let Err(e) = result {
                 failure.get_or_insert(e);
             }

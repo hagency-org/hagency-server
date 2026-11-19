@@ -12,9 +12,8 @@ impl DomainStore {
         input: &ConfirmProjectSetup,
     ) -> Result<Option<ProjectSetup>> {
         let digest = digest(id, input)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let s = setup_id(db, id).await?;
                 let plan = plan(db, &s.project_id).await?;

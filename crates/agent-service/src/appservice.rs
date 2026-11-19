@@ -105,15 +105,13 @@ impl Inbox {
 }).await
     }
     pub(crate) async fn routed(&self, id: &str) -> Result<()> {
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
+        self.db.transaction(async |db:&mut AsyncPgConnection| {
             {
                 use crate::schema::agent_tables::routing_jobs as q;
                 let params = (id,);
                 diesel::update(q::table)
                     .filter((q::transaction_id).eq(&params.0))
+                    .filter(q::state.eq("pending"))
                     .set((q::state.eq("routed"),))
                     .execute(db)
                     .await
@@ -124,7 +122,6 @@ impl Inbox {
             sql_query("UPDATE hagency_agent_v1.inbound_transactions SET body='{\"events\":[]}'::jsonb WHERE id=$1 AND EXISTS(SELECT 1 FROM hagency_agent_v1.routing_jobs WHERE transaction_id=$1 AND state='routed')").bind::<Text,_>(id).execute(db).await?;
             Ok(())
         }).await
-    }).await
     }
     pub async fn open(url: &str, hs_token: String) -> Result<Self> {
         if hs_token.len() < 32 {
@@ -145,6 +142,7 @@ impl Inbox {
             db.batch_execute("CREATE TABLE IF NOT EXISTS hagency_agent_v1.routing_rejections (transaction_id text NOT NULL REFERENCES hagency_agent_v1.inbound_transactions(id) ON DELETE CASCADE,event_id text NOT NULL,binding_id text NOT NULL,reason text NOT NULL,PRIMARY KEY(transaction_id,event_id,binding_id))").await?;
             db.batch_execute("CREATE TABLE IF NOT EXISTS hagency_agent_v1.readiness_room (singleton boolean PRIMARY KEY CHECK(singleton),room_id text NOT NULL)").await?;
             db.batch_execute("CREATE TABLE IF NOT EXISTS hagency_agent_v1.readiness_receipts (event_id text PRIMARY KEY,received_at_ms bigint NOT NULL)").await?;
+            db.batch_execute(include_str!("inbox_capacity.sql")).await?;
             Ok(())
         }).await?;
         Ok(Self {
@@ -218,11 +216,8 @@ impl Inbox {
         }
         let digest = hash(&encoded);
         let limits = self.limits;
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async move |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             #[derive(diesel::Queryable, diesel::QueryableByName)] struct Existing {#[diesel(sql_type=Text)] digest:String}
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
             let existing={
                 use crate::schema::agent_tables::inbound_transactions as q;
                 let params = (id,);
@@ -235,20 +230,6 @@ impl Inbox {
             if let Some(old)=existing.as_slice().first() {
                 return if old.digest==digest {Ok(())} else {Err(Error::Conflict("transaction_content_mismatch"))};
             }
-            #[derive(diesel::Queryable, diesel::QueryableByName)] struct Count {#[diesel(sql_type=BigInt)] count:i64}
-            let pending={
-                use crate::schema::agent_tables::routing_jobs as q;
-                q::table
-                    .select((diesel::dsl::count_star(),))
-                    .filter((q::state).eq("pending"))
-                    .get_result::<Count>(db)
-                    .await
-            }?;
-            #[derive(diesel::Queryable, diesel::QueryableByName)] struct Capacity {#[diesel(sql_type=BigInt)] records:i64,#[diesel(sql_type=BigInt)] bytes:i64}
-            let capacity=sql_query("SELECT count(*) AS records,coalesce(sum(octet_length(t.body::text)),0)::bigint AS bytes FROM hagency_agent_v1.inbound_transactions t JOIN hagency_agent_v1.routing_jobs j ON j.transaction_id=t.id WHERE j.state='pending'").get_result::<Capacity>(db).await?;
-            #[derive(diesel::Queryable, diesel::QueryableByName)] struct Incoming {#[diesel(sql_type=BigInt)] bytes:i64}
-            let payload_bytes=sql_query("SELECT octet_length($1::jsonb::text)::bigint AS bytes").bind::<Jsonb,_>(&body).get_result::<Incoming>(db).await?.bytes;
-            if pending.count>=limits.max_pending || capacity.records>=limits.max_records || capacity.bytes.saturating_add(payload_bytes)>limits.max_bytes {return Err(Error::Unavailable("appservice_queue_full"));}
             sql_query("INSERT INTO hagency_agent_v1.readiness_receipts(event_id,received_at_ms) SELECT e->>'event_id',$2 FROM jsonb_array_elements($1->'events') e WHERE e->>'type'='m.room.message' AND split_part(e->>'sender',':',1)='@_hagency_service' AND e->'content'->>'msgtype'='m.notice' AND e->'content'->>'body'='Hagency service readiness probe' AND length(e->>'event_id') BETWEEN 2 AND 255 AND EXISTS(SELECT 1 FROM hagency_agent_v1.readiness_room r WHERE r.room_id=e->>'room_id') ON CONFLICT DO NOTHING")
                 .bind::<Jsonb,_>(&body).bind::<BigInt,_>(now).execute(db).await?;
             {
@@ -261,7 +242,7 @@ impl Inbox {
             }?;
             {
                 use crate::schema::agent_tables::inbound_transactions as q;
-                let params = (id, digest, body, now);
+                let params = (id, &digest, &body, now);
                 diesel::insert_into(q::table)
                     .values((
                         q::id.eq(&params.0),
@@ -283,9 +264,15 @@ impl Inbox {
                     .execute(db)
                     .await
             }?;
+            #[derive(diesel::QueryableByName)]
+            struct Capacity { #[diesel(sql_type=BigInt)] records: i64, #[diesel(sql_type=BigInt)] bytes: i64 }
+            let capacity = sql_query("SELECT records, bytes FROM hagency_agent_v1.inbox_capacity WHERE singleton")
+                .get_result::<Capacity>(db).await?;
+            if capacity.records > limits.max_pending.min(limits.max_records) || capacity.bytes > limits.max_bytes {
+                return Err(Error::Unavailable("appservice_queue_full"));
+            }
             Ok(())
         }).await
-    }).await
     }
     fn authenticated(&self, req: &Request) -> bool {
         let headers = req
@@ -503,6 +490,76 @@ mod tests {
         inbox.routed(&impostor_id).await.unwrap();
         assert!(!inbox.observed_event(&impostor_event).await.unwrap());
     }
+    #[tokio::test]
+    #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+    async fn concurrent_inbox_accept_accounts_for_legacy_and_compacted_bodies() {
+        let source = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+        let mut admin = AsyncPgConnection::establish(&source).await.unwrap();
+        let mut url = url::Url::parse(&source).unwrap();
+        let name = format!("inbox_capacity_{}", &crate::secret_token()[..12]);
+        admin
+            .batch_execute(&format!("CREATE DATABASE {name}"))
+            .await
+            .unwrap();
+        url.set_path(&name);
+        crate::store::Store::open(url.as_str(), "example.test", "https://example.test/auth/")
+            .await
+            .unwrap();
+        let first = Inbox::open(url.as_str(), "h".repeat(64)).await.unwrap();
+        let mut observer = AsyncPgConnection::establish(url.as_str()).await.unwrap();
+        let body = json!({"events":[{"body":"an existing payload"}]});
+        first.accept("legacy", body.clone(), 1).await.unwrap();
+        observer.batch_execute("DROP TRIGGER update_inbox_capacity ON hagency_agent_v1.routing_jobs; DROP TABLE hagency_agent_v1.inbox_capacity").await.unwrap();
+        let restored = Inbox::open(url.as_str(), "h".repeat(64)).await.unwrap();
+        #[derive(diesel::QueryableByName)]
+        struct Usage {
+            #[diesel(sql_type=BigInt)]
+            records: i64,
+            #[diesel(sql_type=BigInt)]
+            bytes: i64,
+        }
+        let usage = async |db: &mut AsyncPgConnection| {
+            sql_query("SELECT records,bytes FROM hagency_agent_v1.inbox_capacity")
+                .get_result::<Usage>(db)
+                .await
+                .unwrap()
+        };
+        let initial = usage(&mut observer).await;
+        assert_eq!(initial.records, 1);
+        assert!(initial.bytes > 0);
+        let limits = Limits {
+            max_pending: 10,
+            max_records: 10,
+            max_bytes: 2 * initial.bytes,
+        };
+        let a = restored.with_limits(limits).unwrap();
+        let b = first.with_limits(limits).unwrap();
+        let (one, two) = tokio::join!(
+            a.accept("one", body.clone(), 2),
+            b.accept("two", body.clone(), 2)
+        );
+        let (winner, loser) = match (one, two) {
+            (Ok(()), Err(Error::Unavailable("appservice_queue_full"))) => ("one", "two"),
+            (Err(Error::Unavailable("appservice_queue_full")), Ok(())) => ("two", "one"),
+            result => panic!("exactly one new body must fit: {result:?}"),
+        };
+        b.accept(winner, body.clone(), 3).await.unwrap();
+        let (one, two) = tokio::join!(a.routed("legacy"), b.routed("legacy"));
+        one.unwrap();
+        two.unwrap();
+        a.accept(loser, body, 4).await.unwrap();
+        let final_usage = usage(&mut observer).await;
+        assert_eq!(
+            (final_usage.records, final_usage.bytes),
+            (2, 2 * initial.bytes)
+        );
+        drop((a, b, observer));
+        admin
+            .batch_execute(&format!("DROP DATABASE {name} WITH (FORCE)"))
+            .await
+            .unwrap();
+    }
+
     #[test]
     fn hashes_semantic_json_consistently() {
         let a: Value = serde_json::from_str(r#"{"events":[],"nested":{"x":1,"y":2}}"#).unwrap();

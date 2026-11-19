@@ -242,9 +242,8 @@ impl DomainStore {
     ) -> Result<ProjectReadiness> {
         enabled(policy)?;
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 view(db, id, p, policy, now).await
@@ -266,9 +265,8 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 if !policy.can_administer(p) {
@@ -342,8 +340,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_project_setup"));
         }
         let digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;let plan=plan(db,id).await?;
             if plan.manager_user_id!=p.user_id{return Err(Error::Unauthorized("project_manager_required"));}
             if let Some(saved)=replay::<ProjectReadiness>(db,p,&input.command_id,"project.setup.begin",&digest).await?{return view(db,&saved.project_id,p,policy,now).await;}
@@ -421,9 +418,8 @@ impl DomainStore {
         // Reauthorize before any privileged state read. Replay never repeats a
         // Matrix mutation; this endpoint performs only trusted observations.
         let (s, replayed) = {
-            let mut db = self.db.lock().await?;
-            (*db)
-                .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+            self.db
+                .write_transaction(async |db: &mut AsyncPgConnection| {
                     Self::authorize(db, p, crate::api::now_ms()).await?;
                     let s = setup_id(db, id).await?;
                     if s.manager_mxid != p.mxid {
@@ -493,8 +489,7 @@ impl DomainStore {
             marker(&space_state, &s, "space", &input.space_id)?;
             marker(&room_state, &s, "room", &input.space_id)?;
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             if let Some(saved)=replay::<ProjectReadiness>(db,p,&input.command_id,"project.setup.confirm",&digest).await?{return view(db,&saved.project_id,p,policy,now).await;}
             let current=setup_id(db,id).await?;let plan=plan(db,&current.project_id).await?;
@@ -542,8 +537,7 @@ impl DomainStore {
         ) {
             return Err(Error::Invalid("invalid_management_operation"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let rows=sql_query("SELECT operation,digest,result FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND device_id=$2 AND command_id=$3 ORDER BY device_generation LIMIT 2").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(id).load::<Receipt>(db).await?;
             if rows.len()>1{return Err(Error::Conflict("management_command_conflict"));}

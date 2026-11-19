@@ -135,8 +135,7 @@ impl DomainStore {
         {
             return Err(Error::Invalid("invalid_resource_capability"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             let rows=sql_query(format!("{CONTRIBUTIONS} WHERE c.state='admitted' AND c.id>$1 AND ($2::text IS NULL OR c.capabilities::jsonb ? $2) ORDER BY c.id LIMIT $3"))
@@ -161,8 +160,7 @@ impl DomainStore {
         input.validate()?;
         device(p)?;
         let payload_digest = digest("", &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             if let Some(saved)=replay::<ProjectPlan>(db,p,&input.command_id,"project.request",&payload_digest).await? {
@@ -197,9 +195,8 @@ impl DomainStore {
         id: &str,
     ) -> Result<ProjectPlan> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 project(db, id, p, policy, now).await
@@ -214,9 +211,8 @@ impl DomainStore {
         query: ManagementQuery,
     ) -> Result<ManagementPage<ProjectPlan>> {
         query.validate()?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let rows = sql_query(format!(
@@ -282,9 +278,8 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 if !policy.can_administer(p) {
                     return Err(Error::Unauthorized("management_administrator_required"));
@@ -358,9 +353,8 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let row = project_row(db, id).await?;
@@ -427,8 +421,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_operation"));
         }
         let (executor, _) = device(p)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let rows=sql_query("SELECT operation,digest,result FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND device_id=$2 AND command_id=$3 ORDER BY device_generation LIMIT 2")
                 .bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<Text,_>(command).load::<Receipt>(db).await?;

@@ -367,8 +367,7 @@ impl DomainStore {
         ) {
             return Err(Error::Invalid("invalid_management_operation"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let rows=sql_query("SELECT operation,digest,result FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND device_id=$2 AND command_id=$3 ORDER BY device_generation LIMIT 2").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(id).load::<Receipt>(db).await?;
             if rows.len()>1 {return Err(Error::Conflict("management_command_conflict"));}
@@ -388,8 +387,7 @@ impl DomainStore {
         if let Some(after) = &query.after {
             key(after)?;
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             let rows=sql_query(format!("{CONTRIBUTIONS} WHERE c.state='admitted' AND c.id>$1 AND ($2::text IS NULL OR c.capabilities::jsonb ? $2) ORDER BY c.id LIMIT 17"))
@@ -435,9 +433,9 @@ impl DomainStore {
         // Replays are read-only and must survive a later room departure.
         let payload = digest(pool, &input)?;
         {
-            let mut db = self.db.lock().await?;
-            let saved = (*db)
-                .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+            let saved = self
+                .db
+                .write_transaction(async |db: &mut AsyncPgConnection| {
                     Self::authorize(db, p, crate::api::now_ms()).await?;
                     if let Some(saved) = replay::<PoolAgentRequest>(
                         db,
@@ -486,8 +484,7 @@ impl DomainStore {
         input.validate()?;
         device(p)?;
         let payload = digest(pool, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?; let now=clock(db).await?;
             if let Some(saved)=replay::<PoolAgentRequest>(db,p,&input.command_id,"pool_agent.request",&payload).await? {
                 return view_pool(db,&saved.id,p,now).await;
@@ -531,9 +528,8 @@ impl DomainStore {
 
     pub async fn pool_agent_request(&self, p: &Principal, id: &str) -> Result<PoolAgentRequest> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 view_pool(db, id, p, now).await
@@ -549,8 +545,7 @@ impl DomainStore {
         for id in [&input.after, &input.pool_id].into_iter().flatten() {
             key(id)?;
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let rows=sql_query("SELECT * FROM hagency_agent_v1.management_agent_request_read WHERE pool_contribution_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_reallocations x WHERE x.previous_request_id=management_agent_request_read.id) AND (manager_user_id=$1 OR administrator_user_id=$1) AND (NOT $2 OR administrator_user_id=$1 AND state='pending_approval' AND expires_at_ms>$3) AND id>$4 AND ($5::text IS NULL OR pool_contribution_id=$5) ORDER BY id LIMIT 17")
                 .bind::<Text,_>(&p.user_id).bind::<Bool,_>(input.needs_my_action).bind::<BigInt,_>(now)
@@ -577,8 +572,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             sql_query("SELECT id AS payload FROM hagency_agent_v1.management_agent_requests WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<AgentPerson>(db).await.map_err(hidden)?;
             let r=pool_row(db,id,p).await?;
@@ -627,8 +621,7 @@ impl DomainStore {
         key(&input.command_id)?;
         device(p)?;
         let payload = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             sql_query("SELECT id AS payload FROM hagency_agent_v1.management_agent_requests WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<AgentPerson>(db).await.map_err(hidden)?;
             let r=pool_row(db,id,p).await?;

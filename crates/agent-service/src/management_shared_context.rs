@@ -337,9 +337,8 @@ impl DomainStore {
         input: SharedWorkEvidenceInput,
         protocol: WorkProtocol,
     ) -> Result<SharedWorkInputMode> {
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .transaction(async |db: &mut AsyncPgConnection| {
                 let (_, r, w) = owned(db, p, id, &input, &self.server).await?;
                 protocol.check(&r)?;
                 let mode = mode(db, id).await?;
@@ -358,11 +357,8 @@ impl DomainStore {
         id: &str,
         input: SharedWorkEvidenceInput,
     ) -> Result<SharedReplyObservation> {
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-                    .await?;
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 let (_, _, w) = owned(db, p, id, &input, &self.server).await?;
                 delivery(db, &w).await
             })
@@ -374,9 +370,8 @@ impl DomainStore {
         id: &str,
         input: SharedContextRecoverInput,
     ) -> Result<SharedContextRecord> {
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .transaction(async |db: &mut AsyncPgConnection| {
                 let (_, _, w) = owned(
                     db,
                     p,
@@ -451,11 +446,8 @@ impl DomainStore {
         let observed = self
             .shared_work_facts(p, policy, &input.authority, gateway, protocol, Some(id))
             .await?;
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-                    .await?;
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, 0).await?;
                 let r = runtime(db, &input.authority.runtime_command_id).await?;
                 protocol.check(&r)?;
@@ -531,9 +523,8 @@ impl DomainStore {
         let observed = self
             .shared_work_facts(p, policy, &input.authority, gateway, protocol, Some(id))
             .await?;
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{
+
             Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;
             if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_execution_issuance_unavailable"));}
             worker_protocol::require(db,p,now).await?;let original=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
@@ -599,9 +590,11 @@ impl DomainStore {
             value: bool,
         }
         let encrypted = {
-            let mut db = self.db.lock().await?;
-            sql_query("SELECT coalesce((payload::jsonb->>'encrypted')::boolean,false) AS value FROM hagency_agent_v1.management_shared_work WHERE id=$1")
-                .bind::<Text,_>(&input.work_id).get_result::<Encrypted>(&mut *db).await?.value
+            self.db.transaction(async |db| {
+
+                Ok(sql_query("SELECT coalesce((payload::jsonb->>'encrypted')::boolean,false) AS value FROM hagency_agent_v1.management_shared_work WHERE id=$1")
+                    .bind::<Text,_>(&input.work_id).get_result::<Encrypted>(db).await?.value)
+            }).await?
         };
         if encrypted {
             return if budget {

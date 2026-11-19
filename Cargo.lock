@@ -3728,6 +3728,7 @@ dependencies = [
  "diesel-async",
  "hagency-db-runtime",
  "hex",
+ "horme",
  "palpo-core",
  "percent-encoding",
  "rand 0.10.3",

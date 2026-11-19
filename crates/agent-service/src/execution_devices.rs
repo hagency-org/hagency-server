@@ -47,21 +47,18 @@ pub(crate) async fn require_assigned(
 impl DomainStore {
     pub async fn owner_devices(&self, p: &Principal, now: i64) -> Result<Vec<OwnerDevice>> {
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    Ok({
-                        use crate::schema::agent_tables::devices as q;
-                        let params = (&p.user_id,);
-                        q::table
-                            .select((q::id, q::name, q::generation, q::revoked))
-                            .filter((q::user_id).eq(&params.0))
-                            .order((q::id.asc(),))
-                            .load(db)
-                            .await
-                    }?)
-                })
-                .await
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                Ok({
+                    use crate::schema::agent_tables::devices as q;
+                    let params = (&p.user_id,);
+                    q::table
+                        .select((q::id, q::name, q::generation, q::revoked))
+                        .filter((q::user_id).eq(&params.0))
+                        .order((q::id.asc(),))
+                        .load(db)
+                        .await
+                }?)
             })
             .await
     }
@@ -79,9 +76,7 @@ impl DomainStore {
             .device_id
             .as_deref()
             .ok_or(Error::Unauthorized("device_authorization_required"))?;
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        crate::database::retry_crypto_write(|| self.db.write_transaction(async |db:&mut AsyncPgConnection| {
  Self::authorize(db,p,now).await?;let current=Self::agent_db(db,p,agent).await?;
  if !matches!(current.state.as_str(),"creating"|"active"|"suspended") {return Err(Error::Conflict("agent_retired"));}
  if current.generation!=input.expected_generation {return Err(Error::Conflict("execution_device_changed"));}
@@ -120,7 +115,6 @@ impl DomainStore {
  }?;
  Self::audit(db,p,"agent.execution_device",agent,now).await?;
  Self::agent_db(db,p,agent).await
- }).await
-    }).await
+ })).await
     }
 }

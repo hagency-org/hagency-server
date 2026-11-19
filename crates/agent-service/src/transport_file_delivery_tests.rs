@@ -1483,20 +1483,18 @@ async fn file_shutdown_scenario(url: &str, phase: &str) {
         !draining.is_finished(),
         "drain must retain the in-flight HTTP future"
     );
+    let before_receipt = f.transport.db.checkout_count();
     release_tx.send(()).unwrap();
     server.await.unwrap();
     if phase == "receipt" {
-        #[derive(diesel::QueryableByName)]
-        struct Waiting {
-            #[diesel(sql_type=diesel::sql_types::Bool)]
-            value: bool,
-        }
-        tokio::time::timeout(std::time::Duration::from_secs(2),async {
-            loop {
-                let waiting=sql_query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event='advisory') AS value").get_result::<Waiting>(&mut blocker).await.unwrap().value;
-                if waiting {break;}tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        // Each failed writer attempt returns its checkout before waiting to retry.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while f.transport.db.checkout_count() < before_receipt + 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         assert!(
             !draining.is_finished(),
             "drain must retain receipt persistence after actual HTTP acceptance"

@@ -216,8 +216,7 @@ impl DomainStore {
         if let Some(id) = &input.after {
             key(id)?
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;
  let w=sql_query("SELECT c.* FROM hagency_agent_v1.management_agent_budget_commands c LEFT JOIN hagency_agent_v1.management_agent_budget_results r ON r.command_id=c.id WHERE c.owner_user_id=$1 AND c.executor_device_id=$2 AND r.command_id IS NULL AND NOT hagency_agent_v1.executor_ledger_replaced_request(c.request_id) ORDER BY (c.id<=$3),c.id LIMIT 1").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<CommandRow>(db).await.optional()?;
  match w{Some(w)=>Ok(Some(deliver(db,p,policy,&w,&self.server,false).await?)),None=>Ok(None)}}).await
     }
@@ -229,9 +228,8 @@ impl DomainStore {
         input: ExecutorRecoverInput,
     ) -> Result<AgentBudgetDelivery> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let w = command(db, id).await?;
                 owner(&w, p)?;
@@ -249,8 +247,7 @@ impl DomainStore {
         input: AgentBudgetResult,
     ) -> Result<AgentBudgetReceipt> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;let w=command(db,id).await?;owner(&w,p)?;let c=checked(&w,&self.server)?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;let w=command(db,id).await?;owner(&w,p)?;let c=checked(&w,&self.server)?;
  if input.command_digest!=w.digest{return Err(Error::Conflict("agent_budget_command_changed"))}input.receipt.validate_for(&c)?;
  // First immutable receipt wins, independently of subsequent ticket expiry or disabled issuance.
  if let Some(old)=result(db,id).await?{if allocation_digest(&old)?!=allocation_digest(&input.receipt)?{return Err(Error::Conflict("agent_budget_result_changed"))}return Ok(old)}

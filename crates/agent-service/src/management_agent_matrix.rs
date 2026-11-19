@@ -56,11 +56,6 @@ fn enabled_matrix(p: &ManagementPolicy) -> Result<()> {
         Err(Error::Unavailable("agent_matrix_provisioning_unavailable"))
     }
 }
-async fn lock(db: &mut AsyncPgConnection) -> Result<()> {
-    db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-        .await?;
-    Ok(())
-}
 async fn membership(db: &mut AsyncPgConnection, id: &str) -> Result<Membership> {
     sql_query("SELECT * FROM hagency_agent_v1.management_agent_matrix WHERE assignment_id=$1")
         .bind::<Text, _>(id)
@@ -179,8 +174,7 @@ impl DomainStore {
         if let Some(id) = &input.after {
             key(id)?;
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;sweep(db,p,now).await?;
             // Desktop returns the last challenge ID, not an assignment ID.
             // Resolve that cursor and wrap so expired checks can be renewed.
@@ -212,9 +206,8 @@ impl DomainStore {
     ) -> Result<AgentMatrixDelivery> {
         enabled_matrix(policy)?;
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let q = check(db, id).await?;
                 let m = membership(db, &q.assignment_id).await?;
@@ -237,8 +230,7 @@ impl DomainStore {
         enabled_matrix(policy)?;
         key(id)?;
         wire(&input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;let q=check(db,id).await?;let m=membership(db,&q.assignment_id).await?;let w=original(db,&m).await?;owner(&w,p)?;
             if q.digest!=input.command_digest {return Err(Error::Conflict("agent_matrix_challenge_conflict"));}
             let c:ManagedAgentMatrixChallenge=decode(&q.payload)?;input.observation.validate_for(&c)?;let digest=allocation_digest(&input.observation)?;
@@ -266,9 +258,8 @@ impl DomainStore {
     ) -> Result<Option<AgentMatrixReadiness>> {
         enabled_matrix(policy)?;
         key(request)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let r = row(db, request).await?;
                 let m = sql_query(
@@ -333,9 +324,8 @@ impl DomainStore {
         effect: bool,
         policy: Option<&ManagementPolicy>,
     ) -> Result<Option<Phase>> {
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            lock(db).await?;let m=membership(db,id).await?;let w=original(db,&m).await?;let now=clock(db).await?;
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
+            let m=membership(db,id).await?;let w=original(db,&m).await?;let now=clock(db).await?;
             if !current(db,&m,&w,now).await? {return Ok(None);}
             if effect && (!issuing(policy)||m.native_until_ms<=now||m.state!="authorized"||m.challenge_id.as_deref()!=challenge) {return Err(Error::Conflict("agent_matrix_native_check_required"));}
             let r=row(db,&m.request_id).await?;let cx=if r.pool_contribution_id.is_some() {None} else {Some(context(db,&r.plan_id,now).await?)};
@@ -347,10 +337,8 @@ impl DomainStore {
         }).await
     }
     async fn matrix_fence(&self, id: &str) -> Result<()> {
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                lock(db).await?;
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 let m = membership(db, id).await?;
                 let w = original(db, &m).await?;
                 fence(db, &w.intent_id).await
@@ -400,19 +388,16 @@ impl DomainStore {
         at: i64,
         joined: bool,
     ) -> Result<()> {
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            lock(db).await?;let m=membership(db,id).await?;let w=original(db,&m).await?;let now=clock(db).await?;fresh(at,now)?;
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
+            let m=membership(db,id).await?;let w=original(db,&m).await?;let now=clock(db).await?;fresh(at,now)?;
             if !current(db,&m,&w,now).await? {return Ok(());}
             if m.challenge_id.as_deref()!=challenge || m.state!="matrix_verified"&&(m.state!="authorized"||m.native_until_ms<=now) {return Err(Error::Conflict("agent_matrix_native_check_required"));}
             sql_query("UPDATE hagency_agent_v1.management_agent_matrix SET state=CASE WHEN $2 THEN 'matrix_verified' ELSE 'waiting_native' END,verified_at_ms=$3,native_until_ms=CASE WHEN $2 THEN native_until_ms ELSE 0 END,blocking_reason=CASE WHEN $2 THEN NULL ELSE 'matrix_membership_missing' END WHERE assignment_id=$1").bind::<Text,_>(id).bind::<Bool,_>(joined).bind::<Nullable<BigInt>,_>(joined.then_some(at)).execute(db).await?;Ok(())
         }).await
     }
     async fn matrix_cleanup_desired(&self, id: &str) -> Result<bool> {
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                lock(db).await?;
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
+
                 let m=membership(db,id).await?;
                 let replacement=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments WHERE agent_id=$1 AND id<>$2 AND state='pending_native') AS matched").bind::<Text,_>(&m.agent_id).bind::<Text,_>(id).get_result::<Flag>(db).await?.matched;
                 Ok(m.state=="fenced" && !replacement)
@@ -426,8 +411,9 @@ impl DomainStore {
         matrix: &MatrixClient,
     ) -> Result<()> {
         let m = {
-            let mut db = self.db.lock().await?;
-            membership(&mut db, id).await?
+            self.db
+                .transaction(async |db| Ok(membership(db, id).await?))
+                .await?
         };
         if !self.matrix_cleanup_desired(id).await? {
             return Ok(());
@@ -453,8 +439,8 @@ impl DomainStore {
         }
         let member = puppet_membership(&after?, &m.puppet_mxid)?;
         if !matches!(member.as_str(), "join" | "invite") {
-            let mut db = self.db.lock().await?;
-            (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {lock(db).await?;sql_query("UPDATE hagency_agent_v1.management_agent_matrix SET cleanup_observed_at_ms=$2 WHERE assignment_id=$1 AND state='fenced'").bind::<Text,_>(id).bind::<BigInt,_>(clock(db).await?).execute(db).await?;Ok(())}).await?;
+            self.db.write_transaction(async |db:&mut AsyncPgConnection| {
+            sql_query("UPDATE hagency_agent_v1.management_agent_matrix SET cleanup_observed_at_ms=$2 WHERE assignment_id=$1 AND state='fenced'").bind::<Text,_>(id).bind::<BigInt,_>(clock(db).await?).execute(db).await?;Ok(())}).await?;
         }
         Ok(())
     }
@@ -577,8 +563,9 @@ impl DomainStore {
         after: &str,
         limit: i64,
     ) -> Result<Vec<String>> {
-        let mut db = self.db.lock().await?;
-        let rows=sql_query("SELECT assignment_id AS payload FROM hagency_agent_v1.management_agent_matrix WHERE assignment_id>$1 ORDER BY assignment_id LIMIT $2").bind::<Text,_>(after).bind::<BigInt,_>(limit.clamp(1,20)).load::<Json>(&mut *db).await?;
-        Ok(rows.into_iter().map(|r| r.payload).collect())
+        self.db.transaction(async |db| {
+            let rows=sql_query("SELECT assignment_id AS payload FROM hagency_agent_v1.management_agent_matrix WHERE assignment_id>$1 ORDER BY assignment_id LIMIT $2").bind::<Text,_>(after).bind::<BigInt,_>(limit.clamp(1,20)).load::<Json>(db).await?;
+            Ok(rows.into_iter().map(|r| r.payload).collect())
+        }).await
     }
 }

@@ -31,9 +31,7 @@ impl DomainStore {
         if received <= 0 {
             return Err(Error::Invalid("invalid_event_received_time"));
         }
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db.transaction(async |db: &mut AsyncPgConnection| {
                 let known = match &r.kind {
                     RevisionKind::Edit { .. } => known_request(db, &r.room_id, &r.target_event_id).await?,
                     RevisionKind::Redaction => {

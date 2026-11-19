@@ -26,14 +26,17 @@ that per-pool size and must be a positive integer. The independent board pool ha
 against PostgreSQL's limit, plus dedicated infrastructure sessions.
 
 The membership controller intentionally retains a dedicated unpooled session for
-its leadership advisory lock. Crypto operations retain a separate serialized
-session while their bounded HTTP authorization fence holds real rows. These do not
-use business pool slots. Startup upgrades also use their own session, retain the
+its leadership advisory lock. Agent crypto reserves the affected authorization
+records in a short transaction, then returns the connection before Matrix HTTP.
+Authorization writers retry an active reservation outside the pool. Shared device
+issuance rechecks the claim and authorization after Matrix login. Startup upgrades
+use their own session, retain the
 existing locks/version checks and execute the existing SQL files. Board migration
 statements use a 120-second timeout with a 30-second lock timeout, independently of
 request deadlines.
 
-No schema or data rewrite is required by this change. Existing IDs, token hashes,
+Startup installs crypto reservations and backfills pending inbox capacity from
+existing routing jobs. Existing IDs, token hashes,
 task versions, idempotency receipts, outbox states, ciphertext and attachment
 storage remain in their current tables. The existing v6-to-v7 board migration
 still backfills attachment metadata and removes already-deleted blob payloads;

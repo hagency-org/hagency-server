@@ -465,9 +465,8 @@ impl DomainStore {
         id: &str,
     ) -> Result<AgentBudget> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let r = visible(db, p, id).await?;
@@ -539,8 +538,7 @@ impl DomainStore {
         input.validate()?;
         device(p)?;
         let d = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;if let Some(a)=replay(db,p,&input.command_id,"agent.topup.request",&d).await?{return reply(db,p,policy,a,now).await}enabled(policy)?;let r=visible(db,p,id).await?;if super::periods::terms(db,id).await?.is_some() {return Err(Error::Conflict("agent_period_allowance_fixed"));}
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;if let Some(a)=replay(db,p,&input.command_id,"agent.topup.request",&d).await?{return reply(db,p,policy,a,now).await}enabled(policy)?;let r=visible(db,p,id).await?;if super::periods::terms(db,id).await?.is_some() {return Err(Error::Conflict("agent_period_allowance_fixed"));}
    if input.owner_funded {
  if r.pool_grant_id.is_none() || p.user_id!=r.administrator_user_id {return Err(Error::Unauthorized("pool_resource_owner_required"))}
 } else if r.manager_user_id!=p.user_id{return Err(Error::Unauthorized("project_manager_required"))}let(b,c,receipt)=base(db,id,&self.server).await?;let cx=fresh_base(db,&r,&b,&c,now).await?;let h=head(db,id,&b,&receipt,&self.server).await?;if r.revision!=input.expected_request_revision||b.assignment_generation!=input.expected_assignment_generation||h.revision!=input.expected_budget_revision||h.digest!=input.expected_budget_digest{return Err(Error::Conflict("management_revision_changed"))}
@@ -574,9 +572,8 @@ if h.ceiling.checked_add(input.add_tokens).is_none_or(|v|v>MAX_EXACT){return Err
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let d = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 if let Some(a) = replay(db, p, &input.command_id, "agent.topup.decide", &d).await? {
@@ -688,8 +685,7 @@ if h.ceiling.checked_add(input.add_tokens).is_none_or(|v|v>MAX_EXACT){return Err
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let d = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;if let Some(a)=replay(db,p,&input.command_id,"agent.topup.cancel",&d).await?{return reply(db,p,policy,a,now).await}let t=top(db,id).await?;if p.user_id!=t.manager_user_id{return Err(Error::Unauthorized("project_manager_required"))}
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;if let Some(a)=replay(db,p,&input.command_id,"agent.topup.cancel",&d).await?{return reply(db,p,policy,a,now).await}let t=top(db,id).await?;if p.user_id!=t.manager_user_id{return Err(Error::Unauthorized("project_manager_required"))}
 if t.revision!=input.expected_revision{return Err(Error::Conflict("management_revision_changed"))}
 if !matches!(t.state.as_str(),"pending"|"approved"){return Err(Error::Conflict("agent_topup_closed"))}
  if t.state=="approved"{let saved=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_budget_results r JOIN hagency_agent_v1.management_agent_budget_commands c ON c.id=r.command_id WHERE c.topup_id=$1) AS matched").bind::<Text,_>(id).get_result::<Flag>(db).await?.matched;if saved{return Err(Error::Conflict("agent_topup_closed"))}let cmd=sql_query("SELECT id FROM hagency_agent_v1.management_agent_budget_commands WHERE topup_id=$1").bind::<Text,_>(id).get_result::<Key>(db).await?;let body=json!({"topUpId":id,"commandId":cmd.id,"humanCommandId":input.command_id,"expectedRevision":input.expected_revision});sql_query("INSERT INTO hagency_agent_v1.management_agent_budget_cancellations VALUES($1,$2,$3,$4)").bind::<Text,_>(&cmd.id).bind::<Text,_>(&input.command_id).bind::<Text,_>(wire(&body)?).bind::<Text,_>(allocation_digest(&body)?).execute(db).await?;}
@@ -702,9 +698,8 @@ if !matches!(t.state.as_str(),"pending"|"approved"){return Err(Error::Conflict("
         id: &str,
     ) -> Result<AgentTopUp> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 view(db, id, p, policy, now).await
@@ -726,8 +721,7 @@ if !matches!(t.state.as_str(),"pending"|"approved"){return Err(Error::Conflict("
         ) {
             return Err(Error::Invalid("invalid_management_operation"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let rows=sql_query("SELECT operation,digest,result FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND device_id=$2 AND command_id=$3 ORDER BY device_generation LIMIT 2").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(id).load::<Receipt>(db).await?;if rows.len()>1{return Err(Error::Conflict("management_command_conflict"))}let Some(r)=rows.as_slice().first()else{return Ok(json!({"recorded":false,"result":null}))};if r.operation!=input.operation{return Err(Error::Conflict("management_command_conflict"))}let a:AgentTopUpAck=decode(&r.result)?;let now=clock(db).await?;Ok(json!({"recorded":true,"result":reply(db,p,policy,a,now).await?}))}).await
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let rows=sql_query("SELECT operation,digest,result FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND device_id=$2 AND command_id=$3 ORDER BY device_generation LIMIT 2").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(id).load::<Receipt>(db).await?;if rows.len()>1{return Err(Error::Conflict("management_command_conflict"))}let Some(r)=rows.as_slice().first()else{return Ok(json!({"recorded":false,"result":null}))};if r.operation!=input.operation{return Err(Error::Conflict("management_command_conflict"))}let a:AgentTopUpAck=decode(&r.result)?;let now=clock(db).await?;Ok(json!({"recorded":true,"result":reply(db,p,policy,a,now).await?}))}).await
     }
 }
 
@@ -747,8 +741,7 @@ impl DomainStore {
         if !(1..=16).contains(&limit) {
             return Err(Error::Invalid("invalid_management_arguments"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;visible(db,p,id).await?;let now=clock(db).await?;let ids=sql_query("SELECT id FROM hagency_agent_v1.management_agent_topups WHERE request_id=$1 AND id>$2 ORDER BY id LIMIT $3").bind::<Text,_>(id).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<BigInt,_>(i64::from(limit)+1).load::<Key>(db).await?;let mut more=ids.len()>usize::from(limit);let mut bytes=0usize;let mut items=Vec::new();for row in ids.into_iter().take(usize::from(limit)){let item=view(db,&row.id,p,policy,now).await?;let size=serde_json::to_vec(&item).map_err(|_|Error::Unavailable("encoding_failed"))?.len();if bytes+size>96*1024{more=true;break}bytes+=size;items.push(item)}let next_after=if more{items.last().map(|t|t.id.clone())}else{None};Ok(AgentTopUpPage{items,next_after})}).await
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;visible(db,p,id).await?;let now=clock(db).await?;let ids=sql_query("SELECT id FROM hagency_agent_v1.management_agent_topups WHERE request_id=$1 AND id>$2 ORDER BY id LIMIT $3").bind::<Text,_>(id).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<BigInt,_>(i64::from(limit)+1).load::<Key>(db).await?;let mut more=ids.len()>usize::from(limit);let mut bytes=0usize;let mut items=Vec::new();for row in ids.into_iter().take(usize::from(limit)){let item=view(db,&row.id,p,policy,now).await?;let size=serde_json::to_vec(&item).map_err(|_|Error::Unavailable("encoding_failed"))?.len();if bytes+size>96*1024{more=true;break}bytes+=size;items.push(item)}let next_after=if more{items.last().map(|t|t.id.clone())}else{None};Ok(AgentTopUpPage{items,next_after})}).await
     }
 }
 

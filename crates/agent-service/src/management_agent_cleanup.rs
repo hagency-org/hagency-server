@@ -25,8 +25,7 @@ impl DomainStore {
         id: &str,
     ) -> Result<AgentRemovalProgress> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db, p, crate::api::now_ms()).await?;
             let r = row(db, id).await?;
             let a = cleanup_visible(db, &r, p).await?;
@@ -75,8 +74,7 @@ impl DomainStore {
         if !(1..=16).contains(&limit) {
             return Err(Error::Invalid("invalid_management_limit"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
             Self::authorize(db,p,crate::api::now_ms()).await?;
             if let Some(project)=&input.project_id {
                 let a=roles(db,project).await?;

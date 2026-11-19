@@ -219,8 +219,7 @@ impl DomainStore {
         } else {
             None
         };
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
+        self.db.transaction(async|db:&mut AsyncPgConnection|{
    let now=clock(db).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;
    let c=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
    if request_runtime.is_some_and(|runtime| runtime!=c.runtime)
@@ -263,38 +262,40 @@ impl DomainStore {
         {
             return Err(Error::Invalid("invalid_room"));
         }
-        let mut db = self.db.lock().await?;
-        let now = clock(&mut db).await?;
-        // A request its sender decides is not listed for the owner.
-        let rows=sql_query("SELECT * FROM hagency_agent_v1.management_shared_approvals WHERE (requester_mxid=$2 OR (owner_user_id=$1 AND payload::jsonb->'deciderMxid' IS NULL)) AND ($3::text IS NULL OR room_id=$3) AND NOT consumed AND expires_at_ms>$4 ORDER BY expires_at_ms,id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Nullable<Text>,_>(&input.room_id).bind::<BigInt,_>(now).load::<Row>(&mut *db).await?;
-        let mut result = Vec::new();
-        for a in rows {
-            if live_request(&mut db, &a, &self.server, now).await? {
-                let payload: Value = decode(&a.payload)?;
-                if !may_read(&a, &payload, p) {
-                    continue;
+        self.db.transaction(async |db| {
+            let now = clock(db).await?;
+            // A request its sender decides is not listed for the owner.
+            let rows=sql_query("SELECT * FROM hagency_agent_v1.management_shared_approvals WHERE (requester_mxid=$2 OR (owner_user_id=$1 AND payload::jsonb->'deciderMxid' IS NULL)) AND ($3::text IS NULL OR room_id=$3) AND NOT consumed AND expires_at_ms>$4 ORDER BY expires_at_ms,id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Nullable<Text>,_>(&input.room_id).bind::<BigInt,_>(now).load::<Row>(db).await?;
+            let mut result = Vec::new();
+            for a in rows {
+                if live_request(db, &a, &self.server, now).await? {
+                    let payload: Value = decode(&a.payload)?;
+                    if !may_read(&a, &payload, p) {
+                        continue;
+                    }
+                    let can = may_decide(&a, &payload, p);
+                    result.push(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}));
                 }
-                let can = may_decide(&a, &payload, p);
-                result.push(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}));
             }
-        }
-        let executions = chat_status::query(&mut db, p, input.room_id.as_deref(), now).await?;
-        Ok(json!({"approvals":result,"executions":executions}))
+            let executions = chat_status::query(db, p, input.room_id.as_deref(), now).await?;
+            Ok(json!({"approvals":result,"executions":executions}))
+        }).await
     }
     pub async fn shared_approval(&self, p: &Principal, id: &str) -> Result<Value> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        let a = row(&mut db, id).await?;
-        let payload: Value = decode(&a.payload)?;
-        if !may_read(&a, &payload, p) {
-            return Err(Error::Unauthorized("approval_reader_required"));
-        }
-        let now = clock(&mut db).await?;
-        if !live_request(&mut db, &a, &self.server, now).await? {
-            return Err(Error::Conflict("approval_expired"));
-        }
-        let can = may_decide(&a, &payload, p);
-        Ok(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}))
+        self.db.transaction(async |db| {
+            let a = row(db, id).await?;
+            let payload: Value = decode(&a.payload)?;
+            if !may_read(&a, &payload, p) {
+                return Err(Error::Unauthorized("approval_reader_required"));
+            }
+            let now = clock(db).await?;
+            if !live_request(db, &a, &self.server, now).await? {
+                return Err(Error::Conflict("approval_expired"));
+            }
+            let can = may_decide(&a, &payload, p);
+            Ok(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}))
+        }).await
     }
     pub async fn decide_shared_approval(
         &self,
@@ -308,8 +309,7 @@ impl DomainStore {
         ) {
             return Err(Error::Invalid("invalid_permission_decision"));
         }
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
+        self.db.transaction(async|db:&mut AsyncPgConnection|{
    let a=row(db,&input.id).await?;
    let reviewed:Value=decode(&a.payload)?;
    if !may_decide(&a,&reviewed,p) {return Err(Error::Unauthorized(if requester_decides(&reviewed) {"approval_requester_required"} else {"resource_owner_required"}));}
@@ -324,8 +324,7 @@ impl DomainStore {
     }
     pub async fn take_shared_approval(&self, p: &Principal, input: TakeApproval) -> Result<Value> {
         key(&input.id)?;
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
+        self.db.transaction(async|db:&mut AsyncPgConnection|{
    let a=row(db,&input.id).await?;let r=runtime(db,&a.runtime_id).await?;let now=clock(db).await?;
    require_activity(db,p,&r,&input.authority,&self.server,now).await?;
    if a.digest!=input.digest || a.owner_user_id!=p.user_id {return Err(Error::Unauthorized("approval_request_changed"));}

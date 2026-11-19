@@ -12,6 +12,7 @@ publish.workspace = true
 hagency-db-runtime = { path = "../db-runtime" }
 chrono.workspace = true
 chrono-tz = { version = "=0.10.4", default-features = false, features = ["std"] }
+horme.workspace = true
 diesel.workspace = true
 diesel-async = { workspace = true, features = ["deadpool"] }
 tokio.workspace = true

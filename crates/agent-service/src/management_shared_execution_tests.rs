@@ -3488,3 +3488,44 @@ async fn direct_pool_qualification_and_stop_are_delivered_after_a_command_cursor
     ));
     assert_eq!(stop.command.original().assignment_id, assignment.id);
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_device_login_releases_only_slot_and_rechecks_after_revocation() {
+    use crate::Error;
+    let (mut f, _, assignment, _) = Box::pin(prepared_pool(true)).await;
+    let pool = f.domain.use_single_slot_pool(&f.url);
+    let server = crate::transport::LoginServer::new().await;
+    let input = || serde_json::from_value(json!({"assignmentId":assignment.id})).unwrap();
+    let mut login = Box::pin(
+        f.domain
+            .shared_crypto_device(&f.owner.p, input(), &server.matrix),
+    );
+    tokio::select! {
+        _ = server.wait_login() => (),
+        result = &mut login => panic!("login did not reach Matrix: {result:?}"),
+    }
+    assert_eq!(pool.status().available, 1);
+    assert!(matches!(
+        f.domain
+            .shared_crypto_device(&f.owner.p, input(), &server.matrix)
+            .await,
+        Err(Error::Conflict("matrix_device_issuance_pending"))
+    ));
+    let mut other = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("UPDATE hagency_agent_v1.devices SET revoked=true WHERE id=$1")
+        .bind::<Text, _>(f.owner.p.device_id.as_deref().unwrap())
+        .execute(&mut other)
+        .await
+        .unwrap();
+    server.resume.notify_one();
+    assert!(matches!(login.await, Err(Error::Unauthorized(_))));
+    #[derive(QueryableByName)]
+    struct Retired {
+        #[diesel(sql_type=Bool)]
+        matched: bool,
+    }
+    let retired = sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.executor_matrix_devices WHERE scope_id=$1 AND kind='shared' AND revoked AND retiring AND issuance_nonce IS NULL) AS matched")
+        .bind::<Text,_>(&assignment.id).get_result::<Retired>(&mut other).await.unwrap();
+    assert!(retired.matched);
+}

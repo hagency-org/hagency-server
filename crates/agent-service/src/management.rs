@@ -229,8 +229,7 @@ impl DomainStore {
     /// the response observation so finite native leases do not gain or lose
     /// time through process/DB clock skew or different millisecond rounding.
     pub(crate) async fn management_observed_at_ms(&self) -> Result<i64> {
-        let mut db = self.db.lock().await?;
-        clock(&mut db).await
+        self.db.transaction(async |db| clock(db).await).await
     }
 
     /// Read an earlier result from this same owner/installation under fresh
@@ -255,8 +254,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_operation"));
         }
         let (executor, _) = device(p)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let rows=sql_query("SELECT operation,digest,result FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND device_id=$2 AND command_id=$3 ORDER BY device_generation LIMIT 2")
                 .bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<Text,_>(command).load::<Receipt>(db).await?;
@@ -286,8 +284,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_connection_verification"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             let (owner,c)=contribution(db,id).await?;
@@ -332,8 +329,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_connection_verification"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             let (owner,c)=contribution(db,id).await?;
@@ -373,8 +369,7 @@ impl DomainStore {
         }
         let (executor, generation) = device(p)?;
         let payload_digest = digest("", &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             if let Some(r)=replay(db,p,&input.command_id,"contribution.create",&payload_digest).await? { return Ok(r); }
@@ -407,8 +402,7 @@ impl DomainStore {
         if query.needs_my_action {
             return Err(Error::Invalid("invalid_contribution_filter"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             let rows=sql_query(format!("{CONTRIBUTIONS} WHERE (c.owner_user_id=$1 OR c.coordinator_mxid=$2 OR $3 AND c.state<>'draft') AND c.id>$4 ORDER BY c.id LIMIT $5"))
@@ -426,9 +420,8 @@ impl DomainStore {
         id: &str,
     ) -> Result<Admission> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 admission(db, id, p, policy, now).await
@@ -442,9 +435,8 @@ impl DomainStore {
         id: &str,
     ) -> Result<ManagementRequest> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 request(db, id, p, policy, now).await
@@ -458,9 +450,8 @@ impl DomainStore {
         query: ManagementQuery,
     ) -> Result<ManagementPage<ManagementRequest>> {
         query.validate()?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let rows = sql_query(format!(
@@ -533,8 +524,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             if !policy.can_administer(p) {return Err(Error::Unauthorized("management_administrator_required"));}
             let now=clock(db).await?;
@@ -580,8 +570,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             let (owner,c)=contribution(db,id).await?;

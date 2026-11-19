@@ -106,49 +106,49 @@ impl DomainStore {
         if !policy.shared_demand_retries() {
             return Err(Error::Unavailable("shared_demand_retry_unavailable"));
         }
-        let mut g = self.db.lock().await?;
-        (*g).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-            Self::authorize(db, p, 0).await?;
-            let d = load(db, id).await?;
-            let q = queued(db, &d.intake_id).await?;
-            let o = offer(&d, &q)?;
-            let now = clock(db).await?;
-            authorize(db, p, &q, &self.server, now, false).await?;
-            if d.digest != input.demand_digest
-                || o.control_revision != input.expected_control_revision
-            {
-                return Err(Error::Conflict("shared_demand_changed"));
-            }
-            let latest = latest_start(db, &d.id)
-                .await?
-                .ok_or(Error::Conflict("shared_demand_retry_changed"))?;
-            if latest.runtime_id != input.attempt_id || input.retry != latest.retry + 1 {
-                return Err(Error::Conflict("shared_demand_retry_changed"));
-            }
-            let acknowledgement = attempts::record_in(
-                db,
-                p,
-                policy,
-                &self.server,
-                &input.attempt_id,
-                &input.result,
-            )
-            .await?;
-            open(
-                db,
-                p,
-                &d,
-                &input.attempt_id,
-                input.retry,
-                &acknowledgement.observation_id,
-                &self.server,
-            )
-            .await?;
-            Ok(SharedDemandRetryReply {
-                acknowledgement,
-                demand: status(db, &d).await?,
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, 0).await?;
+                let d = load(db, id).await?;
+                let q = queued(db, &d.intake_id).await?;
+                let o = offer(&d, &q)?;
+                let now = clock(db).await?;
+                authorize(db, p, &q, &self.server, now, false).await?;
+                if d.digest != input.demand_digest
+                    || o.control_revision != input.expected_control_revision
+                {
+                    return Err(Error::Conflict("shared_demand_changed"));
+                }
+                let latest = latest_start(db, &d.id)
+                    .await?
+                    .ok_or(Error::Conflict("shared_demand_retry_changed"))?;
+                if latest.runtime_id != input.attempt_id || input.retry != latest.retry + 1 {
+                    return Err(Error::Conflict("shared_demand_retry_changed"));
+                }
+                let acknowledgement = attempts::record_in(
+                    db,
+                    p,
+                    policy,
+                    &self.server,
+                    &input.attempt_id,
+                    &input.result,
+                )
+                .await?;
+                open(
+                    db,
+                    p,
+                    &d,
+                    &input.attempt_id,
+                    input.retry,
+                    &acknowledgement.observation_id,
+                    &self.server,
+                )
+                .await?;
+                Ok(SharedDemandRetryReply {
+                    acknowledgement,
+                    demand: status(db, &d).await?,
+                })
             })
-        })
-        .await
+            .await
     }
 }

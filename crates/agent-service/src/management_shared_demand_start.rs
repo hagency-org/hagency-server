@@ -86,20 +86,20 @@ impl DomainStore {
     ) -> Result<SharedAttemptDelivery> {
         key(id)?;
         let scope = {
-            let mut g = self.db.lock().await?;
-            (*g).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                Self::authorize(db, p, 0).await?;
-                let d = load(db, id).await?;
-                let q = queued(db, &d.intake_id).await?;
-                if let Some(v) = saved(db, p, policy, &d, &input, &self.server).await? {
-                    return Ok(Err(v));
-                }
-                enabled_demand(policy)?;
-                let now = clock(db).await?;
-                let (r, _) = fresh(db, p, &d, &q, &input, &self.server, now).await?;
-                Ok(Ok(membership(db, &r).await?))
-            })
-            .await?
+            self.db
+                .write_transaction(async |db: &mut AsyncPgConnection| {
+                    Self::authorize(db, p, 0).await?;
+                    let d = load(db, id).await?;
+                    let q = queued(db, &d.intake_id).await?;
+                    if let Some(v) = saved(db, p, policy, &d, &input, &self.server).await? {
+                        return Ok(Err(v));
+                    }
+                    enabled_demand(policy)?;
+                    let now = clock(db).await?;
+                    let (r, _) = fresh(db, p, &d, &q, &input, &self.server, now).await?;
+                    Ok(Ok(membership(db, &r).await?))
+                })
+                .await?
         };
         let m = match scope {
             Err(v) => return Ok(v),
@@ -114,8 +114,7 @@ impl DomainStore {
                 &m.puppet_mxid,
             )
             .await?;
-        let mut g = self.db.lock().await?;
-        (*g).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,0).await?;let d=load(db,id).await?;let q=queued(db,&d.intake_id).await?;if let Some(v)=saved(db,p,policy,&d,&input,&self.server).await?{return Ok(v)}enabled_demand(policy)?;let now=clock(db).await?;let prepared=fresh(db,p,&d,&q,&input,&self.server,now).await?;facts(&membership(db,&prepared.0).await?,&observed)?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,0).await?;let d=load(db,id).await?;let q=queued(db,&d.intake_id).await?;if let Some(v)=saved(db,p,policy,&d,&input,&self.server).await?{return Ok(v)}enabled_demand(policy)?;let now=clock(db).await?;let prepared=fresh(db,p,&d,&q,&input,&self.server,now).await?;facts(&membership(db,&prepared.0).await?,&observed)?;
  let delivery=attempts::commit_start(db,p,policy,&input.start,prepared,&self.server,now).await?;
  match input.retry {
   None=>{sql_query("INSERT INTO hagency_agent_v1.management_shared_demand_starts VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(id).bind::<Text,_>(&input.start.start_intent_id).bind::<Text,_>(&delivery.command.command_id).bind::<Text,_>(wire(&input)?).bind::<Text,_>(allocation_digest(&input)?).execute(db).await?;}
@@ -130,42 +129,42 @@ impl DomainStore {
         input: SharedDemandBlockInput,
     ) -> Result<SharedDemandStatus> {
         key(id)?;
-        let mut g = self.db.lock().await?;
-        (*g).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-            Self::authorize(db, p, 0).await?;
-            let d = load(db, id).await?;
-            let q = queued(db, &d.intake_id).await?;
-            let o = offer(&d, &q)?;
-            let now = clock(db).await?;
-            let w = authorize(db, p, &q, &self.server, now, true).await?;
-            if d.digest != input.demand_digest
-                || o.control_revision != input.expected_control_revision
-                || started(db, id).await?.is_some()
-                    && status(db, &d).await?.state != "retry_offered"
-                || binding(db, id).await?.is_some()
-            {
-                return Err(Error::Conflict("shared_demand_changed"));
-            }
-            if q.state != "pending" && status(db, &d).await?.state != input.reason {
-                return Err(Error::Conflict("shared_demand_not_current"));
-            }
-            let c: ManagedAgentReserveCommand = decode(&w.payload)?;
-            match (input.reason.as_str(), &input.budget) {
-                ("budget_blocked", Some(b)) => {
-                    b.validate()?;
-                    if b.allocated_tokens != c.requested_tokens
-                        || b.remaining_tokens != 0
-                        || b.known_consumed_tokens < known(db, &q.assignment_id).await?
-                    {
-                        return Err(Error::Conflict("shared_budget_observation_changed"));
-                    }
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, 0).await?;
+                let d = load(db, id).await?;
+                let q = queued(db, &d.intake_id).await?;
+                let o = offer(&d, &q)?;
+                let now = clock(db).await?;
+                let w = authorize(db, p, &q, &self.server, now, true).await?;
+                if d.digest != input.demand_digest
+                    || o.control_revision != input.expected_control_revision
+                    || started(db, id).await?.is_some()
+                        && status(db, &d).await?.state != "retry_offered"
+                    || binding(db, id).await?.is_some()
+                {
+                    return Err(Error::Conflict("shared_demand_changed"));
                 }
-                ("usage_unrepresentable", None) => (),
-                _ => return Err(Error::Invalid("invalid_shared_demand_block")),
-            }
-            block(db, &d, &q, &input.reason, &wire(&input)?).await?;
-            visible(db, &d, input.retries).await
-        })
-        .await
+                if q.state != "pending" && status(db, &d).await?.state != input.reason {
+                    return Err(Error::Conflict("shared_demand_not_current"));
+                }
+                let c: ManagedAgentReserveCommand = decode(&w.payload)?;
+                match (input.reason.as_str(), &input.budget) {
+                    ("budget_blocked", Some(b)) => {
+                        b.validate()?;
+                        if b.allocated_tokens != c.requested_tokens
+                            || b.remaining_tokens != 0
+                            || b.known_consumed_tokens < known(db, &q.assignment_id).await?
+                        {
+                            return Err(Error::Conflict("shared_budget_observation_changed"));
+                        }
+                    }
+                    ("usage_unrepresentable", None) => (),
+                    _ => return Err(Error::Invalid("invalid_shared_demand_block")),
+                }
+                block(db, &d, &q, &input.reason, &wire(&input)?).await?;
+                visible(db, &d, input.retries).await
+            })
+            .await
     }
 }

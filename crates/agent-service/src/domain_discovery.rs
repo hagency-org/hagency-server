@@ -31,24 +31,21 @@ impl DomainStore {
     ) -> Result<Vec<Room>> {
         key(project)?;
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    if !Self::project_db(db, project).await?.active {
-                        return Err(Error::Unauthorized("project_not_active"));
-                    }
-                    Ok({
-                        use crate::schema::agent_tables::rooms as q;
-                        let params = (project,);
-                        q::table
-                            .select(crate::domain::Room::as_select())
-                            .filter(((q::project_id).eq(&params.0)).and(q::active))
-                            .order((q::room_id.asc(),))
-                            .load(db)
-                            .await
-                    }?)
-                })
-                .await
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                if !Self::project_db(db, project).await?.active {
+                    return Err(Error::Unauthorized("project_not_active"));
+                }
+                Ok({
+                    use crate::schema::agent_tables::rooms as q;
+                    let params = (project,);
+                    q::table
+                        .select(crate::domain::Room::as_select())
+                        .filter(((q::project_id).eq(&params.0)).and(q::active))
+                        .order((q::room_id.asc(),))
+                        .load(db)
+                        .await
+                }?)
             })
             .await
     }
@@ -61,9 +58,7 @@ impl DomainStore {
     ) -> Result<Vec<RoomAgent>> {
         key(project)?;
         matrix_id(room, '!')?;
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db, p, now).await?;
             if !Self::project_db(db, project).await?.active || !Self::room_db(db, room, project).await?.active {
                 return Err(Error::Unauthorized("room_not_active"));
@@ -74,7 +69,6 @@ impl DomainStore {
             Ok(sql_query("SELECT (a.owner_user_id=$3) AS is_mine,a.visibility,a.id AS agent_id,a.puppet_mxid,a.display_name,u.mxid AS owner_mxid,b.state AS binding_state FROM hagency_agent_v1.bindings b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id WHERE b.project_id=$1 AND b.room_id=$2 AND b.state IN ('active','suspended') AND a.state IN ('active','suspended') AND u.active AND (a.visibility='public' OR a.owner_user_id=$3) UNION ALL SELECT (a.owner_user_id=$3) AS is_mine,'public'::text AS visibility,a.id AS agent_id,a.puppet_mxid,a.display_name,u.mxid AS owner_mxid,b.state AS binding_state FROM hagency_agent_v1.shared_agent_rooms b JOIN hagency_agent_v1.agents a ON a.id=b.agent_id JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id JOIN hagency_agent_v1.shared_room_memberships m ON m.binding_id=b.id WHERE b.project_id=$1 AND b.room_id=$2 ORDER BY agent_id")
                 .bind::<Text,_>(project).bind::<Text,_>(room).bind::<Text,_>(&p.user_id).load(db).await?)
         }).await
-    }).await
     }
 }
 
@@ -114,14 +108,12 @@ impl DomainStore {
         if let Some(after) = after {
             key(after)?;
         }
-        self.db.with_connection(async |db| {
-            db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
                 Self::authorize(db,p,now).await?;
                 let mut agents=sql_query("SELECT a.id,a.puppet_mxid,a.display_name,u.mxid AS owner_mxid,a.visibility,a.state,(a.owner_user_id=$1) AS is_mine FROM hagency_agent_v1.agents a JOIN hagency_agent_v1.users u ON u.id=a.owner_user_id WHERE u.active AND a.execution_kind='personal' AND a.state IN ('active','suspended') AND a.visibility='public' AND a.id>$2 ORDER BY a.id LIMIT 257").bind::<Text,_>(&p.user_id).bind::<Text,_>(after.unwrap_or("")).load::<DiscoverableAgent>(db).await?;
                 let more=agents.len()>256;agents.truncate(256);
                 let next=if more {agents.last().map(|a|a.id.clone())} else {None};
                 Ok((agents,next))
             }).await
-        }).await
     }
 }
