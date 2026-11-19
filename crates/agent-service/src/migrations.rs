@@ -111,6 +111,13 @@ pub(crate) async fn domain(
             return Err(Error::Conflict("deployment_identity_mismatch"));
         }
         apply(db, DOMAIN)?;
+        if !matches_schema(db, "SELECT EXISTS (
+            SELECT 1 FROM pg_proc
+            WHERE oid=to_regprocedure('hagency_agent_v1.validate_shared_demand()')
+              AND position('retry-aware demand validator' in prosrc)>0
+        ) AS matched")? {
+            return Err(Error::Conflict("validate_shared_demand_changed_by_migration"));
+        }
         if !matches_schema(db, "SELECT version=36 AS matched FROM hagency_agent_v1.management_deployment WHERE singleton")? {
             return Err(Error::Conflict("management_schema_incompatible"));
         }

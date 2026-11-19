@@ -1,7 +1,6 @@
 -- ADR-193 amendment: retry an event whose attempt provably never started.
 -- The demand, its event and its FIFO place stay; a retry is a new attempt
--- that names the not_started one as predecessor. Additive and idempotent:
--- run at every start, no version change, and an older binary ignores it.
+-- that names the not_started one as predecessor. An older binary ignores the additive retry tables.
 CREATE TABLE IF NOT EXISTS hagency_agent_v1.management_shared_demand_retries (
  demand_id text NOT NULL REFERENCES hagency_agent_v1.management_shared_demands(id),
  retry bigint NOT NULL CHECK(retry BETWEEN 1 AND 3),
@@ -67,14 +66,8 @@ DROP TRIGGER IF EXISTS validate_shared_demand_retry ON hagency_agent_v1.manageme
 CREATE TRIGGER validate_shared_demand_retry BEFORE INSERT ON hagency_agent_v1.management_shared_demand_retries FOR EACH ROW EXECUTE FUNCTION hagency_agent_v1.validate_shared_demand_retry();
 DROP TRIGGER IF EXISTS validate_shared_demand_retry_start ON hagency_agent_v1.management_shared_demand_retry_starts;
 CREATE TRIGGER validate_shared_demand_retry_start BEFORE INSERT ON hagency_agent_v1.management_shared_demand_retry_starts FOR EACH ROW EXECUTE FUNCTION hagency_agent_v1.validate_shared_demand_retry();
--- validate_shared_demand() has one owner: this file. It is the schema-17
--- validator (management_shared_demand_schema.sql), unchanged except that a
--- binding may name the demand's latest retry start, and it is re-created here
--- at every start, after the versioned migrations. Replacing it is safe only
--- while the installed body is the schema-17 one (by digest) or this file's
--- own (by its marker); anything else means a later versioned migration
--- changed it, and startup fails instead of silently undoing that change.
--- A future change to this function belongs here, not in a migration.
+-- Adopt the schema-17 validator or a retry-aware validator from an existing
+-- deployment. Refuse to overwrite a body installed by a later release.
 DO $guard$
 DECLARE src text;
 BEGIN

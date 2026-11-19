@@ -693,9 +693,14 @@ async fn audience_upgrade_keeps_pool_agents_listed_and_bindable() {
         .unwrap();
 
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
-    db.batch_execute("DROP TABLE hagency_agent_v1.agent_crypto_identities;ALTER TABLE hagency_agent_v1.agents DROP COLUMN visibility")
-        .await
-        .unwrap();
+    // Recreate the deployment from before audience support and Diesel adoption.
+    db.batch_execute(
+        "DROP TABLE public.__diesel_schema_migrations;
+        DROP TABLE hagency_agent_v1.agent_crypto_identities;
+        ALTER TABLE hagency_agent_v1.agents DROP COLUMN visibility",
+    )
+    .await
+    .unwrap();
     let upgraded = DomainStore::open(&f.url, "example.test", "_hagency_test_")
         .await
         .unwrap();

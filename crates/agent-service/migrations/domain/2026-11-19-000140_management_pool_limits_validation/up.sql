@@ -2,8 +2,7 @@
 -- same native no-issuance proof requirements as V4; a missing receipt is no proof. V6 (the pool owns the renewal
 -- policy) was left out of the list at first, so a first command that never started under a V6 grant could not be
 -- retired and its Agent stayed in pending_native for good.
--- This function is replaced on every start, so changing it needs no schema
--- version: v2 successors accept the same not_started proof as v3.
+-- V2 successors accept the same not_started proof as V3.
 CREATE OR REPLACE FUNCTION hagency_agent_v1.validate_shared_runtime() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF TG_TABLE_NAME='management_shared_runtimes' THEN
