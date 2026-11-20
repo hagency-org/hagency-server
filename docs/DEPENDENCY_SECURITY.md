@@ -23,6 +23,11 @@ covering paste, pin-utils, chrono, chrono-tz and async-std. The review still
 expires on 2026-11-29. The original review started with 14
 vulnerability records.
 
+The subsequent [Palpo #700](https://github.com/palpo-im/palpo/pull/700) update
+pins the embedded server and core to `3d44c435`. Matrix token introspection
+now surfaces issuer outages as gateway or service errors. An inactive or expired
+token still returns HTTP 401.
+
 ## Automated review policy
 
 `python3 scripts/audit-dependencies.py` runs cargo-audit against a fresh RustSec
