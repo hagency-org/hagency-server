@@ -1334,6 +1334,36 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         )
         .await
         .unwrap();
+    // The administrator is not an applicant or a sender. Joining the bound room
+    // permits only its generic state; leaving it withdraws even that view.
+    let read_room = || {
+        f.domain
+            .room_allowance_page(&f.admin.p, &request.room_id, "", &matrix.gateway)
+    };
+    member(
+        &mut matrix.states.lock().unwrap(),
+        &request.room_id,
+        &f.admin.p.mxid,
+        "leave",
+    );
+    assert_eq!(read_room().await.unwrap()["items"], json!([]));
+    member(
+        &mut matrix.states.lock().unwrap(),
+        &request.room_id,
+        &f.admin.p.mxid,
+        "join",
+    );
+    let visible = read_room().await.unwrap();
+    assert_eq!(visible["items"].as_array().unwrap().len(), 1);
+    assert_eq!(visible["items"][0]["state"], "exhausted");
+    assert_eq!(visible["items"][0].as_object().unwrap().len(), 2);
+    member(
+        &mut matrix.states.lock().unwrap(),
+        &request.room_id,
+        &f.admin.p.mxid,
+        "leave",
+    );
+    assert_eq!(read_room().await.unwrap()["items"], json!([]));
     for principal in [&f.owner.p, &f.outsider.p] {
         let detail = f
             .domain

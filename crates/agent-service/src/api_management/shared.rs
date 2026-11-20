@@ -56,7 +56,9 @@ pub(super) async fn call(
             domain.register_shared_approval(p, body(req).await?).await?
         }
         (&Method::POST, ["shared-execution", "approvals", "query"]) => {
-            domain.shared_approvals(p, body(req).await?).await?
+            domain
+                .shared_approval_room_page(p, body(req).await?, gateway)
+                .await?
         }
         (&Method::POST, ["shared-execution", "approvals", "get"]) => {
             #[derive(serde::Deserialize)]

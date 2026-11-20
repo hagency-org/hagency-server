@@ -39,6 +39,9 @@ impl Gateway {
     pub async fn shared_state(&self, room: &str) -> Result<Arc<Vec<Value>>> {
         (self.read)(room.into()).await
     }
+    pub(crate) async fn viewer_joined(&self, room: &str, user: &str) -> Result<bool> {
+        Ok(joined(self.shared_state(room).await?.as_slice(), user))
+    }
     pub async fn admin(&self, room: &str, actor: &str, space: Option<&str>) -> Result<AdminFacts> {
         let state = self.shared_state(room).await?;
         let is_space = content(&state, "m.room.create", "").is_some_and(|c| c["type"] == "m.space");

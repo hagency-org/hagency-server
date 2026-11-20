@@ -266,6 +266,36 @@ async fn allowance_notice(
         .transpose()
 }
 
+/// Caller has already verified the viewer's current Matrix room membership
+/// and the assignment's retained authority. Return only a public reason.
+pub(crate) async fn room_allowance_reason(
+    db: &mut AsyncPgConnection,
+    request: &str,
+    p: &Principal,
+    now: i64,
+) -> Result<Option<String>> {
+    let r = row(db, request).await?;
+    if r.pool_contribution_id.is_none() {
+        return Ok(None);
+    }
+    let (_, _, period, _) = super::periods::projection(db, &r, p, now).await?;
+    if let Some(period) = &period {
+        match period.state.as_str() {
+            "exhausted" => return Ok(Some("exhausted".into())),
+            "awaiting_capacity" => return Ok(Some("renewal_waiting_capacity".into())),
+            "available" => {}
+            _ => return Ok(None),
+        }
+    }
+    Ok(allowance_notice(
+        db,
+        request,
+        period.as_ref().map_or(0, |v| v.start_ms as i64),
+    )
+    .await?
+    .map(|n| n.state))
+}
+
 pub(super) async fn view_pool(
     db: &mut AsyncPgConnection,
     id: &str,
