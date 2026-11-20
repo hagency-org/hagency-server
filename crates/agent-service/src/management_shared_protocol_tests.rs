@@ -358,3 +358,63 @@ async fn shared_protocol_scope_freshness_and_encrypted_pending_visibility() {
         "protocol observations cannot consume ciphertext candidates"
     );
 }
+
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn discovery_observations_require_the_current_worker_and_a_successful_lane_poll() {
+    let (mut f, _, _, _) = Box::pin(prepared_pool(true)).await;
+    f.policy = f
+        .policy
+        .with_agent_budget_deltas(true)
+        .with_shared_budget_execution(true);
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let read = || {
+        sql_query("SELECT jsonb_build_array(ordinary_poll_at_ms,budget_poll_at_ms)::text AS value FROM hagency_agent_v1.management_shared_executor_protocols WHERE device_id=$1")
+        .bind::<Text,_>(f.owner.p.device_id.clone().unwrap())
+    };
+    let poll = || serde_json::from_value(json!({})).unwrap();
+    f.domain
+        .observe_shared_daemon_protocol(&f.owner.p, false)
+        .await
+        .unwrap();
+    f.domain
+        .observe_shared_daemon_protocol(&f.owner.p, true)
+        .await
+        .unwrap();
+    let times: Value =
+        serde_json::from_str(&read().get_result::<Raw>(&mut db).await.unwrap().value).unwrap();
+    assert_eq!(times, json!([null, null]));
+    f.domain
+        .poll_shared_demand(&f.owner.p, &f.policy, poll())
+        .await
+        .unwrap();
+    let times: Value =
+        serde_json::from_str(&read().get_result::<Raw>(&mut db).await.unwrap().value).unwrap();
+    assert!(times[0].is_i64() && times[1].is_null());
+    f.domain
+        .poll_shared_budget_demand(&f.owner.p, &f.policy, Default::default())
+        .await
+        .unwrap();
+    let both: Value =
+        serde_json::from_str(&read().get_result::<Raw>(&mut db).await.unwrap().value).unwrap();
+    assert_eq!(times[0], both[0]);
+    assert!(both[1].is_i64());
+    f.domain
+        .observe_shared_daemon_protocol(&f.owner.p, true)
+        .await
+        .unwrap();
+    f.domain
+        .poll_shared_demand(&f.owner.p, &f.policy, poll())
+        .await
+        .unwrap();
+    let repeated: Value =
+        serde_json::from_str(&read().get_result::<Raw>(&mut db).await.unwrap().value).unwrap();
+    assert_eq!(repeated, both);
+    f.domain
+        .observe_shared_daemon_protocol(&f.owner.p, false)
+        .await
+        .unwrap();
+    let reset: Value =
+        serde_json::from_str(&read().get_result::<Raw>(&mut db).await.unwrap().value).unwrap();
+    assert_eq!(reset, json!([null, null]));
+}
