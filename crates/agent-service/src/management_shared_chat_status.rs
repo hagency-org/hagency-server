@@ -52,10 +52,15 @@ pub(super) async fn query(
                 WHEN w.state IS NOT NULL THEN w.state
                 ELSE i.state END,
             'reason', CASE WHEN queue.status IS NOT NULL THEN queue.reason ELSE i.reason END,
+            'resourceRecovery', CASE WHEN queue.reason='budget_blocked' AND req.id IS NOT NULL
+                THEN jsonb_build_object('requestId',req.id,'role',
+                    CASE WHEN req.administrator_user_id=$1 THEN 'owner' ELSE 'manager' END) END,
             'budgetBlock', CASE WHEN queue.reason='budget_blocked' THEN budget_block.payload::jsonb END
         )::text AS payload
         FROM hagency_agent_v1.management_shared_intake i
         JOIN hagency_agent_v1.management_shared_assignments a ON a.id=i.assignment_id
+        LEFT JOIN hagency_agent_v1.management_agent_requests req ON req.id=a.request_id
+            AND req.pool_contribution_id IS NOT NULL AND $1 IN (req.manager_user_id,req.administrator_user_id)
         LEFT JOIN LATERAL (
             SELECT hagency_agent_v1.shared_executor_protocol_reason(
                 a.executor_owner_user_id,a.executor_device_id,a.executor_generation,$4) AS reason
