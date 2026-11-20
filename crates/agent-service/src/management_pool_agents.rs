@@ -251,9 +251,13 @@ async fn allowance_notice(
         ) evidence ON true
         WHERE a.request_id=$1 AND i.received_at_ms >= $2 AND i.expires_at_ms>$3 AND i.state IN ('pending','blocked')
           AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=d.id)
-          AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w
-              JOIN hagency_agent_v1.management_shared_runtimes rt ON rt.id=w.runtime_id
-              WHERE rt.assignment_id=a.id AND w.started_at_ms>=i.received_at_ms)
+          AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake later
+              JOIN hagency_agent_v1.management_shared_event_pins pin
+                ON pin.assignment_id=later.assignment_id AND pin.event_id=later.event_id
+              JOIN hagency_agent_v1.management_shared_work w ON w.id=pin.work_id
+              WHERE later.assignment_id=a.id AND later.control_revision=i.control_revision
+                AND (later.received_at_ms,later.id)>=(i.received_at_ms,i.id)
+                AND w.started_at_ms IS NOT NULL)
         ORDER BY i.received_at_ms DESC,i.id DESC LIMIT 1")
         .bind::<Text,_>(request).bind::<BigInt,_>(since).bind::<BigInt,_>(now).get_result::<Notice>(db).await.optional()?;
     recorded
