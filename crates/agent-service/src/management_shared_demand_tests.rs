@@ -815,6 +815,17 @@ async fn shared_demand_known_overrun_retains_actual_usage_and_zero_remaining_wit
     );
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     assert!(sql_query("SELECT w.known_consumed_tokens=$2 AND w.retained_tokens=$2 AND w.usage_complete AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demands d JOIN hagency_agent_v1.management_shared_demand_blocks b ON b.demand_id=d.id WHERE d.payload::jsonb->>'assignmentId'=$3 AND b.reason='budget_blocked') AS matched FROM hagency_agent_v1.management_shared_work w WHERE w.id=$1").bind::<Text,_>(&w.id).bind::<BigInt,_>(consumed).bind::<Text,_>(&a.id).get_result::<Check>(&mut db).await.unwrap().matched);
+    let room = read_matrix(&f, &r).await.room_id;
+    let view = f
+        .domain
+        .shared_approvals(
+            &f.owner.p,
+            serde_json::from_value(json!({"roomId":room})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(view["executions"][0]["reason"], "budget_blocked");
+    assert_eq!(view["executions"][0]["budgetState"], "exhausted");
     no_successor(&f, &a.id).await;
 }
 #[tokio::test]

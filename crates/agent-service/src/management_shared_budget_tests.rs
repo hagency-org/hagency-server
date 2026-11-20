@@ -1124,6 +1124,66 @@ fn demand_input(
 }
 #[tokio::test]
 #[ignore = "dedicated PostgreSQL"]
+async fn current_budget_block_is_visible_until_a_new_revision_is_applied() {
+    let (mut f, r, admin, m, i) = Box::pin(fixture()).await;
+    running(&mut f, &m, &i.assignment_id).await;
+    retain_event(&f, &r, &m, "blocked_chat").await;
+    let d = offered(&f).await;
+    let mut budget = i.budget_observation;
+    budget.known_consumed_tokens = budget.allocated_tokens;
+    budget.retained_tokens = budget.allocated_tokens;
+    budget.remaining_tokens = 0;
+    budget.usage_complete = false;
+    f.domain
+        .block_shared_budget_demand(
+            &f.owner.p,
+            &d.offer.demand_id,
+            SharedBudgetDemandBlockInput {
+                demand_digest: d.demand_digest,
+                expected_control_revision: d.offer.control_revision,
+                original_block: d.original_block,
+                execution_budget: d.execution_budget,
+                reason: "budget_blocked".into(),
+                budget: Some(budget),
+            },
+        )
+        .await
+        .unwrap();
+    let room = work::message(&f, &r, "scope").await.room_id;
+    for n in 0..16 {
+        retain_event(&f, &r, &m, &format!("later_chat_{n}")).await;
+    }
+    let query = || {
+        serde_json::from_value(json!({"roomId":room,"executionThread":"$blocked_chat"})).unwrap()
+    };
+    let read = f
+        .domain
+        .shared_approvals(&f.outsider.p, query())
+        .await
+        .unwrap();
+    assert_eq!(read["executions"].as_array().unwrap().len(), 1);
+    assert_eq!(read["executions"][0]["state"], "blocked");
+    assert_eq!(read["executions"][0]["reason"], "budget_blocked");
+    assert_eq!(read["executions"][0]["budgetState"], "exhausted");
+    let hidden = f
+        .domain
+        .shared_approvals(&f.admin.p, query())
+        .await
+        .unwrap();
+    assert_eq!(hidden["executions"], json!([]));
+    apply_delta(&f, &r, &admin, 25, 250).await;
+    let restored = f
+        .domain
+        .shared_approvals(&f.outsider.p, query())
+        .await
+        .unwrap();
+    assert_eq!(restored["executions"][0]["state"], "pending");
+    assert!(restored["executions"][0]["reason"].is_null());
+    assert!(restored["executions"][0].get("budgetState").is_none());
+}
+
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
 async fn budget_execution_v3_idle_promotion_fifo_never_creates_second_start() {
     use crate::management_shared_demand_types::*;
     let (mut f, r, _, m, i) = Box::pin(fixture()).await;

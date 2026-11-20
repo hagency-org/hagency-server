@@ -31,6 +31,7 @@ pub struct TakeApproval {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalQuery {
     room_id: Option<String>,
+    execution_thread: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -262,6 +263,15 @@ impl DomainStore {
         {
             return Err(Error::Invalid("invalid_room"));
         }
+        if input.execution_thread.as_deref().is_some_and(|id| {
+            input.room_id.is_none()
+                || !id.starts_with('$')
+                || id.len() < 2
+                || id.len() > 255
+                || id.chars().any(char::is_control)
+        }) {
+            return Err(Error::Invalid("invalid_execution_thread"));
+        }
         self.db.transaction(async |db| {
             let now = clock(db).await?;
             // A request its sender decides is not listed for the owner.
@@ -277,8 +287,8 @@ impl DomainStore {
                     result.push(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}));
                 }
             }
-            let executions = chat_status::query(db, p, input.room_id.as_deref(), now).await?;
-            Ok(json!({"approvals":result,"executions":executions}))
+            let executions = chat_status::query(db, p, input.room_id.as_deref(), input.execution_thread.as_deref(), now).await?;
+            Ok(json!({"approvals":result,"executions":executions,"executionThreadFilter":true}))
         }).await
     }
     pub async fn shared_approval(&self, p: &Principal, id: &str) -> Result<Value> {
