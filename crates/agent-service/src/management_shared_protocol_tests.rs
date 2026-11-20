@@ -368,6 +368,11 @@ async fn discovery_observations_require_the_current_worker_and_a_successful_lane
         .with_agent_budget_deltas(true)
         .with_shared_budget_execution(true);
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    // A legacy database can lose its Diesel history while retaining the
+    // later additive columns. Re-adoption must preserve its observations.
+    let migration =
+        include_str!("../migrations/domain/2026-11-20-000153_discovery_observations/up.sql");
+    db.batch_execute(migration).await.unwrap();
     let read = || {
         sql_query("SELECT jsonb_build_array(ordinary_poll_at_ms,budget_poll_at_ms)::text AS value FROM hagency_agent_v1.management_shared_executor_protocols WHERE device_id=$1")
         .bind::<Text,_>(f.owner.p.device_id.clone().unwrap())
@@ -410,6 +415,11 @@ async fn discovery_observations_require_the_current_worker_and_a_successful_lane
     let repeated: Value =
         serde_json::from_str(&read().get_result::<Raw>(&mut db).await.unwrap().value).unwrap();
     assert_eq!(repeated, both);
+    db.batch_execute(migration).await.unwrap();
+    let adopted: Value =
+        serde_json::from_str(&read().get_result::<Raw>(&mut db).await.unwrap().value).unwrap();
+    assert_eq!(adopted, both);
+
     f.domain
         .observe_shared_daemon_protocol(&f.owner.p, false)
         .await
