@@ -36,4 +36,4 @@ Use a durable recipient key derived from the supply scope, state revision, recip
 5. Remove membership or revoke a binding between enqueue and delivery. Verify the old recipient receives no private state. Return connectivity and verify a still-entitled account receives the latest state.
 6. Apply a fresh positive observation and obtain an actual response using an existing approved allocation. Keep the observation and the successful execution as distinct evidence.
 
-A resource owner manually pausing a whole pool would introduce a separate product action and audit reason. The proposed automatic source can be evaluated independently.
+The product decision for this release is to retain unknown supply status when evidence does not cover the whole pool. Manual owner declaration and pool-wide push delivery are deferred. This release must not emit an outage or restoration from an absent balance, a partial bucket observation, or exhaustion of one allocation.
