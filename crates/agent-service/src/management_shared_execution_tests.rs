@@ -1167,7 +1167,7 @@ async fn pool_owner_can_fund_beyond_published_grant_but_manager_cannot() {
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_user_leakage() {
-    let (f, request, _assignment, matrix) = Box::pin(prepared_pool_calendar(true, true)).await;
+    let (f, request, assignment, matrix) = Box::pin(prepared_pool_calendar(true, true)).await;
     let runtime = shared_poll(&f).await;
     let activity = save(&f, &runtime, "qualified", 101)
         .await
@@ -1336,9 +1336,18 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         .unwrap();
     // The administrator is not an applicant or a sender. Joining the bound room
     // permits only its generic state; leaving it withdraws even that view.
-    let read_room = || {
-        f.domain
-            .room_allowance_page(&f.admin.p, &request.room_id, "", &matrix.gateway)
+    let read_room = || async {
+        let input =
+            serde_json::from_value(json!({"roomId":request.room_id,"roomAllowanceAfter":""}))
+                .unwrap();
+        let page = f
+            .domain
+            .shared_approval_room_page(&f.admin.p, input, &matrix.gateway)
+            .await
+            .unwrap();
+        assert_eq!(page["roomAllowanceSupported"], true);
+        assert_eq!(page["executions"], json!([]));
+        page["roomAllowancePage"].clone()
     };
     member(
         &mut matrix.states.lock().unwrap(),
@@ -1346,14 +1355,14 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         &f.admin.p.mxid,
         "leave",
     );
-    assert_eq!(read_room().await.unwrap()["items"], json!([]));
+    assert_eq!(read_room().await["items"], json!([]));
     member(
         &mut matrix.states.lock().unwrap(),
         &request.room_id,
         &f.admin.p.mxid,
         "join",
     );
-    let visible = read_room().await.unwrap();
+    let visible = read_room().await;
     assert_eq!(visible["items"].as_array().unwrap().len(), 1);
     assert_eq!(visible["items"][0]["state"], "exhausted");
     assert_eq!(visible["items"][0].as_object().unwrap().len(), 2);
@@ -1363,7 +1372,7 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         &f.admin.p.mxid,
         "leave",
     );
-    assert_eq!(read_room().await.unwrap()["items"], json!([]));
+    assert_eq!(read_room().await["items"], json!([]));
     for principal in [&f.owner.p, &f.outsider.p] {
         let detail = f
             .domain
@@ -1418,6 +1427,26 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
     }
     assert!(sql_query("SELECT count(*)=1 AS matched FROM hagency_agent_v1.management_shared_work WHERE id=$1 AND state='unknown'")
         .bind::<Text,_>(&work.id).get_result::<Check>(&mut db).await.unwrap().matched);
+    f.domain
+        .change_shared_run_control(
+            &f.outsider.p,
+            &f.policy,
+            &assignment.id,
+            intake_tests::change(
+                "pause_after_denial",
+                offered.offer.control_revision,
+                "paused",
+            ),
+            &matrix.gateway,
+        )
+        .await
+        .unwrap();
+    let refreshed = f
+        .domain
+        .pool_agent_request(&f.owner.p, &request.id)
+        .await
+        .unwrap();
+    assert!(refreshed.allowance_notice.is_none());
 }
 
 #[tokio::test]

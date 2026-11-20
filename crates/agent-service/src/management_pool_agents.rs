@@ -222,6 +222,7 @@ async fn allowance_notice(
     db: &mut AsyncPgConnection,
     request: &str,
     since: i64,
+    now: i64,
 ) -> Result<Option<PoolAllowanceNotice>> {
     #[derive(QueryableByName)]
     struct Notice {
@@ -248,13 +249,13 @@ async fn allowance_notice(
             SELECT b.payload FROM hagency_agent_v1.management_shared_budget_demand_blocks b
              WHERE b.budget_revision=applied.revision AND b.demand_id=d.id AND b.reason='budget_blocked'
         ) evidence ON true
-        WHERE a.request_id=$1 AND i.received_at_ms >= $2 AND i.state IN ('pending','blocked')
+        WHERE a.request_id=$1 AND i.received_at_ms >= $2 AND i.expires_at_ms>$3 AND i.state IN ('pending','blocked')
           AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=d.id)
           AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w
               JOIN hagency_agent_v1.management_shared_runtimes rt ON rt.id=w.runtime_id
               WHERE rt.assignment_id=a.id AND w.started_at_ms>=i.received_at_ms)
         ORDER BY i.received_at_ms DESC,i.id DESC LIMIT 1")
-        .bind::<Text,_>(request).bind::<BigInt,_>(since).get_result::<Notice>(db).await.optional()?;
+        .bind::<Text,_>(request).bind::<BigInt,_>(since).bind::<BigInt,_>(now).get_result::<Notice>(db).await.optional()?;
     recorded
         .map(|row| {
             let evidence = decode(&row.payload)?;
@@ -291,6 +292,7 @@ pub(crate) async fn room_allowance_reason(
         db,
         request,
         period.as_ref().map_or(0, |v| v.start_ms as i64),
+        now,
     )
     .await?
     .map(|n| n.state))
@@ -382,6 +384,7 @@ pub(super) async fn view_pool(
             current_period
                 .as_ref()
                 .map_or(0, |period| period.start_ms as i64),
+            now,
         )
         .await?
     } else {

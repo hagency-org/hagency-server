@@ -271,7 +271,12 @@ impl DomainStore {
         result["roomAllowanceSupported"] = json!(true);
         if let (Some(room), Some(after)) = (room, after) {
             // Permission decisions remain available during a Matrix outage.
-            if let Ok(page) = self.room_allowance_page(p, &room, &after, gateway).await {
+            if let Ok(Ok(page)) = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                self.room_allowance_page(p, &room, &after, gateway),
+            )
+            .await
+            {
                 result["roomAllowancePage"] = page;
             }
         }
