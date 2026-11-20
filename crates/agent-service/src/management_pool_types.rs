@@ -100,6 +100,10 @@ pub struct PoolRenewal {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PoolAgentRequest {
+    /// Most recent budget-denied start for this allocation. Read-only advisory;
+    /// callers still refresh the authoritative budget and period before acting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowance_notice: Option<PoolAllowanceNotice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar: Option<crate::recurring_quota::Calendar>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -145,6 +149,13 @@ pub struct PoolAgentRequest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolAllowanceNotice {
+    pub state: String,
+    pub received_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenewPoolAgent {
     pub command_id: String,
@@ -171,4 +182,21 @@ pub struct ReallocatePoolAgent {
     pub expected_revision: i64,
     pub expected_grant_revision: i64,
     pub renewal_mode: crate::recurring_quota::RenewalMode,
+}
+
+pub(crate) fn budget_state(block: &serde_json::Value) -> Option<&'static str> {
+    let exhausted = "known_consumption_exhausted";
+    if block == exhausted || block["reason"] == exhausted || block["source"] == exhausted {
+        return Some("exhausted");
+    }
+    let budget = &block["budget"];
+    let known = budget["knownConsumedTokens"].as_u64()?;
+    let ceiling = budget["allocatedTokens"].as_u64()?;
+    if known >= ceiling {
+        return Some("exhausted");
+    }
+    match budget["usageComplete"].as_bool() {
+        Some(false) => Some("usage_unresolved"),
+        _ => None,
+    }
 }

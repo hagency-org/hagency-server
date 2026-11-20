@@ -1167,7 +1167,7 @@ async fn pool_owner_can_fund_beyond_published_grant_but_manager_cannot() {
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_user_leakage() {
-    let (f, request, assignment, matrix) = Box::pin(prepared_pool_calendar(true, true)).await;
+    let (f, request, _assignment, matrix) = Box::pin(prepared_pool_calendar(true, true)).await;
     let runtime = shared_poll(&f).await;
     let activity = save(&f, &runtime, "qualified", 101)
         .await
@@ -1234,7 +1234,7 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         .await
         .unwrap();
     assert_eq!(value["executions"][0]["state"], "started");
-    attempts::stop(&f, &runtime, 103).await;
+    let stopped = attempts::stop(&f, &runtime, 103).await;
     let pool = f
         .domain
         .pool_agent_request(&f.outsider.p, &request.id)
@@ -1304,8 +1304,53 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         .route_shared_event(&f.policy, &event, now_ms(), &matrix.gateway)
         .await
         .unwrap();
-    sql_query("UPDATE hagency_agent_v1.management_shared_intake SET state='blocked',reason='budget_blocked' WHERE assignment_id=$1 AND event_id=$2")
-        .bind::<Text,_>(&assignment.id).bind::<Text,_>(&event.event_id).execute(&mut db).await.unwrap();
+    let offered = f
+        .domain
+        .poll_shared_demand(
+            &f.owner.p,
+            &f.policy,
+            serde_json::from_value(json!({})).unwrap(),
+        )
+        .await
+        .unwrap()
+        .demand
+        .unwrap();
+    let mut budget = attempts::start(&runtime, &stopped).budget_observation;
+    budget.allocated_tokens = request.requested_tokens;
+    budget.retained_tokens = budget.allocated_tokens;
+    budget.known_consumed_tokens = budget.allocated_tokens;
+    budget.remaining_tokens = 0;
+    f.domain
+        .block_shared_demand(
+            &f.owner.p,
+            &offered.offer.demand_id,
+            crate::management_shared_demand_types::SharedDemandBlockInput {
+                demand_digest: offered.demand_digest,
+                expected_control_revision: offered.offer.control_revision,
+                reason: "budget_blocked".into(),
+                budget: Some(budget),
+                retries: false,
+            },
+        )
+        .await
+        .unwrap();
+    for principal in [&f.owner.p, &f.outsider.p] {
+        let detail = f
+            .domain
+            .pool_agent_request(principal, &request.id)
+            .await
+            .unwrap();
+        let notice = detail.allowance_notice.unwrap();
+        assert_eq!(notice.state, "exhausted");
+        let encoded = serde_json::to_value(&notice).unwrap();
+        assert_eq!(encoded.as_object().unwrap().len(), 2);
+    }
+    assert!(
+        f.domain
+            .pool_agent_request(&f.admin.p, &request.id)
+            .await
+            .is_err()
+    );
     for p in [&f.owner.p, &f.outsider.p] {
         let value = f
             .domain

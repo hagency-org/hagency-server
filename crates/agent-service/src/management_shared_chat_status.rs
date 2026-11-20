@@ -7,22 +7,7 @@ struct ChatStatus {
     payload: String,
 }
 
-fn budget_state(block: &Value) -> Option<&'static str> {
-    let exhausted = "known_consumption_exhausted";
-    if block == exhausted || block["reason"] == exhausted || block["source"] == exhausted {
-        return Some("exhausted");
-    }
-    let budget = &block["budget"];
-    let known = budget["knownConsumedTokens"].as_u64()?;
-    let ceiling = budget["allocatedTokens"].as_u64()?;
-    if known >= ceiling {
-        return Some("exhausted");
-    }
-    match budget["usageComplete"].as_bool() {
-        Some(false) => Some("usage_unresolved"),
-        _ => None,
-    }
-}
+use crate::management_pool_types::budget_state;
 
 pub(super) async fn query(
     db: &mut AsyncPgConnection,
