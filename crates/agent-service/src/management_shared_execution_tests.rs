@@ -1314,6 +1314,15 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
             .unwrap();
         assert_eq!(value["executions"][0]["eventId"], event.event_id);
         assert_eq!(value["executions"][0]["reason"], "budget_blocked");
+        let role = if p.user_id == f.owner.p.user_id {
+            "owner"
+        } else {
+            "manager"
+        };
+        assert_eq!(
+            value["executions"][0]["resourceRecovery"],
+            json!({"requestId":request.id,"role":role})
+        );
     }
     let hidden = f
         .domain
