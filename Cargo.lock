@@ -3912,7 +3912,7 @@ dependencies = [
  "horme",
  "palpo-core",
  "percent-encoding",
- "rand 0.10.3",
+ "rand 0.10.4",
  "reqwest 0.13.5",
  "salvo",
  "serde",
@@ -3983,7 +3983,7 @@ dependencies = [
  "pasion-config",
  "pasion-data",
  "percent-encoding",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_chacha 0.9.0",
  "rand_core 0.6.4",
  "regex",
@@ -4014,7 +4014,7 @@ dependencies = [
  "flate2",
  "libc",
  "percent-encoding",
- "rand 0.10.3",
+ "rand 0.10.4",
  "serde_json",
  "sha2 0.11.1",
  "signal-hook 0.4.6",
@@ -4129,7 +4129,7 @@ dependencies = [
  "idna",
  "ipnet",
  "jni 0.22.4",
- "rand 0.10.3",
+ "rand 0.10.4",
  "thiserror 2.0.21",
  "tinyvec",
  "tokio",
@@ -4149,7 +4149,7 @@ dependencies = [
  "jni 0.22.4",
  "once_cell",
  "prefix-trie",
- "rand 0.10.3",
+ "rand 0.10.4",
  "ring",
  "thiserror 2.0.21",
  "tinyvec",
@@ -4174,7 +4174,7 @@ dependencies = [
  "ndk-context",
  "once_cell",
  "parking_lot 0.12.5",
- "rand 0.10.3",
+ "rand 0.10.4",
  "resolv-conf",
  "smallvec",
  "system-configuration",
@@ -6849,7 +6849,7 @@ dependencies = [
  "palpo-data",
  "palpo-server-macros",
  "path-slash",
- "rand 0.10.3",
+ "rand 0.10.4",
  "regex",
  "regex-automata",
  "regex-syntax",
@@ -6933,7 +6933,7 @@ dependencies = [
  "phf 0.14.0",
  "pkcs8",
  "pulldown-cmark",
- "rand 0.10.3",
+ "rand 0.10.4",
  "regex",
  "reqwest 0.13.5",
  "salvo",
@@ -7015,7 +7015,7 @@ dependencies = [
  "mime-infer",
  "palpo-core",
  "path-slash",
- "rand 0.10.3",
+ "rand 0.10.4",
  "regex",
  "reqwest 0.13.5",
  "ring",
@@ -7187,7 +7187,7 @@ dependencies = [
  "pin-project-lite",
  "pkcs8",
  "psl",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "reqwest 0.13.5",
@@ -7245,7 +7245,7 @@ dependencies = [
  "pasion-jose",
  "pasion-keystore",
  "pem-rfc7468",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "rustls-pki-types",
@@ -7282,7 +7282,7 @@ dependencies = [
  "opentelemetry-semantic-conventions",
  "pasion-iana",
  "pasion-jose",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "regex",
@@ -7347,7 +7347,7 @@ dependencies = [
  "p384",
  "p521",
  "pasion-iana",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_core 0.6.4",
  "rsa",
  "schemars 1.2.2",
@@ -7382,7 +7382,7 @@ dependencies = [
  "pem-rfc7468",
  "pkcs1",
  "pkcs8",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_core 0.6.4",
  "rsa",
  "sec1",
@@ -7478,7 +7478,7 @@ dependencies = [
  "pasion-matrix",
  "pasion-messaging",
  "pasion-templates",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde",
@@ -7510,7 +7510,7 @@ dependencies = [
  "pasion-i18n",
  "pasion-iana",
  "pasion-policy",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde",
@@ -7967,7 +7967,7 @@ dependencies = [
  "hmac 0.13.0",
  "md-5",
  "memchr",
- "rand 0.10.3",
+ "rand 0.10.4",
  "sha2 0.11.1",
  "stringprep",
 ]
@@ -8160,7 +8160,7 @@ dependencies = [
  "chacha20 0.10.2",
  "core_detect",
  "num-traits",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_xorshift",
  "regex-syntax",
  "unarray",
@@ -8336,7 +8336,7 @@ dependencies = [
  "bytes",
  "getrandom 0.4.3",
  "lru-slab",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_pcg",
  "ring",
  "rustc-hash 2.1.3",
@@ -8424,9 +8424,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.3"
+version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+checksum = "8f6fa277c67e6ea590466f04c3fe82cb509f0864fe470643e5570de9514a9b11"
 dependencies = [
  "chacha20 0.10.2",
  "getrandom 0.4.3",
@@ -8863,7 +8863,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc05fbf560421a0357a750cbe78c7ca19d4923918490daabba313d5dbc871e47"
 dependencies = [
- "rand 0.10.3",
+ "rand 0.10.4",
 ]
 
 [[package]]
@@ -9450,7 +9450,7 @@ dependencies = [
  "percent-encoding",
  "pin-project",
  "quinn",
- "rand 0.10.3",
+ "rand 0.10.4",
  "regex",
  "rustls",
  "salvo_macros",
@@ -9718,7 +9718,7 @@ version = "0.49.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3ed398494bb8fc412a11a182c1883a10ae147587b8f6314abd222d1d626f31b"
 dependencies = [
- "rand 0.10.3",
+ "rand 0.10.4",
  "sentry-types",
  "serde",
  "serde_json",
@@ -9756,7 +9756,7 @@ checksum = "1c18bf7b159bdfc7c8f97816f476b4947a1937fb6bea9d38d3479e58631614ac"
 dependencies = [
  "debugid",
  "hex",
- "rand 0.10.3",
+ "rand 0.10.4",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -10534,7 +10534,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.52.0",
@@ -10782,7 +10782,7 @@ dependencies = [
  "pin-project-lite",
  "postgres-protocol",
  "postgres-types",
- "rand 0.10.3",
+ "rand 0.10.4",
  "socket2",
  "tokio",
  "tokio-util",
@@ -11180,7 +11180,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "947dde63b6d514cc5e044edad4e0ca7261afd1099d16c83d942cb2b2f348689c"
 dependencies = [
- "rand 0.10.3",
+ "rand 0.10.4",
  "serde",
  "uuid",
  "web-time",
