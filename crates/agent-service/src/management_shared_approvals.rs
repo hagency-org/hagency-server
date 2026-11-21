@@ -32,6 +32,7 @@ pub struct TakeApproval {
 pub struct ApprovalQuery {
     room_id: Option<String>,
     execution_thread: Option<String>,
+    room_allowance_after: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -255,6 +256,33 @@ impl DomainStore {
    Ok(json!({"approval":payload,"digest":digest}))
   }).await
     }
+    pub(crate) async fn shared_approval_room_page(
+        &self,
+        p: &Principal,
+        input: ApprovalQuery,
+        gateway: &Gateway,
+    ) -> Result<Value> {
+        let after = input.room_allowance_after.clone();
+        if let Some(cursor) = after.as_deref().filter(|s| !s.is_empty()) {
+            key(cursor)?;
+        }
+        let room = input.room_id.clone();
+        let mut result = self.shared_approvals(p, input).await?;
+        result["roomAllowanceSupported"] = json!(true);
+        if let (Some(room), Some(after)) = (room, after) {
+            // Permission decisions remain available during a Matrix outage.
+            if let Ok(Ok(page)) = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                self.room_allowance_page(p, &room, &after, gateway),
+            )
+            .await
+            {
+                result["roomAllowancePage"] = page;
+            }
+        }
+        Ok(result)
+    }
+
     pub async fn shared_approvals(&self, p: &Principal, input: ApprovalQuery) -> Result<Value> {
         if input
             .room_id

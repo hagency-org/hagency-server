@@ -216,6 +216,92 @@ async fn authority_until(db: &mut AsyncPgConnection, r: &Row, now: i64) -> Resul
         lifetime.min(allocations::chain_until(db, &effective.id).await?),
     ))
 }
+/// Both pool principals can inspect a retained denial even when another
+/// member sent the message. No event, sender, room or budget amounts escape.
+async fn allowance_notice(
+    db: &mut AsyncPgConnection,
+    request: &str,
+    since: i64,
+    now: i64,
+) -> Result<Option<PoolAllowanceNotice>> {
+    #[derive(QueryableByName)]
+    struct Notice {
+        #[diesel(sql_type=Text)]
+        payload: String,
+        #[diesel(sql_type=BigInt)]
+        received: i64,
+    }
+    let recorded = sql_query("WITH applied AS (
+            SELECT max(br.budget_revision) AS revision
+            FROM hagency_agent_v1.management_agent_budget_commands bc
+            JOIN hagency_agent_v1.management_agent_budget_results br ON br.command_id=bc.id
+            WHERE bc.request_id=$1 AND br.state='applied')
+        SELECT evidence.payload,i.received_at_ms AS received
+        FROM hagency_agent_v1.management_shared_assignments a
+        JOIN hagency_agent_v1.management_shared_controls ctl ON ctl.assignment_id=a.id AND ctl.mode='running'
+        JOIN hagency_agent_v1.management_shared_intake i ON i.assignment_id=a.id AND i.control_revision=ctl.revision
+        JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=i.id
+        CROSS JOIN applied
+        JOIN LATERAL (
+            SELECT b.payload FROM hagency_agent_v1.management_shared_demand_blocks b
+             WHERE applied.revision IS NULL AND b.demand_id=d.id AND b.reason='budget_blocked'
+            UNION ALL
+            SELECT b.payload FROM hagency_agent_v1.management_shared_budget_demand_blocks b
+             WHERE b.budget_revision=applied.revision AND b.demand_id=d.id AND b.reason='budget_blocked'
+        ) evidence ON true
+        WHERE a.request_id=$1 AND i.received_at_ms >= $2 AND i.expires_at_ms>$3 AND i.state IN ('pending','blocked')
+          AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=d.id)
+          AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake later
+              JOIN hagency_agent_v1.management_shared_event_pins pin
+                ON pin.assignment_id=later.assignment_id AND pin.event_id=later.event_id
+              JOIN hagency_agent_v1.management_shared_work w ON w.id=pin.work_id
+              WHERE later.assignment_id=a.id AND later.control_revision=i.control_revision
+                AND (later.received_at_ms,later.id)>=(i.received_at_ms,i.id)
+                AND w.started_at_ms IS NOT NULL)
+        ORDER BY i.received_at_ms DESC,i.id DESC LIMIT 1")
+        .bind::<Text,_>(request).bind::<BigInt,_>(since).bind::<BigInt,_>(now).get_result::<Notice>(db).await.optional()?;
+    recorded
+        .map(|row| {
+            let evidence = decode(&row.payload)?;
+            Ok(PoolAllowanceNotice {
+                state: budget_state(&evidence).unwrap_or("unavailable").into(),
+                received_at_ms: row.received,
+            })
+        })
+        .transpose()
+}
+
+/// Caller has already verified the viewer's current Matrix room membership
+/// and the assignment's retained authority. Return only a public reason.
+pub(crate) async fn room_allowance_reason(
+    db: &mut AsyncPgConnection,
+    request: &str,
+    p: &Principal,
+    now: i64,
+) -> Result<Option<String>> {
+    let r = row(db, request).await?;
+    if r.pool_contribution_id.is_none() {
+        return Ok(None);
+    }
+    let (_, _, period, _) = super::periods::projection(db, &r, p, now).await?;
+    if let Some(period) = &period {
+        match period.state.as_str() {
+            "exhausted" => return Ok(Some("exhausted".into())),
+            "awaiting_capacity" => return Ok(Some("renewal_waiting_capacity".into())),
+            "available" => {}
+            _ => return Ok(None),
+        }
+    }
+    Ok(allowance_notice(
+        db,
+        request,
+        period.as_ref().map_or(0, |v| v.start_ms as i64),
+        now,
+    )
+    .await?
+    .map(|n| n.state))
+}
+
 pub(super) async fn view_pool(
     db: &mut AsyncPgConnection,
     id: &str,
@@ -295,7 +381,21 @@ pub(super) async fn view_pool(
         calendar = g.receipt.calendar;
     }
     let rooms_requiring_reinvite=sql_query("SELECT count(*)::bigint AS now FROM (SELECT b.room_id FROM hagency_agent_v1.shared_agent_rooms b WHERE b.assignment_id=hagency_agent_v1.previous_agent_assignment($1) AND b.state IN ('left','leaving') AND b.departure_reason IS DISTINCT FROM 'allocation_ended' UNION SELECT b.room_id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.shared_agent_rooms b ON b.assignment_id=a.id WHERE a.request_id=$1 AND b.state IN ('left','leaving') AND b.restoration_requires_membership) skipped WHERE NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.shared_agent_rooms b ON b.assignment_id=a.id WHERE a.request_id=$1 AND b.room_id=skipped.room_id AND b.state IN ('joining','active'))").bind::<Text,_>(&r.id).get_result::<Clock>(db).await?.now;
+    let allowance_notice = if blocked.is_none() && r.state == "approved_waiting_executor" {
+        allowance_notice(
+            db,
+            &r.id,
+            current_period
+                .as_ref()
+                .map_or(0, |period| period.start_ms as i64),
+            now,
+        )
+        .await?
+    } else {
+        None
+    };
     Ok(PoolAgentRequest {
+        allowance_notice,
         calendar,
         renewal_mode,
         current_period,

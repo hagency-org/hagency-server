@@ -1,4 +1,6 @@
 //! Versioned shared process/activity authority; personal execution stays separate.
+#[path = "management_room_allowances.rs"]
+mod room_allowances;
 #[path = "management_shared_tickets.rs"]
 mod tickets;
 use super::*;

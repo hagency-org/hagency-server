@@ -1234,7 +1234,7 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         .await
         .unwrap();
     assert_eq!(value["executions"][0]["state"], "started");
-    attempts::stop(&f, &runtime, 103).await;
+    let stopped = attempts::stop(&f, &runtime, 103).await;
     let pool = f
         .domain
         .pool_agent_request(&f.outsider.p, &request.id)
@@ -1304,8 +1304,92 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         .route_shared_event(&f.policy, &event, now_ms(), &matrix.gateway)
         .await
         .unwrap();
-    sql_query("UPDATE hagency_agent_v1.management_shared_intake SET state='blocked',reason='budget_blocked' WHERE assignment_id=$1 AND event_id=$2")
-        .bind::<Text,_>(&assignment.id).bind::<Text,_>(&event.event_id).execute(&mut db).await.unwrap();
+    let offered = f
+        .domain
+        .poll_shared_demand(
+            &f.owner.p,
+            &f.policy,
+            serde_json::from_value(json!({})).unwrap(),
+        )
+        .await
+        .unwrap()
+        .demand
+        .unwrap();
+    let mut budget = attempts::start(&runtime, &stopped).budget_observation;
+    budget.allocated_tokens = request.requested_tokens;
+    budget.retained_tokens = budget.allocated_tokens;
+    budget.known_consumed_tokens = budget.allocated_tokens;
+    budget.remaining_tokens = 0;
+    f.domain
+        .block_shared_demand(
+            &f.owner.p,
+            &offered.offer.demand_id,
+            crate::management_shared_demand_types::SharedDemandBlockInput {
+                demand_digest: offered.demand_digest,
+                expected_control_revision: offered.offer.control_revision,
+                reason: "budget_blocked".into(),
+                budget: Some(budget),
+                retries: false,
+            },
+        )
+        .await
+        .unwrap();
+    // The administrator is not an applicant or a sender. Joining the bound room
+    // permits only its generic state; leaving it withdraws even that view.
+    let read_room = || async {
+        let input =
+            serde_json::from_value(json!({"roomId":request.room_id,"roomAllowanceAfter":""}))
+                .unwrap();
+        let page = f
+            .domain
+            .shared_approval_room_page(&f.admin.p, input, &matrix.gateway)
+            .await
+            .unwrap();
+        assert_eq!(page["roomAllowanceSupported"], true);
+        assert_eq!(page["executions"], json!([]));
+        page["roomAllowancePage"].clone()
+    };
+    member(
+        &mut matrix.states.lock().unwrap(),
+        &request.room_id,
+        &f.admin.p.mxid,
+        "leave",
+    );
+    assert_eq!(read_room().await["items"], json!([]));
+    member(
+        &mut matrix.states.lock().unwrap(),
+        &request.room_id,
+        &f.admin.p.mxid,
+        "join",
+    );
+    let visible = read_room().await;
+    assert_eq!(visible["items"].as_array().unwrap().len(), 1);
+    assert_eq!(visible["items"][0]["state"], "exhausted");
+    assert_eq!(visible["items"][0].as_object().unwrap().len(), 2);
+    member(
+        &mut matrix.states.lock().unwrap(),
+        &request.room_id,
+        &f.admin.p.mxid,
+        "leave",
+    );
+    assert_eq!(read_room().await["items"], json!([]));
+    for principal in [&f.owner.p, &f.outsider.p] {
+        let detail = f
+            .domain
+            .pool_agent_request(principal, &request.id)
+            .await
+            .unwrap();
+        let notice = detail.allowance_notice.unwrap();
+        assert_eq!(notice.state, "exhausted");
+        let encoded = serde_json::to_value(&notice).unwrap();
+        assert_eq!(encoded.as_object().unwrap().len(), 2);
+    }
+    assert!(
+        f.domain
+            .pool_agent_request(&f.admin.p, &request.id)
+            .await
+            .is_err()
+    );
     for p in [&f.owner.p, &f.outsider.p] {
         let value = f
             .domain
@@ -1343,6 +1427,26 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
     }
     assert!(sql_query("SELECT count(*)=1 AS matched FROM hagency_agent_v1.management_shared_work WHERE id=$1 AND state='unknown'")
         .bind::<Text,_>(&work.id).get_result::<Check>(&mut db).await.unwrap().matched);
+    f.domain
+        .change_shared_run_control(
+            &f.outsider.p,
+            &f.policy,
+            &assignment.id,
+            intake_tests::change(
+                "pause_after_denial",
+                offered.offer.control_revision,
+                "paused",
+            ),
+            &matrix.gateway,
+        )
+        .await
+        .unwrap();
+    let refreshed = f
+        .domain
+        .pool_agent_request(&f.owner.p, &request.id)
+        .await
+        .unwrap();
+    assert!(refreshed.allowance_notice.is_none());
 }
 
 #[tokio::test]
