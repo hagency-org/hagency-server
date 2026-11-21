@@ -107,7 +107,9 @@ impl DomainStore {
             let generation = p.device_generation.ok_or(Error::Unauthorized("device_required"))?;
             #[derive(QueryableByName)] struct Clock { #[diesel(sql_type=BigInt)] now:i64 }
             let now=sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now").get_result::<Clock>(db).await?.now;
-            sql_query("INSERT INTO hagency_agent_v1.management_shared_executor_protocols(device_id,owner_user_id,generation,session_id,qualified,observed_at_ms,expires_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(device_id) DO UPDATE SET owner_user_id=excluded.owner_user_id,generation=excluded.generation,session_id=excluded.session_id,qualified=excluded.qualified,observed_at_ms=excluded.observed_at_ms,expires_at_ms=excluded.expires_at_ms")
+            sql_query("INSERT INTO hagency_agent_v1.management_shared_executor_protocols AS prev(device_id,owner_user_id,generation,session_id,qualified,observed_at_ms,expires_at_ms) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(device_id) DO UPDATE SET owner_user_id=excluded.owner_user_id,generation=excluded.generation,session_id=excluded.session_id,qualified=excluded.qualified,observed_at_ms=excluded.observed_at_ms,expires_at_ms=excluded.expires_at_ms,
+                ordinary_poll_at_ms=CASE WHEN excluded.qualified AND (prev.owner_user_id,prev.generation,prev.session_id)=(excluded.owner_user_id,excluded.generation,excluded.session_id) THEN prev.ordinary_poll_at_ms END,
+                budget_poll_at_ms=CASE WHEN excluded.qualified AND (prev.owner_user_id,prev.generation,prev.session_id)=(excluded.owner_user_id,excluded.generation,excluded.session_id) THEN prev.budget_poll_at_ms END")
                 .bind::<Text,_>(device).bind::<Text,_>(&p.user_id).bind::<BigInt,_>(generation)
                 .bind::<Text,_>(&p.session_id).bind::<Bool,_>(qualified).bind::<BigInt,_>(now)
                 .bind::<BigInt,_>(now+FRESH_MS).execute(db).await?;

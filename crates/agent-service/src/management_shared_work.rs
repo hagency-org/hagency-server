@@ -465,7 +465,9 @@ impl DomainStore {
         key(id)?;
         let (membership, work) = {
             self.db
-                .transaction(async |db| native_send_scope(db, p, policy, id, &self.server).await)
+                .write_transaction(async |db| {
+                    native_send_scope(db, p, policy, id, &self.server).await
+                })
                 .await?
         };
         let observed = gateway

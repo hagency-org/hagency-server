@@ -1135,6 +1135,8 @@ pub mod hagency_agent_v1 {
             qualified -> Bool,
             observed_at_ms -> Int8,
             expires_at_ms -> Int8,
+            ordinary_poll_at_ms -> Nullable<Int8>,
+            budget_poll_at_ms -> Nullable<Int8>,
         }
     }
 
