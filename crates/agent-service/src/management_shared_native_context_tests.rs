@@ -169,10 +169,29 @@ async fn shared_context_v3_freezes_only_current_request_preserving_exact_start_a
         allocation_encoding(&recovered).unwrap(),
         allocation_encoding(&c).unwrap()
     );
-    f.domain
-        .authorize_shared_room_send(&f.owner.p, &f.policy, &w.id, &m.gateway)
-        .await
-        .unwrap();
+    // A concurrent domain write must not fence the final send before membership is checked.
+    {
+        use diesel_async::{AsyncConnection, AsyncPgConnection, SimpleAsyncConnection};
+        let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+        let mut writer = AsyncPgConnection::establish(&url).await.unwrap();
+        writer.batch_execute("BEGIN").await.unwrap();
+        assert!(
+            crate::database::try_domain_writer(&mut writer)
+                .await
+                .unwrap()
+        );
+        let send = f
+            .domain
+            .authorize_shared_room_send(&f.owner.p, &f.policy, &w.id, &m.gateway);
+        tokio::pin!(send);
+        if let Ok(result) =
+            tokio::time::timeout(std::time::Duration::from_millis(150), &mut send).await
+        {
+            panic!("send authorization returned while the domain writer was held: {result:?}");
+        }
+        writer.batch_execute("COMMIT").await.unwrap();
+        send.await.unwrap();
+    }
     assert!(
         f.domain
             .authorize_shared_room_send(&f.outsider.p, &f.policy, &w.id, &m.gateway)
