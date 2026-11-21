@@ -224,8 +224,8 @@ impl DomainStore {
             Self::authorize(db,p,0).await?;let(device,generation)=device(p)?;let now=clock(db).await?;
             let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id) AND c.mode='running' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes root WHERE root.assignment_id=a.id AND NOT root.issuance_void AND (root.payload::jsonb->>'version'='1' OR ($5 AND root.payload::jsonb->>'version'='4') OR ($6 AND root.payload::jsonb->>'version'='5'))) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_budget_commands bc JOIN hagency_agent_v1.management_agent_budget_results br ON br.command_id=bc.id WHERE bc.request_id=a.request_id AND br.state='applied') AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.control_revision=c.revision AND q.state IN('pending','blocked')) ORDER BY (a.id<=$4),a.id LIMIT 16")
                 .bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<Bool,_>(allow_claude).bind::<Bool,_>(allow_octos).load::<Id>(db).await?;
-            let mut after=None;
-            for id in ids {after=Some(id.id.clone());let revision=intake::running_revision(db,&id.id).await?;
+            let mut found=None;let mut after=None;
+            'scan: for id in ids {after=Some(id.id.clone());let revision=intake::running_revision(db,&id.id).await?;
                 // Bounded expired-head draining; the next page resumes without
                 // replacing event IDs or spinning forever on one expired block.
                 for _ in 0..16 {
@@ -250,11 +250,12 @@ impl DomainStore {
                     // An old live process is never upgraded in place.
                     if s.is_none()&&h.state!="stopped"&&runtime_version(&h)?!=3 {break;}
                     let value=status(db,&d).await?;
-                    if matches!(value.state.as_str(),"offered"|"start_committed"){return Ok(SharedBudgetDemandPoll{demand:Some(value),next_after:after});}
+                    if matches!(value.state.as_str(),"offered"|"start_committed"){found=Some(value);break 'scan;}
                     break;
                 }
             }
-            Ok(SharedBudgetDemandPoll{demand:None,next_after:after})
+            record_discovery(db,p,true).await?;
+            Ok(SharedBudgetDemandPoll{demand:found,next_after:after})
         }).await
     }
     pub async fn recover_shared_budget_demand(
