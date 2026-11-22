@@ -253,6 +253,15 @@ persisted in `data_dir/matrix-signing-key.json` (mode 0600). Back up that direct
 and PostgreSQL together. `server_name` is an identity and must not be changed
 when reusing a database.
 
+`invite_state_member_limit` in `palpo.toml` lets an invitation name the room's
+members: with a value above zero, an invitation of one of this server's users
+carries the membership of the room's joined and invited members, up to that
+number, as they are when the invitation is sent. Desktop then shows them on the
+invitation screen; without it the screen shows the number of members only.
+Everyone who is invited learns those members' user IDs, names and avatars,
+whether they join or not. The default is 0; the example configuration sets 1000.
+Invitations sent before the option was set keep what they had.
+
 Registration is disabled by default. For a new database, create an administrator
 with a password file, then start the same application:
 
