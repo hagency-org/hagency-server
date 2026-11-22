@@ -28,6 +28,12 @@ pins the embedded server and core to `3d44c435`. Matrix token introspection
 now surfaces issuer outages as gateway or service errors. An inactive or expired
 token still returns HTTP 401.
 
+The subsequent [Palpo #701](https://github.com/palpo-im/palpo/pull/701) and
+[Palpo #703](https://github.com/palpo-im/palpo/pull/703) update pins the embedded
+server and core to `51e48a89`. Sliding sync now sends an accepted invitation as a
+new joined room, and the targets of the membership events in a room's timeline as
+lazily loaded members. No dependency of the embedded server changed.
+
 ## Automated review policy
 
 `python3 scripts/audit-dependencies.py` runs cargo-audit against a fresh RustSec
