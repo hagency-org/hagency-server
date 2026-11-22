@@ -1,6 +1,11 @@
 # Native Palpo ServerConfig: no [matrix] wrapper.
 server_name = "localhost:8088"
 allow_registration = false
+# An invitation of one of this server's users names the room's members, up to
+# this number, so that Desktop can show who is in a room before the user
+# accepts. Everyone who is invited learns those members' user IDs, names and
+# avatars. 0, Palpo's default, names only the inviter.
+invite_state_member_limit = 1000
 # Embedded mode uses Hagency's listener instead of Palpo's listeners.
 [db]
 url = "postgres://hagency:hagency_dev@127.0.0.1:55438/palpo"

@@ -197,6 +197,10 @@ Pasion 使用原生 `[database]`、`[account]`、`[email]`、`[[clients]]`、`[[
 如果 `palpo.toml` 没有显式 `[keypair]`，首次生成 Matrix 签名密钥，保存为 `data_dir/matrix-signing-key.json`，权限 0600。
 数据目录与 PostgreSQL 应一同备份。`server_name` 是 Matrix 身份的一部分，复用数据库时不能改变。
 
+`palpo.toml` 的 `invite_state_member_limit` 让邀请带上房间成员：值大于 0 时，发给本服务器用户的邀请会带上房间内已加入和已被邀请成员的成员信息（发出邀请那一刻的名单，最多到这个数）。
+Desktop 据此在邀请页显示这些成员；没有设置时邀请页只显示成员人数。
+每个被邀请的人都会得知这些成员的用户 ID、名称和头像，无论是否加入。默认值为 0，示例配置设为 1000。设置之前发出的邀请保持原样。
+
 默认关闭注册。为新数据库创建第一个管理员时，先把强密码放进权限受保护的 `secrets/admin-password` 文件，再启动应用：
 
 ```sh

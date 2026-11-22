@@ -43,6 +43,13 @@ of a thread is now put together for the user who reads the thread's first event,
 and holds the latest reply only for a user who may see that reply. No dependency
 of the embedded server changed.
 
+The subsequent [Palpo #706](https://github.com/palpo-im/palpo/pull/706) update pins
+the embedded server and core to `50511ee0`. It adds the server option
+`invite_state_member_limit`: with a value above zero, an invitation of one of this
+server's users also names the room's joined and invited members, up to that
+number. With the default of zero nothing changes. Knocks and invitations of users
+on other servers are not changed. No dependency of the embedded server changed.
+
 ## Automated review policy
 
 `python3 scripts/audit-dependencies.py` runs cargo-audit against a fresh RustSec
