@@ -34,6 +34,15 @@ server and core to `51e48a89`. Sliding sync now sends an accepted invitation as 
 new joined room, and the targets of the membership events in a room's timeline as
 lazily loaded members. No dependency of the embedded server changed.
 
+The subsequent [Palpo #704](https://github.com/palpo-im/palpo/pull/704) and
+[Palpo #705](https://github.com/palpo-im/palpo/pull/705) update pins the embedded
+server and core to `216c13c3`. Sliding sync now sends a room by the user's
+membership of it: a room subscription no longer serves a room to a user who has
+no part in it, and a user who has left or knocks gets no room state. The summary
+of a thread is now put together for the user who reads the thread's first event,
+and holds the latest reply only for a user who may see that reply. No dependency
+of the embedded server changed.
+
 ## Automated review policy
 
 `python3 scripts/audit-dependencies.py` runs cargo-audit against a fresh RustSec
