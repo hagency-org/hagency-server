@@ -513,8 +513,13 @@ pub fn deploy(
     let sbom_name = format!("{release_id}.spdx.json");
     write_sbom(sbom_dir, &sbom_name, &sbom, &image, &bases, release, out)?;
     let name = container(&release.project);
-    engine.replace(&name, &image, probe.port, probe.container_port)?;
-    let result = check(probe, &release.tag);
+    // A replacement that fails part-way may already have removed the old container: it is a failed
+    // deployment like a failed health check, restored and recorded, never an early return.
+    let result = match engine.replace(&name, &image, probe.port, probe.container_port) {
+        Ok(()) => check(probe, &release.tag),
+        Err(e) => Err(json!({"command": format!("start container {name}"), "exit_code": 1,
+            "result": "failed", "detail": e})),
+    };
     let restored = match &result {
         Ok(_) => None,
         Err(_) => previous.as_ref().and_then(|p| {

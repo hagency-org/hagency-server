@@ -12,6 +12,8 @@ struct Fake {
     images: Arc<Mutex<HashMap<String, (String, bool)>>>,
     running: Arc<Mutex<Option<String>>>,
     signed: Arc<Mutex<Vec<String>>>,
+    /// Images built from a context named `unstartable`: replacing removes the old container and fails.
+    unstartable: Arc<Mutex<Vec<String>>>,
 }
 
 impl Engine for Fake {
@@ -34,6 +36,9 @@ impl Engine for Fake {
         let served = tag.rsplit(':').next().unwrap().to_owned();
         let id = sha256(tag.as_bytes());
         let healthy = !context.ends_with("broken");
+        if context.ends_with("unstartable") {
+            self.unstartable.lock().unwrap().push(id.clone());
+        }
         self.images
             .lock()
             .unwrap()
@@ -44,6 +49,10 @@ impl Engine for Fake {
         Ok(format!("{{\"spdxVersion\":\"SPDX-2.3\",\"name\":\"{image}\"}}").into_bytes())
     }
     fn replace(&self, _name: &str, image: &str, _host: u16, _container: u16) -> Result<(), String> {
+        if self.unstartable.lock().unwrap().iter().any(|i| i == image) {
+            *self.running.lock().unwrap() = None;
+            return Err("docker run: port is already allocated".into());
+        }
         *self.running.lock().unwrap() = Some(image.to_owned());
         Ok(())
     }
@@ -209,6 +218,24 @@ fn a_good_release_is_recorded_and_a_broken_one_is_restored_from_the_previous() {
             .count(),
         2
     );
+}
+
+#[test]
+fn a_container_that_cannot_start_is_restored_and_still_recorded() {
+    let (dir, fake, probe, out, ring) = setup();
+    let sbom = dir.path().join("sbom");
+    deploy(&fake, &release("v1"), &dir.path().join("app"), &sbom, &probe, &out).unwrap();
+    // The old container is already gone when starting the new one fails.
+    let failed = deploy(&fake, &release("v2"), &dir.path().join("unstartable"), &sbom, &probe, &out)
+        .expect("a failed start is a failed deployment, not an error before the receipt");
+    assert!(!failed.passed);
+    assert_eq!(failed.restored.as_deref(), Some("DEMO-01-v1"));
+    assert!(http_get(probe.port, "/version", Duration::from_secs(1)).unwrap().1.contains("v1"));
+    let all = signed_receipts(&out, &ring);
+    assert_eq!(all.len(), 2, "the failed start has its receipt");
+    assert_eq!(all[1]["healthcheck"]["result"], "failed");
+    assert!(all[1]["healthcheck"]["detail"].as_str().unwrap().contains("port is already allocated"));
+    assert_eq!(all[1]["rollback"]["result"], "restored");
 }
 
 #[test]
