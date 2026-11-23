@@ -99,6 +99,22 @@ impl Recorder {
         Ok(Self::new(journal, key, public_key_ref))
     }
 
+    /// The commit a run's Test stage recorded as succeeding in `round`: the commit the Reviewer then
+    /// reviewed. The latest attempt's when there were several.
+    pub(crate) fn tested_commit(&self, run_id: &str, round: u32) -> Option<String> {
+        let journal = self.journal.lock().ok()?;
+        journal
+            .events()
+            .filter(|e| {
+                e["run_id"] == run_id
+                    && e["phase"] == "test"
+                    && e["status"] == "succeeded"
+                    && e["round"].as_u64() == Some(u64::from(round))
+            })
+            .filter_map(|e| Some((e["timestamp"].as_str()?.to_owned(), e["commit_sha"].as_str()?.to_owned())))
+            .max()
+            .map(|(_, sha)| sha)
+    }
     fn append(&self, event: &Value, actor_type: &str) -> Result<()> {
         let signer = Signer {
             key: &self.key,
@@ -710,8 +726,18 @@ impl<R: StageRoom> Orchestrator<'_, R> {
                 match crate::orchestrator_git::target(self.room.git(), &run) {
                     Some((host, repo)) => Some((
                         slot,
-                        crate::orchestrator_git::step(host, &repo, &run, slot.stage, slot.round)
-                            .await,
+                        crate::orchestrator_git::step(
+                            host,
+                            &repo,
+                            &run,
+                            slot.stage,
+                            slot.round,
+                            (slot.stage == Stage::Release)
+                                .then(|| self.recorder.tested_commit(&run.id, slot.round))
+                                .flatten()
+                                .as_deref(),
+                        )
+                        .await,
                     )),
                     None => None,
                 }

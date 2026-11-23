@@ -99,7 +99,7 @@ Thread 里能看到：每个阶段的派发消息（含任务分支 `agent/<proj
     scripts/gitfab-workspace.sh https://github.com/ZhangHanDong/gitfab-demo-02 <基线 SHA> agent/DEMO-02/<任务 ID> ~/gitfab/DEMO-02-<任务 ID>
   ```
   只接受列在 `GITFAB_ALLOWED_REPOS` 里的仓库（地址里不能带凭据）和 `agent/<项目>/<任务>` 分支；新任务从基线开始，任务分支已在远端时接着它继续（须包含基线）。每个仓库一份缓存（`GITFAB_WORKSPACE_CACHE`，默认 `~/.cache/gitfab/repos`），远端分支放在 `refs/remotes/origin`，不会覆盖任务分支。这个 worktree 自带推送检查：只能把本任务分支推到该仓库，不能删除分支、不能改写远端已有的提交。检查是本机的护栏（`git push --no-verify` 可以跳过），真正的约束是平台的分支保护和只授权该仓库的 Token。退出码：0 就绪，1 被拒绝（仓库不在列表、基线不存在、远端分支不含基线），2 用法或环境错误。
-- 不需要自己建 PR 或 Release：配置了平台 Token 时由编排器完成。
+- 不需要自己建 PR 或 Release：配置了平台 Token 时由编排器完成。Release 只发布本轮 Test 阶段签名记录的那个提交（也就是 Reviewer 评审的提交）：评审之后有人再往任务分支推了提交，编排器不会发布，会在签名事件和 Thread 里说明原因，需要重新走一轮 Execute、Test、Review。
 
 ## 6. 部署与回退（Runner，Linux + Docker）
 

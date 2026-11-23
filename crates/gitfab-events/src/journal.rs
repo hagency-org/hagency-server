@@ -60,6 +60,12 @@ impl Journal {
         })
     }
 
+    /// Every recorded event (in no particular order), as written.
+    pub fn events(&self) -> impl Iterator<Item = Value> + '_ {
+        self.recorded
+            .values()
+            .filter_map(|content| serde_json::from_str(content).ok())
+    }
     /// Appends one event. Memory, token and release events and key task events are signed with `signer`;
     /// `actor_type` (human, agent or system) goes into the identity event of a key event.
     pub fn append(

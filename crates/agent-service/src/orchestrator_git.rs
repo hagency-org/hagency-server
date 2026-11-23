@@ -213,6 +213,7 @@ pub(crate) async fn step(
     run: &OrchestratorRun,
     stage: Stage,
     round: u32,
+    reviewed: Option<&str>,
 ) -> GitStep {
     let branch = task_branch(run);
     let result = async {
@@ -265,6 +266,21 @@ pub(crate) async fn step(
                 None => no_pull(&branch),
             },
             Stage::Release => match host.open_pull(repo, &branch, &base).await? {
+                // Only the commit the round's Test recorded, which the Reviewer reviewed, is released;
+                // a commit pushed after the review is not.
+                Some(PullRequest { url, head_sha, .. }) if commit(&head_sha) != reviewed.and_then(commit) => {
+                    let error = match reviewed {
+                        None => format!("no reviewed commit recorded for round {round}; not releasing"),
+                        Some(sha) => format!("Pull Request head {head_sha} is not the reviewed commit {sha}; not releasing"),
+                    };
+                    GitStep {
+                        note: Some(format!("未发布 Release：PR 当前的头提交不是评审过的提交（{error}）。请在新一轮 Execute/Test/Review 后再发布。")),
+                        commit: commit(&head_sha),
+                        refs: vec![url],
+                        error: Some(error),
+                        spec_blob: None,
+                    }
+                }
                 Some(PullRequest { url, head_sha, .. }) if !head_sha.is_empty() => {
                     let tag = release_tag(run, round);
                     let notes = format!("任务 {}，运行 {}，PR {url}", run.init.task_id, run.id);
@@ -441,10 +457,49 @@ mod tests {
             })
         });
         let repo = Repo::from_ref("https://github.com/o/r").unwrap();
-        let step = step(&host, &repo, &run(), Stage::Execute, 1).await;
+        let step = step(&host, &repo, &run(), Stage::Execute, 1, None).await;
         assert_eq!(step.refs, vec!["https://github.com/o/r/pull/3".to_owned()]);
         assert_eq!(step.commit.as_deref(), Some("a".repeat(40).as_str()));
         assert_eq!(step.error, None);
+    }
+
+    #[tokio::test]
+    async fn a_release_publishes_only_the_reviewed_commit() {
+        let reviewed = "b".repeat(40);
+        let release = |head: &'static str| {
+            let posted = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+            let seen = posted.clone();
+            let pull = json!({"number": 3, "html_url": "https://github.com/o/r/pull/3",
+                "head": {"ref": "agent/DEMO-02/task-1", "sha": head}});
+            let host = host(move |r| {
+                repo_answer(r).unwrap_or_else(|| match (r.method, r.path.as_str()) {
+                    ("GET", p) if p.starts_with("/repos/o/r/pulls?") => Response { status: 200, body: json!([pull.clone()]) },
+                    ("POST", "/repos/o/r/releases") => {
+                        seen.lock().unwrap().push(r.body.clone().unwrap());
+                        Response { status: 201, body: json!({"html_url": "https://github.com/o/r/releases/tag/gitfab-task-1-r1", "tag_name": "gitfab-task-1-r1"}) }
+                    }
+                    _ => Response { status: 404, body: json!({}) },
+                })
+            });
+            (host, posted)
+        };
+        let repo = Repo::from_ref("https://github.com/o/r").unwrap();
+        // The head is the reviewed commit: released at it.
+        let (h, posted) = release("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let released = step(&h, &repo, &run(), Stage::Release, 1, Some(&reviewed)).await;
+        assert_eq!(released.error, None, "{:?}", released.note);
+        assert_eq!(posted.lock().unwrap()[0]["target_commitish"], reviewed.as_str());
+        // A commit pushed after the review: nothing is released, and the step says why.
+        let (h, posted) = release("cccccccccccccccccccccccccccccccccccccccc");
+        let moved = step(&h, &repo, &run(), Stage::Release, 1, Some(&reviewed)).await;
+        assert!(posted.lock().unwrap().is_empty());
+        assert!(moved.error.as_deref().is_some_and(|e| e.contains("is not the reviewed commit")), "{:?}", moved.error);
+        assert_eq!(moved.refs, vec!["https://github.com/o/r/pull/3".to_owned()]);
+        // No reviewed commit recorded for the round: nothing is released either.
+        let (h, posted) = release("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let unreviewed = step(&h, &repo, &run(), Stage::Release, 1, None).await;
+        assert!(posted.lock().unwrap().is_empty());
+        assert!(unreviewed.error.as_deref().is_some_and(|e| e.contains("no reviewed commit")), "{:?}", unreviewed.error);
     }
 
     #[tokio::test]
@@ -463,7 +518,7 @@ mod tests {
             })
         });
         let repo = Repo::from_ref("https://github.com/o/r").unwrap();
-        let step = step(&host, &repo, &run(), Stage::Execute, 1).await;
+        let step = step(&host, &repo, &run(), Stage::Execute, 1, None).await;
         assert!(step.refs.is_empty());
         assert_eq!(step.commit, None);
         let error = step.error.unwrap();
@@ -530,7 +585,7 @@ mod tests {
                 })
             });
             let repo = Repo::from_ref("https://github.com/o/r").unwrap();
-            let step = step(&host, &repo, &run(), Stage::Test, 1).await;
+            let step = step(&host, &repo, &run(), Stage::Test, 1, None).await;
             let note = step.note.unwrap();
             assert!(note.starts_with("平台测试状态：通过"), "{note}");
             assert!(note.contains(want), "{note}");
