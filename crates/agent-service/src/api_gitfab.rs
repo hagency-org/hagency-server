@@ -90,6 +90,40 @@ fn view(run: &OrchestratorRun) -> Value {
     })
 }
 
+/// A run's Room must be one of its project's Rooms, whatever kind of Agent it names, and every Agent
+/// must serve in that Room: a personal binding of this Room and Space, or a pool Agent among the
+/// Room's pool members. Checking only the bindings let pool Agents carry a run into a Room of
+/// another project.
+pub(crate) async fn check_run_scope(
+    transport: &TransportStore,
+    project_id: &str,
+    space_id: &str,
+    room_id: &str,
+    bindings: &Value,
+) -> Result<()> {
+    if transport.room_project(room_id).await?.as_deref() != Some(project_id) {
+        return Err(Error::Unauthorized("run_room_outside_project"));
+    }
+    for role in ORCHESTRATOR_ROLES {
+        let binding = bindings[*role]
+            .as_str()
+            .ok_or(Error::Invalid("invalid_orchestrator_run"))?;
+        crate::key(binding)?;
+        if binding.starts_with("mas_") {
+            let pool = transport.shared_room_agents(room_id).await?;
+            if !pool.iter().any(|(a, ..)| a == binding) {
+                return Err(Error::Unauthorized("binding_outside_run_room"));
+            }
+            continue;
+        }
+        let scope = transport.binding_scope(binding).await?;
+        if scope.room_id != room_id || scope.space_id != space_id {
+            return Err(Error::Unauthorized("binding_outside_run_room"));
+        }
+    }
+    Ok(())
+}
+
 impl Gitfab<'_> {
     pub(crate) async fn call(&self, req: &mut Request, credential: &str) -> Result<Option<Value>> {
         let path = req.uri().path().to_owned();
@@ -137,23 +171,14 @@ impl Gitfab<'_> {
         let value = match (method, &parts[8..]) {
             (salvo::http::Method::POST, []) => {
                 let start: Start = body(req).await?;
-                for role in ORCHESTRATOR_ROLES {
-                    let binding = start.bindings[*role]
-                        .as_str()
-                        .ok_or(Error::Invalid("invalid_orchestrator_run"))?;
-                    crate::key(binding)?;
-                    if binding.starts_with("mas_") {
-                        let pool = self.transport.shared_room_agents(&start.room_id).await?;
-                        if !pool.iter().any(|(a, ..)| a == binding) {
-                            return Err(Error::Unauthorized("binding_outside_run_room"));
-                        }
-                        continue;
-                    }
-                    let scope = self.transport.binding_scope(binding).await?;
-                    if scope.room_id != start.room_id || scope.space_id != project.space_id {
-                        return Err(Error::Unauthorized("binding_outside_run_room"));
-                    }
-                }
+                check_run_scope(
+                    self.transport,
+                    &project.id,
+                    &project.space_id,
+                    &start.room_id,
+                    &start.bindings,
+                )
+                .await?;
                 // Stage messages are plaintext: an encrypted Room is refused, named, up front.
                 if room_is_encrypted(&self.gateway.state(&start.room_id).await?) {
                     return Err(Error::Conflict("encrypted_room_requires_client_crypto"));

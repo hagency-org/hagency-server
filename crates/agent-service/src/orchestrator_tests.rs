@@ -1106,3 +1106,32 @@ async fn postgres_a_held_stage_is_reassigned_to_the_named_agent_of_the_room() {
         State::Failed { reason: "aborted" }
     );
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_a_run_room_must_belong_to_its_project_whatever_agents_it_names() {
+    use crate::api_gitfab::check_run_scope;
+    let f = fixture().await;
+    let scope = f.transport.binding_scope(&f.binding).await.unwrap();
+    let project = f
+        .transport
+        .room_project(&scope.room_id)
+        .await
+        .unwrap()
+        .expect("the fixture Room is a project Room");
+    let roles = |b: &str| json!({"coordinator": b, "implementer": b, "reviewer": b});
+    let check = |project: &str, room: &str, bindings: Value| {
+        let (t, space, project, room) = (&f.transport, scope.space_id.clone(), project.to_owned(), room.to_owned());
+        async move { check_run_scope(t, &project, &space, &room, &bindings).await }
+    };
+    check(&project, &scope.room_id, roles(&f.binding)).await.unwrap();
+    // A pool assignment cannot carry a run into a Room outside the project.
+    let refused = check(&project, "!elsewhere:example.test", roles("mas_pool_elsewhere")).await.unwrap_err();
+    assert!(matches!(refused, Error::Unauthorized("run_room_outside_project")), "{refused:?}");
+    // Nor can the project be another one than the Room's.
+    let refused = check("prj_other", &scope.room_id, roles(&f.binding)).await.unwrap_err();
+    assert!(matches!(refused, Error::Unauthorized("run_room_outside_project")), "{refused:?}");
+    // In the project's Room, a pool assignment must be one of the Room's pool Agents.
+    let refused = check(&project, &scope.room_id, roles("mas_pool_elsewhere")).await.unwrap_err();
+    assert!(matches!(refused, Error::Unauthorized("binding_outside_run_room")), "{refused:?}");
+}
