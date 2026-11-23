@@ -5,19 +5,22 @@ use palpo::{AppError, AppResult, DepotExt, GetUrlOrigin};
 use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 
-const FEDERATION_PATH: &str = "_matrix/federation/unstable/im.hagency/space_kind";
+const FEDERATION_PATH: &str = "hagency/api/v1/federation/space-kind";
 
 #[derive(Serialize, Deserialize)]
 struct SpaceKind {
     agent: bool,
 }
 
-pub fn router(store: DomainStore) -> Router {
+pub fn router(store: DomainStore, public: url::Url) -> Router {
     Router::new()
+        .hoop(no_store)
         .hoop(affix_state::inject(store))
         .push(
-            Router::with_path("_matrix/client/unstable/im.hagency/space_kind")
-                .hoop(palpo::hoops::auth_by_access_token)
+            Router::with_path("hagency/api/v1/space-kind")
+                .hoop(affix_state::inject(public))
+                .hoop(native_bearer)
+                .hoop(palpo::hoops::auth_by_access_token_without_query_masquerade)
                 .get(client_kind),
         )
         .push(
@@ -25,6 +28,24 @@ pub fn router(store: DomainStore) -> Router {
                 .hoop(palpo::hoops::auth_by_signatures)
                 .get(federation_kind),
         )
+}
+
+#[handler]
+async fn no_store(res: &mut Response) {
+    res.add_header("cache-control", "no-store", true).unwrap();
+}
+
+#[handler]
+async fn native_bearer(req: &mut Request, depot: &mut Depot) -> AppResult<()> {
+    let public = depot
+        .get_typed::<url::Url>()
+        .map_err(|_| StatusError::internal_server_error())?;
+    hagency_agent_service::api::validate_native_request(req, public)
+        .map_err(|_| StatusError::unauthorized())?;
+    if !req.headers().contains_key("authorization") || req.queries().contains_key("access_token") {
+        return Err(MatrixError::missing_token("Use the Authorization header").into());
+    }
+    Ok(())
 }
 
 fn hidden() -> AppError {

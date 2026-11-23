@@ -209,6 +209,10 @@ def validate(doc):
             elif path == '/hagency/api/v1/room-project-folder':
                 # A hosting daemon asks with its execution device; an owner may use the session.
                 require(operation['security'] == [{'deviceBearer': []}, {'userBearer': []}] and method == 'get', 'room project folder bearer/method drift')
+            elif path in ('/hagency/api/v1/space-kind', '/hagency/api/v1/federation/space-kind'):
+                peer = path.endswith('/federation/space-kind')
+                require(method == 'get' and operation['security'] == [{'matrixSignature' if peer else 'matrixBearer': []}], 'project registration authentication drift')
+                require({p['name'] for p in operation['parameters'] if p['in'] == 'query' and p['required']} == ({'room','viewer'} if peer else {'room'}), 'project registration query drift')
             elif path.startswith('/hagency/api/v1/') and path not in ['/hagency/api/v1/discovery', '/hagency/api/v1/readiness', '/hagency/api/v1/sessions/pasion']:
                 require(operation['security'] == [{'userBearer': []}], 'owner session security drift')
     inputs = request_schema_names(doc)
@@ -222,6 +226,7 @@ def validate(doc):
         literal = set((p, m.lower()) for p, m in re.findall(r'path\s*==\s*"(/hagency/api/v1/[^"]+)"\s*&&\s*method\s*==\s*salvo::http::Method::(\w+)', api))
         literal |= {(p, 'post') for p in re.findall(r'"(/hagency/api/v1/execution/[^"]+)" =>', transport)}
         literal |= {(p, 'post') for p in re.findall(r'"(/hagency/api/v1/execution/e2ee-device(?:/revoke)?)" =>', api)}
+        literal |= {('/hagency/api/v1/space-kind', 'get'), ('/hagency/api/v1/federation/space-kind', 'get')}
         require(literal <= operations, 'source literal route omitted: ' + str(literal - operations))
         require({p for p, _ in operations if p.startswith('/hagency/api/v1/execution/')} == {p for p, _ in literal if p.startswith('/hagency/api/v1/execution/')}, 'invented transport route')
         require(('/hagency/api/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
@@ -267,7 +272,7 @@ def validate(doc):
         worker_health = doc['paths']['/workers-healthz']['get']
         require(worker_health['security'] == [] and set(worker_health['responses']) == {'200', '503'}, 'worker health security/status drift')
         require(set(doc['components']['schemas']['WorkerQueueHealth']['properties']) == {'name', 'running', 'consecutiveFailures', 'lastSuccessAgeMs', 'lastActivityAgeMs', 'error'}, 'worker health must remain aggregate and body-free')
-        require(len(operations) == 138, 'reviewed owner route count drift')
+        require(len(operations) == 140, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)

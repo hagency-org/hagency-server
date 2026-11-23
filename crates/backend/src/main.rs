@@ -199,7 +199,10 @@ async fn run() -> anyhow::Result<()> {
             "_hagency_",
         )
         .await?;
-        space_kind = Some(hagency_server::space_kind::router(domain.clone()));
+        space_kind = Some(hagency_server::space_kind::router(
+            domain.clone(),
+            conf.public_origin.clone(),
+        ));
         let read = hagency_server::matrix_state::shared_reader();
         let gateway = hagency_agent_service::gateway::Gateway::new_shared(
             read,
@@ -279,11 +282,12 @@ async fn run() -> anyhow::Result<()> {
         matrix_router =
             matrix_router.hoop(hagency_server::pasion::DelegatedAdminGuard::new(&conf)?);
     }
-    if let Some(kind) = space_kind {
-        matrix_router = matrix_router.push(kind);
-    }
     matrix_router = matrix_router.push(matrix.router());
     let mut router = Router::new();
+    // The agent service below handles all other /hagency/api/v1 paths.
+    if let Some(kind) = space_kind {
+        router = router.push(kind);
+    }
     if let Some(service) = &agent_service {
         router = router.push(service.router());
     }
