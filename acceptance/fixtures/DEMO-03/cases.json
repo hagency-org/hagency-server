@@ -1,0 +1,76 @@
+{
+  "project": "DEMO-03",
+  "comment": "Black-box cases for PRD-DEMO-03-v1: mdcheck on each frozen sample; findings compare rule_id, severity and line (message is not compared) and the summary; the exit code is the sample's exit_code. One case reads standard input.",
+  "cli": [
+    {
+      "name": "sample clean",
+      "command": "mdcheck",
+      "args": [
+        "${fixtures}/samples/clean.md"
+      ],
+      "exit_code_from": "samples/clean.expected.json",
+      "stdout_json_file": "samples/clean.expected.json"
+    },
+    {
+      "name": "sample combined",
+      "command": "mdcheck",
+      "args": [
+        "${fixtures}/samples/combined.md"
+      ],
+      "exit_code_from": "samples/combined.expected.json",
+      "stdout_json_file": "samples/combined.expected.json"
+    },
+    {
+      "name": "sample duplicate-heading",
+      "command": "mdcheck",
+      "args": [
+        "${fixtures}/samples/duplicate-heading.md"
+      ],
+      "exit_code_from": "samples/duplicate-heading.expected.json",
+      "stdout_json_file": "samples/duplicate-heading.expected.json"
+    },
+    {
+      "name": "sample empty",
+      "command": "mdcheck",
+      "args": [
+        "${fixtures}/samples/empty.md"
+      ],
+      "exit_code_from": "samples/empty.expected.json",
+      "stdout_json_file": "samples/empty.expected.json"
+    },
+    {
+      "name": "sample empty-link",
+      "command": "mdcheck",
+      "args": [
+        "${fixtures}/samples/empty-link.md"
+      ],
+      "exit_code_from": "samples/empty-link.expected.json",
+      "stdout_json_file": "samples/empty-link.expected.json"
+    },
+    {
+      "name": "sample missing-h1",
+      "command": "mdcheck",
+      "args": [
+        "${fixtures}/samples/missing-h1.md"
+      ],
+      "exit_code_from": "samples/missing-h1.expected.json",
+      "stdout_json_file": "samples/missing-h1.expected.json"
+    },
+    {
+      "name": "sample unclosed-fence",
+      "command": "mdcheck",
+      "args": [
+        "${fixtures}/samples/unclosed-fence.md"
+      ],
+      "exit_code_from": "samples/unclosed-fence.expected.json",
+      "stdout_json_file": "samples/unclosed-fence.expected.json"
+    },
+    {
+      "name": "standard input",
+      "command": "mdcheck",
+      "stdin_file": "samples/combined.md",
+      "exit_code_from": "samples/combined.expected.json",
+      "stdout_json_file": "samples/combined.expected.json"
+    }
+  ]
+}

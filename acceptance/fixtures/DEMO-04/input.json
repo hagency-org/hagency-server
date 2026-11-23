@@ -1,0 +1,12 @@
+[
+  {"id": "c-0003", "kind": "commit", "ref": "a1b2c3d", "title": "feat: add /version endpoint", "author": "alice"},
+  {"id": "pr-12", "kind": "pr", "ref": "#12", "title": "Handle empty titles", "labels": ["bug"], "author": "bob"},
+  {"id": "c-0001", "kind": "commit", "ref": "0f1e2d3", "title": "docs: describe the release flow", "author": "carol"},
+  {"id": "pr-15", "kind": "pr", "ref": "#15", "title": "fix: reject titles over 200 characters", "author": "alice"},
+  {"id": "c-0002", "kind": "commit", "ref": "9e8d7c6", "title": "Bump dependencies", "author": "dave"},
+  {"id": "pr-12", "kind": "pr", "ref": "#12", "title": "Handle empty titles (duplicate export)", "labels": ["bug"], "author": "bob"},
+  {"id": "pr-20", "kind": "pr", "ref": "#20", "title": "fix: wording", "labels": ["documentation"], "author": "erin"},
+  {"id": "c-0004", "kind": "commit", "ref": "1234abc", "title": "FEAT(api): list tasks in id order", "author": "bob"},
+  {"id": "pr-18", "kind": "pr", "ref": "#18", "title": "Speed up builds", "labels": ["enhancement", "bug"], "author": "frank"},
+  {"id": "c-0005", "kind": "commit", "ref": "5678def", "title": "featuring nothing", "author": "alice"}
+]

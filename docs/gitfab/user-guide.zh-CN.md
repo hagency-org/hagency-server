@@ -1,0 +1,183 @@
+# GitFab 用户操作手册与演示用例操作指南
+
+面向四类人：部署服务端的运维、在房间里发起任务的 Human、提供 Agent 的 Agent 主人、执行验收的验收人。按本文顺序操作即可从零跑通一次演示。系统结构见 `architecture.zh-CN.md`，提示词见 `prompts.zh-CN.md`。
+
+## 1. 服务端准备（运维）
+
+1. 生成事件签名密钥（私钥 0600，只放服务器）：
+   ```
+   gitfab keygen --key-id gitfab-1 --dir /etc/hagency/keys
+   ```
+2. 在 hagency 配置里加 `[gitfab]` 段（需要已启用 Agent 服务 `pasion.delegate_matrix_auth`）：
+   ```toml
+   [gitfab]
+   signing_key_file = "/etc/hagency/keys/gitfab-1.key"
+   signing_key_id = "gitfab-1"
+   journal_file = "data/gitfab/events.jsonl"   # 设置即启用编排器
+   stage_timeout_minutes = 120                  # 阶段超时转人工
+   github_token_file = "/etc/hagency/keys/github-token"   # 可选：启用 PR 与 Release
+   gitcode_token_file = "/etc/hagency/keys/gitcode-token" # 可选
+   board_token_file = "/etc/hagency/keys/board-token"     # 可选：大屏读取 Agent 状态
+
+   # 可选：固定 Agent 队伍与能力声明（附件 1 第 1.2.1(4) 条）
+   [gitfab.team.coordinator]
+   capabilities = ["planning", "release"]
+   [gitfab.team.implementer]
+   capabilities = ["rust", "http", "docker"]
+   [gitfab.team.reviewer]
+   capabilities = ["code-review"]
+
+   # 配置了平台 Token 时必填：每个 Hagency 项目（项目 ID，prj_ 开头）只能操作这里绑定的一个仓库
+   [gitfab.repos."prj_01…"]
+   backend = "gitcode"
+   repo = "alexzhang1/gitfab-demo-01"
+   ```
+   所有 Token 文件必须是 0600，否则服务拒绝启动并说明原因。发起流程时填的 `backend=`、`repo=` 必须与本项目在 `[gitfab.repos]` 里绑定的一致，否则拒绝（`gitfab_repo_not_bound`）：仓库由管理员绑定，不由发起人决定，所以项目成员不能借服务器的 Token 去操作别的仓库。
+   配置了 `[gitfab.team]` 时：派工规则用到的三个角色都必须声明，未知角色、重复声明或空能力都会拒绝启动；Plan 阶段的派发消息会写明实现角色的能力，Plan 拆出的每个 Module 只能要求这些能力，超出的 Plan 不算完成（重派一次，仍超出则运行失败）。不配置时不做此项检查。
+   事件日志与 Runner 回执定时写入 Git（附件 3 第 7.1 节），例如 crontab 每分钟一次：
+   ```
+   * * * * * /opt/hagency/scripts/gitfab-journal-git.sh /var/lib/hagency/data/gitfab/events.jsonl /var/lib/gitfab/journal-git
+   * * * * * /opt/hagency/scripts/gitfab-journal-git.sh /var/lib/gitfab/receipts.jsonl /var/lib/gitfab/journal-git
+   ```
+   脚本只提交新增的整行；日志前面的内容被改动或变短时拒绝提交并返回 1，Git 历史保留每行最初写入的样子。
+3. 重启后检查：日志出现 `GitFab orchestrator enabled`；`GET /hagency/gitfab/v1/public-keys` 返回公钥。把公钥文件交给验收方，放进 `acceptance/keys/`。
+
+Git 平台 Token 的最小权限：
+- GitHub 细粒度 Token，只授权演示仓库：Contents、Pull requests、Commit statuses 读写，Actions、Metadata 只读；需要设置分支保护时再加 Administration。
+- GitCode 经典 Token（不能限定单仓库）：Repositories、PR 读写，Users、Action 只读，其余禁止。
+
+## 2. 准备项目房间（Human，Hagency Desktop）
+
+1. 左侧“Agent 空间”里新建聊天室：在向导里填名称，**关闭“端到端加密”**（编排器只支持不加密的项目房间），创建。
+2. “邀请成员”邀请参与的人。
+3. “聊天信息 → 成员 → 添加 Agent”，把要参与的 Agent 加进房间。资源池 Agent 需先经资源 owner 批准。
+4. 房间里只有一个 Agent 时，三个角色都由它担任；有多个时，发起时要分别指定。
+
+## 3. 发起任务（Human）
+
+在项目房间发一条消息（这条消息会成为任务 Thread 的根）：
+
+```
+/gitfab start DEMO-02-task-1
+project: DEMO-02
+repo: https://github.com/ZhangHanDong/gitfab-demo-02
+baseline: 9865050f8628ef399cbab786d79026539830d3f2
+spec: spec/DEMO-02.md@v1
+coordinator: @协调Agent账号
+implementer: @实现Agent账号
+reviewer: @评审Agent账号
+goal: 实现轻量任务清单 API，见 PRD-DEMO-02-v1。
+```
+
+规则：
+- 第一行是 `/gitfab start <任务ID>`，任务 ID 只能是一个词。
+- 之后每行 `名称: 值`（中英文冒号都可以）。必填：`repo`、`baseline`、`spec`、`goal`；`backend` 可从仓库地址推断（github.com / gitcode），推断不出时写 `backend: github` 或 `gitcode`。
+- `goal:` 必须放在最后，它后面的所有行都算目标正文。
+- 角色可写 Agent 账号、绑定 ID（`bnd_…`）或资源池分配 ID（`mas_…`）。
+- 写错时编排器会在 Thread 里说明原因；发 `/gitfab help` 查看用法。
+
+## 4. 流程中的操作（只有发起人能决定）
+
+| 时机 | 在任务 Thread 里发 | 结果 |
+|---|---|---|
+| Spec 出稿后 | `/gitfab approve` | 进入 Plan |
+| | `/gitfab revise` | 重新出 Spec，版本加一（修改意见直接写在 Thread 里） |
+| | `/gitfab reject` | 流程结束（失败） |
+| 转人工介入后（超时、评审驳回超过 2 次、评审 blocked） | `/gitfab continue` | 同一 Agent 重新执行该阶段（新的一次派发，不重放旧的） |
+| | `/gitfab reassign @Agent账号` | 卡住的阶段改由本房间里指定的 Agent 接手（也可写绑定 ID 或资源池分配 ID）；该角色此后都由它担任 |
+| | `/gitfab reassign` | 不指定时仍派给该角色原来的 Agent，记录里标明是改派 |
+| | `/gitfab abort` | 流程结束（失败） |
+
+Thread 里能看到：每个阶段的派发消息（含任务分支 `agent/<project>/<task>`）、Agent 的回复、编排器的平台说明（“已创建或更新 PR”“平台测试状态”“已发布 Release”）。流程停下等人或结束时，编排器还会发一条状态提示：Spec 出稿待确认、某阶段转入人工介入（附原因和可用命令）、流程已完成或已结束（附原因）。这些消息带 `org.hagency.gitfab_stage` 元数据（`kind: "status"`、`state`），客户端可据此显示任务状态卡；签名事件日志仍是权威记录，状态提示发送失败不影响流程。
+
+## 5. Agent 主人需要做的
+
+- 保证执行设备在线，Agent 能读写演示仓库并推送 `agent/…` 分支（推送凭据在执行设备上，不交给 GitFab）。
+- 建议让 Agent 在隔离工作区里改代码。执行设备上用 `scripts/gitfab-workspace.sh` 为每个任务开一个独立的 git worktree：
+  ```sh
+  GITFAB_ALLOWED_REPOS="https://github.com/ZhangHanDong/gitfab-demo-02" \
+    scripts/gitfab-workspace.sh https://github.com/ZhangHanDong/gitfab-demo-02 <基线 SHA> agent/DEMO-02/<任务 ID> ~/gitfab/DEMO-02-<任务 ID>
+  ```
+  只接受列在 `GITFAB_ALLOWED_REPOS` 里的仓库（地址里不能带凭据）和 `agent/<项目>/<任务>` 分支；新任务从基线开始，任务分支已在远端时接着它继续（须包含基线）。每个仓库一份缓存（`GITFAB_WORKSPACE_CACHE`，默认 `~/.cache/gitfab/repos`），远端分支放在 `refs/remotes/origin`，不会覆盖任务分支。这个 worktree 自带推送检查：只能把本任务分支推到该仓库，不能删除分支、不能改写远端已有的提交。检查是本机的护栏（`git push --no-verify` 可以跳过），真正的约束是平台的分支保护和只授权该仓库的 Token。退出码：0 就绪，1 被拒绝（仓库不在列表、基线不存在、远端分支不含基线），2 用法或环境错误。
+- 不需要自己建 PR 或 Release：配置了平台 Token 时由编排器完成。Release 只发布本轮 Test 阶段签名记录的那个提交（也就是 Reviewer 评审的提交）：评审之后有人再往任务分支推了提交，编排器不会发布，会在签名事件和 Thread 里说明原因，需要重新走一轮 Execute、Test、Review。
+
+## 6. 部署与回退（Runner，Linux + Docker）
+
+1. 生成 Runner 自己的密钥（与服务端密钥分开）：`gitfab keygen --key-id runner-1 --dir /etc/gitfab-runner`，公钥交给验收方。
+2. 检出 Release 对应的提交后部署：
+   ```
+   gitfab-runner deploy --key /etc/gitfab-runner/runner-1.key --key-id runner-1 --runner-id runner-a \
+     --receipts /var/lib/gitfab/receipts.jsonl --port 18080 --container-port 8080 \
+     --project DEMO-02 --task DEMO-02-task-1 --backend github --repo https://github.com/ZhangHanDong/gitfab-demo-02 \
+     --commit <PR 头提交> --tag <Release 标签> --context <检出目录> --sbom-dir /var/lib/gitfab/sbom
+   ```
+   退出码 0 表示健康与版本检查通过；1 表示新版本没起来，回执会写明是否已恢复上一版。
+   加 `--registry <host[:port]/namespace>` 时，镜像先推送到该 Registry 再启动，回执的 `image_ref` 记为 `<registry>/<项目>@sha256:<manifest digest>`（Registry 返回的不可变摘要）；`image_digest` 仍是本机镜像 ID，供回退和容器核对使用。推送失败则不替换线上容器，部署失败。Registry 的登录凭据由 Runner 机器上的 `docker login` 管理，不经过 GitFab。
+   再加 `--cosign-key <cosign.key>`（须同时有 `--registry`）时，推送后、启动前用 cosign 对该 digest 签名，签名存放在 Registry 中；签名失败则不替换线上容器。密钥对用 cosign 官方镜像生成（`docker run --rm -e COSIGN_PASSWORD -v <目录>:/k -w /k gcr.io/projectsigstore/cosign:v2.4.1 generate-key-pair`），私钥 0600 只留在 Runner，口令放在 Runner 进程的环境变量 `COSIGN_PASSWORD`，不写在命令行。公钥改名为 `cosign.pem` 交给验收方放进 `acceptance/keys/`（不能叫 `.pub`，那是 GitFab 自己的 Ed25519 公钥格式）；verify-release 用它离线核对签名，不依赖透明日志。
+3. 回退：`gitfab-runner rollback`（参数同上，去掉 Release 相关项，保留 `--project`）。
+4. 离线核对 SBOM：`gitfab verify-sbom --keys <公钥目录> /var/lib/gitfab/sbom/<文件>.spdx.json`。
+
+## 7. 大屏
+
+```
+gitfab-board --keys <公钥目录> --journal <事件日志> --receipts /var/lib/gitfab/receipts.jsonl \
+  --probe DEMO-02=18080 --server https://<hagency 服务器> --server-token-file <大屏 Token 文件>
+```
+
+`--probe` 写成 `项目=端口`，健康路径默认 `/healthz`；项目的健康路径不同时写成 `项目=端口:/路径`（例如 DEMO-01 为 `DEMO-01=18095:/health`）。用最新版 Chrome 打开 `http://127.0.0.1:8090/`。页面每 5 秒刷新，只读：概览、Agent 状态、任务进度、部署结果、Token 记录、签名与审计事件流。
+
+## 8. 验收（验收人）
+
+配置 `acceptance/gitfab.env`（照 `gitfab.env.example`）和 `acceptance/projects/DEMO-0N.env`，然后按顺序。`RELEASE_TAG` 可选，填写后作为 run 的 `releaseTag`，编排器用它作 Release 标签；不填时标签为 `gitfab-<任务>-r<轮次>`。DEMO-01 的 PRD 要求版本形如 `v1.2.3`，所以必须填写，且每次验收运行换一个新标签：
+
+```
+./acceptance/preflight.sh
+./acceptance/run-project.sh DEMO-01 --backend gitcode
+./acceptance/run-project.sh DEMO-02 --backend github
+./acceptance/verify-events.sh
+./acceptance/verify-ledger.sh DEMO-05
+./acceptance/verify-release.sh DEMO-01
+./acceptance/verify-blackbox.sh DEMO-01     # 冻结黑盒用例，在全新容器中执行
+./acceptance/rollback.sh DEMO-01
+```
+
+每条命令把报告写进 `evidence/<acceptance_run_id>/`。设 `ACCEPTANCE_RUN_ID=ar-…` 可让多条命令共用一个证据包。退出码：0 通过，1 有核对不通过，2 配置不全。命令细节见 `acceptance/README.zh-CN.md`。
+
+查看与追溯（都只读，只采用验签通过的记录）：
+
+```
+gitfab report --keys acceptance/keys --project DEMO-02 <事件日志> <部署回执>    # 一个项目做了什么（Markdown）
+gitfab trace  --keys acceptance/keys --id <任务/运行/提交/Release/镜像 digest> <文件…>
+gitfab trace  --keys acceptance/keys --text spec.md <事件日志>                  # 这段文本是否为某个签名阶段的原文
+```
+
+验收结束后归档证据包（保留至质保期满后 30 日）：
+
+```
+./acceptance/archive.sh <acceptance_run_id> --retain-until <质保期满后 30 日，YYYY-MM-DD>
+./acceptance/archive.sh --check evidence/archive/<acceptance_run_id>.tar.gz   # 日后核对归档未被改动
+```
+
+报告里每个 Spec 版本和每次评审回复都标出输出摘要，可以集中查看 Spec 的历史版本。`trace --text` 用文件的 SHA-256 查找输入或输出正是这段文本的签名阶段：原样保存的 Spec 或评审回复能找到对应事件；改动过的文本对不上任何签名记录，返回 1。
+
+## 9. 演示用例
+
+| 项目 | 后端 | 测试仓库 | 演示重点 |
+|---|---|---|---|
+| DEMO-01 健康状态与版本服务 | GitCode | alexzhang1/gitfab-demo-01 | 主流程冒烟，现场演示首选；部署与回退 |
+| DEMO-02 轻量任务清单 API | GitHub | ZhangHanDong/gitfab-demo-02 | 完整 PR 流程；Spec 人工批改 |
+| DEMO-03 Markdown 规格检查服务 | GitCode | 待建 | Reviewer 驳回一次后返工通过 |
+| DEMO-04 Release Notes 生成服务 | GitHub | 待建 | 冻结夹具、确定性输出 |
+| DEMO-05 Open Token 账本校验器 | 待定 | 待建 | 账本去重、冲突拒绝、`verify-ledger.sh` |
+
+PRD 草案在 `acceptance/fixtures/DEMO-0N/`，冻结前需双方书面确认。
+
+## 10. 常见问题
+
+- **发起后提示“本房间有 N 个 Agent，请用 `角色: @Agent账号` 指定”**：房间里不止一个 Agent，按提示写出三个角色。
+- **提示角色“不是本房间里正在服务的 Agent”**：该 Agent 不在房间，或绑定未启用、资源池分配未批准。
+- **Spec 一直等待**：只有发起人发的 `/gitfab approve|revise|reject` 有效。
+- **服务启动失败，提示 must be mode 0600**：把对应 Token 文件改为 `chmod 600`。
+- **PR 或 Release 没出现**：检查是否配置了该后端的 Token；平台调用失败时 Thread 里会有“Git 平台操作未完成”的说明，流程不会因此卡住。
+- **房间是加密的**：编排器不处理加密房间，请新建不加密的项目房间。在加密房间里发起时会被明确拒绝：房间命令回复“本房间已启用端到端加密……（encrypted_room_requires_client_crypto）”，API 返回 409 `encrypted_room_requires_client_crypto`，不会创建流程。若客户端发的是加密消息，服务端读不到命令内容，Thread 里不会有任何回复，同样说明需要换不加密的房间。
+- **两个任务改了同一个文件**：每个任务各有自己的分支和 PR，GitFab 不做自动合并，PR 由人逐个合并。Test 阶段的说明会写出平台给的合并状态；显示“与默认分支有冲突”时，在该任务分支上解决冲突（或基于最新默认分支重新执行），再用 `/gitfab continue` 或重新发起。

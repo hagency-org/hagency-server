@@ -24,6 +24,11 @@ pub struct App {
     transport: Option<crate::transport::TransportStore>,
     management: Option<crate::management_types::ManagementPolicy>,
     board_enabled: bool,
+    /// GitFab orchestrator: the signed journal and the stage timeout.
+    gitfab: Option<(Arc<crate::orchestrator::Recorder>, i64)>,
+    gitfab_git: Option<Arc<crate::orchestrator_git::GitHosts>>,
+    gitfab_team: Option<Arc<crate::orchestrator_team::Team>>,
+    gitfab_board: Option<Arc<String>>,
 }
 impl App {
     pub fn new(
@@ -46,6 +51,10 @@ impl App {
             transport: None,
             management: None,
             board_enabled: true,
+            gitfab: None,
+            gitfab_git: None,
+            gitfab_team: None,
+            gitfab_board: None,
         }
     }
     pub fn with_management(mut self, policy: crate::management_types::ManagementPolicy) -> Self {
@@ -90,6 +99,59 @@ impl App {
                 .clone()
                 .filter(|p| p.shared_execution())
                 .map(|p| (self.domain.as_ref().unwrap().0.clone(), p)),
+            self.workers.clone(),
+        ))
+    }
+    /// Runs GitFab workflows when a journal is configured.
+    pub fn with_gitfab_orchestrator(
+        mut self,
+        recorder: crate::orchestrator::Recorder,
+        stage_timeout_ms: Option<i64>,
+    ) -> Self {
+        let timeout = stage_timeout_ms.unwrap_or(crate::orchestrator::DEFAULT_STAGE_TIMEOUT_MS);
+        self.gitfab = Some((Arc::new(recorder), timeout));
+        // `/gitfab` Room messages go to the orchestrator only where it runs.
+        self.transport = self.transport.take().map(|t| t.with_gitfab_commands(true));
+        self
+    }
+    /// Lets the orchestrator open Pull Requests and publish Releases on these hosts.
+    pub fn with_gitfab_git(mut self, hosts: crate::orchestrator_git::GitHosts) -> Self {
+        self.gitfab_git = Some(Arc::new(hosts));
+        self
+    }
+    /// Holds Plans to this fixed Agent team: every Module needs only what the Implementer declares.
+    pub fn with_gitfab_team(mut self, team: crate::orchestrator_team::Team) -> Self {
+        self.gitfab_team = Some(Arc::new(team));
+        self
+    }
+    /// Serves Agent status to the GitFab board with this read-only token.
+    pub fn with_gitfab_board_token(mut self, token: String) -> Self {
+        self.gitfab_board = Some(Arc::new(token));
+        self
+    }
+    /// `GET /hagency/gitfab/v1/agents`, when the orchestrator and a board token are configured.
+    pub fn gitfab_board_router(&self) -> Option<Router> {
+        Some(Router::with_path("hagency/gitfab/v1/agents").get(
+            crate::orchestrator_status::BoardStatus {
+                transport: self.transport.clone()?,
+                token: self.gitfab_board.clone()?,
+            },
+        ))
+    }
+    pub fn start_orchestrator(&self) -> Option<tokio::task::JoinHandle<()>> {
+        let (recorder, timeout) = self.gitfab.clone()?;
+        Some(crate::orchestrator::start_controlled(
+            self.transport.clone()?,
+            self.domain.as_ref()?.1.clone(),
+            self.matrix_client.clone()?,
+            self.management
+                .clone()
+                .filter(|p| p.shared_execution())
+                .map(|p| (self.domain.as_ref().unwrap().0.clone(), p)),
+            recorder,
+            timeout,
+            self.gitfab_git.clone(),
+            self.gitfab_team.clone(),
             self.workers.clone(),
         ))
     }
@@ -591,6 +653,35 @@ impl App {
                 crate::api_configuration::call(req, &self.store, domain, &credential).await?
         {
             return Ok(value);
+        }
+        if crate::api_gitfab::matches(&path) {
+            let (Some((domain, gateway)), Some(transport), Some(matrix), Some((recorder, timeout))) = (
+                &self.domain,
+                &self.transport,
+                &self.matrix_client,
+                &self.gitfab,
+            ) else {
+                return Err(Error::NotFound("gitfab_unsupported"));
+            };
+            let gitfab = crate::api_gitfab::Gitfab {
+                store: &self.store,
+                domain,
+                gateway,
+                transport,
+                matrix,
+                recorder,
+                stage_timeout_ms: *timeout,
+                team: self.gitfab_team.as_deref(),
+                git: self.gitfab_git.as_deref(),
+                shared: self
+                    .management
+                    .as_ref()
+                    .filter(|p| p.shared_execution())
+                    .map(|p| (domain, p)),
+            };
+            if let Some(value) = Box::pin(gitfab.call(req, &credential)).await? {
+                return Ok(value);
+            }
         }
         if !self.board_enabled && crate::api_project_board::matches(&path) {
             return Err(Error::NotFound("board_unsupported"));

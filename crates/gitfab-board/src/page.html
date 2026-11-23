@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GitFab 监控大屏</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --ink: #1c2128; --muted: #5d6673; --line: #e3e6ea;
+    --ok: #1a7f37; --ok-bg: #e6f4ea; --bad: #c4291c; --bad-bg: #fdecea; --warn: #9a6700; --warn-bg: #fff4d6;
+    --accent: #0b6e8a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1419; --panel: #171d24; --ink: #e6e9ed; --muted: #9aa4b1; --line: #27303a;
+      --ok: #4ac26b; --ok-bg: #12301c; --bad: #ff7b72; --bad-bg: #3b1714; --warn: #e3b341; --warn-bg: #33270a;
+      --accent: #4fb3d1;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 16px; padding: 18px 24px 8px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; }
+  .sub { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; padding: 12px 24px 32px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size: 15px; margin: 0 0 10px; display: flex; justify-content: space-between; align-items: baseline; }
+  h2 small { color: var(--muted); font-weight: normal; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+  th { color: var(--muted); font-weight: 500; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
+  .ok { color: var(--ok); background: var(--ok-bg); }
+  .bad { color: var(--bad); background: var(--bad-bg); }
+  .warn { color: var(--warn); background: var(--warn-bg); }
+  .steps { display: flex; flex-wrap: wrap; gap: 4px; }
+  .stats { display: flex; gap: 12px; flex-wrap: wrap; }
+  .stat { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; min-width: 110px; }
+  .stat b { display: block; font-size: 22px; }
+  a { color: var(--accent); }
+  .muted { color: var(--muted); }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .replay-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .replay-controls input[type=range] { flex: 1; min-width: 160px; }
+  select, button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; }
+  /* Tables keep a readable width and scroll sideways on narrow screens; the page itself never does. */
+  .tw { overflow-x: auto; max-width: 100%; }
+  .tw table { min-width: 560px; }
+  td, th { overflow-wrap: normal; }
+  td .mono, td a { overflow-wrap: anywhere; }
+  .timeline { margin: 0; padding-left: 20px; }
+  .timeline li { padding: 4px 0; border-bottom: 1px solid var(--line); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  @media (max-width: 600px) { main { grid-template-columns: 1fr; padding: 12px 16px; } header { padding: 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>GitFab 监控大屏</h1>
+  <span class="sub">只读投影：数据全部来自签名事件日志与 Runner 回执，逐条验签；本页没有任何写入口。</span>
+  <span class="sub" id="updated"></span>
+</header>
+<main>
+  <section class="wide"><h2>概览 <small id="counts"></small></h2><div class="stats" id="stats"></div></section>
+  <section class="wide"><h2>Agent 状态 <small>来自服务端编排器</small></h2><div id="agents"></div></section>
+  <section class="wide"><h2>任务进度 <small>按运行</small></h2><div id="runs"></div></section>
+  <section class="wide"><h2>任务回放 <small>按时间逐条查看一个运行的签名事件</small></h2>
+    <div class="replay-controls"><select id="rp-run" aria-label="选择运行"></select>
+      <button id="rp-play" type="button">回放</button>
+      <input id="rp-pos" type="range" min="0" max="0" value="0" aria-label="回放位置"><span id="rp-count" class="mono muted"></span></div>
+    <ol id="rp-list" class="timeline"></ol></section>
+  <section><h2>部署结果 <small>回执 + 实时探测</small></h2><div id="deploys"></div></section>
+  <section><h2>Token 记录 <small>由账本复算</small></h2><div id="tokens"></div></section>
+  <section class="wide"><h2>签名与审计事件流 <small>最新在前</small></h2><div id="events"></div></section>
+</main>
+<script>
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const CHECK = { verified: ['ok', '已验签'], identity: ['ok', '身份记录'], unsigned: ['warn', '未签名'], bad_signature: ['bad', '签名不符'], invalid: ['bad', '格式无效'] };
+const check = (c) => { const [k, t] = CHECK[c] || ['warn', c]; return `<span class="pill ${k}">${t}</span>`; };
+const status = (s) => `<span class="pill ${/succeeded|passed|completed/.test(s) ? 'ok' : /failed|blocked|not_restored/.test(s) ? 'bad' : 'warn'}">${esc(s)}</span>`;
+const link = (u) => /^https:\/\//.test(u) ? `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https:\/\/[^/]+\//, ''))}</a>` : esc(u);
+
+function render(d) {
+  replay.runs = d.runs || [];
+  renderReplay();
+  document.getElementById('updated').textContent = '更新于 ' + new Date().toLocaleTimeString();
+  const c = d.counts || {};
+  document.getElementById('counts').textContent = `共 ${Object.values(c).reduce((a, b) => a + b, 0)} 条记录`;
+  const stat = (label, value, cls = '') => `<div class="stat"><span class="muted">${label}</span><b class="${cls}">${value}</b></div>`;
+  document.getElementById('stats').innerHTML =
+    stat('运行', d.runs.length) + stat('已验签', c.verified || 0) + stat('身份记录', c.identity || 0) + stat('未签名', c.unsigned || 0) +
+    stat('签名不符', c.bad_signature || 0, (c.bad_signature ? 'bad' : '')) + stat('格式无效', c.invalid || 0, (c.invalid ? 'bad' : '')) +
+    stat('部署项目', d.deployments.length);
+
+  const AG = { running: ['ok', 'Running 执行中'], pending: ['warn', 'Pending 等待'], active: ['ok', 'Active 空闲'] };
+  const ag = d.agents || {};
+  document.getElementById('agents').innerHTML = !ag.ok ? `<p class="muted">未接入服务端：${esc(ag.error)}</p>` :
+    (ag.status.agents.length ? `<div class="tw"><table><tr><th>Agent（绑定）</th><th>状态</th><th>角色</th><th>所在流程</th></tr>${ag.status.agents.map((a) => {
+      const [k, t] = AG[a.status] || ['warn', a.status];
+      return `<tr><td class="mono">${esc(a.binding)}${a.pool ? ' <span class="muted">资源池</span>' : ''}</td><td><span class="pill ${k}">${t}</span></td><td>${esc(a.roles.join('、'))}</td>
+        <td>${a.runs.map((r) => `${esc(r.project)} ${esc(r.task)}：${esc(r.status)}${r.stage ? ' · ' + esc(r.stage) : ''}`).join('<br>')}</td></tr>`;
+    }).join('')}</table></div>` : '<p class="muted">当前没有进行中的流程。</p>');
+  document.getElementById('runs').innerHTML = d.runs.length ? `<div class="tw"><table><tr><th>项目 / 任务</th><th>当前</th><th>阶段</th><th>链接</th></tr>${
+    d.runs.map((r) => {
+      const links = [...new Set(r.steps.flatMap((s) => s.links || []))];
+      // Only verified records name the commit or a platform refusal.
+      const ok = r.steps.filter((s) => s.check === 'verified');
+      const commit = ok.map((s) => s.commit).filter(Boolean).pop();
+      const refused = ok.filter((s) => s.platform_error).map((s) => `<span class="pill bad">平台未完成</span> ${esc(s.phase)}：${esc(s.platform_error)}`);
+      return `<tr><td><b>${esc(r.project)}</b><br><span class="muted">${esc(r.task)} · ${esc(r.backend)}</span><br><span class="mono muted">${esc(r.run)}</span></td>
+        <td>${esc(r.current?.phase)} ${status(r.current?.status)}</td>
+        <td><div class="steps">${r.steps.map((s) => `<span title="${esc(s.time)} ${esc(s.actor)}">${esc(s.phase)}·${esc(s.status)} ${check(s.check)}</span>`).join('')}</div></td>
+        <td>${[...links.map(link), ...(commit ? [`提交 <span class="mono">${esc(commit.slice(0, 12))}</span>`] : []), ...refused].join('<br>') || '<span class="muted">—</span>'}</td></tr>`;
+    }).join('')}</table></div>` : '<p class="muted">还没有任务事件。</p>';
+
+  document.getElementById('deploys').innerHTML = d.deployments.length ? d.deployments.map((p) => {
+    const last = p.receipts[p.receipts.length - 1];
+    const live = p.live ? `实时：健康 ${p.live.health === 200 ? '<span class="pill ok">200</span>' : `<span class="pill bad">${esc(p.live.health)}</span>`}，版本 <span class="mono">${esc(p.live.version)}</span>` : '<span class="muted">未配置实时探测</span>';
+    return `<p><b>${esc(p.project)}</b> · ${live}</p>` + (last ? `<div class="tw"><table><tr><th>回执</th><th>健康</th><th>回退</th><th>签名</th></tr>${
+      p.receipts.slice(-5).reverse().map((r) => `<tr><td>${esc(r.release)}<br><span class="mono muted">${esc(String(r.image).slice(0, 19))} · ${esc(r.time)}</span></td><td>${status(r.health)}</td><td>${esc(r.rollback)}</td><td>${check(r.check)}</td></tr>`).join('')}</table></div>` : '<p class="muted">没有回执。</p>');
+  }).join('') : '<p class="muted">还没有部署回执。</p>';
+
+  const t = d.tokens;
+  const totals = (s) => { const row = (k, v) => `<tr><td>${k}</td><td class="mono">${esc(v)}</td></tr>`;
+    const groups = Object.entries(s.by_project || {}).map(([p, v]) => row('项目 ' + esc(p), typeof v === 'object' ? JSON.stringify(v) : v)).join('');
+    return `<div class="tw"><table>${row('Token 合计', s.token_total)}${row('去重后事件', s.unique_events)}${row('忽略的重复', s.duplicates_ignored)}${row('更正', s.corrections)}${groups}${row('账本摘要', String(s.ledger_digest || '').slice(0, 23) + '…')}</table></div>`; };
+  document.getElementById('tokens').innerHTML = t.ok
+    ? totals(t.summary)
+    : `<p><span class="pill bad">账本不一致</span></p><pre class="mono">${esc(JSON.stringify(t.errors, null, 2))}</pre>`;
+
+  document.getElementById('events').innerHTML = d.events.length ? `<div class="tw"><table><tr><th>时间</th><th>项目</th><th>事件</th><th>执行者</th><th>密钥 / 摘要</th><th>验签</th></tr>${
+    d.events.slice(0, 60).map((e) => `<tr><td class="mono">${esc(e.time)}</td><td>${esc(e.project)}</td><td>${esc(e.kind || e.schema)}<br><span class="mono muted">${esc(e.id)}</span></td><td>${esc(e.actor)}</td><td class="mono">${esc(e.key_id)}<br>${esc(e.digest)}</td><td>${check(e.check)}</td></tr>`).join('')}</table></div>` : '<p class="muted">还没有事件。</p>';
+}
+
+// Replay keeps its own choice across refreshes; only the timeline is redrawn while it plays.
+const replay = { run: null, pos: null, timer: null, runs: [] };
+function renderReplay() {
+  const sel = document.getElementById('rp-run');
+  const ids = replay.runs.map((r) => r.run);
+  if (sel.dataset.ids !== ids.join(',')) {
+    sel.innerHTML = replay.runs.map((r) => `<option value="${esc(r.run)}">${esc(r.project)} ${esc(r.task)} · ${esc(r.run)}</option>`).join('');
+    sel.dataset.ids = ids.join(',');
+  }
+  if (!ids.includes(replay.run)) { replay.run = ids[0] || null; replay.pos = null; }
+  sel.value = replay.run || '';
+  const run = replay.runs.find((r) => r.run === replay.run);
+  const steps = run ? [...run.steps].sort((a, b) => String(a.time).localeCompare(String(b.time))) : [];
+  const pos = replay.pos === null ? steps.length : Math.min(replay.pos, steps.length);
+  const range = document.getElementById('rp-pos');
+  range.max = steps.length; range.value = pos;
+  document.getElementById('rp-count').textContent = `${pos} / ${steps.length}`;
+  document.getElementById('rp-play').textContent = replay.timer ? '暂停' : '回放';
+  document.getElementById('rp-list').innerHTML = steps.slice(0, pos).map((s) => `<li><span class="mono">${esc(s.time)}</span> ${esc(s.phase)}·${status(s.status)} ${check(s.check)} <span class="muted">${esc(s.actor)}</span>${(s.links || []).length ? '<br>' + s.links.map(link).join(' ') : ''}${s.check === 'verified' && s.commit ? ` <span class="muted">提交</span> <span class="mono">${esc(s.commit.slice(0, 12))}</span>` : ''}${s.check === 'verified' && s.platform_error ? `<br><span class="pill bad">平台未完成</span> ${esc(s.platform_error)}` : ''}</li>`).join('') || '<li class="muted">没有可回放的事件。</li>';
+}
+function stopReplay() { clearInterval(replay.timer); replay.timer = null; }
+document.getElementById('rp-run').onchange = (e) => { stopReplay(); replay.run = e.target.value; replay.pos = 0; renderReplay(); };
+document.getElementById('rp-pos').oninput = (e) => { stopReplay(); replay.pos = +e.target.value; renderReplay(); };
+document.getElementById('rp-play').onclick = () => {
+  if (replay.timer) { stopReplay(); renderReplay(); return; }
+  const total = +document.getElementById('rp-pos').max;
+  if (replay.pos === null || replay.pos >= total) replay.pos = 0;
+  replay.timer = setInterval(() => {
+    const max = +document.getElementById('rp-pos').max;
+    if (replay.pos >= max) { stopReplay(); } else { replay.pos++; }
+    renderReplay();
+  }, 900);
+  renderReplay();
+};
+
+async function tick() {
+  try {
+    const r = await fetch('/api/snapshot', { cache: 'no-store' });
+    render(await r.json());
+  } catch (e) {
+    document.getElementById('updated').textContent = '暂时无法读取数据，5 秒后重试';
+  }
+}
+tick();
+setInterval(tick, 5000);
+</script>
+</body>
+</html>

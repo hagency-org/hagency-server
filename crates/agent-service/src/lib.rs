@@ -3,6 +3,7 @@ pub mod api;
 mod api_configuration;
 #[cfg(test)]
 mod api_discovery_tests;
+mod api_gitfab;
 mod api_management;
 mod api_transport;
 pub mod appservice;
@@ -45,6 +46,12 @@ pub mod management_shared_work_types;
 mod management_tests;
 pub mod management_types;
 pub mod matrix_client;
+pub mod orchestrator;
+pub mod orchestrator_flow;
+pub mod orchestrator_git;
+pub mod orchestrator_modules;
+pub mod orchestrator_status;
+pub mod orchestrator_team;
 #[cfg(test)]
 mod project_folders_tests;
 pub mod recurring_quota;

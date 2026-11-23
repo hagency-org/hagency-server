@@ -1,0 +1,14 @@
+{
+  "findings": [
+    {
+      "rule_id": "MD001",
+      "severity": "error",
+      "line": 1
+    }
+  ],
+  "summary": {
+    "error": 1,
+    "warning": 0
+  },
+  "exit_code": 1
+}

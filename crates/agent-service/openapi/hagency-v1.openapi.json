@@ -22435,7 +22435,7 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "513091f96c35b144e02caee23f3d9072a9d2401e5d8494d89c7f6804f35e36e3",
+    "crates/agent-service/src/api.rs": "e79eea22fbecee1b73c76d0672b376a2e890401e8622a3507f07223ed9a4e2d8",
     "crates/agent-service/src/api_transport.rs": "6ae8f015419f7d02db2e1dc252e27c24659beab94658264195cff8046c84ddf7",
     "crates/agent-service/src/transport_history.rs": "1d61b13ea345751e23d7d9078acb5c389d1fc8e71a827a25db9ebfb3c389266e",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
@@ -22445,10 +22445,10 @@
     "crates/agent-service/src/agent_crypto_receive.rs": "3cc274036e5efdb36e5a2c99c9a434bf2570929538f88f5a78b1323138701ae3",
     "crates/agent-service/src/transport_ciphertexts.rs": "a1d8a3210e4c399d41a827138e6530ce287caf593e83fa7c1737f169af26c1d9",
     "crates/agent-service/migrations/transport/2026-11-19-000403_ciphertext/up.sql": "60f27f6e6d6dac8920627b308ac821525e50fb8af7ff9657bf0793c4e83e9e55",
-    "crates/agent-service/src/workers.rs": "cc1c1f6c9484f0cb6e72f079fcaa8ab02c53d0fde9bf2b3e35a5e5605eff6582",
+    "crates/agent-service/src/workers.rs": "5f6a1531e5849d7d1cca5cf8f5660c764696abecb2e8b7551ab0eaedd050401f",
     "crates/agent-service/src/encrypted_dispatches.rs": "2ee988178d38df5e86208abcf8d17f6d2d81b14128a21ed5db208bee954640cb",
     "crates/agent-service/migrations/transport/2026-11-19-000404_encrypted_dispatches/up.sql": "10680dabf305c284e4051e0f2da2575fdc52b48350753e410c1a4c9ea3f0b177",
-    "crates/agent-service/src/transport.rs": "dc894c8647cee4703316ba2ce2a48d9bdb0b41807a600cc192f81f566971b728",
+    "crates/agent-service/src/transport.rs": "358f9038f0c9e7662d6c616b42b9cec9b02049089b64eb50a20d776729f41497",
     "crates/agent-service/src/encrypted_execution.rs": "680006eb1e664ca7a0212b5383ba09c2e37f53ab5e53025683d646547cd7597b",
     "crates/agent-service/migrations/transport/2026-11-19-000405_encrypted_execution/up.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "8b00c34274b1cc100c347cb46f96fd88dbee9f1611aa6eedfe3501dc31bf58fa",
