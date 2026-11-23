@@ -32,3 +32,9 @@ Existing fields remain: `serverName`, `homeserver`, `serviceMxid`, `issuer`, `au
 Regression: PostgreSQL-backed real routing proves unauthenticated metadata retrieval, explicit product/version/capabilities, no issued credential/cookie, protected Projects still unauthorized, and mismatched Host rejection.
 
 Protocol 3 assigns each new Agent to the current authenticated owner device. `executionDeviceId` is nullable for an unassigned identity; one device may execute several Agents. `PUT /hagency/api/v1/agents/{id}/execution-device` accepts only `expectedGeneration`, targets the authenticated device, and uses Agent generation as CAS. The removed execution-instance resource has no compatibility handler. Domain schema version 4 refuses earlier versions at startup; offline maintenance is explicit and backed up.
+
+## Federated Space type
+
+A joined member can query `GET /_matrix/client/unstable/im.hagency/space_kind?room=<encoded-room-id>` on their own homeserver with Matrix authentication. The response contains a single boolean field, `agent`. The server checks local project registration first. For a Space created remotely it can also ask the creator's homeserver through signed federation. The responding server checks the requesting server's identity, the room ACL and the named member's current membership.
+
+Use this result to display the Space type. Project identifiers and management operations remain scoped to the server that registered the project. Treat an unavailable or unsupported lookup as an unknown type. This lookup covers the local registry and the Space creator's registry.
