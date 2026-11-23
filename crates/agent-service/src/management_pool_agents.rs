@@ -216,6 +216,92 @@ async fn authority_until(db: &mut AsyncPgConnection, r: &Row, now: i64) -> Resul
         lifetime.min(allocations::chain_until(db, &effective.id).await?),
     ))
 }
+/// Both pool principals can inspect a retained denial even when another
+/// member sent the message. No event, sender, room or budget amounts escape.
+async fn allowance_notice(
+    db: &mut AsyncPgConnection,
+    request: &str,
+    since: i64,
+    now: i64,
+) -> Result<Option<PoolAllowanceNotice>> {
+    #[derive(QueryableByName)]
+    struct Notice {
+        #[diesel(sql_type=Text)]
+        payload: String,
+        #[diesel(sql_type=BigInt)]
+        received: i64,
+    }
+    let recorded = sql_query("WITH applied AS (
+            SELECT max(br.budget_revision) AS revision
+            FROM hagency_agent_v1.management_agent_budget_commands bc
+            JOIN hagency_agent_v1.management_agent_budget_results br ON br.command_id=bc.id
+            WHERE bc.request_id=$1 AND br.state='applied')
+        SELECT evidence.payload,i.received_at_ms AS received
+        FROM hagency_agent_v1.management_shared_assignments a
+        JOIN hagency_agent_v1.management_shared_controls ctl ON ctl.assignment_id=a.id AND ctl.mode='running'
+        JOIN hagency_agent_v1.management_shared_intake i ON i.assignment_id=a.id AND i.control_revision=ctl.revision
+        JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=i.id
+        CROSS JOIN applied
+        JOIN LATERAL (
+            SELECT b.payload FROM hagency_agent_v1.management_shared_demand_blocks b
+             WHERE applied.revision IS NULL AND b.demand_id=d.id AND b.reason='budget_blocked'
+            UNION ALL
+            SELECT b.payload FROM hagency_agent_v1.management_shared_budget_demand_blocks b
+             WHERE b.budget_revision=applied.revision AND b.demand_id=d.id AND b.reason='budget_blocked'
+        ) evidence ON true
+        WHERE a.request_id=$1 AND i.received_at_ms >= $2 AND i.expires_at_ms>$3 AND i.state IN ('pending','blocked')
+          AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=d.id)
+          AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake later
+              JOIN hagency_agent_v1.management_shared_event_pins pin
+                ON pin.assignment_id=later.assignment_id AND pin.event_id=later.event_id
+              JOIN hagency_agent_v1.management_shared_work w ON w.id=pin.work_id
+              WHERE later.assignment_id=a.id AND later.control_revision=i.control_revision
+                AND (later.received_at_ms,later.id)>=(i.received_at_ms,i.id)
+                AND w.started_at_ms IS NOT NULL)
+        ORDER BY i.received_at_ms DESC,i.id DESC LIMIT 1")
+        .bind::<Text,_>(request).bind::<BigInt,_>(since).bind::<BigInt,_>(now).get_result::<Notice>(db).await.optional()?;
+    recorded
+        .map(|row| {
+            let evidence = decode(&row.payload)?;
+            Ok(PoolAllowanceNotice {
+                state: budget_state(&evidence).unwrap_or("unavailable").into(),
+                received_at_ms: row.received,
+            })
+        })
+        .transpose()
+}
+
+/// Caller has already verified the viewer's current Matrix room membership
+/// and the assignment's retained authority. Return only a public reason.
+pub(crate) async fn room_allowance_reason(
+    db: &mut AsyncPgConnection,
+    request: &str,
+    p: &Principal,
+    now: i64,
+) -> Result<Option<String>> {
+    let r = row(db, request).await?;
+    if r.pool_contribution_id.is_none() {
+        return Ok(None);
+    }
+    let (_, _, period, _) = super::periods::projection(db, &r, p, now).await?;
+    if let Some(period) = &period {
+        match period.state.as_str() {
+            "exhausted" => return Ok(Some("exhausted".into())),
+            "awaiting_capacity" => return Ok(Some("renewal_waiting_capacity".into())),
+            "available" => {}
+            _ => return Ok(None),
+        }
+    }
+    Ok(allowance_notice(
+        db,
+        request,
+        period.as_ref().map_or(0, |v| v.start_ms as i64),
+        now,
+    )
+    .await?
+    .map(|n| n.state))
+}
+
 pub(super) async fn view_pool(
     db: &mut AsyncPgConnection,
     id: &str,
@@ -295,7 +381,21 @@ pub(super) async fn view_pool(
         calendar = g.receipt.calendar;
     }
     let rooms_requiring_reinvite=sql_query("SELECT count(*)::bigint AS now FROM (SELECT b.room_id FROM hagency_agent_v1.shared_agent_rooms b WHERE b.assignment_id=hagency_agent_v1.previous_agent_assignment($1) AND b.state IN ('left','leaving') AND b.departure_reason IS DISTINCT FROM 'allocation_ended' UNION SELECT b.room_id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.shared_agent_rooms b ON b.assignment_id=a.id WHERE a.request_id=$1 AND b.state IN ('left','leaving') AND b.restoration_requires_membership) skipped WHERE NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.shared_agent_rooms b ON b.assignment_id=a.id WHERE a.request_id=$1 AND b.room_id=skipped.room_id AND b.state IN ('joining','active'))").bind::<Text,_>(&r.id).get_result::<Clock>(db).await?.now;
+    let allowance_notice = if blocked.is_none() && r.state == "approved_waiting_executor" {
+        allowance_notice(
+            db,
+            &r.id,
+            current_period
+                .as_ref()
+                .map_or(0, |period| period.start_ms as i64),
+            now,
+        )
+        .await?
+    } else {
+        None
+    };
     Ok(PoolAgentRequest {
+        allowance_notice,
         calendar,
         renewal_mode,
         current_period,
@@ -367,8 +467,7 @@ impl DomainStore {
         ) {
             return Err(Error::Invalid("invalid_management_operation"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let rows=sql_query("SELECT operation,digest,result FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND device_id=$2 AND command_id=$3 ORDER BY device_generation LIMIT 2").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(id).load::<Receipt>(db).await?;
             if rows.len()>1 {return Err(Error::Conflict("management_command_conflict"));}
@@ -388,8 +487,7 @@ impl DomainStore {
         if let Some(after) = &query.after {
             key(after)?;
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             let rows=sql_query(format!("{CONTRIBUTIONS} WHERE c.state='admitted' AND c.id>$1 AND ($2::text IS NULL OR c.capabilities::jsonb ? $2) ORDER BY c.id LIMIT 17"))
@@ -420,24 +518,80 @@ impl DomainStore {
         }).await
     }
 
-    pub async fn request_pool_agent(
+    pub async fn request_pool_agent_with_gateway(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        pool: &str,
+        input: RequestPoolAgent,
+        gateway: &crate::gateway::Gateway,
+    ) -> Result<PoolAgentRequest> {
+        enabled_pool(policy)?;
+        key(pool)?;
+        input.validate()?;
+        device(p)?;
+        // Replays are read-only and must survive a later room departure.
+        let payload = digest(pool, &input)?;
+        {
+            let saved = self
+                .db
+                .write_transaction(async |db: &mut AsyncPgConnection| {
+                    Self::authorize(db, p, crate::api::now_ms()).await?;
+                    if let Some(saved) = replay::<PoolAgentRequest>(
+                        db,
+                        p,
+                        &input.command_id,
+                        "pool_agent.request",
+                        &payload,
+                    )
+                    .await?
+                    {
+                        let now = clock(db).await?;
+                        return Ok(Some(view_pool(db, &saved.id, p, now).await?));
+                    }
+                    Ok(None)
+                })
+                .await?;
+            if let Some(saved) = saved {
+                return Ok(saved);
+            }
+        }
+        let observed = gateway.pool_request(&input.room_id, &p.mxid).await?;
+        self.request_pool_agent_inner(p, policy, pool, input, Some(observed))
+            .await
+    }
+    #[cfg(test)]
+    pub(crate) async fn request_pool_agent(
         &self,
         p: &Principal,
         policy: &ManagementPolicy,
         pool: &str,
         input: RequestPoolAgent,
     ) -> Result<PoolAgentRequest> {
+        self.request_pool_agent_inner(p, policy, pool, input, None)
+            .await
+    }
+    async fn request_pool_agent_inner(
+        &self,
+        p: &Principal,
+        policy: &ManagementPolicy,
+        pool: &str,
+        input: RequestPoolAgent,
+        observed: Option<i64>,
+    ) -> Result<PoolAgentRequest> {
         enabled_pool(policy)?;
         key(pool)?;
         input.validate()?;
         device(p)?;
         let payload = digest(pool, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?; let now=clock(db).await?;
             if let Some(saved)=replay::<PoolAgentRequest>(db,p,&input.command_id,"pool_agent.request",&payload).await? {
                 return view_pool(db,&saved.id,p,now).await;
             }
+            if let Some(observed)=observed {crate::domain::fresh(observed,now)?;}
+            let used=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests r JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=r.id WHERE r.room_id=$1 AND r.pool_contribution_id IS NOT NULL) AS matched").bind::<Text,_>(&input.room_id).get_result::<Flag>(db).await?.matched;
+            if used {return Err(Error::Conflict("pool_agent_room_used"));}
             let (owner,c)=contribution(db,pool).await?;
             if c.state!="admitted" {return Err(Error::Conflict("pool_capacity_unavailable"));}
             if c.revision!=input.expected_pool_revision {return Err(Error::Conflict("management_revision_changed"));}
@@ -474,9 +628,8 @@ impl DomainStore {
 
     pub async fn pool_agent_request(&self, p: &Principal, id: &str) -> Result<PoolAgentRequest> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 view_pool(db, id, p, now).await
@@ -492,8 +645,7 @@ impl DomainStore {
         for id in [&input.after, &input.pool_id].into_iter().flatten() {
             key(id)?;
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let rows=sql_query("SELECT * FROM hagency_agent_v1.management_agent_request_read WHERE pool_contribution_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_reallocations x WHERE x.previous_request_id=management_agent_request_read.id) AND (manager_user_id=$1 OR administrator_user_id=$1) AND (NOT $2 OR administrator_user_id=$1 AND state='pending_approval' AND expires_at_ms>$3) AND id>$4 AND ($5::text IS NULL OR pool_contribution_id=$5) ORDER BY id LIMIT 17")
                 .bind::<Text,_>(&p.user_id).bind::<Bool,_>(input.needs_my_action).bind::<BigInt,_>(now)
@@ -520,8 +672,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             sql_query("SELECT id AS payload FROM hagency_agent_v1.management_agent_requests WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<AgentPerson>(db).await.map_err(hidden)?;
             let r=pool_row(db,id,p).await?;
@@ -570,8 +721,7 @@ impl DomainStore {
         key(&input.command_id)?;
         device(p)?;
         let payload = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             sql_query("SELECT id AS payload FROM hagency_agent_v1.management_agent_requests WHERE id=$1 FOR UPDATE").bind::<Text,_>(id).get_result::<AgentPerson>(db).await.map_err(hidden)?;
             let r=pool_row(db,id,p).await?;

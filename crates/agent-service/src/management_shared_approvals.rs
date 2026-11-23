@@ -31,6 +31,8 @@ pub struct TakeApproval {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalQuery {
     room_id: Option<String>,
+    execution_thread: Option<String>,
+    room_allowance_after: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -100,8 +102,7 @@ fn encrypted_request(request: &Value) -> Result<EncryptedRequest> {
 }
 // Claude and Octos permission callbacks have their own closed schema. They never use
 // question cards. The funding owner authorizes the native tool, unless the
-// owner's daemon asked that the person who sent the message decides a Claude
-// request. Octos requests stay owner-only.
+// owner's daemon asked that the person who sent the message decides it.
 fn plain_request_runtime(request: &Value, requester_decides: bool) -> Result<&'static str> {
     let invalid = || Error::Invalid("invalid_permission_request");
     if matches!(
@@ -132,8 +133,7 @@ fn plain_request_runtime(request: &Value, requester_decides: bool) -> Result<&'s
         Some("octos/can_use_tool") => "octos",
         _ => return Err(invalid()),
     };
-    if requester_decides && runtime != "claude"
-        || request["sessionAllowed"] != false
+    if request["sessionAllowed"] != false
         || request["managerCanDecide"] != requester_decides
         || object.len() != 5
         || object.keys().any(|k| {
@@ -221,13 +221,11 @@ impl DomainStore {
         } else {
             None
         };
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{
    let now=clock(db).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;
    let c=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
    if request_runtime.is_some_and(|runtime| runtime!=c.runtime)
-    || c.runtime=="claude" && (request["sessionAllowed"]!=false || request["managerCanDecide"]!=input.requester_decides)
-    || c.runtime=="octos" && (input.requester_decides || request["sessionAllowed"]!=false || request["managerCanDecide"]!=false)
+    || (c.runtime=="claude" || c.runtime=="octos") && (request["sessionAllowed"]!=false || request["managerCanDecide"]!=input.requester_decides)
     // The sender may only be given requests the daemon already limits to the
     // Agent's own folder or the sandboxed native tool.
     || input.requester_decides && request["managerCanDecide"]!=true {
@@ -258,6 +256,33 @@ impl DomainStore {
    Ok(json!({"approval":payload,"digest":digest}))
   }).await
     }
+    pub(crate) async fn shared_approval_room_page(
+        &self,
+        p: &Principal,
+        input: ApprovalQuery,
+        gateway: &Gateway,
+    ) -> Result<Value> {
+        let after = input.room_allowance_after.clone();
+        if let Some(cursor) = after.as_deref().filter(|s| !s.is_empty()) {
+            key(cursor)?;
+        }
+        let room = input.room_id.clone();
+        let mut result = self.shared_approvals(p, input).await?;
+        result["roomAllowanceSupported"] = json!(true);
+        if let (Some(room), Some(after)) = (room, after) {
+            // Permission decisions remain available during a Matrix outage.
+            if let Ok(Ok(page)) = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                self.room_allowance_page(p, &room, &after, gateway),
+            )
+            .await
+            {
+                result["roomAllowancePage"] = page;
+            }
+        }
+        Ok(result)
+    }
+
     pub async fn shared_approvals(&self, p: &Principal, input: ApprovalQuery) -> Result<Value> {
         if input
             .room_id
@@ -266,38 +291,49 @@ impl DomainStore {
         {
             return Err(Error::Invalid("invalid_room"));
         }
-        let mut db = self.db.lock().await?;
-        let now = clock(&mut db).await?;
-        // A request its sender decides is not listed for the owner.
-        let rows=sql_query("SELECT * FROM hagency_agent_v1.management_shared_approvals WHERE (requester_mxid=$2 OR (owner_user_id=$1 AND payload::jsonb->'deciderMxid' IS NULL)) AND ($3::text IS NULL OR room_id=$3) AND NOT consumed AND expires_at_ms>$4 ORDER BY expires_at_ms,id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Nullable<Text>,_>(&input.room_id).bind::<BigInt,_>(now).load::<Row>(&mut *db).await?;
-        let mut result = Vec::new();
-        for a in rows {
-            if live_request(&mut db, &a, &self.server, now).await? {
-                let payload: Value = decode(&a.payload)?;
-                if !may_read(&a, &payload, p) {
-                    continue;
-                }
-                let can = may_decide(&a, &payload, p);
-                result.push(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}));
-            }
+        if input.execution_thread.as_deref().is_some_and(|id| {
+            input.room_id.is_none()
+                || !id.starts_with('$')
+                || id.len() < 2
+                || id.len() > 255
+                || id.chars().any(char::is_control)
+        }) {
+            return Err(Error::Invalid("invalid_execution_thread"));
         }
-        let executions = chat_status::query(&mut db, p, input.room_id.as_deref(), now).await?;
-        Ok(json!({"approvals":result,"executions":executions}))
+        self.db.transaction(async |db| {
+            let now = clock(db).await?;
+            // A request its sender decides is not listed for the owner.
+            let rows=sql_query("SELECT * FROM hagency_agent_v1.management_shared_approvals WHERE (requester_mxid=$2 OR (owner_user_id=$1 AND payload::jsonb->'deciderMxid' IS NULL)) AND ($3::text IS NULL OR room_id=$3) AND NOT consumed AND expires_at_ms>$4 ORDER BY expires_at_ms,id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Nullable<Text>,_>(&input.room_id).bind::<BigInt,_>(now).load::<Row>(db).await?;
+            let mut result = Vec::new();
+            for a in rows {
+                if live_request(db, &a, &self.server, now).await? {
+                    let payload: Value = decode(&a.payload)?;
+                    if !may_read(&a, &payload, p) {
+                        continue;
+                    }
+                    let can = may_decide(&a, &payload, p);
+                    result.push(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}));
+                }
+            }
+            let executions = chat_status::query(db, p, input.room_id.as_deref(), input.execution_thread.as_deref(), now).await?;
+            Ok(json!({"approvals":result,"executions":executions,"executionThreadFilter":true}))
+        }).await
     }
     pub async fn shared_approval(&self, p: &Principal, id: &str) -> Result<Value> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        let a = row(&mut db, id).await?;
-        let payload: Value = decode(&a.payload)?;
-        if !may_read(&a, &payload, p) {
-            return Err(Error::Unauthorized("approval_reader_required"));
-        }
-        let now = clock(&mut db).await?;
-        if !live_request(&mut db, &a, &self.server, now).await? {
-            return Err(Error::Conflict("approval_expired"));
-        }
-        let can = may_decide(&a, &payload, p);
-        Ok(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}))
+        self.db.transaction(async |db| {
+            let a = row(db, id).await?;
+            let payload: Value = decode(&a.payload)?;
+            if !may_read(&a, &payload, p) {
+                return Err(Error::Unauthorized("approval_reader_required"));
+            }
+            let now = clock(db).await?;
+            if !live_request(db, &a, &self.server, now).await? {
+                return Err(Error::Conflict("approval_expired"));
+            }
+            let can = may_decide(&a, &payload, p);
+            Ok(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}))
+        }).await
     }
     pub async fn decide_shared_approval(
         &self,
@@ -311,8 +347,7 @@ impl DomainStore {
         ) {
             return Err(Error::Invalid("invalid_permission_decision"));
         }
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{
    let a=row(db,&input.id).await?;
    let reviewed:Value=decode(&a.payload)?;
    if !may_decide(&a,&reviewed,p) {return Err(Error::Unauthorized(if requester_decides(&reviewed) {"approval_requester_required"} else {"resource_owner_required"}));}
@@ -327,8 +362,7 @@ impl DomainStore {
     }
     pub async fn take_shared_approval(&self, p: &Principal, input: TakeApproval) -> Result<Value> {
         key(&input.id)?;
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{
    let a=row(db,&input.id).await?;let r=runtime(db,&a.runtime_id).await?;let now=clock(db).await?;
    require_activity(db,p,&r,&input.authority,&self.server,now).await?;
    if a.digest!=input.digest || a.owner_user_id!=p.user_id {return Err(Error::Unauthorized("approval_request_changed"));}
@@ -427,15 +461,20 @@ mod claude_tests {
         assert!(may_read(&old, &owner_only, &manager) && !may_read(&old, &owner_only, &sender));
     }
     #[test]
-    fn shared_octos_permission_is_owner_only_and_uses_a_closed_schema() {
+    fn shared_octos_permission_uses_a_closed_schema_the_sender_may_decide() {
         let request = json!({"id":"approval-1","method":"octos/can_use_tool",
             "params":{"sessionId":"session-1","toolName":"shell","input":{"body":"synthetic command"}},
             "sessionAllowed":false,"managerCanDecide":false});
         assert_eq!(plain_request_runtime(&request, false).unwrap(), "octos");
-        // The sender never decides an Octos request.
+        // As for Claude, a request the sender decides says so, and only then.
+        assert!(plain_request_runtime(&request, true).is_err());
         let mut delegated = request.clone();
         delegated["managerCanDecide"] = json!(true);
-        assert!(plain_request_runtime(&delegated, true).is_err());
+        assert_eq!(plain_request_runtime(&delegated, true).unwrap(), "octos");
+        assert!(plain_request_runtime(&delegated, false).is_err());
+        let mut session = delegated.clone();
+        session["sessionAllowed"] = json!(true);
+        assert!(plain_request_runtime(&session, true).is_err());
         for (pointer, value) in [
             ("/sessionAllowed", json!(true)),
             ("/managerCanDecide", json!(true)),

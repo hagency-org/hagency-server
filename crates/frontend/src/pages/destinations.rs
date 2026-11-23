@@ -23,11 +23,32 @@ pub fn DestinationList() -> Element {
     let mut page = use_signal(|| 1u64);
     let mut search = use_signal(String::new);
     let page_val = *page.read();
-    let search_val = search.read().clone();
 
     let mut dest_data = use_resource(move || {
-        let _search = search_val.clone();
-        async move { destinations::get_destinations(page_val, PAGE_SIZE, "destination", "asc").await }
+        let page = page();
+        let search = search();
+        async move {
+            destinations::get_destinations(page, PAGE_SIZE, "destination", "asc", &search).await
+        }
+    });
+
+    let mut alerted = use_signal(Vec::<String>::new);
+    use_effect(move || {
+        if let Some(Ok(data)) = dest_data() {
+            for destination in data.data {
+                if let Some(failure) = destination.destination.failure_ts.filter(|ts| *ts > 0) {
+                    let key = format!("{}:{failure}", destination.id);
+                    if !alerted.peek().contains(&key) {
+                        crate::components::ui::notifications::add_typed_notification(&format!("Federation connection to {} failed",destination.id),crate::components::ui::notifications::NotificationSeverity::Warning,Some(crate::components::ui::notifications::NotificationType::FederationAlert));
+                        let mut seen = alerted.write();
+                        seen.push(key);
+                        if seen.len() > 200 {
+                            seen.remove(0);
+                        }
+                    }
+                }
+            }
+        }
     });
 
     rsx! {
@@ -48,13 +69,8 @@ pub fn DestinationList() -> Element {
 
             match &*dest_data.read() {
                 Some(Ok(data)) => {
-                    let search_term = search.read().to_lowercase();
-                    let filtered: Vec<_> = if search_term.is_empty() {
-                        data.data.clone()
-                    } else {
-                        data.data.iter().filter(|d| d.destination.destination.to_lowercase().contains(&search_term)).cloned().collect()
-                    };
-                    let total = if search_term.is_empty() { data.total } else { filtered.len() as u64 };
+                    let filtered = &data.data;
+                    let total = data.total;
 
                     rsx! {
                         div { class: "rounded-md border",

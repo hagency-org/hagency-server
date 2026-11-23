@@ -25,7 +25,7 @@ pub fn ServerStatus() -> Element {
     });
 
     let palpo_url_for_process = palpo_url.clone();
-    let process_data = use_resource(move || {
+    let mut process_data = use_resource(move || {
         let url = palpo_url_for_process.clone();
         async move {
             if let Some(url) = url {
@@ -51,7 +51,7 @@ pub fn ServerStatus() -> Element {
                 description: "Monitor your server's health".to_string(),
                 Button {
                     variant: ButtonVariant::Outline,
-                    onclick: move |_| { status_data.restart(); },
+                    onclick: move |_| { status_data.restart(); process_data.restart(); },
                     "Refresh"
                 }
             }

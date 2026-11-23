@@ -1,5 +1,40 @@
 use dioxus::prelude::*;
 
+#[derive(Clone)]
+struct FieldId(String);
+
+thread_local! { static DOM_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+pub(super) fn use_dom_id(prefix: &'static str) -> String {
+    use_hook(move || {
+        DOM_ID.with(|counter| {
+            let next = counter
+                .get()
+                .checked_add(1)
+                .expect("DOM ID space exhausted");
+            counter.set(next);
+            format!("hg-{prefix}-{next}")
+        })
+    })
+}
+
+fn field_id() -> String {
+    try_consume_context::<FieldId>()
+        .map(|field| field.0)
+        .unwrap_or_default()
+}
+
+/// Associates sibling Label and Input controls without requiring callers to invent IDs.
+#[component]
+pub fn Field(
+    #[props(default)] class: String,
+    #[props(default)] hidden: bool,
+    children: Element,
+) -> Element {
+    let id = use_dom_id("field");
+    use_context_provider(move || FieldId(id));
+    rsx! { div { class, hidden, {children} } }
+}
+
 #[component]
 pub fn Input(
     #[props(default = "text".to_string())] r#type: String,
@@ -16,6 +51,17 @@ pub fn Input(
     #[props(default)] aria_invalid: bool,
     #[props(default)] oninput: EventHandler<FormEvent>,
 ) -> Element {
+    let field = try_consume_context::<FieldId>();
+    let id = if id.is_empty() {
+        field.map(|field| field.0).unwrap_or_default()
+    } else {
+        id
+    };
+    let aria_label = if aria_label.is_empty() && id.is_empty() {
+        placeholder.clone()
+    } else {
+        aria_label
+    };
     let is_password = r#type == "password";
     let mut password_visible = use_signal(|| false);
     let visible = password_visible();
@@ -81,6 +127,13 @@ pub fn Label(
     #[props(default)] r#for: String,
     children: Element,
 ) -> Element {
+    let r#for = if r#for.is_empty() {
+        try_consume_context::<FieldId>()
+            .map(|field| field.0)
+            .unwrap_or_default()
+    } else {
+        r#for
+    };
     rsx! {
         label {
             r#for,
@@ -88,6 +141,38 @@ pub fn Label(
             {children}
         }
     }
+}
+
+/// Native select with the same label association as Input.
+#[component]
+pub fn Select(
+    #[props(default)] class: String,
+    #[props(default)] value: Option<String>,
+    #[props(default)] disabled: bool,
+    #[props(default)] aria_label: String,
+    #[props(default)] onchange: EventHandler<FormEvent>,
+    children: Element,
+) -> Element {
+    let id = field_id();
+    rsx! { select { id, class, value, disabled, aria_label, onchange: move |event| onchange.call(event), {children} } }
+}
+
+#[component]
+pub fn Textarea(
+    #[props(default)] class: String,
+    #[props(default)] value: String,
+    #[props(default)] placeholder: String,
+    #[props(default)] disabled: bool,
+    #[props(default)] aria_label: String,
+    #[props(default)] oninput: EventHandler<FormEvent>,
+) -> Element {
+    let id = field_id();
+    let aria_label = if aria_label.is_empty() && id.is_empty() {
+        placeholder.clone()
+    } else {
+        aria_label
+    };
+    rsx! { textarea { id, class, value, placeholder, disabled, aria_label, oninput: move |event| oninput.call(event) } }
 }
 
 #[component]
@@ -121,5 +206,45 @@ pub fn SearchInput(
                 oninput: move |evt| oninput.call(evt),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod association_tests {
+    use super::*;
+    fn form() -> Element {
+        rsx! {
+            Field { Label { "First" } Input { value: "first" } }
+            Field { Label { "Second" } Select { option { "Second" } } }
+            Field { Label { "Third" } Textarea { value: "third" } }
+        }
+    }
+    #[test]
+    fn sibling_labels_and_inputs_receive_matching_unique_ids() {
+        use dioxus::dioxus_core::{AttributeValue, Mutation};
+        let mut dom = VirtualDom::new(form);
+        let mutations = dom.rebuild_to_vec();
+        let mut ids = Vec::new();
+        let mut labels = Vec::new();
+        for edit in mutations.edits {
+            if let Mutation::SetAttribute {
+                name,
+                value: AttributeValue::Text(value),
+                ..
+            } = edit
+            {
+                if name == "id" && !value.is_empty() {
+                    ids.push(value);
+                } else if name == "for" && !value.is_empty() {
+                    labels.push(value);
+                }
+            }
+        }
+        assert_eq!(ids.len(), 3);
+        assert_eq!(labels, ids);
+        assert_eq!(
+            ids.iter().collect::<std::collections::HashSet<_>>().len(),
+            3
+        );
     }
 }

@@ -23,7 +23,7 @@ UPDATE hagency_agent_v1.reply_outbox SET state='cancelled' WHERE state='pending'
 DROP TABLE hagency_agent_v1.execution_instances;
 DROP FUNCTION hagency_agent_v1.retain_execution_instance();
 -- Replace the trigger function with the EXACT retain_agent_scope definition
--- in src/domain_schema.sql BEFORE committing this maintenance transaction.
+-- in migrations/domain/2026-11-19-000101_domain/up.sql BEFORE committing this maintenance transaction.
 -- Required additionally: reject generation rollback and require an increased
 -- generation whenever execution_device_id IS DISTINCT FROM its prior value.
 CREATE OR REPLACE FUNCTION hagency_agent_v1.retain_agent_scope() RETURNS trigger LANGUAGE plpgsql AS $$

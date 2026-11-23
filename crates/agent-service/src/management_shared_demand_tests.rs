@@ -6,12 +6,13 @@ pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
     // ADR-193 amendment retry tables depend on the tables below.
     db.batch_execute("DROP TABLE IF EXISTS hagency_agent_v1.management_shared_demand_retry_starts,hagency_agent_v1.management_shared_demand_retries;DROP FUNCTION IF EXISTS hagency_agent_v1.validate_shared_demand_retry()").await.unwrap();
     context_tests::remove_migration(db).await;
-    db.batch_execute("DROP TABLE hagency_agent_v1.management_shared_demand_bindings,hagency_agent_v1.management_shared_demand_starts,hagency_agent_v1.management_shared_demand_blocks,hagency_agent_v1.management_shared_demands;DROP FUNCTION hagency_agent_v1.validate_shared_demand(),hagency_agent_v1.retain_shared_demand();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=16;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=16)").await.unwrap();
+    db.batch_execute("DROP TABLE hagency_agent_v1.management_shared_demand_bindings,hagency_agent_v1.management_shared_demand_starts,hagency_agent_v1.management_shared_demand_blocks,hagency_agent_v1.management_shared_demands;DROP FUNCTION hagency_agent_v1.validate_shared_demand(),hagency_agent_v1.retain_shared_demand();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=16;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=16)").await.unwrap();
     // This disposable test DB can contain newer rows from earlier test cases.
     // Remove only schema17-only intake states before restoring schema16 checks.
     db.batch_execute("ALTER TABLE hagency_agent_v1.management_shared_intake DISABLE TRIGGER USER;DELETE FROM hagency_agent_v1.management_shared_intake WHERE state='bound' OR reason IN('head_changed','budget_blocked','usage_unrepresentable');ALTER TABLE hagency_agent_v1.management_shared_intake ENABLE TRIGGER USER").await.unwrap();
     // Reinstall the exact previous function/constraints for a real16 source.
-    let sql = include_str!("management_shared_intake_schema.sql");
+    let sql =
+        include_str!("../migrations/domain/2026-11-19-000119_management_shared_intake/up.sql");
     let f = sql
         .split_once("CREATE FUNCTION hagency_agent_v1.retain_shared_intake()")
         .unwrap()
@@ -814,6 +815,17 @@ async fn shared_demand_known_overrun_retains_actual_usage_and_zero_remaining_wit
     );
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     assert!(sql_query("SELECT w.known_consumed_tokens=$2 AND w.retained_tokens=$2 AND w.usage_complete AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demands d JOIN hagency_agent_v1.management_shared_demand_blocks b ON b.demand_id=d.id WHERE d.payload::jsonb->>'assignmentId'=$3 AND b.reason='budget_blocked') AS matched FROM hagency_agent_v1.management_shared_work w WHERE w.id=$1").bind::<Text,_>(&w.id).bind::<BigInt,_>(consumed).bind::<Text,_>(&a.id).get_result::<Check>(&mut db).await.unwrap().matched);
+    let room = read_matrix(&f, &r).await.room_id;
+    let view = f
+        .domain
+        .shared_approvals(
+            &f.owner.p,
+            serde_json::from_value(json!({"roomId":room})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(view["executions"][0]["reason"], "budget_blocked");
+    assert_eq!(view["executions"][0]["budgetState"], "exhausted");
     no_successor(&f, &a.id).await;
 }
 #[tokio::test]

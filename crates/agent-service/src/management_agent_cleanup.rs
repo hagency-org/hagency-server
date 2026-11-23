@@ -25,8 +25,7 @@ impl DomainStore {
         id: &str,
     ) -> Result<AgentRemovalProgress> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db, p, crate::api::now_ms()).await?;
             let r = row(db, id).await?;
             let a = cleanup_visible(db, &r, p).await?;
@@ -49,16 +48,16 @@ impl DomainStore {
             // Null/unknown cleanup cannot erase a previously confirmed hold.
             // Only a complete native fence can lower that original balance;
             // subsequent consumed usage remains an independent lower bound.
-            let mut retained_floor = native.as_ref().and_then(|v|v.retained_tokens);
+            let mut retained_floor = if replaced { known } else { native.as_ref().and_then(|v|v.retained_tokens) };
             if !replaced && native.as_ref().is_none_or(|v|!v.usage_complete) {
                 retained_floor = retained_floor.into_iter().chain(original_reserve.as_ref().filter(|v|v.state=="reserved").map(|v|v.retained_tokens)).max();
                 retained_floor = retained_floor.into_iter().chain(budget::cleanup_commitment(db,id,&self.server).await?).max();
             }
             retained_floor = retained_floor.into_iter().chain(known).max();
-            let settlement = super::settlement::cleanup_balance(db,id,&self.server).await?;
+            let settlement = if replaced {None} else {super::settlement::cleanup_balance(db,id,&self.server).await?};
             let known=known.into_iter().chain(settlement.map(|v|v.0)).max();
             if let Some((_,floor,_))=settlement { retained_floor=Some(floor); }
-            let usage = AgentCleanupUsage {period_key:r.period_key, known_consumed_tokens:known, retained_tokens_floor:retained_floor, fence_usage_complete:native.as_ref().map(|v|v.usage_complete), requires_reconciliation:settlement.map_or_else(||native.as_ref().is_some_and(|v|known.is_some_and(|n|n>v.known_consumed_tokens)),|v|v.2)};
+            let usage = AgentCleanupUsage {period_key:r.period_key, known_consumed_tokens:known, retained_tokens_floor:retained_floor, fence_usage_complete:native.as_ref().map(|v|v.usage_complete), requires_reconciliation:!replaced && settlement.map_or_else(||native.as_ref().is_some_and(|v|known.is_some_and(|n|n>v.known_consumed_tokens)),|v|v.2)};
             let definition: AgentDefinition = decode(&r.definition)?;
             Ok(AgentRemovalProgress { request_id:r.id, project_id:r.plan_id, project_name:a.project_name, proposed_agent_id:r.proposed_agent_id, agent_name:definition.name, request_revision:r.revision, can_cancel:p.user_id==r.manager_user_id && matches!(r.state.as_str(),"pending_approval"|"approved_waiting_executor"), can_revoke:p.user_id==a.administrator_user_id && r.state=="approved_waiting_executor", admission_state:r.state, central_fenced, native_fence, process_observation:process, matrix, usage })
         }).await
@@ -75,8 +74,7 @@ impl DomainStore {
         if !(1..=16).contains(&limit) {
             return Err(Error::Invalid("invalid_management_limit"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
             Self::authorize(db,p,crate::api::now_ms()).await?;
             if let Some(project)=&input.project_id {
                 let a=roles(db,project).await?;

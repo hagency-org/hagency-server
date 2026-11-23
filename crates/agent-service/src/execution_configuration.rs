@@ -170,60 +170,56 @@ impl DomainStore {
         device(p)?;
         let now = now.max(crate::api::now_ms());
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    maintain(db, &p.user_id, now).await?;
-                    let a = Self::agent_db(db, p, id).await?;
-                    let target = match a.execution_device_id.as_deref() {
-                        Some(id) => presence(db, &p.user_id, id, now).await?,
-                        None => None,
-                    };
-                    let target = if matches!(a.state.as_str(), "creating" | "active" | "suspended")
-                    {
-                        target
-                    } else {
-                        None
-                    };
-                    let mut result = ConfigurationStatus {
-                        agent_id: a.id.clone(),
-                        agent_generation: a.generation,
-                        execution_device_id: a.execution_device_id.clone(),
-                        device_generation: target.as_ref().map(|p| p.generation),
-                        online: target.as_ref().is_some_and(|p| online(p, now)),
-                        last_seen_at_ms: target.as_ref().and_then(|p| p.last_seen),
-                        observed_at_ms: None,
-                        cached: false,
-                        environment: None,
-                    };
-                    if let (Some(target_id), Some(t)) = (a.execution_device_id.as_deref(), target) {
-                        let observation = {
-                            use crate::schema::agent_tables::configuration_observations as q;
-                            let params = (&a.id, a.generation, target_id, t.generation);
-                            q::table
-                                .select((q::observed_at_ms, q::environment))
-                                .filter(
-                                    ((((q::agent_id).eq(&params.0))
-                                        .and((q::agent_generation).eq(&params.1)))
-                                    .and((q::execution_device_id).eq(&params.2)))
-                                    .and((q::device_generation).eq(&params.3)),
-                                )
-                                .get_result::<Observation>(db)
-                                .await
-                        }
-                        .optional()?;
-                        if let Some(o) = observation {
-                            result.observed_at_ms = Some(o.observed_at_ms);
-                            result.cached = !result.online || o.observed_at_ms < now - ONLINE;
-                            result.environment =
-                                Some(serde_json::from_str(&o.environment).map_err(|_| {
-                                    Error::Unavailable("configuration_storage_invalid")
-                                })?);
-                        }
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                maintain(db, &p.user_id, now).await?;
+                let a = Self::agent_db(db, p, id).await?;
+                let target = match a.execution_device_id.as_deref() {
+                    Some(id) => presence(db, &p.user_id, id, now).await?,
+                    None => None,
+                };
+                let target = if matches!(a.state.as_str(), "creating" | "active" | "suspended") {
+                    target
+                } else {
+                    None
+                };
+                let mut result = ConfigurationStatus {
+                    agent_id: a.id.clone(),
+                    agent_generation: a.generation,
+                    execution_device_id: a.execution_device_id.clone(),
+                    device_generation: target.as_ref().map(|p| p.generation),
+                    online: target.as_ref().is_some_and(|p| online(p, now)),
+                    last_seen_at_ms: target.as_ref().and_then(|p| p.last_seen),
+                    observed_at_ms: None,
+                    cached: false,
+                    environment: None,
+                };
+                if let (Some(target_id), Some(t)) = (a.execution_device_id.as_deref(), target) {
+                    let observation = {
+                        use crate::schema::agent_tables::configuration_observations as q;
+                        let params = (&a.id, a.generation, target_id, t.generation);
+                        q::table
+                            .select((q::observed_at_ms, q::environment))
+                            .filter(
+                                ((((q::agent_id).eq(&params.0))
+                                    .and((q::agent_generation).eq(&params.1)))
+                                .and((q::execution_device_id).eq(&params.2)))
+                                .and((q::device_generation).eq(&params.3)),
+                            )
+                            .get_result::<Observation>(db)
+                            .await
                     }
-                    Ok(result)
-                })
-                .await
+                    .optional()?;
+                    if let Some(o) = observation {
+                        result.observed_at_ms = Some(o.observed_at_ms);
+                        result.cached = !result.online || o.observed_at_ms < now - ONLINE;
+                        result.environment =
+                            Some(serde_json::from_str(&o.environment).map_err(|_| {
+                                Error::Unavailable("configuration_storage_invalid")
+                            })?);
+                    }
+                }
+                Ok(result)
             })
             .await
     }
@@ -249,9 +245,7 @@ impl DomainStore {
             &value,
         ))?);
         let now = now.max(crate::api::now_ms());
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;maintain(db,&p.user_id,now).await?;
             let a=Self::agent_db(db,p,id).await?;
             let existing=sql_query(format!("SELECT {COLUMNS} FROM hagency_agent_v1.configuration_requests WHERE owner_user_id=$1 AND requester_device_id=$2 AND agent_id=$3 AND idempotency_key=$4"))
@@ -313,7 +307,6 @@ impl DomainStore {
             }?;
             row(db,&p.user_id,&request_id).await?.public()
         }).await
-    }).await
     }
     pub async fn configuration_request(
         &self,
@@ -327,18 +320,15 @@ impl DomainStore {
         device(p)?;
         let now = now.max(crate::api::now_ms());
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                    Self::authorize(db, p, now).await?;
-                    maintain(db, &p.user_id, now).await?;
-                    Self::agent_db(db, p, agent).await?;
-                    let r = row(db, &p.user_id, id).await?;
-                    if r.agent_id != agent {
-                        return Err(Error::NotFound("not_found"));
-                    }
-                    r.public()
-                })
-                .await
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, now).await?;
+                maintain(db, &p.user_id, now).await?;
+                Self::agent_db(db, p, agent).await?;
+                let r = row(db, &p.user_id, id).await?;
+                if r.agent_id != agent {
+                    return Err(Error::NotFound("not_found"));
+                }
+                r.public()
             })
             .await
     }
@@ -350,9 +340,7 @@ impl DomainStore {
     ) -> Result<Option<ConfigurationRequest>> {
         let (id, generation) = device(p)?;
         let now = now.max(crate::api::now_ms());
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;maintain(db,&p.user_id,now).await?;
             sql_query("INSERT INTO hagency_agent_v1.configuration_presence(device_id,device_generation,last_seen_at_ms) VALUES($1,$2,$3) ON CONFLICT(device_id) DO UPDATE SET device_generation=EXCLUDED.device_generation,last_seen_at_ms=EXCLUDED.last_seen_at_ms")
                 .bind::<Text,_>(id).bind::<BigInt,_>(generation).bind::<BigInt,_>(now).execute(db).await?;
@@ -373,7 +361,6 @@ impl DomainStore {
             }?;
             r.state="claimed".into();r.claimed_at_ms=Some(now);Ok(Some(r.public()?))
         }).await
-    }).await
     }
     pub async fn complete_configuration(
         &self,
@@ -385,9 +372,7 @@ impl DomainStore {
         key(id)?;
         let (target, generation) = device(p)?;
         let now = now.max(crate::api::now_ms());
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;maintain(db,&p.user_id,now).await?;
             let r=row(db,&p.user_id,id).await?;
             if r.execution_device_id!=target || r.device_generation!=generation {return Err(Error::Unauthorized("execution_device_required"));}
@@ -434,6 +419,5 @@ impl DomainStore {
             }
             row(db,&p.user_id,id).await?.public()
         }).await
-    }).await
     }
 }

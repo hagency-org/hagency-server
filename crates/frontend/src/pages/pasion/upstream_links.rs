@@ -23,7 +23,10 @@ pub fn UpstreamLinksPage() -> Element {
     let mut create_account_name = use_signal(String::new);
     let mut creating = use_signal(|| false);
 
+    let mut cursors = use_signal(Vec::<Option<String>>::new);
+    let mut next_cursor = use_signal(|| None::<String>);
     let mut links_data = use_resource(move || {
+        let after = cursors().last().cloned().flatten();
         let uid = user_filter.read().clone();
         let pid = provider_filter.read().clone();
         async move {
@@ -37,7 +40,12 @@ pub fn UpstreamLinksPage() -> Element {
             } else {
                 Some(pid.as_str())
             };
-            pasion::pasion_get_upstream_links(user, provider).await
+            pasion::pasion_get_upstream_links(user, provider, after.as_deref())
+                .await
+                .map(|page| {
+                    next_cursor.set(page.next_cursor);
+                    page.data
+                })
         }
     });
 
@@ -72,6 +80,8 @@ pub fn UpstreamLinksPage() -> Element {
             match pasion::pasion_create_upstream_link(body).await {
                 Ok(link) => {
                     show_toast("Link created", ToastVariant::Success);
+                    cursors.set(Vec::new());
+                    next_cursor.set(None);
                     user_filter.set(link.user_id.unwrap_or_default());
                     provider_filter.set(link.provider_id.clone());
                     create_open.set(false);
@@ -126,21 +136,21 @@ pub fn UpstreamLinksPage() -> Element {
 
             // Filters
             div { class: "flex items-center gap-4 flex-wrap",
-                input {
+                crate::components::ui::input::Input {
                     class: "flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     placeholder: "Filter by user ID...",
                     value: user_filter.read().clone(),
                     oninput: move |evt: FormEvent| {
-                        user_filter.set(evt.value());
+                        cursors.set(Vec::new()); next_cursor.set(None); user_filter.set(evt.value());
                         links_data.restart();
                     },
                 }
-                input {
+                crate::components::ui::input::Input {
                     class: "flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     placeholder: "Filter by provider ID...",
                     value: provider_filter.read().clone(),
                     oninput: move |evt: FormEvent| {
-                        provider_filter.set(evt.value());
+                        cursors.set(Vec::new()); next_cursor.set(None); provider_filter.set(evt.value());
                         links_data.restart();
                     },
                 }
@@ -151,6 +161,7 @@ pub fn UpstreamLinksPage() -> Element {
                 }
             }
 
+            crate::components::ui::pagination::CursorPagination { cursors, next_cursor: next_cursor(), loading: !links_data.finished() }
             match &*links_data.read() {
                 Some(Ok(links)) => rsx! {
                     div { class: "rounded-md border",
@@ -255,7 +266,7 @@ pub fn UpstreamLinksPage() -> Element {
                         "Create a user-to-provider binding for an existing federated account."
                     }
                     div { class: "space-y-4",
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { "Pasion User ID" }
                             Input {
                                 placeholder: "01H...".to_string(),
@@ -264,7 +275,7 @@ pub fn UpstreamLinksPage() -> Element {
                                 disabled: is_creating,
                             }
                         }
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { "Provider ID" }
                             Input {
                                 placeholder: "google".to_string(),
@@ -273,7 +284,7 @@ pub fn UpstreamLinksPage() -> Element {
                                 disabled: is_creating,
                             }
                         }
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { "Subject" }
                             Input {
                                 placeholder: "OAuth subject".to_string(),
@@ -282,7 +293,7 @@ pub fn UpstreamLinksPage() -> Element {
                                 disabled: is_creating,
                             }
                         }
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { "Account name (optional)" }
                             Input {
                                 placeholder: "name@example.com".to_string(),

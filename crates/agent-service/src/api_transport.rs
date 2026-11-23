@@ -66,6 +66,13 @@ pub(crate) async fn call(
     }
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct AgentMessage {
+        lease: LeaseRef,
+        binding_id: String,
+        binding_generation: i64,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct Poll {
         lease: LeaseRef,
         binding_id: String,
@@ -137,6 +144,32 @@ pub(crate) async fn call(
         inbox_id: String,
     }
     match path.as_str() {
+        "/hagency/api/v1/execution/messages/authorize" => {
+            let b: AgentMessage = body(req).await?;
+            let scope = t
+                .agent_message_scope(p, &b.lease, &b.binding_id, b.binding_generation, now_ms())
+                .await?;
+            let f = g
+                .delivery(
+                    &scope.room_id,
+                    &scope.space_id,
+                    &scope.owner_mxid,
+                    &scope.owner_mxid,
+                    &scope.puppet_mxid,
+                )
+                .await?;
+            let authorization = t
+                .authorize_agent_message(
+                    p,
+                    &b.lease,
+                    &b.binding_id,
+                    b.binding_generation,
+                    &f,
+                    now_ms(),
+                )
+                .await?;
+            Ok(json!({"authorization":authorization}))
+        }
         "/hagency/api/v1/execution/ciphertexts/prepare" => {
             let b: crate::transport::encrypted::Prepare = body(req).await?;
             let h = t.ciphertext_header(p, &b.inbox_id, now_ms()).await?;

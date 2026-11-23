@@ -465,15 +465,15 @@ fn CommandDialog(
         Modal { open: true, on_close: move |_| on_close.call(()),
             h2 { class: "text-lg font-semibold mb-4", {kind.dialog_title(is_editing)} }
             div { class: "space-y-4",
-                div { class: "space-y-2",
+                crate::components::ui::input::Field { class: "space-y-2",
                     Label { {t("commands.field_command")} }
                     Input { placeholder: t("commands.field_command_placeholder"), value: command.read().clone(), oninput: move |e: FormEvent| command.set(e.value()) }
                 }
-                div { class: "space-y-2",
+                crate::components::ui::input::Field { class: "space-y-2",
                     Label { {t("commands.field_arguments")} }
                     Input { placeholder: t("commands.field_arguments_placeholder"), value: args.read().clone(), oninput: move |e: FormEvent| args.set(e.value()) }
                 }
-                div { class: "space-y-2",
+                crate::components::ui::input::Field { class: "space-y-2",
                     Label { {kind.time_label()} }
                     Input { placeholder: kind.time_placeholder(), value: time.read().clone(), oninput: move |e: FormEvent| time.set(e.value()) }
                 }

@@ -203,15 +203,28 @@ async fn runtime_delivery(
 impl DomainStore {
     /// A bounded expiry sweep fences issuance and queues exact cleanup atomically.
     pub(crate) async fn sweep_managed_runtime(&self) -> Result<()> {
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-                    .await?;
+        let expired = self
+            .db
+            .transaction(async |db| {
                 let now = clock(db).await?;
-                runtime_sweep(db, now).await
+                Ok(
+                    sql_query(format!("SELECT EXISTS({EXPIRED_INTENTS}) AS matched"))
+                        .bind::<BigInt, _>(now)
+                        .get_result::<Flag>(db)
+                        .await?
+                        .matched,
+                )
             })
-            .await
+            .await?;
+        if expired {
+            self.db
+                .write_transaction(async |db| {
+                    let now = clock(db).await?;
+                    runtime_sweep(db, now).await
+                })
+                .await?;
+        }
+        Ok(())
     }
     pub async fn poll_managed_runtime(
         &self,
@@ -224,17 +237,17 @@ impl DomainStore {
         if let Some(id) = &input.after {
             key(id)?;
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;runtime_sweep(db,now).await?;sweep(db,p,now).await?;
-   let assignments=sql_query("SELECT id AS payload FROM hagency_agent_v1.management_shared_assignments WHERE executor_owner_user_id=$1 AND executor_device_id=$2 AND NOT hagency_agent_v1.executor_ledger_replaced_request(request_id) AND id>$3 ORDER BY id LIMIT 32").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).load::<Json>(db).await?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;runtime_sweep(db,now).await?;sweep(db,p,now).await?;
+   let assignments=sql_query("SELECT id AS payload FROM hagency_agent_v1.management_shared_assignments WHERE executor_owner_user_id=$1 AND executor_device_id=$2 AND NOT hagency_agent_v1.executor_ledger_replaced_request(request_id) ORDER BY (id<=coalesce((SELECT after_assignment_id FROM hagency_agent_v1.management_agent_runtime_cursors WHERE executor_device_id=$2),(SELECT assignment_id FROM hagency_agent_v1.management_agent_runtime_commands WHERE id=$3),$3)),id LIMIT 32").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<Text,_>(input.after.as_deref().unwrap_or("")).load::<Json>(db).await?;
    for a in assignments {
+    sql_query("INSERT INTO hagency_agent_v1.management_agent_runtime_cursors VALUES($1,$2) ON CONFLICT(executor_device_id) DO UPDATE SET after_assignment_id=excluded.after_assignment_id").bind::<Text,_>(device).bind::<Text,_>(&a.payload).execute(db).await?;
     let existing=sql_query("SELECT * FROM hagency_agent_v1.management_agent_runtime_commands WHERE assignment_id=$1 ORDER BY operation DESC").bind::<Text,_>(&a.payload).load::<RuntimeRow>(db).await?;
     for r in &existing {let d=runtime_delivery(db,p,policy,r,&self.server,false,None).await?;if d.execution_allowed{return Ok(Some(d));}}
     if !existing.is_empty()||!issuing(policy){continue;}
     let shared=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes WHERE assignment_id=$1) AS matched").bind::<Text,_>(&a.payload).get_result::<Flag>(db).await?.matched;if shared{continue;}
     let w=original(db,&a.payload).await?;owner(&w,p)?;let reserve:ManagedAgentReserveCommand=decode(&w.payload)?;if p.device_generation!=Some(w.executor_generation)||!live(db,&w,&reserve,now).await?||!matrix_current(db,&a.payload,now).await?{continue;}
-    let r=row(db,&w.request_id).await?;let cx=context(db,&r.plan_id,now).await?;
-    if !matches!(cx.contribution.runtime,Runtime::Codex){continue;}
+    let codex=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests q LEFT JOIN hagency_agent_v1.management_projects a ON a.id=q.plan_id JOIN hagency_agent_v1.management_contributions c ON c.id=coalesce(q.pool_contribution_id,a.contribution_id) WHERE q.id=$1 AND c.runtime='codex') AS matched").bind::<Text,_>(&w.request_id).get_result::<Flag>(db).await?.matched;
+    if !codex{continue;}
     let a=super::projection(db,&w.request_id).await?.ok_or(Error::Conflict("agent_assignment_required"))?;
     let c=ManagedRuntimeProvisionCommand{version:1,capability:AGENT_RUNTIME_CAPABILITY.into(),operation:"agent.runtime.provision".into(),command_id:format!("mrp_{}",entity_id()?),assignment_id:a.id.clone(),assignment_generation:a.generation,agent_reservation_id:a.agent_reservation_id,reserve_command_digest:w.digest.clone(),reserve_receipt_digest:a.reserve_receipt_digest,policy:"codex_no_tools_v1".into(),issued_at_ms:now,expires_at_ms:(now+30000).min(reserve.expires_at_ms),reserve_command:reserve};c.validate(&self.server)?;
     sql_query("INSERT INTO hagency_agent_v1.management_agent_runtime_commands(id,assignment_id,operation,created_at_ms,payload,digest,expires_at_ms) VALUES($1,$2,'agent.runtime.provision',$3,$4,$5,$6)").bind::<Text,_>(&c.command_id).bind::<Text,_>(&c.assignment_id).bind::<BigInt,_>(now).bind::<Text,_>(wire(&c)?).bind::<Text,_>(allocation_digest(&c)?).bind::<BigInt,_>(c.expires_at_ms).execute(db).await?;
@@ -254,9 +267,8 @@ impl DomainStore {
         if let Some(id) = &input.observation_id {
             key(id)?;
         }
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let r = runtime_row(db, id).await?;
                 let w = original(db, &r.assignment_id).await?;
@@ -288,8 +300,7 @@ impl DomainStore {
         enabled_runtime(policy)?;
         key(id)?;
         wire(&input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;let r=runtime_row(db,id).await?;let w=original(db,&r.assignment_id).await?;owner(&w,p)?;let(c,digest)=runtime_command(db,&r,&self.server).await?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;let r=runtime_row(db,id).await?;let w=original(db,&r.assignment_id).await?;owner(&w,p)?;let(c,digest)=runtime_command(db,&r,&self.server).await?;
    if digest!=input.command_digest{return Err(Error::Conflict("runtime_command_changed"));}input.receipt.validate_for(&c)?;let receipt_digest=allocation_digest(&input.receipt)?;
    let old=sql_query("SELECT payload FROM hagency_agent_v1.management_agent_runtime_observations WHERE id=$1").bind::<Text,_>(&input.receipt.observation_id).get_result::<Json>(db).await.optional()?;
    if let Some(old)=old {if allocation_digest(&decode::<ManagedRuntimeReceipt>(&old.payload)?)?!=receipt_digest{return Err(Error::Conflict("runtime_observation_changed"));}}
@@ -307,12 +318,13 @@ impl DomainStore {
     ) -> Result<Option<ManagedRuntimeReadiness>> {
         enabled_runtime(policy)?;
         key(request)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let r=row(db,request).await?;let a=super::projection(db,request).await?;let Some(a)=a else{visible(db,&r,p).await?;return Ok(None)};let w=original(db,&a.id).await?;if owner(&w,p).is_err(){visible(db,&r,p).await?;}let exists=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_runtime_commands WHERE assignment_id=$1) AS matched").bind::<Text,_>(&a.id).get_result::<Flag>(db).await?.matched;if !exists{return Ok(None)}let now=clock(db).await?;Ok(Some(runtime_view(db,&a.id,now).await?))}).await
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{Self::authorize(db,p,crate::api::now_ms()).await?;let r=row(db,request).await?;let a=super::projection(db,request).await?;let Some(a)=a else{visible(db,&r,p).await?;return Ok(None)};let w=original(db,&a.id).await?;if owner(&w,p).is_err(){visible(db,&r,p).await?;}let exists=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_runtime_commands WHERE assignment_id=$1) AS matched").bind::<Text,_>(&a.id).get_result::<Flag>(db).await?.matched;if !exists{return Ok(None)}let now=clock(db).await?;Ok(Some(runtime_view(db,&a.id,now).await?))}).await
     }
 }
+const EXPIRED_INTENTS: &str = "SELECT i.id FROM hagency_agent_v1.management_agent_runtime_commands c JOIN hagency_agent_v1.management_shared_assignments a ON a.id=c.assignment_id JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=a.request_id WHERE c.operation='agent.runtime.provision' AND c.expires_at_ms<=$1 AND i.state<>'fenced' AND NOT (i.payload::jsonb ? 'renewalMode') ORDER BY c.id LIMIT 64";
+
 async fn runtime_sweep(db: &mut AsyncPgConnection, now: i64) -> Result<()> {
-    sql_query("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE id IN(SELECT i.id FROM hagency_agent_v1.management_agent_runtime_commands c JOIN hagency_agent_v1.management_shared_assignments a ON a.id=c.assignment_id JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=a.request_id WHERE c.operation='agent.runtime.provision' AND c.expires_at_ms<=$1 AND i.state<>'fenced' AND NOT (i.payload::jsonb ? 'renewalMode') ORDER BY c.id LIMIT 64)").bind::<BigInt,_>(now).execute(db).await?;
+    sql_query(format!("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE id IN({EXPIRED_INTENTS})")).bind::<BigInt,_>(now).execute(db).await?;
     Ok(())
 }
 /// Returns the ledger epoch the accepted receipt is numbered in.

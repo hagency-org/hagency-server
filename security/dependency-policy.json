@@ -1,29 +1,11 @@
 {
-  "version": 1,
-  "reviewed_on": "2026-10-30",
+  "version": 2,
+  "reviewed_on": "2026-11-20",
   "expires_on": "2026-11-29",
   "reviewed_sources": {
-    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?branch=main#37d6e30ceecb9c0aee3da3c6990298c13760f4bc"
+    "pasion-jose": "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
   },
   "findings": [
-    {
-      "advisory": "RUSTSEC-2026-0387",
-      "kind": "vulnerability",
-      "package": "crypto-bigint",
-      "version": "0.5.5",
-      "status": "unresolved_upstream",
-      "reason": "Pasion JOSE uses elliptic-curve 0.13 and crypto-bigint 0.5.5. The fixed 0.7.6 API is incompatible. A coordinated upstream cryptography migration is required; this is an open side-channel risk, not a non-applicability claim.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0387.html"
-    },
-    {
-      "advisory": "RUSTSEC-2023-0071",
-      "kind": "vulnerability",
-      "package": "rsa",
-      "version": "0.9.10",
-      "status": "unresolved_upstream",
-      "reason": "No patched rsa release exists. The reviewed Pasion JOSE path signs and verifies JWTs; no PKCS#1 v1.5 decryption call was found. Retain the upstream side-channel risk explicitly; re-review on any JOSE/dependency change.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2023-0071.html"
-    },
     {
       "advisory": "RUSTSEC-2026-0441",
       "kind": "unmaintained",
@@ -31,16 +13,8 @@
       "version": "0.1.1",
       "status": "reviewed_warning",
       "reason": "Reviewed 2026-11-13: pin-utils is unmaintained with no patched release. The locked path is reqwest-retry's wasm32-only wasmtimer dependency; keep the warning visible and re-review or replace the upstream dependency before this policy expires.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0441.html"
-    },
-    {
-      "advisory": "RUSTSEC-2025-0052",
-      "kind": "unmaintained",
-      "package": "async-std",
-      "version": "1.13.2",
-      "status": "reviewed_warning",
-      "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2025-0052.html"
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0441.html",
+      "advisory_fingerprint": "83d4147e0bb949d49bd9ce245a4b6f2fd82d1d52bfbc94a02d74d3d73612ae61"
     },
     {
       "advisory": "RUSTSEC-2024-0436",
@@ -49,34 +23,38 @@
       "version": "1.0.15",
       "status": "reviewed_warning",
       "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2024-0436.html"
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2024-0436.html",
+      "advisory_fingerprint": "b0ecb2e148b7788aa275afa1af7fc4b6ebbc5025e2a662d5ab3d8cf229d3ce57"
     },
     {
-      "advisory": "RUSTSEC-2026-0249",
+      "advisory": "RUSTSEC-2026-0543",
       "kind": "unmaintained",
-      "package": "smartstring",
-      "version": "1.0.1",
+      "package": "chrono",
+      "version": "0.4.45",
       "status": "reviewed_warning",
-      "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0249.html"
+      "reason": "Reviewed 2026-11-17: chrono is unmaintained across all versions, with no patched release. The server uses it directly for timestamps and Diesel mappings; Palpo and Pasion also depend on it. Migrating to jiff/time requires coordinated upstream and database API changes. Retain this maintenance warning visibly and re-review before the existing policy expiry.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0543.html",
+      "advisory_fingerprint": "c9db0efdf883e899c4a02194c2903f8da0a60518ea77d63451dde11e200c0847"
     },
     {
-      "advisory": "RUSTSEC-2024-0449",
+      "advisory": "RUSTSEC-2026-0555",
       "kind": "unmaintained",
-      "package": "unsafe-libyaml",
-      "version": "0.2.11",
+      "package": "chrono-tz",
+      "version": "0.10.4",
       "status": "reviewed_warning",
-      "reason": "Transitive unmaintained dependency. This warning remains visible and requires replacement or re-review before expiry.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2024-0449.html"
+      "reason": "Reviewed 2026-11-17: chrono-tz is unmaintained across all versions, with no patched release. The Agent service uses its timezone and DST gap APIs to calculate recurring quota periods. Replacement requires a coordinated chrono/timezone API migration. Retain this maintenance warning visibly and re-review before the existing policy expiry.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0555.html",
+      "advisory_fingerprint": "14d83969469c2427c08281b0f2c79f1e5f5e9c8e4890d5763b164f8dcef30d23"
     },
     {
-      "advisory": "RUSTSEC-2026-0097",
-      "kind": "unsound",
-      "package": "rand",
-      "version": "0.7.3",
+      "advisory": "RUSTSEC-2025-0052",
+      "kind": "unmaintained",
+      "package": "async-std",
+      "version": "1.13.2",
       "status": "reviewed_warning",
-      "reason": "Legacy rand 0.7.3 is transitive. Its custom-logger/reentrant RNG trigger was not demonstrated; retain the unsoundness warning until the dependency is replaced.",
-      "reference": "https://rustsec.org/advisories/RUSTSEC-2026-0097.html"
+      "reason": "Reviewed 2026-11-20. Lettre 0.11.24 records async-std as an optional dependency. The embedded Pasion mail transport selects Tokio. The server's resolved feature graph across all targets contains no active async-std dependency. Keep this lockfile maintenance warning visible until the existing review expires.",
+      "reference": "https://rustsec.org/advisories/RUSTSEC-2025-0052.html",
+      "advisory_fingerprint": "6f88a311a3c794daeec6de01f43ed312aae7428d2ce99b146fa53ca2b6c03b05"
     }
   ],
   "timezone": "Asia/Shanghai"

@@ -1,8 +1,18 @@
+#![recursion_limit = "256"]
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
 use clap::Parser;
-use hagency_server::{MatrixServer, browser_auth::BrowserAuth, config::Config, frontend::Frontend};
+use hagency_server::MatrixServer;
+use hagency_server::browser_auth::BrowserAuth;
+use hagency_server::config::Config;
+use hagency_server::frontend::Frontend;
 use salvo::prelude::*;
-use std::{path::PathBuf, sync::Arc, time::Duration};
-use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Parser)]
 #[command(
@@ -212,6 +222,7 @@ async fn run() -> anyhow::Result<()> {
             &conf.database_url,
             hagency_agent_service::transport::Limits {
                 event_ttl_ms: conf.queue.event_ttl_ms,
+                worker_lease_ms: conf.queue.lease_ms,
                 ..Default::default()
             },
         )
@@ -221,27 +232,41 @@ async fn run() -> anyhow::Result<()> {
             .with_domain(domain, gateway)
             .with_transport(transport)
             .with_project_board_enabled(conf.project_board_enabled);
-        if let Some(management) = &conf.management {
+        let management = &conf.management;
+        if management.enabled.unwrap_or(true) {
+            let policy = match &management.administrator {
+                Some(administrator) => {
+                    hagency_agent_service::management_types::ManagementPolicy::new(
+                        administrator.clone(),
+                        conf.matrix.server_name.as_str(),
+                    )?
+                }
+                None => hagency_server::pasion::management_policy(
+                    pasion
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("agent service requires Pasion"))?,
+                    conf.matrix.server_name.to_string(),
+                ),
+            };
             app = app.with_management(
-                hagency_agent_service::management_types::ManagementPolicy::new(
-                    management.administrator.clone(),
-                    conf.matrix.server_name.as_str(),
-                )?
-                .with_project_reservations(management.enable_project_reservations)
-                .with_parent_settlement(management.enable_parent_settlement)
-                .with_project_setup(management.enable_project_setup)
-                .with_agent_admission(management.enable_agent_admission)
-                .with_agent_executor(management.enable_agent_executor)
-                .with_agent_matrix_provisioning(management.enable_agent_matrix_provisioning)
-                .with_agent_runtime_provisioning(management.enable_agent_runtime_provisioning)
-                .with_shared_execution(management.enable_shared_execution)
-                .with_shared_successors(management.enable_shared_successors)
-                .with_shared_durable_intake(management.enable_shared_durable_intake)
-                .with_shared_demands(management.enable_shared_demands)
-                .with_shared_thread_context(management.enable_shared_thread_context)
-                .with_agent_budget_deltas(management.enable_agent_budget_deltas)
-                .with_shared_budget_execution(management.enable_shared_budget_execution)
-                .with_pool_grant_succession(management.enable_pool_grant_succession),
+                policy
+                    .with_project_reservations(
+                        management.enable_project_reservations.unwrap_or(false),
+                    )
+                    .with_parent_settlement(management.enable_parent_settlement)
+                    .with_project_setup(management.enable_project_setup)
+                    .with_agent_admission(management.enable_agent_admission.unwrap_or(false))
+                    .with_agent_executor(management.enable_agent_executor)
+                    .with_agent_matrix_provisioning(management.enable_agent_matrix_provisioning)
+                    .with_agent_runtime_provisioning(management.enable_agent_runtime_provisioning)
+                    .with_shared_execution(management.enable_shared_execution)
+                    .with_shared_successors(management.enable_shared_successors)
+                    .with_shared_durable_intake(management.enable_shared_durable_intake)
+                    .with_shared_demands(management.enable_shared_demands)
+                    .with_shared_thread_context(management.enable_shared_thread_context)
+                    .with_agent_budget_deltas(management.enable_agent_budget_deltas)
+                    .with_shared_budget_execution(management.enable_shared_budget_execution)
+                    .with_pool_grant_succession(management.enable_pool_grant_succession),
             );
         }
         if let Some(gitfab) = &conf.gitfab

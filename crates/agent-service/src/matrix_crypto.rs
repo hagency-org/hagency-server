@@ -140,3 +140,7 @@ impl MatrixClient {
         Ok((status, value))
     }
 }
+
+#[cfg(test)]
+#[path = "matrix_crypto_receive_http_tests.rs"]
+mod receive_http_tests;

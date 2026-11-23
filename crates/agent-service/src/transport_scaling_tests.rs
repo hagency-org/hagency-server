@@ -327,8 +327,8 @@ async fn postgres_legacy_file_prefix_survives_additive_chunk_upgrade_and_termina
         let f = fixture_at(&url).await;
         let (lease, target, _, _) = setup(&f, b"hello").await;
         let mut db = AsyncPgConnection::establish(&url).await.unwrap();
-        db.batch_execute("DROP TRIGGER clear_terminal_file_chunks ON hagency_agent_v1.file_outbox; DROP TABLE hagency_agent_v1.file_chunks; DROP FUNCTION hagency_agent_v1.guard_file_chunk(); DROP FUNCTION hagency_agent_v1.clear_terminal_file_chunks(); DROP INDEX hagency_agent_v1.file_outbox_owner_active;").await.unwrap();
-        let schema = include_str!("file_delivery/schema.sql");
+        db.batch_execute("DROP TABLE public.__diesel_schema_migrations; DROP TRIGGER clear_terminal_file_chunks ON hagency_agent_v1.file_outbox; DROP TABLE hagency_agent_v1.file_chunks; DROP FUNCTION hagency_agent_v1.guard_file_chunk(); DROP FUNCTION hagency_agent_v1.clear_terminal_file_chunks(); DROP INDEX hagency_agent_v1.file_outbox_owner_active;").await.unwrap();
+        let schema = include_str!("../migrations/transport/2026-11-19-000409_schema/up.sql");
         let start = schema
             .find("CREATE FUNCTION hagency_agent_v1.retain_file_outbox()")
             .unwrap();

@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 
-use crate::components::theme::{get_resolved_theme, set_theme};
+use crate::components::theme::set_theme;
 use crate::components::ui::icons::Icon;
 use crate::components::ui::notifications::{self, NOTIFICATIONS, NotificationSeverity};
 use crate::utils::i18n::{Language, current_language, set_language, t};
@@ -58,7 +58,7 @@ impl HeaderIdentity {
 pub fn AppHeader(collapsed: Signal<bool>, mobile_sidebar_open: Signal<bool>) -> Element {
     let mut is_collapsed = collapsed;
     let mut is_mobile_sidebar_open = mobile_sidebar_open;
-    let mut dark_mode = use_signal(|| get_resolved_theme() == "dark");
+    let mut dark_mode = crate::components::theme::use_resolved_dark_mode();
     let mut show_notifications = use_signal(|| false);
     let nav = use_navigator();
 
@@ -108,7 +108,8 @@ pub fn AppHeader(collapsed: Signal<bool>, mobile_sidebar_open: Signal<bool>) -> 
                 span {class:"hg-role", if crate::router::is_server_admin() {"Administrator"}else {"Personal account"}}
                 a {href:"/auth/",class:"text-xs text-muted-foreground hover:underline","Account center"}
                 // Language selector
-                select {
+                crate::components::ui::input::Select {
+                    aria_label: t("language.select"),
                     class: "app-header-language h-9 rounded-lg border bg-background px-3 text-xs text-foreground touch-target",
                     value: "{current_language().code()}",
                     onchange: move |evt: FormEvent| {

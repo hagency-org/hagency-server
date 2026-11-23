@@ -83,7 +83,30 @@ def check_example(doc, schema, value):
         require('pattern' not in schema or re.search(schema['pattern'], value) is not None, 'example pattern mismatch')
 
 
-def check_rust_schema(schema, metadata):
+def request_schema_names(doc):
+    """Find schemas consumed by request bodies, including nested references."""
+    names, visited = set(), set()
+    def visit(value):
+        if isinstance(value, dict):
+            reference = value.get('$ref')
+            if reference and reference not in visited:
+                visited.add(reference)
+                if reference.startswith('#/components/schemas/'):
+                    names.add(reference.rsplit('/', 1)[1])
+                visit(resolve(doc, reference))
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+    for item in doc['paths'].values():
+        for operation in item.values():
+            if isinstance(operation, dict) and 'requestBody' in operation:
+                visit(operation['requestBody'])
+    return names
+
+
+def check_rust_schema(schema, metadata, is_input=False):
     source = (ROOT / metadata['file']).read_text()
     name = metadata['name']
     matches = list(re.finditer(r'(?:pub )?struct ' + re.escape(name) + r'\s*\{(.*?)\n\s*\}', source, re.S))
@@ -110,6 +133,11 @@ def check_rust_schema(schema, metadata):
         if not re.search(r'\bskip_serializing\b', attrs):
             fields.append((field, typ.strip()))
             if re.search(r'\bdefault\b|\bskip_serializing_if\b', attrs):
+                defaulted.add(camel(field))
+            # Serde accepts an absent Option even without #[serde(default)].
+            # This is independent of nullability. Output-only fields can still
+            # be required while carrying null, so use request reachability.
+            if is_input and typ.strip().startswith('Option<') and 'deserialize_with' not in attrs:
                 defaulted.add(camel(field))
     require([f for f, _ in fields] == metadata['serializedFields'], 'Rust field drift ' + name)
     require(set(schema['properties']) == {camel(f) for f, _ in fields}, 'spec property drift ' + name)
@@ -183,9 +211,10 @@ def validate(doc):
                 require(operation['security'] == [{'deviceBearer': []}, {'userBearer': []}] and method == 'get', 'room project folder bearer/method drift')
             elif path.startswith('/hagency/api/v1/') and path not in ['/hagency/api/v1/discovery', '/hagency/api/v1/readiness', '/hagency/api/v1/sessions/pasion']:
                 require(operation['security'] == [{'userBearer': []}], 'owner session security drift')
-    for schema in doc['components']['schemas'].values():
+    inputs = request_schema_names(doc)
+    for name, schema in doc['components']['schemas'].items():
         if 'x-rust-dto' in schema:
-            check_rust_schema(schema, schema['x-rust-dto'])
+            check_rust_schema(schema, schema['x-rust-dto'], name in inputs)
     if 'userBearer' in doc['components']['securitySchemes']:
         api = (ROOT / 'crates/agent-service/src/api.rs').read_text()
         transport = (ROOT / 'crates/agent-service/src/api_transport.rs').read_text()
@@ -197,6 +226,16 @@ def validate(doc):
         require({p for p, _ in operations if p.startswith('/hagency/api/v1/execution/')} == {p for p, _ in literal if p.startswith('/hagency/api/v1/execution/')}, 'invented transport route')
         require(('/hagency/api/v1/projects', 'post') not in operations, 'unimplemented Space creation advertised')
         require(('/hagency/api/v1/projects/{projectId}/rooms', 'post') not in operations, 'unimplemented Room creation advertised')
+        message = doc['paths']['/hagency/api/v1/execution/messages/authorize']['post']
+        require(message['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/AgentMessage'}, 'message authorization request drift')
+        require(message['responses']['200']['content']['application/json']['schema'] == {'type':'object','properties':{'authorization':{'$ref':'#/components/schemas/AgentMessageAuthorization'}},'required':['authorization'],'additionalProperties':False}, 'message authorization response drift')
+        discovery = doc['paths']['/hagency/api/v1/agents/discover']['get']
+        cursor = {'type':'string','minLength':1,'maxLength':128,'pattern':'^[A-Za-z0-9_-]+$'}
+        require(len(discovery['parameters']) == 1 and discovery['parameters'][0]['name'] == 'after' and discovery['parameters'][0]['in'] == 'query' and discovery['parameters'][0]['required'] is False and discovery['parameters'][0]['schema'] == cursor, 'discovery cursor query drift')
+        catalog = discovery['responses']['200']['content']['application/json']['schema']
+        require(set(catalog['properties']) == {'agents','nextAfter'} and set(catalog['required']) == {'agents','nextAfter'} and catalog['additionalProperties'] is False, 'discovery page response drift')
+        require(catalog['properties']['agents'].get('maxItems') == 256 and catalog['properties']['agents']['items'] == {'$ref':'#/components/schemas/DiscoverableAgent'}, 'discovery page bound drift')
+        require({key:value for key,value in catalog['properties']['nextAfter'].items() if key != 'description'} == dict(cursor, type=['string','null']), 'discovery next cursor drift')
         for suffix, request in [('prepare', 'FilePrepare'), ('chunk', 'FileChunk'), ('queue', 'FileWrite'), ('status', 'Target')]:
             operation = doc['paths']['/hagency/api/v1/execution/files/' + suffix]['post']
             require(operation['requestBody']['content']['application/json']['schema'] == {'$ref': '#/components/schemas/' + request}, 'file request payload drift: ' + suffix)
@@ -228,7 +267,7 @@ def validate(doc):
         worker_health = doc['paths']['/workers-healthz']['get']
         require(worker_health['security'] == [] and set(worker_health['responses']) == {'200', '503'}, 'worker health security/status drift')
         require(set(doc['components']['schemas']['WorkerQueueHealth']['properties']) == {'name', 'running', 'consecutiveFailures', 'lastSuccessAgeMs', 'lastActivityAgeMs', 'error'}, 'worker health must remain aggregate and body-free')
-        require(len(operations) == 137, 'reviewed owner route count drift')
+        require(len(operations) == 138, 'reviewed owner route count drift')
     else:
         require(len(operations) == 4, 'reviewed AS route count drift')
     return len(operations)
@@ -315,6 +354,20 @@ class GuardTests(unittest.TestCase):
         self.rejection(lambda d: d['paths'].pop('/hagency/api/v1/room-project-folder'))
     def test_private_or_missing_field(self):
         self.rejection(lambda d: d['components']['schemas']['ReplyIntent']['properties'].update(workerToken={'type': 'string'}))
+    def test_discovery_requires_the_bounded_after_query(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/agents/discover']['get'].update(parameters=[]))
+    def test_discovery_response_keeps_the_next_page_cursor(self):
+        self.rejection(lambda d: d['paths']['/hagency/api/v1/agents/discover']['get']['responses']['200']['content']['application/json']['schema']['properties'].pop('nextAfter'))
+    def test_optional_input_is_omittable_and_still_nullable(self):
+        manifest = self.doc['components']['schemas']['Manifest']
+        check_example(self.doc, manifest, {'filename': 'example.txt', 'bytes': 1, 'sha256': 'a' * 64})
+        self.assertNotIn('caption', manifest['required'])
+        self.assertIn({'type': 'null'}, manifest['properties']['caption']['anyOf'])
+    def test_nullable_input_cannot_be_made_required(self):
+        self.rejection(lambda d: d['components']['schemas']['Manifest']['required'].append('caption'))
+    def test_nullable_output_can_still_be_required(self):
+        self.assertIn('ownerDirectRoomId', self.doc['components']['schemas']['Agent']['required'])
+        self.rejection(lambda d: d['components']['schemas']['Agent']['required'].remove('ownerDirectRoomId'))
     def test_rust_type_drift(self):
         self.rejection(lambda d: d['components']['schemas']['DeviceGrant']['properties']['generation'].update(type='string', examples=['bad']))
     def test_non_strict_request(self):

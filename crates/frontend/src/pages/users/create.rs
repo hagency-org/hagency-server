@@ -172,7 +172,7 @@ pub fn UserCreate() -> Element {
                     }
                     CardContent {
                         div { class: "responsive-form-grid",
-                            div { class: "space-y-2 form-span-full",
+                            crate::components::ui::input::Field { class: "space-y-2 form-span-full",
                                 Label { {t("users.username")} }
                                 div { class: "relative",
                                     Input {
@@ -246,7 +246,7 @@ pub fn UserCreate() -> Element {
                                 }
                             }
 
-                            div { class: "space-y-2",
+                            crate::components::ui::input::Field { class: "space-y-2",
                                 Label { {t("users.display_name")} }
                                 Input {
                                     placeholder: t("users.display_name"),
@@ -256,7 +256,7 @@ pub fn UserCreate() -> Element {
                                 }
                             }
 
-                            div { class: "space-y-2",
+                            crate::components::ui::input::Field { class: "space-y-2",
                                 Label { {t("users.password")} }
                                 Input {
                                     r#type: "password".to_string(),
@@ -270,7 +270,7 @@ pub fn UserCreate() -> Element {
                                 PasswordStrengthIndicator { password: password.read().clone() }
                             }
 
-                            div { class: "space-y-2",
+                            crate::components::ui::input::Field { class: "space-y-2",
                                 Label { {t("users.email_optional")} }
                                 Input {
                                     r#type: "email".to_string(),
@@ -291,7 +291,7 @@ pub fn UserCreate() -> Element {
                                 }
                             }
 
-                            div { class: "space-y-2",
+                            crate::components::ui::input::Field { class: "space-y-2",
                                 Label { {t("users.phone_optional")} }
                                 Input {
                                     placeholder: "+1234567890",
@@ -316,7 +316,7 @@ pub fn UserCreate() -> Element {
                                                 is_admin.set(evt.value() == "true");
                                             },
                                         }
-                                        div { class: "flex-1",
+                                        crate::components::ui::input::Field { class: "flex-1",
                                             Label { r#for: "admin".to_string(), {t("users.admin_privileges")} }
                                         }
                                     }
@@ -332,13 +332,13 @@ pub fn UserCreate() -> Element {
                                             is_locked.set(evt.value() == "true");
                                         },
                                     }
-                                    div { class: "flex-1",
+                                    crate::components::ui::input::Field { class: "flex-1",
                                         Label { r#for: "locked".to_string(), {t("users.locked")} }
                                     }
                                 }
                             }
 
-                            div { class: "space-y-2 form-span-full",
+                            crate::components::ui::input::Field { class: "space-y-2 form-span-full",
                                 Label { {t("users.user_type")} }
                                 select {
                                     id: "user_type",

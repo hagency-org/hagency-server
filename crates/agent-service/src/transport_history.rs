@@ -1,7 +1,8 @@
 //! Permanent execution metadata witnesses. No message bodies, model budgets or
 //! charges leave the server; the authenticated owner client checks its ledger.
-use super::*;
 use sha2::{Digest, Sha256};
+
+use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -129,6 +130,26 @@ pub(super) async fn snapshot(
     .get_result::<Flag>(db)
     .await
     .map_err(unauthorized)?;
+    #[derive(diesel::QueryableByName)]
+    struct Cached {
+        #[diesel(sql_type=BigInt)]
+        count: i64,
+        #[diesel(sql_type=Text)]
+        digest: String,
+    }
+    if let Some(cached) = sql_query(
+        "SELECT count,digest FROM hagency_agent_v1.execution_history_snapshots WHERE agent_id=$1",
+    )
+    .bind::<Text, _>(agent)
+    .get_result::<Cached>(db)
+    .await
+    .optional()?
+    {
+        return Ok(ExecutionHistorySnapshot {
+            count: cached.count as u64,
+            digest: cached.digest,
+        });
+    }
     let mut digest = Sha256::new();
     digest.update(b"hagency-started-executions-v1\n");
     let mut cursor = String::new();
@@ -152,10 +173,12 @@ pub(super) async fn snapshot(
                 .ok_or(Error::Conflict("execution_history_exhausted"))?;
         }
     }
-    Ok(ExecutionHistorySnapshot {
+    let snapshot = ExecutionHistorySnapshot {
         count,
         digest: hex::encode(digest.finalize()),
-    })
+    };
+    sql_query("INSERT INTO hagency_agent_v1.execution_history_snapshots VALUES($1,$2,$3) ON CONFLICT(agent_id) DO UPDATE SET count=excluded.count,digest=excluded.digest").bind::<Text,_>(agent).bind::<BigInt,_>(count as i64).bind::<Text,_>(&snapshot.digest).execute(db).await?;
+    Ok(snapshot)
 }
 impl TransportStore {
     /// Owner/device-authenticated history across ALL bindings, including retired
@@ -178,9 +201,7 @@ impl TransportStore {
         if let Some(expected) = expected {
             expected.validate()?;
         }
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authenticate(db,p,now).await?;
             let current=snapshot(db,p,agent).await?;
             if expected.is_some_and(|value|value!=&current){return Err(Error::Conflict("execution_history_changed"));}
@@ -192,7 +213,6 @@ impl TransportStore {
             Self::authenticate(db,p,now).await?;
             Ok(ExecutionHistoryPage{agent_id:agent.into(),snapshot:current,executions,next_cursor})
         }).await
-    }).await
     }
     #[cfg(test)]
     pub(crate) async fn acquire_for_test(

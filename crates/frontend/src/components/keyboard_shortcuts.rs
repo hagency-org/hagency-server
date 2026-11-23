@@ -1,10 +1,10 @@
+use std::rc::Rc;
+
 use dioxus::prelude::*;
+use wasm_bindgen::{JsCast, closure::Closure};
 
+use crate::components::ui::dialog::Modal;
 use crate::router::Route;
-
-/// Global signal: if Some, we are awaiting the second key of a two-key chord.
-/// The f64 is the timestamp (milliseconds) when the first key was pressed.
-static PENDING_KEY: GlobalSignal<Option<(String, f64)>> = GlobalSignal::new(|| None);
 
 /// Whether the shortcut help modal is visible.
 static SHOW_HELP: GlobalSignal<bool> = GlobalSignal::new(|| false);
@@ -15,127 +15,100 @@ pub fn toggle_help() {
     *show = !*show;
 }
 
-/// Extract the character string from a keyboard_types::Key, if it is a Character variant.
-fn key_to_string(key: &keyboard_types::Key) -> Option<String> {
-    match key {
-        keyboard_types::Key::Character(s) => Some(s.clone()),
-        _ => None,
-    }
-}
-
 #[component]
-pub fn KeyboardShortcuts() -> Element {
+pub fn KeyboardShortcuts(children: Element) -> Element {
     let nav = use_navigator();
-
-    let handle_keydown = move |evt: KeyboardEvent| {
-        // Ignore if the user is typing in an input, textarea or contenteditable.
-        if let Some(window) = web_sys::window()
-            && let Some(doc) = window.document()
-            && let Some(active) = doc.active_element()
+    let mut chord_start = use_signal(|| None::<f64>);
+    let handle_key = use_callback(move |event: web_sys::KeyboardEvent| {
+        let target = event
+            .target()
+            .and_then(|v| v.dyn_into::<web_sys::Element>().ok());
+        if event.default_prevented()
+            || event.repeat()
+            || event.is_composing()
+            || event.ctrl_key()
+            || event.alt_key()
+            || event.meta_key()
+            || target.as_ref().is_some_and(|el| {
+                el.closest("input, textarea, select, dialog, [role=dialog]")
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    || el
+                        .dyn_ref::<web_sys::HtmlElement>()
+                        .is_some_and(|el| el.is_content_editable())
+            })
         {
-            let tag = active.tag_name().to_uppercase();
-            if tag == "INPUT" || tag == "TEXTAREA" || tag == "SELECT" {
-                return;
-            }
-            if active
-                .get_attribute("contenteditable")
-                .map(|v| v == "true")
-                .unwrap_or(false)
-            {
+            chord_start.set(None);
+            return;
+        }
+        let now = js_sys::Date::now();
+        let pending = chord_start.take();
+        let key = event.key();
+        if pending.is_some_and(|start| now - start <= 500.0) {
+            let destination = match key.as_str() {
+                "p" => Some(Route::HagencyProjects {}),
+                "a" => Some(Route::HagencyAgents {}),
+                "d" if crate::router::is_server_admin() => Some(Route::Dashboard {}),
+                "u" if crate::router::is_server_admin() => Some(Route::UserList {}),
+                "r" if crate::router::is_server_admin() => Some(Route::RoomList {}),
+                _ => None,
+            };
+            if let Some(route) = destination {
+                nav.push(route);
                 return;
             }
         }
-
-        let key = evt.key();
-        let key_str = match key_to_string(&key) {
-            Some(s) => s,
-            None => return,
-        };
-
-        // Current time for chord timeout.
-        let now = js_sys::Date::now(); // milliseconds since epoch
-
-        // Check if we are in a pending chord state.
-        let pending = { PENDING_KEY.read().clone() };
-        if let Some((first_key, ts)) = pending {
-            // Clear pending state regardless.
-            *PENDING_KEY.write() = None;
-
-            // Only accept if within 500ms.
-            if now - ts <= 500.0 && first_key == "g" {
-                match key_str.as_str() {
-                    "p" => {
-                        nav.push(Route::HagencyProjects {});
-                        return;
-                    }
-                    "a" => {
-                        nav.push(Route::HagencyAgents {});
-                        return;
-                    }
-                    "d" if crate::router::is_server_admin() => {
-                        nav.push(Route::Dashboard {});
-                        return;
-                    }
-                    "u" if crate::router::is_server_admin() => {
-                        nav.push(Route::UserList {});
-                        return;
-                    }
-                    "r" if crate::router::is_server_admin() => {
-                        nav.push(Route::RoomList {});
-                        return;
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Single-key shortcuts.
-        match key_str.as_str() {
-            "?" => {
-                toggle_help();
-            }
-            "g" => {
-                *PENDING_KEY.write() = Some(("g".to_string(), now));
-            }
+        match key.as_str() {
+            "?" => toggle_help(),
+            "g" => chord_start.set(Some(now)),
             _ => {}
         }
-    };
+    });
 
-    rsx! {
-        div {
-            tabindex: 0,
-            onkeydown: handle_keydown,
-            style: "outline:none;",
+    // A key pressed after clicking plain text targets the body, outside the layout.
+    let listener = use_hook(move || {
+        let doc = web_sys::window()?.document()?;
+        let callback = Rc::new(Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+            move |event| {
+                handle_key.call(event);
+            },
+        ));
+        doc.add_event_listener_with_callback("keydown", callback.as_ref().as_ref().unchecked_ref())
+            .ok()?;
+        Some((doc, callback))
+    });
+    use_drop(move || {
+        if let Some((doc, callback)) = listener {
+            let _ = doc.remove_event_listener_with_callback(
+                "keydown",
+                callback.as_ref().as_ref().unchecked_ref(),
+            );
         }
-        ShortcutHelpModal {}
-    }
+    });
+
+    rsx! { {children} ShortcutHelpModal {} }
 }
 
 #[component]
 fn ShortcutHelpModal() -> Element {
-    let show = *SHOW_HELP.read();
-
-    if !show {
-        return rsx! {};
-    }
-
     rsx! {
-        // Backdrop
-        div {
-            class: "fixed inset-0 z-50 flex items-center justify-center bg-black/50",
-            onclick: move |_| {
-                *SHOW_HELP.write() = false;
-            },
-            // Modal panel
+        Modal {
+            open: SHOW_HELP(),
+            label: "Keyboard Shortcuts".to_string(),
+            on_close: move |_| *SHOW_HELP.write() = false,
             div {
-                class: "relative w-full max-w-md rounded-lg border bg-card p-6 shadow-lg",
-                onclick: move |evt: MouseEvent| {
-                    evt.stop_propagation();
+                onkeydown: move |event: KeyboardEvent| {
+                    if event.key() == Key::Character("?".into()) {
+                        event.stop_propagation();
+                        *SHOW_HELP.write() = false;
+                    }
                 },
                 // Header
                 div { class: "flex items-center justify-between mb-4",
                     h2 { class: "text-lg font-semibold", "Keyboard Shortcuts" }
                     button {
+                        aria_label: "Close keyboard shortcuts",
                         class: "text-muted-foreground hover:text-foreground",
                         onclick: move |_| {
                             *SHOW_HELP.write() = false;

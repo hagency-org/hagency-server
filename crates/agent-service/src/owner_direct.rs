@@ -11,9 +11,7 @@ impl DomainStore {
         now: i64,
     ) -> Result<AgentBinding> {
         matrix_id(room, '!')?;
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,now).await?;
             Self::require_unmanaged_binding(db,None,room).await?;
             let a=Self::agent_db(db,p,agent).await?;
@@ -70,6 +68,5 @@ impl DomainStore {
             Self::audit(db,p,"agent.owner_direct",agent,now).await?;
             Ok(AgentBinding{agent:a,binding})
         }).await
-    }).await
     }
 }

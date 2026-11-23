@@ -106,6 +106,9 @@ struct Matrix {
     calls: Calls,
     fail: Arc<AtomicBool>,
     unexpected_login_device: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
+    entered: Arc<tokio::sync::Notify>,
+    resume: Arc<tokio::sync::Notify>,
 }
 #[handler]
 impl Matrix {
@@ -124,6 +127,10 @@ impl Matrix {
         } else {
             serde_json::from_slice(raw).unwrap()
         };
+        if self.pause.swap(false, Ordering::AcqRel) {
+            self.entered.notify_one();
+            self.resume.notified().await;
+        }
         if url.path().ends_with("/register") {
             assert_eq!(body["inhibit_login"], true);
             assert_eq!(body["type"], "m.login.application_service");
@@ -199,6 +206,9 @@ struct Fixture {
     calls: Calls,
     fail: Arc<AtomicBool>,
     unexpected_login_device: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
+    entered: Arc<tokio::sync::Notify>,
+    resume: Arc<tokio::sync::Notify>,
     http: tokio::task::JoinHandle<()>,
     url: String,
 }
@@ -283,7 +293,13 @@ async fn fixture() -> Fixture {
         .await
         .unwrap();
     let address = acceptor.local_addr().unwrap();
+    let pause: Arc<AtomicBool> = Default::default();
+    let entered: Arc<tokio::sync::Notify> = Default::default();
+    let resume: Arc<tokio::sync::Notify> = Default::default();
     let router = Router::with_path("{**path}").goal(Matrix {
+        pause: pause.clone(),
+        entered: entered.clone(),
+        resume: resume.clone(),
         calls: calls.clone(),
         fail: fail.clone(),
         unexpected_login_device: unexpected_login_device.clone(),
@@ -310,6 +326,9 @@ async fn fixture() -> Fixture {
         calls,
         fail,
         unexpected_login_device,
+        pause,
+        entered,
+        resume,
         http,
         url,
     }
@@ -890,4 +909,75 @@ async fn owner_receive_signatures_require_original_agent_user_signer_before_http
             .is_err()
     );
     assert_eq!(count, f.calls.lock().unwrap().len());
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn delayed_crypto_http_releases_pool_and_guards_revocation_across_sessions() {
+    let mut f = fixture().await;
+    let pool = f.domain.use_single_slot_pool(&f.url);
+    let mut other = AsyncPgConnection::establish(&f.url).await.unwrap();
+    for cancel in [false, true] {
+        f.pause.store(true, Ordering::Release);
+        let mut operation = Box::pin(f.domain.crypto_request(
+            &f.matrix,
+            &f.p,
+            &f.agent,
+            1,
+            Operation::Versions,
+            Value::Null,
+        ));
+        tokio::select! {
+            _ = f.entered.notified() => (),
+            result = &mut operation => panic!("expected paused Matrix HTTP, got {result:?}"),
+        }
+        assert_eq!(
+            pool.status().available,
+            1,
+            "no checkout survives into Matrix HTTP"
+        );
+        let revoke = async |conn: &mut AsyncPgConnection| {
+            diesel::sql_query("UPDATE hagency_agent_v1.devices SET revoked=true WHERE id=$1")
+                .bind::<Text, _>(f.p.device_id.clone().unwrap())
+                .execute(conn)
+                .await
+        };
+        // A second database session observes the persisted grant, and returns promptly.
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), revoke(&mut other))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.to_string(), "agent_crypto_in_progress");
+        if cancel {
+            drop(operation);
+            f.resume.notify_one();
+            assert_eq!(
+                revoke(&mut other).await.unwrap_err().to_string(),
+                "agent_crypto_in_progress"
+            );
+            let mut pending_revoke = Box::pin(f.auth.revoke_device(
+                &f.session,
+                f.p.device_id.as_deref().unwrap(),
+                now_ms(),
+            ));
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(150), &mut pending_revoke)
+                    .await
+                    .is_err()
+            );
+            // Advance just this fixture's lease to simulate crash expiry.
+            diesel::sql_query("UPDATE hagency_agent_v1.crypto_io_leases SET until_ms=0 WHERE nonce=(SELECT nonce FROM hagency_agent_v1.crypto_io_leases WHERE resource='agents' AND resource_id=$1)")
+                .bind::<Text,_>(&f.agent).execute(&mut other).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), pending_revoke)
+                .await
+                .unwrap()
+                .unwrap();
+        } else {
+            f.resume.notify_one();
+            assert_eq!(operation.await.unwrap().0, 200);
+            other.batch_execute("BEGIN").await.unwrap();
+            assert_eq!(revoke(&mut other).await.unwrap(), 1);
+            other.batch_execute("ROLLBACK").await.unwrap();
+        }
+    }
 }

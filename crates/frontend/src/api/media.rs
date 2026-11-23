@@ -81,24 +81,52 @@ pub async fn delete_local_media(
     size_gt: u64,
     keep_profiles: bool,
 ) -> Result<DeleteMediaResult, HttpError> {
-    let home_server = get_home_server()?;
-    let url = build_url(&format!("/_palpo/admin/v1/media/{home_server}/delete"), &[])?;
-    let body = serde_json::json!({
-        "before_ts": before_ts,
-        "size_gt": size_gt,
-        "keep_profiles": keep_profiles,
-    })
-    .to_string();
-
-    let result = api_client(&url, "POST", Some(body)).await?;
+    if keep_profiles {
+        super::admin_capabilities::require("media_keep_profiles").await?;
+    }
+    let before = before_ts.to_string();
+    let size = size_gt.to_string();
+    let url = build_url(
+        "/_palpo/admin/v1/media/delete",
+        &[
+            ("before_ts", &before),
+            ("size_gt", &size),
+            (
+                "keep_profiles",
+                if keep_profiles { "true" } else { "false" },
+            ),
+        ],
+    )?;
+    let result = api_client(&url, "POST", None).await?;
     invalidate_media_related_caches();
     Ok(result)
 }
 
-pub async fn purge_remote_media(before_ts: u64) -> Result<DeleteMediaResult, HttpError> {
-    let url = build_url("/_palpo/admin/v1/purge_media_cache", &[])?;
-    let body = serde_json::json!({ "before_ts": before_ts }).to_string();
-    let result = api_client(&url, "POST", Some(body)).await?;
+#[derive(Debug, serde::Deserialize)]
+pub struct PurgeMediaResult {
+    pub deleted: u64,
+}
+pub async fn purge_remote_media(before_ts: u64) -> Result<PurgeMediaResult, HttpError> {
+    let before = before_ts.to_string();
+    let url = build_url(
+        "/_palpo/admin/v1/purge_media_cache",
+        &[("before_ts", &before)],
+    )?;
+    let result = api_client(&url, "POST", None).await?;
     invalidate_media_related_caches();
     Ok(result)
+}
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    #[test]
+    fn purge_does_not_accept_a_default_zero_from_the_local_delete_shape() {
+        assert_eq!(
+            serde_json::from_str::<PurgeMediaResult>(r#"{"deleted":17}"#)
+                .unwrap()
+                .deleted,
+            17
+        );
+        assert!(serde_json::from_str::<PurgeMediaResult>(r#"{"total":17}"#).is_err());
+    }
 }

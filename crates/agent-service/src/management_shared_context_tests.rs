@@ -20,7 +20,7 @@ pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
     db.batch_execute(include_str!("management_agent_budget_remove_test.sql"))
         .await
         .unwrap();
-    db.batch_execute("DROP TRIGGER require_shared_context_start ON hagency_agent_v1.management_shared_work;DROP INDEX hagency_agent_v1.shared_work_context_scope;DROP TABLE hagency_agent_v1.management_shared_context_starts,hagency_agent_v1.management_shared_contexts,hagency_agent_v1.management_shared_context_sequences,hagency_agent_v1.management_shared_reply_deliveries,hagency_agent_v1.management_shared_input_modes;DROP FUNCTION hagency_agent_v1.require_shared_context_start(),hagency_agent_v1.validate_shared_context(),hagency_agent_v1.retain_shared_context();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=17;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=17)").await.unwrap();
+    db.batch_execute("DROP TRIGGER require_shared_context_start ON hagency_agent_v1.management_shared_work;DROP INDEX hagency_agent_v1.shared_work_context_scope;DROP TABLE hagency_agent_v1.management_shared_context_starts,hagency_agent_v1.management_shared_contexts,hagency_agent_v1.management_shared_context_sequences,hagency_agent_v1.management_shared_reply_deliveries,hagency_agent_v1.management_shared_input_modes;DROP FUNCTION hagency_agent_v1.require_shared_context_start(),hagency_agent_v1.validate_shared_context(),hagency_agent_v1.retain_shared_context();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=17;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=17)").await.unwrap();
 }
 fn read_input(w: &SharedWorkItem) -> SharedWorkEvidenceInput {
     SharedWorkEvidenceInput {
@@ -995,4 +995,174 @@ async fn shared_context_concurrent_instances_freeze_once_and_start_once() {
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     assert!(sql_query("SELECT (SELECT count(*) FROM hagency_agent_v1.management_shared_context_starts WHERE work_id=$1)=1 AND (SELECT ordinal FROM hagency_agent_v1.management_shared_context_sequences WHERE assignment_id=$2 AND room_id=$3 AND thread_root=$4)=1 AS matched")
         .bind::<Text,_>(&w.id).bind::<Text,_>(&w.assignment_id).bind::<Text,_>(&w.room_id).bind::<Text,_>(&w.thread_root).get_result::<Check>(&mut db).await.unwrap().matched);
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn recurring_context_start_counts_current_period_without_erasing_historical_usage() {
+    let (f, request, _assignment, matrix) = Box::pin(prepared_pool_calendar(false, true)).await;
+    let runtime = shared_poll(&f).await;
+    let activity = save(&f, &runtime, "qualified", 101)
+        .await
+        .unwrap()
+        .activity
+        .unwrap();
+    async fn pool_work(
+        f: &Fixture,
+        request: &crate::management_pool_types::PoolAgentRequest,
+        matrix: &MatrixFixture,
+        activity: &SharedActivityLease,
+        id: &str,
+    ) -> SharedWorkItem {
+        let event = crate::transport::RoutedEvent {
+            event_id: format!("${id}"),
+            room_id: request.room_id.clone(),
+            sender_mxid: f.outsider.p.mxid.clone(),
+            body: "Use the approved recurring service".into(),
+            mentioned_mxids: Default::default(),
+            thread_root: Some(format!("${id}")),
+            encrypted: false,
+            is_edit: false,
+        };
+        f.domain
+            .route_shared_event(&f.policy, &event, now_ms(), &matrix.gateway)
+            .await
+            .unwrap();
+        let work = f
+            .domain
+            .poll_shared_work(
+                &f.owner.p,
+                &f.policy,
+                activity.authority.clone(),
+                &matrix.gateway,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        f.domain
+            .acknowledge_shared_work(
+                &f.owner.p,
+                &f.policy,
+                input(activity, &work),
+                &matrix.gateway,
+            )
+            .await
+            .unwrap();
+        work
+    }
+    let old = pool_work(&f, &request, &matrix, &activity, "previous_calendar_usage").await;
+    f.domain
+        .start_current_work(
+            &f.owner.p,
+            &f.policy,
+            input(&activity, &old),
+            &matrix.gateway,
+        )
+        .await
+        .unwrap();
+    let ticket = work::ticket(&f, &runtime, &old).await;
+    let consumed = runtime.command.reserve_command.requested_tokens + 717;
+    let mut outcome = work::outcome(&runtime, &old, &ticket, 201, "completed");
+    outcome.receipt.body = Some("Historical result".into());
+    outcome.receipt.body_digest = Some(crate::hash("Historical result"));
+    outcome.receipt.known_consumed_tokens = consumed;
+    outcome.receipt.retained_tokens = Some(consumed);
+    f.domain
+        .record_shared_work_result(&f.owner.p, &f.policy, &old.id, outcome)
+        .await
+        .unwrap();
+
+    let next = pool_work(&f, &request, &matrix, &activity, "current_calendar_request").await;
+    let context = f
+        .domain
+        .freeze_shared_context(
+            &f.owner.p,
+            &f.policy,
+            &next.id,
+            context_input(&activity, &next),
+            &matrix.gateway,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            f.domain
+                .start_shared_context_work(
+                    &f.owner.p,
+                    &f.policy,
+                    &next.id,
+                    start_input(&activity, &next, &context),
+                    &matrix.gateway
+                )
+                .await,
+            Err(Error::Conflict("shared_budget_exhausted"))
+        ),
+        "known consumption in this period still blocks another call"
+    );
+
+    let grant = runtime.command.reserve_command.pool_grant.as_ref().unwrap();
+    let period = grant
+        .calendar
+        .as_ref()
+        .unwrap()
+        .period_at(now_ms() as u64)
+        .unwrap();
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    // A fixture-only timestamp backfill represents permanent usage issued in
+    // the preceding calendar period, without waiting a real day or changing
+    // its recorded consumption. Normal application APIs cannot rewrite it.
+    db.transaction::<_, diesel::result::Error, _>(async |db| {
+        db.batch_execute(
+            "ALTER TABLE hagency_agent_v1.management_shared_work DISABLE TRIGGER USER",
+        )
+        .await?;
+        sql_query(
+            "UPDATE hagency_agent_v1.management_shared_work SET created_at_ms=$2 WHERE id=$1",
+        )
+        .bind::<Text, _>(&old.id)
+        .bind::<BigInt, _>(period.start_ms as i64 - 1)
+        .execute(db)
+        .await?;
+        db.batch_execute("ALTER TABLE hagency_agent_v1.management_shared_work ENABLE TRIGGER USER")
+            .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let started = f
+        .domain
+        .start_shared_context_work(
+            &f.owner.p,
+            &f.policy,
+            &next.id,
+            start_input(&activity, &next, &context),
+            &matrix.gateway,
+        )
+        .await
+        .unwrap();
+    assert!(
+        started.start.newly_started,
+        "the current period must not inherit the preceding period's exhausted quota"
+    );
+    assert!(
+        !f.domain
+            .start_shared_context_work(
+                &f.owner.p,
+                &f.policy,
+                &next.id,
+                start_input(&activity, &next, &context),
+                &matrix.gateway
+            )
+            .await
+            .unwrap()
+            .start
+            .newly_started,
+        "the successful start is idempotent"
+    );
+    #[derive(QueryableByName)]
+    struct Usage {
+        #[diesel(sql_type=BigInt)]
+        count: i64,
+    }
+    assert_eq!(sql_query("SELECT known_consumed_tokens AS count FROM hagency_agent_v1.management_shared_work WHERE id=$1").bind::<Text,_>(&old.id).get_result::<Usage>(&mut db).await.unwrap().count,consumed,"renewal must never erase historical consumption to make room");
 }

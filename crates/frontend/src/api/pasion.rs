@@ -74,28 +74,7 @@ fn flatten_resource<T: DeserializeOwned>(item: &serde_json::Value) -> Result<T, 
     serde_json::from_value(attrs).map_err(|e| HttpError::message(format!("JSON parse error: {e}")))
 }
 
-async fn pasion_fetch_list<T: DeserializeOwned>(
-    path: &str,
-) -> Result<PasionListResponse<T>, HttpError> {
-    let raw: serde_json::Value = pasion_fetch(path, "GET", None).await?;
-    let meta: PasionPaginationMeta = raw
-        .get("meta")
-        .and_then(|m| serde_json::from_value(m.clone()).ok())
-        .unwrap_or_default();
-    let data_arr = raw
-        .get("data")
-        .and_then(|d| d.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let mut data = Vec::with_capacity(data_arr.len());
-    for item in &data_arr {
-        data.push(flatten_resource::<T>(item)?);
-    }
-    Ok(PasionListResponse { data, meta })
-}
-
-/// Like [`pasion_fetch_list`], but also returns the total count and the
-/// cursor of the last item when Pasion reports a next page.
+/// Returns the count and the last item cursor when the server reports a next page.
 async fn pasion_fetch_page<T: DeserializeOwned>(path: &str) -> Result<PasionPage<T>, HttpError> {
     let raw: serde_json::Value = pasion_fetch(path, "GET", None).await?;
     let count = raw
@@ -105,7 +84,7 @@ async fn pasion_fetch_page<T: DeserializeOwned>(path: &str) -> Result<PasionPage
         .get("data")
         .and_then(|d| d.as_array())
         .cloned()
-        .unwrap_or_default();
+        .ok_or_else(|| HttpError::message("Pasion returned a list without a data array."))?;
     let has_next = raw
         .pointer("/links/next")
         .is_some_and(|next| !next.is_null());
@@ -118,6 +97,11 @@ async fn pasion_fetch_page<T: DeserializeOwned>(path: &str) -> Result<PasionPage
     } else {
         None
     };
+    if has_next && next_cursor.is_none() {
+        return Err(HttpError::message(
+            "Pasion returned a next-page link without an item cursor.",
+        ));
+    }
     let mut data = Vec::with_capacity(data_arr.len());
     for item in &data_arr {
         data.push(flatten_resource::<T>(item)?);
@@ -251,13 +235,14 @@ pub async fn pasion_risk_action(
 
 pub async fn pasion_get_user_emails(
     user_id: Option<&str>,
-) -> Result<Vec<PasionUserEmail>, HttpError> {
+    after: Option<&str>,
+) -> Result<PasionPage<PasionUserEmail>, HttpError> {
     let path = if let Some(uid) = user_id {
         format!("/user-emails?page[first]=100&filter[user]={uid}")
     } else {
         "/user-emails?page[first]=100".to_string()
     };
-    Ok(pasion_fetch_list::<PasionUserEmail>(&path).await?.data)
+    pasion_fetch_page(&page_path(&path, after)).await
 }
 
 pub async fn pasion_add_user_email(
@@ -281,7 +266,8 @@ pub async fn pasion_delete_user_email(id: &str) -> Result<(), HttpError> {
 pub async fn pasion_get_browser_sessions(
     user_id: Option<&str>,
     active_only: bool,
-) -> Result<Vec<PasionBrowserSession>, HttpError> {
+    after: Option<&str>,
+) -> Result<PasionPage<PasionBrowserSession>, HttpError> {
     let mut path = "/user-sessions?page[first]=100".to_string();
     if let Some(uid) = user_id {
         path.push_str(&format!("&filter[user]={uid}"));
@@ -289,7 +275,7 @@ pub async fn pasion_get_browser_sessions(
     if active_only {
         path.push_str("&filter[status]=active");
     }
-    Ok(pasion_fetch_list::<PasionBrowserSession>(&path).await?.data)
+    pasion_fetch_page(&page_path(&path, after)).await
 }
 
 pub async fn pasion_finish_browser_session(id: &str) -> Result<(), HttpError> {
@@ -302,22 +288,24 @@ pub async fn pasion_finish_browser_session(id: &str) -> Result<(), HttpError> {
 
 pub async fn pasion_get_oauth2_sessions(
     user_id: Option<&str>,
-) -> Result<Vec<PasionOAuth2Session>, HttpError> {
+    after: Option<&str>,
+) -> Result<PasionPage<PasionOAuth2Session>, HttpError> {
     let path = if let Some(uid) = user_id {
         format!("/oauth2-sessions?filter[user]={uid}")
     } else {
         "/oauth2-sessions".to_string()
     };
-    Ok(pasion_fetch_list::<PasionOAuth2Session>(&path).await?.data)
+    pasion_fetch_page(&page_path(&path, after)).await
 }
 
 /// Active OAuth2 (client) sessions of one user, e.g. their Matrix clients.
 pub async fn pasion_get_active_oauth2_sessions_for_user(
     user_id: &str,
-) -> Result<Vec<PasionOAuth2Session>, HttpError> {
+    after: Option<&str>,
+) -> Result<PasionPage<PasionOAuth2Session>, HttpError> {
     let path =
         format!("/oauth2-sessions?page[first]=100&filter[user]={user_id}&filter[status]=active");
-    Ok(pasion_fetch_list::<PasionOAuth2Session>(&path).await?.data)
+    pasion_fetch_page(&page_path(&path, after)).await
 }
 
 pub async fn pasion_finish_oauth2_session(id: &str) -> Result<(), HttpError> {
@@ -331,24 +319,33 @@ pub async fn pasion_finish_oauth2_session(id: &str) -> Result<(), HttpError> {
 // personal access token is implemented as a session with a long-lived
 // access token attached.
 
-pub async fn pasion_get_personal_sessions() -> Result<Vec<PasionPersonalSession>, HttpError> {
-    Ok(
-        pasion_fetch_list::<PasionPersonalSession>("/personal-sessions")
-            .await?
-            .data,
-    )
+pub async fn pasion_get_personal_sessions(
+    after: Option<&str>,
+) -> Result<PasionPage<PasionPersonalSession>, HttpError> {
+    pasion_fetch_page(&page_path("/personal-sessions", after)).await
 }
 
 pub async fn pasion_create_personal_session(
-    data: serde_json::Value,
+    data: &CreatePersonalSession,
 ) -> Result<PasionPersonalSession, HttpError> {
-    pasion_fetch_one("/personal-sessions", "POST", Some(data.to_string())).await
+    pasion_fetch_one(
+        "/personal-sessions",
+        "POST",
+        Some(serde_json::to_string(data).map_err(|e| HttpError::message(e.to_string()))?),
+    )
+    .await
 }
 
 pub async fn pasion_regenerate_personal_session(
     id: &str,
+    expires_in: Option<u32>,
 ) -> Result<PasionPersonalSession, HttpError> {
-    pasion_fetch_one(&format!("/personal-sessions/{id}/regenerate"), "POST", None).await
+    pasion_fetch_one(
+        &format!("/personal-sessions/{id}/regenerate"),
+        "POST",
+        Some(serde_json::json!({"expires_in":expires_in}).to_string()),
+    )
+    .await
 }
 
 pub async fn pasion_revoke_personal_session(id: &str) -> Result<(), HttpError> {
@@ -359,12 +356,10 @@ pub async fn pasion_revoke_personal_session(id: &str) -> Result<(), HttpError> {
 
 // ── Upstream OAuth Providers ───────────────────────────────────────────────
 
-pub async fn pasion_get_upstream_providers() -> Result<Vec<PasionUpstreamProvider>, HttpError> {
-    Ok(
-        pasion_fetch_list::<PasionUpstreamProvider>("/upstream-oauth-providers")
-            .await?
-            .data,
-    )
+pub async fn pasion_get_upstream_providers(
+    after: Option<&str>,
+) -> Result<PasionPage<PasionUpstreamProvider>, HttpError> {
+    pasion_fetch_page(&page_path("/upstream-oauth-providers", after)).await
 }
 
 pub async fn pasion_get_upstream_provider(id: &str) -> Result<PasionUpstreamProvider, HttpError> {
@@ -420,7 +415,8 @@ pub async fn pasion_enable_upstream_provider(id: &str) -> Result<(), HttpError> 
 pub async fn pasion_get_upstream_links(
     user_id: Option<&str>,
     provider_id: Option<&str>,
-) -> Result<Vec<PasionUpstreamLink>, HttpError> {
+    after: Option<&str>,
+) -> Result<PasionPage<PasionUpstreamLink>, HttpError> {
     let mut params = Vec::new();
     if let Some(uid) = user_id {
         params.push(format!("filter[user]={uid}"));
@@ -433,7 +429,7 @@ pub async fn pasion_get_upstream_links(
     } else {
         format!("/upstream-oauth-links?{}", params.join("&"))
     };
-    Ok(pasion_fetch_list::<PasionUpstreamLink>(&path).await?.data)
+    pasion_fetch_page(&page_path(&path, after)).await
 }
 
 pub async fn pasion_create_upstream_link(
@@ -506,4 +502,34 @@ pub async fn pasion_get_connector_health() -> Result<Vec<PasionConnectorHealth>,
         .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
     serde_json::from_value(providers)
         .map_err(|e| HttpError::message(format!("JSON parse error: {e}")))
+}
+
+/// Keep all non-pagination filters, and use only the service's opaque cursor.
+fn page_path(path: &str, after: Option<&str>) -> String {
+    let (base, query) = path.split_once('?').unwrap_or((path, ""));
+    let mut params = query
+        .split('&')
+        .filter(|p| !p.is_empty() && !p.starts_with("page["))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    params.push("page[first]=100".into());
+    if let Some(cursor) = after {
+        params.push(format!("page[after]={}", urlencoding::encode(cursor)));
+    }
+    format!("{base}?{}", params.join("&"))
+}
+
+#[cfg(test)]
+mod pagination_contract_tests {
+    use super::*;
+    #[test]
+    fn cursor_pages_keep_the_original_filters_without_duplicate_page_parameters() {
+        assert_eq!(
+            page_path(
+                "/user-sessions?page[first]=10&filter[user]=ABC&filter[status]=active",
+                Some("CURSOR")
+            ),
+            "/user-sessions?filter[user]=ABC&filter[status]=active&page[first]=100&page[after]=CURSOR"
+        );
+    }
 }

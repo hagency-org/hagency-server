@@ -4133,6 +4133,110 @@
         }
       }
     },
+    "/hagency/api/v1/execution/messages/authorize": {
+      "post": {
+        "operationId": "authorizeAgentMessageDelivery",
+        "summary": "authorizeAgentMessageDelivery",
+        "description": "Revalidate the current personal Agent device lease, active binding generation, and fresh Matrix membership and send power for one message. The server derives the destination from the binding and rechecks authority after observing Matrix. This short-lived proof grants delivery only, never starting or continuing work. Pool Agents require a separate authorization contract. A definitive owner or puppet membership loss commits a binding-generation fence before denial; restored membership cannot revive the old binding.",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success; returned state is authoritative.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "authorization": {
+                      "$ref": "#/components/schemas/AgentMessageAuthorization"
+                    }
+                  },
+                  "required": [
+                    "authorization"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid arguments or unsupported operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong bearer kind, expired/revoked authorization, ownership/membership/admin denial, or invalid native origin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found or hidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale revision, reused idempotency key, generation/epoch fence, or conflicting state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency/database/AS readiness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request rejected by Salvo size limiter (131072 bytes); body is framework-defined."
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentMessage"
+              }
+            }
+          }
+        },
+        "x-source": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "anchors": [
+            "\"/hagency/api/v1/execution/messages/authorize\" =>",
+            "req.method() != salvo::http::Method::POST"
+          ]
+        }
+      }
+    },
     "/hagency/api/v1/execution/events/finish": {
       "post": {
         "operationId": "finishExecution",
@@ -5897,13 +6001,26 @@
       "get": {
         "operationId": "discoverPublicAgents",
         "summary": "Discover public Agent services",
-        "description": "Authenticated public catalog. Device, owner-direct Room and internal owner identifiers are never exposed. At most 256 rows ordered by Agent ID.",
+        "description": "Authenticated public catalog. Device, owner-direct Room and internal owner identifiers are never exposed. Returns at most 256 rows per page ordered by Agent ID. Follow nextAfter as the next request's after cursor until it is null; concurrent catalog changes can affect later pages.",
         "security": [
           {
             "userBearer": []
           }
         ],
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "description": "Exclusive Agent ID cursor returned as nextAfter by the previous page. Omit for the first page. Duplicate or unknown query parameters are rejected.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success; returned state is authoritative.",
@@ -5916,13 +6033,31 @@
                       "type": "array",
                       "items": {
                         "$ref": "#/components/schemas/DiscoverableAgent"
-                      }
+                      },
+                      "maxItems": 256
+                    },
+                    "nextAfter": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "pattern": "^[A-Za-z0-9_-]+$",
+                      "description": "Pass this cursor as after to continue; null means this is the final page."
                     }
                   },
                   "required": [
-                    "agents"
+                    "agents",
+                    "nextAfter"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "examples": [
+                    {
+                      "agents": [],
+                      "nextAfter": null
+                    }
+                  ]
                 }
               }
             }
@@ -5985,7 +6120,8 @@
           "file": "crates/agent-service/src/api.rs",
           "anchors": [
             "path == \"/hagency/api/v1/agents/discover\"",
-            "method == salvo::http::Method::GET"
+            "method == salvo::http::Method::GET",
+            "json!({\"agents\":agents,\"nextAfter\":next_after})"
           ]
         }
       }
@@ -11230,7 +11366,7 @@
       "get": {
         "operationId": "syncAgentCryptoOwnerReceive",
         "summary": "getAgentCryptoWhoami",
-        "description": "Receive only to-device crypto updates for the exact Agent device. Broker fixes timeout=0, offline presence and an empty-room/presence/account-data filter. Arbitrary filter, identity and token query parameters are rejected. The upstream response is limited to 1 MiB. The broker strips room, presence and account-data sections before sending only the validated crypto mailbox. No execution/admission/ACK grant.",
+        "description": "Receive only to-device crypto updates for the exact Agent device. Broker fixes timeout=0, offline presence and an empty-room/presence/account-data filter. Arbitrary filter, identity and token query parameters are rejected. The broker's local raw upstream response budget is 9 MiB, allowing the reviewed homeserver's 8 MiB JSON ingress plus crypto metadata; this is not a Matrix protocol limit. If exceeded, the complete response fails without releasing a next_batch cursor. The broker strips room, presence and account-data sections before sending only the validated crypto mailbox. No execution/admission/ACK grant.",
         "security": [
           {
             "deviceBearer": []
@@ -18195,9 +18331,7 @@
           }
         },
         "required": [
-          "agentId",
-          "cursor",
-          "snapshot"
+          "agentId"
         ],
         "additionalProperties": false,
         "x-rust-dto": {
@@ -19919,10 +20053,7 @@
         "required": [
           "idempotencyKey",
           "expectedVersion",
-          "state",
-          "expectedSequence",
-          "before",
-          "after"
+          "state"
         ],
         "additionalProperties": false,
         "x-rust-dto": {
@@ -20622,7 +20753,6 @@
         "required": [
           "id",
           "title",
-          "wipLimit",
           "isDone"
         ],
         "additionalProperties": false,
@@ -21087,7 +21217,6 @@
         },
         "required": [
           "filename",
-          "caption",
           "bytes",
           "sha256"
         ],
@@ -21648,7 +21777,6 @@
           }
         },
         "required": [
-          "threadRoot",
           "mentionedMxids"
         ],
         "additionalProperties": false,
@@ -22197,6 +22325,98 @@
           ],
           "strictInput": true
         }
+      },
+      "AgentMessage": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "$ref": "#/components/schemas/LeaseRef"
+          },
+          "bindingId": {
+            "type": "string"
+          },
+          "bindingGeneration": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "lease",
+          "bindingId",
+          "bindingGeneration"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/api_transport.rs",
+          "name": "AgentMessage",
+          "serializedFields": [
+            "lease",
+            "binding_id",
+            "binding_generation"
+          ],
+          "strictInput": true
+        }
+      },
+      "AgentMessageAuthorization": {
+        "type": "object",
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "bindingId": {
+            "type": "string"
+          },
+          "bindingGeneration": {
+            "type": "integer"
+          },
+          "roomId": {
+            "type": "string"
+          },
+          "puppetMxid": {
+            "type": "string"
+          },
+          "encrypted": {
+            "type": "boolean"
+          },
+          "leaseEpoch": {
+            "type": "integer"
+          },
+          "deviceGeneration": {
+            "type": "integer"
+          },
+          "validUntilMs": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agentId",
+          "bindingId",
+          "bindingGeneration",
+          "roomId",
+          "puppetMxid",
+          "encrypted",
+          "leaseEpoch",
+          "deviceGeneration",
+          "validUntilMs"
+        ],
+        "additionalProperties": false,
+        "x-rust-dto": {
+          "file": "crates/agent-service/src/transport.rs",
+          "name": "AgentMessageAuthorization",
+          "serializedFields": [
+            "agent_id",
+            "binding_id",
+            "binding_generation",
+            "room_id",
+            "puppet_mxid",
+            "encrypted",
+            "lease_epoch",
+            "device_generation",
+            "valid_until_ms"
+          ],
+          "strictInput": false
+        }
       }
     },
     "securitySchemes": {
@@ -22215,27 +22435,27 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "aea26f60ea4250dbdcb49331141ec8ffbd37d46b02d69d157a6d826775886fdc",
-    "crates/agent-service/src/api_transport.rs": "f1edd833398d6d3e2c1d72f9618faea40d789e6d408896580a3c7a34be4e7b02",
-    "crates/agent-service/src/transport_history.rs": "839283ce0e2dde651652cce7239099069b008fd63ed12aa1febde66c8068ba4d",
+    "crates/agent-service/src/api.rs": "513091f96c35b144e02caee23f3d9072a9d2401e5d8494d89c7f6804f35e36e3",
+    "crates/agent-service/src/api_transport.rs": "6ae8f015419f7d02db2e1dc252e27c24659beab94658264195cff8046c84ddf7",
+    "crates/agent-service/src/transport_history.rs": "1d61b13ea345751e23d7d9078acb5c389d1fc8e71a827a25db9ebfb3c389266e",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
     "crates/agent-service/src/api_project_board.rs": "315e3c9359438a28c04694b68d9619f281c1b3fcdabc557d4a6971373110cc47",
-    "crates/agent-service/src/agent_crypto.rs": "2f74ef9465ac627a727d142e9ebffbe9af2ad39eef08117b97434bf7e11ad975",
-    "crates/agent-service/src/matrix_crypto.rs": "f234c8707661c31d1265cc8c29621452abe0d4802f0361f1f81a023d89677f47",
-    "crates/agent-service/src/agent_crypto_receive.rs": "ab953385061b318dbefca41c01203b240c40fa9dcfd763f5e3984ee450605850",
-    "crates/agent-service/src/transport_ciphertexts.rs": "c3db5bd5d59da1f5b42302d3b623bd19633ebdd87295dc7c860ad472bb751224",
-    "crates/agent-service/src/ciphertext_schema.sql": "ea43c360e60a316d3cd15e16494bee1b5c60f5482b4d0ad9bbe0883c2f07ad29",
-    "crates/agent-service/src/workers.rs": "5649fe94f93a0a9b266ae7c42594e62f9b5e380c39dc799908780c1db9b80fc2",
-    "crates/agent-service/src/encrypted_dispatches.rs": "2fc78608661e2d4729c578546fbbf2c831dde442b7d5bbd39a4039be844d0b5e",
-    "crates/agent-service/src/encrypted_dispatches_schema.sql": "73c338d99a17eb64e2173c6fdb7246962039d5e7229e03345bad14237852427d",
-    "crates/agent-service/src/transport.rs": "fc4e980e1dfa39948399a5d97f45fd62d16076d4972b0f0b8fdd8f4cb08a129c",
-    "crates/agent-service/src/encrypted_execution.rs": "404f3bffd0a202fdaefb0aff4c80201806673bf019babbecfad287eafbce63cc",
-    "crates/agent-service/src/encrypted_execution_schema.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
-    "crates/agent-service/src/owner_direct.rs": "dc6cd49f41d5cab901249a217704e6b0afd6f5186f7cc1b3c1eb64e8ec1d3218",
-    "crates/agent-service/src/domain.rs": "d636c937f96922873c5dbf254e1eac3b0c87a02ffa101143f9c6ea44028affa9",
-    "crates/agent-service/src/matrix_client.rs": "91419bcee1691a323d06bed8cef393c2eba112efbbb4c4df0c743746f72f3be2",
+    "crates/agent-service/src/agent_crypto.rs": "570114a1eca17e05869318b6d1bc2bafe8fc172a551754029adb324bf1e8b7a6",
+    "crates/agent-service/src/matrix_crypto.rs": "daea874101980a7bea72d86d31bd59e101d9b0c1ce1079f449db19502c8ebadb",
+    "crates/agent-service/src/agent_crypto_receive.rs": "3cc274036e5efdb36e5a2c99c9a434bf2570929538f88f5a78b1323138701ae3",
+    "crates/agent-service/src/transport_ciphertexts.rs": "a1d8a3210e4c399d41a827138e6530ce287caf593e83fa7c1737f169af26c1d9",
+    "crates/agent-service/migrations/transport/2026-11-19-000403_ciphertext/up.sql": "60f27f6e6d6dac8920627b308ac821525e50fb8af7ff9657bf0793c4e83e9e55",
+    "crates/agent-service/src/workers.rs": "cc1c1f6c9484f0cb6e72f079fcaa8ab02c53d0fde9bf2b3e35a5e5605eff6582",
+    "crates/agent-service/src/encrypted_dispatches.rs": "2ee988178d38df5e86208abcf8d17f6d2d81b14128a21ed5db208bee954640cb",
+    "crates/agent-service/migrations/transport/2026-11-19-000404_encrypted_dispatches/up.sql": "10680dabf305c284e4051e0f2da2575fdc52b48350753e410c1a4c9ea3f0b177",
+    "crates/agent-service/src/transport.rs": "dc894c8647cee4703316ba2ce2a48d9bdb0b41807a600cc192f81f566971b728",
+    "crates/agent-service/src/encrypted_execution.rs": "680006eb1e664ca7a0212b5383ba09c2e37f53ab5e53025683d646547cd7597b",
+    "crates/agent-service/migrations/transport/2026-11-19-000405_encrypted_execution/up.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
+    "crates/agent-service/src/owner_direct.rs": "8b00c34274b1cc100c347cb46f96fd88dbee9f1611aa6eedfe3501dc31bf58fa",
+    "crates/agent-service/src/domain.rs": "b9ded60d036b8b0843d542df909590c708f71a4f103e8fcb59889a4ff3524ae9",
+    "crates/agent-service/src/matrix_client.rs": "42ef7077279779a678141db8a3333f91286eb586afeb59574fcc3e00bb194533",
     "crates/agent-service/src/worker_runtime.rs": "7e1de44fa9d7635bfb24a68659a687345573698799f85e418c77eb6c9e1abebe",
-    "crates/agent-service/src/transport_e2ee.rs": "ef9c470ee9c12b188a9ed781f5fdf5739e8aa2cb39d7f45d8da40d171949fedf"
+    "crates/agent-service/src/transport_e2ee.rs": "4a50ca66bf006dc9b2c6a08e671ebc22107aa17a185881f31d41a1cff4e8e13e"
   },
   "x-not-implemented": [
     "POST /hagency/api/v1/projects (create Matrix Space)",

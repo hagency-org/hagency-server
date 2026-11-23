@@ -422,7 +422,7 @@ fn UserCreate() -> Element {
 #[component]
 fn UserShow(user_id: String) -> Element {
     rsx! {
-        pages::users::show::UserShow { user_id }
+        pages::users::show::UserShow { key: "{user_id}", user_id }
     }
 }
 
@@ -436,7 +436,7 @@ fn KnownUserList() -> Element {
 #[component]
 fn KnownUserShow(user_id: String) -> Element {
     rsx! {
-        pages::users::known_show::KnownUserShow { user_id }
+        pages::users::known_show::KnownUserShow { key: "{user_id}", user_id }
     }
 }
 
@@ -450,7 +450,7 @@ fn RoomList() -> Element {
 #[component]
 fn RoomShow(room_id: String) -> Element {
     rsx! {
-        pages::rooms::show::RoomShow { room_id }
+        pages::rooms::show::RoomShow { key: "{room_id}", room_id }
     }
 }
 
@@ -471,7 +471,7 @@ fn ReportList() -> Element {
 #[component]
 fn ReportShow(report_id: String) -> Element {
     rsx! {
-        pages::reports::ReportShow { report_id }
+        pages::reports::ReportShow { key: "{report_id}", report_id }
     }
 }
 
@@ -485,7 +485,7 @@ fn DestinationList() -> Element {
 #[component]
 fn DestinationShow(destination_id: String) -> Element {
     rsx! {
-        pages::destinations::DestinationShow { destination_id }
+        pages::destinations::DestinationShow { key: "{destination_id}", destination_id }
     }
 }
 
@@ -552,7 +552,7 @@ fn PasionAccounts() -> Element {
 
 #[component]
 fn PasionAccountShow(user_id: String) -> Element {
-    rsx! { pages::pasion::account_show::PasionAccountShowPage { user_id } }
+    rsx! { pages::pasion::account_show::PasionAccountShowPage { key: "{user_id}", user_id } }
 }
 
 #[component]

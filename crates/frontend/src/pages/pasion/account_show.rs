@@ -104,13 +104,47 @@ pub fn PasionAccountShowPage(user_id: String) -> Element {
     }));
 
     let mut user_res = use_resource(move || async move { pasion::pasion_get_user(&id()).await });
-    let mut emails_res =
-        use_resource(move || async move { pasion::pasion_get_user_emails(Some(&id())).await });
-    let mut browser_res = use_resource(move || async move {
-        pasion::pasion_get_browser_sessions(Some(&id()), true).await
+    let email_cursors = use_signal(Vec::<Option<String>>::new);
+    let mut email_next = use_signal(|| None::<String>);
+    let browser_cursors = use_signal(Vec::<Option<String>>::new);
+    let mut browser_next = use_signal(|| None::<String>);
+    let oauth_cursors = use_signal(Vec::<Option<String>>::new);
+    let mut oauth_next = use_signal(|| None::<String>);
+    let mut emails_res = use_resource(move || {
+        let user = id();
+        let after = email_cursors().last().cloned().flatten();
+        async move {
+            pasion::pasion_get_user_emails(Some(&user), after.as_deref())
+                .await
+                .map(|page| {
+                    email_next.set(page.next_cursor);
+                    page.data
+                })
+        }
     });
-    let mut oauth_res = use_resource(move || async move {
-        pasion::pasion_get_active_oauth2_sessions_for_user(&id()).await
+    let mut browser_res = use_resource(move || {
+        let user = id();
+        let after = browser_cursors().last().cloned().flatten();
+        async move {
+            pasion::pasion_get_browser_sessions(Some(&user), true, after.as_deref())
+                .await
+                .map(|page| {
+                    browser_next.set(page.next_cursor);
+                    page.data
+                })
+        }
+    });
+    let mut oauth_res = use_resource(move || {
+        let user = id();
+        let after = oauth_cursors().last().cloned().flatten();
+        async move {
+            pasion::pasion_get_active_oauth2_sessions_for_user(&user, after.as_deref())
+                .await
+                .map(|page| {
+                    oauth_next.set(page.next_cursor);
+                    page.data
+                })
+        }
     });
 
     let mut pending = use_signal(|| Option::<PendingAction>::None);
@@ -412,7 +446,7 @@ pub fn PasionAccountShowPage(user_id: String) -> Element {
                         CardDescription { "Display name is synced to the homeserver." }
                     }
                     CardContent { class: "space-y-4".to_string(),
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { r#for: "pasion-display-name", "Display name" }
                             Input {
                                 id: "pasion-display-name".to_string(),
@@ -421,7 +455,7 @@ pub fn PasionAccountShowPage(user_id: String) -> Element {
                                 oninput: move |evt: FormEvent| display_name.set(evt.value()),
                             }
                         }
-                        div { class: "space-y-2",
+                        crate::components::ui::input::Field { class: "space-y-2",
                             Label { r#for: "pasion-locale", "Preferred locale" }
                             Input {
                                 id: "pasion-locale".to_string(),
@@ -602,6 +636,7 @@ pub fn PasionAccountShowPage(user_id: String) -> Element {
                         CardDescription { "Used for sign-in, notifications and self-service account recovery." }
                     }
                     CardContent { class: "space-y-4".to_string(),
+                        crate::components::ui::pagination::CursorPagination { cursors: email_cursors, next_cursor: email_next(), loading: !emails_res.finished() }
                         match &*emails_res.read() {
                             Some(Ok(emails)) if emails.is_empty() => rsx! {
                                 p { class: "text-sm text-muted-foreground", "No email addresses." }
@@ -692,6 +727,7 @@ pub fn PasionAccountShowPage(user_id: String) -> Element {
                 CardContent { class: "space-y-6".to_string(),
                     div { class: "space-y-2",
                         h3 { class: "text-sm font-medium", "Browser sessions" }
+                        crate::components::ui::pagination::CursorPagination { cursors: browser_cursors, next_cursor: browser_next(), loading: !browser_res.finished() }
                         match &*browser_res.read() {
                             Some(Ok(sessions)) => rsx! {
                                 div { class: "rounded-md border",
@@ -747,6 +783,7 @@ pub fn PasionAccountShowPage(user_id: String) -> Element {
                     }
                     div { class: "space-y-2",
                         h3 { class: "text-sm font-medium", "Client sessions" }
+                        crate::components::ui::pagination::CursorPagination { cursors: oauth_cursors, next_cursor: oauth_next(), loading: !oauth_res.finished() }
                         match &*oauth_res.read() {
                             Some(Ok(sessions)) => rsx! {
                                 div { class: "rounded-md border",

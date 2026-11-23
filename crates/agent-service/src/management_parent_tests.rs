@@ -698,10 +698,10 @@ async fn v4_parent_migration_is_atomic_and_preserves_native_grant_evidence() {
         let policy = ManagementPolicy::new(owner.p.mxid.clone(), "example.test").unwrap().with_project_reservations(true).with_parent_settlement(true);
         let mut db = AsyncPgConnection::establish(url.as_str()).await.unwrap();
         for schema in [
-            include_str!("management_schema.sql"),
-            include_str!("management_verification_schema.sql"),
-            include_str!("management_projects_schema.sql"),
-            include_str!("management_allocations_schema.sql"),
+            include_str!("../migrations/domain/2026-11-19-000104_management/up.sql"),
+            include_str!("../migrations/domain/2026-11-19-000105_management_verification/up.sql"),
+            include_str!("../migrations/domain/2026-11-19-000106_management_projects/up.sql"),
+            include_str!("../migrations/domain/2026-11-19-000107_management_allocations/up.sql"),
         ] {
             db.batch_execute(schema).await.unwrap();
         }

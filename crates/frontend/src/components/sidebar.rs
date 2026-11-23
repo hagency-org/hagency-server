@@ -92,6 +92,8 @@ pub fn AppSidebar(collapsed: Signal<bool>, mobile_open: Signal<bool>) -> Element
                                 let title = item.title.clone();
                                 rsx! {
                                     button {
+                                        aria_label: title.clone(),
+                                        title: title.clone(),
                                         class: "sidebar-nav-button flex w-full items-center gap-3 py-2 text-sm font-medium transition-colors {nav_item_layout_class} {active_class}",
                                         onclick: move |_| {
                                             mobile_open.set(false);

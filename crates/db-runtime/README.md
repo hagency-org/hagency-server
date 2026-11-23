@@ -26,20 +26,33 @@ that per-pool size and must be a positive integer. The independent board pool ha
 against PostgreSQL's limit, plus dedicated infrastructure sessions.
 
 The membership controller intentionally retains a dedicated unpooled session for
-its leadership advisory lock. Crypto operations retain a separate serialized
-session while their bounded HTTP authorization fence holds real rows. These do not
-use business pool slots. Startup upgrades also use their own session, retain the
-existing locks/version checks and execute the existing SQL files. Board migration
+its leadership advisory lock. Agent crypto reserves the affected authorization
+records in a short transaction, then returns the connection before Matrix HTTP.
+Authorization writers retry an active reservation outside the pool. Shared device
+issuance rechecks the claim and authorization after Matrix login. Startup runs the Agent, board, transport and inbox upgrades as embedded Diesel
+migrations on a dedicated startup connection. A transaction-scoped advisory lock
+serializes all replicas before Diesel reads its migration ledger. Deployment identity
+checks, schema upgrades, data backfills and migration receipts commit atomically
+for each component. Board migration
 statements use a 120-second timeout with a 30-second lock timeout, independently of
 request deadlines.
 
-No schema or data rewrite is required by this change. Existing IDs, token hashes,
+Startup installs crypto reservations and backfills pending inbox capacity from
+existing routing jobs. Existing IDs, token hashes,
 task versions, idempotency receipts, outbox states, ciphertext and attachment
 storage remain in their current tables. The existing v6-to-v7 board migration
 still backfills attachment metadata and removes already-deleted blob payloads;
 the new populated-legacy-database regression verifies that behavior and idempotent
 reopening. Do not replace deployed schemas with a fresh database or mark old
 migrations as applied without running them.
+
+Each component in `crates/agent-service/migrations/` has its own embedded migration
+set. Use a new, globally unique timestamp for each change. The initial adoption
+migrations consult the deployed schema markers so populated pre-Diesel installations
+run only the historical steps they still need. Subsequent starts use
+`__diesel_schema_migrations`. Forward-only migrations preserve the pre-upgrade
+backup as the recovery path. The embedded Palpo and Pasion libraries each run their
+own embedded Diesel migrations on their respective databases.
 
 Generate/check Rust definitions from the real startup/upgrade chain in a disposable
 database (never a deployment database):

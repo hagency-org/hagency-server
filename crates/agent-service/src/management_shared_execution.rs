@@ -1,4 +1,6 @@
 //! Versioned shared process/activity authority; personal execution stays separate.
+#[path = "management_room_allowances.rs"]
+mod room_allowances;
 #[path = "management_shared_tickets.rs"]
 mod tickets;
 use super::*;
@@ -476,8 +478,7 @@ impl DomainStore {
         if let Some(id) = &input.after {
             key(id)?;
         }
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async|db:&mut AsyncPgConnection| {
             Self::authorize(db,p,0).await?;let now=clock(db).await?;let (device,generation)=device(p)?;sweep(db,p,now).await?;
             // A healthy qualified process has its own activity/work channel;
             // returning it here shadows new agents and needlessly rotates its
@@ -557,9 +558,8 @@ impl DomainStore {
         if let Some(v) = &input.observation_id {
             key(v)?;
         }
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, 0).await?;
                 let r = runtime(db, id).await?;
                 owner(&original(db, &r).await?, p)?;
@@ -588,8 +588,7 @@ impl DomainStore {
     ) -> Result<SharedRuntimeAcknowledgement> {
         enabled(policy)?;
         key(id)?;
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async|db:&mut AsyncPgConnection| {
             Self::authorize(db,p,0).await?;let r=runtime(db,id).await?;let w=original(db,&r).await?;owner(&w,p)?;let original=original_command(&r,&self.server)?;input.receipt.validate_for(&original)?;let c=command(&r,&self.server)?;
             let now=clock(db).await?;
             if input.command_digest!=r.digest {return Err(Error::Conflict("shared_result_ticket_changed"));}
@@ -658,9 +657,8 @@ impl DomainStore {
             return Err(Error::Unavailable("shared_execution_issuance_unavailable"));
         }
         let m = {
-            let mut guard = self.db.lock().await?;
-            (*guard)
-                .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+            self.db
+                .write_transaction(async |db: &mut AsyncPgConnection| {
                     Self::authorize(db, p, 0).await?;
                     let r = runtime(db, &input.authority.runtime_command_id).await?;
                     protocol.check(&r)?;
@@ -685,8 +683,7 @@ impl DomainStore {
                 &m.puppet_mxid,
             )
             .await?;
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async|db:&mut AsyncPgConnection| {
             Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_successor_issuance_unavailable"));}let w=original(db,&r).await?;let c=command(&r,&self.server)?;let now=clock(db).await?;
             check_activity(db,p,&r,&w,&c,&input,now).await?;facts(&membership(db,&r).await?,&f)?;
             if r.last_renewal_id.as_deref()==Some(&input.renewal_id)&&r.last_renewal_epoch==Some(input.authority.epoch) {return activity(&r,input.authority.token);}
@@ -707,8 +704,7 @@ impl DomainStore {
     ) -> Result<Option<SharedExecutionStatus>> {
         enabled(policy)?;
         key(request)?;
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async|db:&mut AsyncPgConnection| {
             Self::authorize(db,p,0).await?;let request=super::super::row(db,request).await?;
             super::super::visible(db,&request,p).await?;
             let id=sql_query("SELECT r.id FROM hagency_agent_v1.management_shared_runtimes r JOIN hagency_agent_v1.management_shared_assignments a ON a.id=r.assignment_id WHERE a.request_id=$1 AND NOT r.issuance_void ORDER BY coalesce((r.payload::jsonb->>'processAttempt')::bigint,1) DESC LIMIT 1").bind::<Text,_>(&request.id).get_result::<Id>(db).await.optional()?;

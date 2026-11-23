@@ -1,11 +1,9 @@
 //! Recurring approvals are durable executor commands. Central state describes
 //! native authorization; it never fabricates a reservation or resets usage.
 use super::*;
-use crate::{
-    management_agent_executor_types::*,
-    management_pool_types::*,
-    recurring_quota::{Calendar, Period, RenewalMode},
-};
+use crate::management_agent_executor_types::*;
+use crate::management_pool_types::*;
+use crate::recurring_quota::{Calendar, Period, RenewalMode};
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,7 +104,7 @@ pub(super) async fn projection(
         Err(e) => return Err(e),
     };
     let consumed = known(db, &r.id, &period).await?;
-    let unsettled=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes x ON x.id=w.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=x.assignment_id WHERE a.request_id=$1 AND w.created_at_ms>=$2 AND w.created_at_ms<$3 AND NOT w.usage_complete AND w.state<>'cancelled' AND x.state<>'stopped') AS matched").bind::<Text,_>(&r.id).bind::<BigInt,_>(period.start_ms as i64).bind::<BigInt,_>(period.end_ms as i64).get_result::<Flag>(db).await?.matched;
+    let unsettled=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes x ON x.id=w.runtime_id JOIN hagency_agent_v1.management_shared_assignments a ON a.id=x.assignment_id WHERE a.request_id=$1 AND w.created_at_ms>=$2 AND w.created_at_ms<$3 AND NOT w.usage_complete AND (w.state<>'cancelled' OR w.started_at_ms IS NOT NULL)) AS matched").bind::<Text,_>(&r.id).bind::<BigInt,_>(period.start_ms as i64).bind::<BigInt,_>(period.end_ms as i64).get_result::<Flag>(db).await?.matched;
     let new_period = original
         .as_ref()
         .and_then(|c| c.pool_grant.as_ref())
@@ -342,9 +340,8 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 let r = row(db, id).await?;
@@ -430,8 +427,7 @@ impl DomainStore {
         key(&input.command_id)?;
         device(p)?;
         let payload = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let old=row(db,id).await?;
             if old.administrator_user_id!=p.user_id {return Err(Error::Unauthorized("pool_resource_owner_required"))}
@@ -466,18 +462,11 @@ impl DomainStore {
 #[cfg(test)]
 impl DomainStore {
     pub(crate) async fn reset_management_test_clock(&self) -> Result<()> {
-        let mut db = self.db.lock().await?;
-        sql_query("SELECT set_config('hagency.test_clock_ms','',false)")
-            .execute(&mut *db)
-            .await?;
+        self.db.set_test_clock(0);
         Ok(())
     }
     pub(crate) async fn set_management_test_clock(&self, now: i64) -> Result<()> {
-        let mut db = self.db.lock().await?;
-        sql_query("SELECT set_config('hagency.test_clock_ms',$1,false)")
-            .bind::<Text, _>(now.to_string())
-            .execute(&mut *db)
-            .await?;
+        self.db.set_test_clock(now);
         Ok(())
     }
 }

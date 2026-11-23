@@ -1,8 +1,13 @@
 //! Exact bounded management routes, authenticated with the existing device grant.
-use crate::{Error, Result, domain::DomainStore, management_types::*, store::Store};
-use salvo::{http::Method, prelude::*};
+use salvo::http::Method;
+use salvo::prelude::*;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+
+use crate::domain::DomainStore;
+use crate::management_types::*;
+use crate::store::Store;
+use crate::{Error, Result};
 mod agents;
 mod budget;
 mod budget_execution;
@@ -43,6 +48,8 @@ pub(crate) async fn call(
     let p = store
         .authenticate(credential, crate::api::now_ms(), true)
         .await?;
+    let policy = policy.resolve().await?;
+    let policy = policy.as_ref();
     let parts = suffix.split('/').collect::<Vec<_>>();
     if req.method() == Method::POST
         && let Some(required) = crate::domain::shared_protocol::worker_route(&parts)
@@ -66,7 +73,9 @@ pub(crate) async fn call(
         Box::pin(session::call(req, domain, policy, &p, gateway, &parts)).await?
     {
         value
-    } else if let Some(value) = Box::pin(pools::call(req, domain, policy, &p, &parts)).await? {
+    } else if let Some(value) =
+        Box::pin(pools::call(req, domain, policy, &p, gateway, &parts)).await?
+    {
         value
     } else if let Some(value) = Box::pin(shared::call(
         req, domain, policy, &p, gateway, &parts, matrix,

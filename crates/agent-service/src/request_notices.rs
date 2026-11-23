@@ -1,9 +1,10 @@
 //! Durable per-request feedback. Does not consume model quota, start/replay work,
 //! or require the executing device to be online. Fresh Matrix authority still applies.
-use super::*;
 use diesel::{BoolExpressionMethods, ExpressionMethods, IntoSql, QueryDsl};
 
-const SELECT: &str = "SELECT n.id,n.owner_event_id,n.kind,n.matrix_txn_id,n.state,n.worker_token,e.binding_id,e.requester_mxid,e.event_id,e.thread_root,e.binding_generation,coalesce(d.name,'') AS device_name,CASE WHEN a.execution_device_id IS NULL THEN 'unassigned' WHEN d.id IS NULL OR d.revoked OR s.revoked OR s.valid_until_ms<=(extract(epoch from clock_timestamp())*1000)::bigint THEN 'offline' WHEN l.expires_at_ms>(extract(epoch from clock_timestamp())*1000)::bigint AND l.device_generation=d.generation THEN 'ready' WHEN p.device_generation=d.generation AND p.last_seen_at_ms BETWEEN (extract(epoch from clock_timestamp())*1000)::bigint-15000 AND (extract(epoch from clock_timestamp())*1000)::bigint THEN 'not_running' WHEN p.device_generation=d.generation AND p.last_seen_at_ms IS NOT NULL THEN 'offline' ELSE 'unobserved' END AS device_state FROM hagency_agent_v1.request_notice_outbox n JOIN hagency_agent_v1.owner_events e ON e.id=n.owner_event_id JOIN hagency_agent_v1.agents a ON a.id=e.agent_id LEFT JOIN hagency_agent_v1.devices d ON d.id=a.execution_device_id AND d.user_id=e.owner_user_id LEFT JOIN hagency_agent_v1.sessions s ON s.id=d.session_id AND s.user_id=e.owner_user_id LEFT JOIN hagency_agent_v1.configuration_presence p ON p.device_id=d.id LEFT JOIN hagency_agent_v1.execution_leases l ON l.agent_id=a.id AND l.device_id=d.id";
+use super::*;
+
+const SELECT: &str = "SELECT n.id,n.owner_event_id,n.kind,n.matrix_txn_id,n.state,n.worker_token,n.content,e.binding_id,e.requester_mxid,e.event_id,e.thread_root,e.binding_generation,coalesce(d.name,'') AS device_name,CASE WHEN a.execution_device_id IS NULL THEN 'unassigned' WHEN d.id IS NULL OR d.revoked OR s.revoked OR s.valid_until_ms<=(extract(epoch from clock_timestamp())*1000)::bigint THEN 'offline' WHEN l.expires_at_ms>(extract(epoch from clock_timestamp())*1000)::bigint AND l.device_generation=d.generation THEN 'ready' WHEN p.device_generation=d.generation AND p.last_seen_at_ms BETWEEN (extract(epoch from clock_timestamp())*1000)::bigint-15000 AND (extract(epoch from clock_timestamp())*1000)::bigint THEN 'not_running' WHEN p.device_generation=d.generation AND p.last_seen_at_ms IS NOT NULL THEN 'offline' ELSE 'unobserved' END AS device_state FROM hagency_agent_v1.request_notice_outbox n JOIN hagency_agent_v1.owner_events e ON e.id=n.owner_event_id JOIN hagency_agent_v1.agents a ON a.id=e.agent_id LEFT JOIN hagency_agent_v1.devices d ON d.id=a.execution_device_id AND d.user_id=e.owner_user_id LEFT JOIN hagency_agent_v1.sessions s ON s.id=d.session_id AND s.user_id=e.owner_user_id LEFT JOIN hagency_agent_v1.configuration_presence p ON p.device_id=d.id LEFT JOIN hagency_agent_v1.execution_leases l ON l.agent_id=a.id AND l.device_id=d.id";
 
 #[cfg(test)]
 pub(crate) fn body(kind: &str) -> &'static str {
@@ -59,6 +60,8 @@ pub(crate) struct RequestNotice {
     pub state: String,
     #[diesel(sql_type=Nullable<Text>)]
     pub worker_token: Option<String>,
+    #[diesel(sql_type=Nullable<Text>)]
+    pub content: Option<String>,
     #[diesel(sql_type=Text)]
     pub binding_id: String,
     #[diesel(sql_type=Text)]
@@ -80,19 +83,26 @@ impl TransportStore {
         cursor: &str,
         now: i64,
     ) -> Result<Vec<RequestNotice>> {
-        self.db.with_connection(async |db| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
 
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?;
             let now=Self::clock(db,now).await?;
-            // A circular scan bounds maintenance and cannot be pinned by one Room.
-            sql_query("INSERT INTO hagency_agent_v1.request_notice_outbox(id,owner_event_id,kind,matrix_txn_id,state) SELECT 'status_'||v.owner_event_id||'_'||v.kind,v.owner_event_id,v.kind,'hg-status-'||v.owner_event_id||'-'||v.kind,'pending' FROM hagency_agent_v1.request_notice_needed v JOIN hagency_agent_v1.bindings b ON b.id=v.binding_id WHERE v.kind IS NOT NULL AND b.state='active' AND b.generation=v.binding_generation AND NOT b.admin_project_paused AND NOT b.admin_room_paused AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.request_notice_outbox n WHERE n.owner_event_id=v.owner_event_id AND n.kind=v.kind) ORDER BY (('status_'||v.owner_event_id||'_'||v.kind)<=$1),v.owner_event_id LIMIT 20 ON CONFLICT DO NOTHING")
-                .bind::<Text,_>(cursor).execute(db).await?;
+            // The derived view evaluates age on the database clock. A faster
+            // API host must not consume a scheduled row before that view is due.
+            let schedule_now=sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now_ms").get_result::<Clock>(db).await?.now_ms;
+            #[derive(diesel::QueryableByName)]
+            struct Candidate {#[diesel(sql_type=Text)] id:String}
+            let due=sql_query("SELECT owner_event_id AS id FROM hagency_agent_v1.request_notice_candidates WHERE next_check_ms<=$1 ORDER BY next_check_ms,owner_event_id LIMIT 64 FOR UPDATE").bind::<BigInt,_>(schedule_now).load::<Candidate>(db).await?;
+            for candidate in due {
+                sql_query("INSERT INTO hagency_agent_v1.request_notice_outbox(id,owner_event_id,kind,matrix_txn_id,state) SELECT 'status_'||v.owner_event_id||'_'||v.kind,v.owner_event_id,v.kind,'hg-status-'||v.owner_event_id||'-'||v.kind,'pending' FROM hagency_agent_v1.request_notice_needed v WHERE v.owner_event_id=$1 AND v.kind IS NOT NULL ON CONFLICT DO NOTHING").bind::<Text,_>(&candidate.id).execute(db).await?;
+                sql_query("DELETE FROM hagency_agent_v1.request_notice_candidates WHERE owner_event_id=$1").bind::<Text,_>(&candidate.id).execute(db).await?;
+                // A state transition can happen before its age threshold. Keep
+                // that one future deadline, without rescanning terminal history.
+                sql_query("INSERT INTO hagency_agent_v1.request_notice_candidates SELECT $1,hagency_agent_v1.request_notice_next_check($1) WHERE hagency_agent_v1.request_notice_next_check($1)>$2 ON CONFLICT DO NOTHING").bind::<Text,_>(&candidate.id).bind::<BigInt,_>(schedule_now).execute(db).await?;
+            }
             sql_query("UPDATE hagency_agent_v1.request_notice_outbox n SET state='cancelled' WHERE n.state IN ('pending','sending','unknown') AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.request_notice_needed v JOIN hagency_agent_v1.bindings b ON b.id=v.binding_id WHERE v.owner_event_id=n.owner_event_id AND v.kind=n.kind AND b.state='active' AND b.generation=v.binding_generation AND NOT b.admin_project_paused AND NOT b.admin_room_paused)").execute(db).await?;
             Ok(sql_query(format!("{SELECT} WHERE n.state IN ('pending','unknown','sending') AND n.worker_until_ms<=$1 ORDER BY (n.id<=$2),n.id LIMIT 20"))
                 .bind::<BigInt,_>(now).bind::<Text,_>(cursor).load(db).await?)
         }).await
-    }).await
     }
     #[cfg(test)]
     pub(crate) async fn claim_request_notice(
@@ -110,10 +120,7 @@ impl TransportStore {
         now: i64,
         gate: Option<&crate::worker_runtime::ClaimGate>,
     ) -> Result<RequestNotice> {
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::lock(db).await?;
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             {
                 use crate::schema::agent_tables::request_notice_outbox as q;
                 let params = (id,);
@@ -166,9 +173,12 @@ impl TransportStore {
                     .await
             }?;
             if claimed==0 {return Ok(None);}
+            let mut content=crate::workers::request_notice_content(scope.space_id.is_empty(),&scope.room_id,&n.thread_root,&n.event_id,body_for(&n.kind,&n.device_state));
+            content["org.hagency.request_notice"]=serde_json::json!({"version":1,"kind":n.kind,"requestEventId":n.event_id,"deviceState":n.device_state,"deviceName":n.device_name,"observedAtMs":now});
+            let content=serde_json::to_string(&content).map_err(|_|Error::Unavailable("encoding_failed"))?;
+            sql_query("UPDATE hagency_agent_v1.request_notice_outbox SET content=coalesce(content,$2) WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(&content).execute(db).await?;
             Ok(Some(sql_query(format!("{SELECT} WHERE n.id=$1")).bind::<Text,_>(id).get_result::<RequestNotice>(db).await?))
         }).await?.ok_or(Error::Conflict("request_notice_not_sendable"))
-    }).await
     }
     pub(crate) async fn confirm_request_notice(
         &self,

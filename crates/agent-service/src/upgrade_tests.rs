@@ -3,15 +3,15 @@ use crate::{domain::DomainStore, identity::Identity, store::Store};
 use diesel::{Connection as _, PgConnection, QueryableByName, connection::SimpleConnection};
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl, SimpleAsyncConnection};
 
-struct IsolatedDatabase {
+pub(crate) struct IsolatedDatabase {
     admin_url: String,
-    url: String,
+    pub(crate) url: String,
     name: String,
 }
 impl IsolatedDatabase {
-    fn create() -> Self {
+    pub(crate) fn create() -> Self {
         let admin_url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
-        let name = format!("hagency_server_upgrade_{}", crate::entity_id().unwrap());
+        let name = format!("hagency_server_test_{}", crate::entity_id().unwrap());
         let mut connection = PgConnection::establish(&admin_url).unwrap();
         connection
             .batch_execute(&format!("CREATE DATABASE {name}"))
@@ -74,14 +74,14 @@ async fn populated_v6_upgrade_and_reopen_preserve_identity_tasks_receipts_and_ac
     );
     let mut connection = AsyncPgConnection::establish(&isolated.url).await.unwrap();
     // Reconstruct exactly the historical v6 board layout inside this newly created DB.
-    connection.batch_execute("DROP SCHEMA hagency_project_v1 CASCADE; ALTER TABLE hagency_agent_v1.projects DROP COLUMN archived").await.unwrap();
+    connection.batch_execute("DROP TABLE public.__diesel_schema_migrations; DROP SCHEMA hagency_project_v1 CASCADE; ALTER TABLE hagency_agent_v1.projects DROP COLUMN archived").await.unwrap();
     for sql in [
-        include_str!("project_board/schema.sql"),
-        include_str!("project_board/schema_v2.sql"),
-        include_str!("project_board/schema_v3.sql"),
-        include_str!("project_board/schema_v4.sql"),
-        include_str!("project_board/schema_v5.sql"),
-        include_str!("project_board/schema_v6.sql"),
+        include_str!("../migrations/board/2026-11-19-000201_schema/up.sql"),
+        include_str!("../migrations/board/2026-11-19-000202_schema_v2/up.sql"),
+        include_str!("../migrations/board/2026-11-19-000203_schema_v3/up.sql"),
+        include_str!("../migrations/board/2026-11-19-000204_schema_v4/up.sql"),
+        include_str!("../migrations/board/2026-11-19-000205_schema_v5/up.sql"),
+        include_str!("../migrations/board/2026-11-19-000206_schema_v6/up.sql"),
     ] {
         connection.batch_execute(sql).await.unwrap();
     }
@@ -132,4 +132,55 @@ async fn populated_v6_upgrade_and_reopen_preserve_identity_tasks_receipts_and_ac
         "repeated startup must be idempotent"
     );
     drop(reopened);
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn inbox_migrations_are_atomic_and_concurrent_reopens_reuse_the_receipts() {
+    use crate::appservice::Inbox;
+    let isolated = IsolatedDatabase::create();
+    Store::open(&isolated.url, "example.test", "https://example.test/auth/")
+        .await
+        .unwrap();
+    let mut conn = AsyncPgConnection::establish(&isolated.url).await.unwrap();
+    // Fail the second inbox migration after the first has executed.
+    conn.batch_execute("CREATE TABLE hagency_agent_v1.inbox_capacity (incompatible integer)")
+        .await
+        .unwrap();
+    assert!(Inbox::open(&isolated.url, "a".repeat(64)).await.is_err());
+    #[derive(QueryableByName)]
+    struct Check {
+        #[diesel(sql_type=diesel::sql_types::Bool)]
+        matched: bool,
+    }
+    let rolled_back = diesel::sql_query("SELECT to_regclass('hagency_agent_v1.routing_jobs') IS NULL AND NOT EXISTS (SELECT FROM public.__diesel_schema_migrations WHERE version='20261119000301') AS matched")
+        .get_result::<Check>(&mut conn).await.unwrap();
+    assert!(
+        rolled_back.matched,
+        "DDL and its receipt must both roll back"
+    );
+    conn.batch_execute("DROP TABLE hagency_agent_v1.inbox_capacity")
+        .await
+        .unwrap();
+    let (one, two) = tokio::join!(
+        Inbox::open(&isolated.url, "a".repeat(64)),
+        Inbox::open(&isolated.url, "a".repeat(64))
+    );
+    drop((one.unwrap(), two.unwrap()));
+    #[derive(QueryableByName)]
+    struct Witness {
+        #[diesel(sql_type=diesel::sql_types::Text)]
+        value: String,
+    }
+    let witness = async |conn: &mut AsyncPgConnection| {
+        diesel::sql_query("SELECT t.xmin::text || ':' || m.xmin::text AS value FROM pg_trigger t CROSS JOIN public.__diesel_schema_migrations m WHERE t.tgrelid='hagency_agent_v1.routing_jobs'::regclass AND t.tgname='update_inbox_capacity' AND m.version='20261119000302'")
+            .get_result::<Witness>(conn).await.unwrap().value
+    };
+    let installed = witness(&mut conn).await;
+    Inbox::open(&isolated.url, "a".repeat(64)).await.unwrap();
+    assert_eq!(
+        installed,
+        witness(&mut conn).await,
+        "a reopen must not reinstall triggers or rewrite migration receipts"
+    );
 }

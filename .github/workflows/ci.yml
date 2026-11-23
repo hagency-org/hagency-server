@@ -23,7 +23,14 @@ env:
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
 jobs:
+  changes:
+    uses: ./.github/workflows/ci-scope.yml
+    with:
+      check_spelling: true
+
   quality:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.docs_only != 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     services:
@@ -41,11 +48,12 @@ jobs:
       RUST_MIN_STACK: 16777216
       HAGENCY_AGENT_TEST_DATABASE_URL: postgres://hagency_ci:ci-only-password@127.0.0.1:5432/hagency_ci
     steps:
+      - name: Require successful scope and spelling checks
+        if: needs.changes.result != 'success'
+        run: exit 1
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Check spelling
-        uses: crate-ci/typos@v1.51.1
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.0
@@ -78,22 +86,22 @@ jobs:
           DB_TEST_DATABASE_URL: postgres://hagency_ci:ci-only-password@127.0.0.1:5432/hagency_ci
         run: cargo test --locked -p hagency-db-runtime --features postgres-tests -- --test-threads=1
       - run: cargo clippy --locked -p hagency-server -p hagency-agent-service -p hagency-xtask --all-targets -- -D warnings
-      - run: cargo test --locked -p hagency-server -p hagency-xtask -p hagency-frontend
-      - name: Original Agent Appservice identity upgrade regression
+      - name: Server, xtask and frontend tests including the Appservice upgrade
         env:
           PGPASSWORD: ci-only-password
           HAGENCY_APPSERVICE_TEST_DATABASE_URL: postgres://hagency_ci:ci-only-password@127.0.0.1:5432/crypto_appservice_ci
         run: |
           createdb --host 127.0.0.1 --username hagency_ci crypto_appservice_ci
-          cargo test --locked -p hagency-server --lib database_device_capability_upgrade_preserves_identity_and_disabled_state -- --ignored --exact agent_appservice::device::tests::database_device_capability_upgrade_preserves_identity_and_disabled_state --test-threads=1
+          cargo test --locked -p hagency-server -p hagency-xtask -p hagency-frontend -- --include-ignored
       - name: Agent service tests including PostgreSQL
-        # Dedicated disposable DBs; serialize fixtures that share schema state.
         env:
+          PGHOST: 127.0.0.1
+          PGUSER: hagency_ci
           PGPASSWORD: ci-only-password
-          HAGENCY_USAGE_TEST_DATABASE_URL: postgres://hagency_ci:ci-only-password@127.0.0.1:5432/hagency_usage_ci
         run: |
-          createdb --host 127.0.0.1 --username hagency_ci hagency_usage_ci
-          cargo test --locked -p hagency-agent-service -- --include-ignored --test-threads=1
+          cargo test --locked -p hagency-agent-service --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/agent-tests.jsonl"
+          python3 .github/scripts/run-agent-shards.py "$RUNNER_TEMP/agent-tests.jsonl" --shards 4
+          cargo test --locked -p hagency-agent-service --doc -- --include-ignored
       - name: Clippy (WASM frontend)
         run: cargo clippy --locked -p hagency-frontend --all-targets --target wasm32-unknown-unknown -- -D warnings
 
@@ -142,6 +150,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          build-args: HAGENCY_SOURCE_FINGERPRINT=${{ github.sha }}
           platforms: linux/${{ matrix.arch }}
           outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=server-${{ matrix.arch }}
@@ -174,6 +183,22 @@ jobs:
             test -n "$(find /app/resources/frontend/public/assets -name '*.wasm.br' -print -quit)"
             test -n "$(find /app/resources/frontend/public/assets -name '*.wasm.gz' -print -quit)"
           '
+      - uses: actions/setup-node@v7
+        if: matrix.arch == 'amd64'
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Run deployment smoke against the candidate digest
+        if: matrix.arch == 'amd64'
+        env:
+          HAGENCY_TEST_IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
+          HAGENCY_TEST_IMAGE_SOURCE: ${{ github.sha }}
+        run: node tests/docker-smoke.mjs
+      - name: Validate release backup and restore
+        if: matrix.arch == 'amd64' && startsWith(github.ref, 'refs/tags/v')
+        uses: ./.github/actions/restore-drill
+        with:
+          image: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
       - name: Export digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -197,23 +222,38 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Checkout publication guard
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check moving image ref before publication
+        id: publish_ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/check-publish-ref.py
       - name: Image name
+        if: steps.publish_ref.outputs.publish == 'true'
         id: image
         env:
           REPOSITORY: ${{ github.repository }}
         run: echo "name=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v8
+        if: steps.publish_ref.outputs.publish == 'true'
         with:
           pattern: digest-*
           path: ${{ runner.temp }}/digests
           merge-multiple: true
       - uses: docker/setup-buildx-action@v4
+        if: steps.publish_ref.outputs.publish == 'true'
       - uses: docker/login-action@v4
+        if: steps.publish_ref.outputs.publish == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/metadata-action@v6
+        if: steps.publish_ref.outputs.publish == 'true'
         id: meta
         with:
           images: ${{ steps.image.outputs.name }}
@@ -224,6 +264,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
       - name: Merge and verify architectures
+        if: steps.publish_ref.outputs.publish == 'true'
         working-directory: ${{ runner.temp }}/digests
         env:
           IMAGE: ${{ steps.image.outputs.name }}

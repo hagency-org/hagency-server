@@ -5,6 +5,7 @@ pub(super) async fn call(
     domain: &DomainStore,
     policy: &ManagementPolicy,
     p: &crate::store::Principal,
+    gateway: &crate::gateway::Gateway,
     parts: &[&str],
 ) -> Result<Option<Value>> {
     Ok(Some(match (req.method(), parts) {
@@ -18,7 +19,7 @@ pub(super) async fn call(
                 .map_err(|_| Error::Unavailable("encoding_failed"))?
         }
         (&Method::POST, ["pools", pool, "agents"]) => json!({
-            "request": domain.request_pool_agent(p, policy, pool, body(req).await?).await?
+            "request": domain.request_pool_agent_with_gateway(p, policy, pool, body(req).await?, gateway).await?
         }),
         (&Method::POST, ["pool-agent-requests", "query"]) => {
             serde_json::to_value(domain.pool_agent_requests(p, body(req).await?).await?)

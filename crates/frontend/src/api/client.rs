@@ -3,7 +3,6 @@ use serde::de::DeserializeOwned;
 
 use crate::utils::error::{HttpError, MatrixError, display_error};
 use crate::utils::perf;
-use crate::utils::storage;
 
 /// Generate a short 8-character hex request ID from the current timestamp and a random value.
 pub fn generate_request_id() -> String {
@@ -167,11 +166,6 @@ pub fn get_base_url() -> Result<String, HttpError> {
     // The Rust host mounts all component APIs on the same origin.
     // Return empty string so paths like "/_palpo/admin/..." are relative.
     Ok(String::new())
-}
-
-pub fn get_home_server() -> Result<String, HttpError> {
-    storage::get_item("home_server")
-        .ok_or_else(|| HttpError::message("Home server not set. Please log in first."))
 }
 
 pub fn build_url(path: &str, params: &[(&str, &str)]) -> Result<String, HttpError> {

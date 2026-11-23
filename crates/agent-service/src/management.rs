@@ -133,7 +133,7 @@ async fn contribution(db: &mut AsyncPgConnection, id: &str) -> Result<(String, C
 fn visible(p: &Principal, policy: &ManagementPolicy, owner: &str, c: &Contribution) -> bool {
     p.user_id == owner
         || p.mxid == c.coordinator_mxid
-        || (c.state != "draft" && p.mxid == policy.administrator())
+        || (c.state != "draft" && policy.can_administer(p))
 }
 fn project_request(
     mut r: ManagementRequest,
@@ -144,8 +144,7 @@ fn project_request(
     if r.state == "pending" && r.expires_at_ms <= now {
         r.state = "expired".into();
     }
-    r.can_decide =
-        r.state == "pending" && r.approver_mxid == p.mxid && p.mxid == policy.administrator();
+    r.can_decide = r.state == "pending" && policy.can_review(p, &r.approver_mxid);
     r
 }
 async fn request(
@@ -230,8 +229,7 @@ impl DomainStore {
     /// the response observation so finite native leases do not gain or lose
     /// time through process/DB clock skew or different millisecond rounding.
     pub(crate) async fn management_observed_at_ms(&self) -> Result<i64> {
-        let mut db = self.db.lock().await?;
-        clock(&mut db).await
+        self.db.transaction(async |db| clock(db).await).await
     }
 
     /// Read an earlier result from this same owner/installation under fresh
@@ -256,8 +254,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_operation"));
         }
         let (executor, _) = device(p)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let rows=sql_query("SELECT operation,digest,result FROM hagency_agent_v1.management_commands WHERE actor_user_id=$1 AND device_id=$2 AND command_id=$3 ORDER BY device_generation LIMIT 2")
                 .bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<Text,_>(command).load::<Receipt>(db).await?;
@@ -287,8 +284,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_connection_verification"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             let (owner,c)=contribution(db,id).await?;
@@ -304,7 +300,7 @@ impl DomainStore {
             sql_query("UPDATE hagency_agent_v1.management_requests SET revision=revision+1 WHERE id=$1")
                 .bind::<Text,_>(&c.request_id).execute(db).await?;
             let result=admission(db,id,p,policy,now).await?;
-            notify(db,&result.request,[policy.administrator().to_owned(),c.coordinator_mxid],now).await?;
+            notify(db,&result.request,policy.administrator_recipients().chain([c.coordinator_mxid]),now).await?;
             Self::audit(db,p,"contribution.resume",id,now).await?;
             receipt(db,p,&input.command_id,"contribution.resume",&payload_digest,&result).await?;
             Ok(result)
@@ -333,8 +329,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_connection_verification"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             let (owner,c)=contribution(db,id).await?;
@@ -374,8 +369,7 @@ impl DomainStore {
         }
         let (executor, generation) = device(p)?;
         let payload_digest = digest("", &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db: &mut AsyncPgConnection| {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             if let Some(r)=replay(db,p,&input.command_id,"contribution.create",&payload_digest).await? { return Ok(r); }
@@ -390,9 +384,9 @@ impl DomainStore {
             sql_query("INSERT INTO hagency_agent_v1.management_contributions(id,owner_user_id,executor_device_id,executor_generation,resource_id,resource_revision,label,runtime,capabilities,coordinator_mxid,state,request_id,created_at_ms,updated_at_ms,publication_first) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$13,$11,$12,$12,$14)")
                 .bind::<Text,_>(&id).bind::<Text,_>(&p.user_id).bind::<Text,_>(executor).bind::<BigInt,_>(generation).bind::<Text,_>(&input.resource_id).bind::<Text,_>(&input.resource_revision).bind::<Text,_>(&input.label).bind::<Text,_>(runtime).bind::<Text,_>(encode(&input.capabilities)?).bind::<Text,_>(&input.coordinator_mxid).bind::<Text,_>(&request_id).bind::<BigInt,_>(now).bind::<Text,_>(if input.publication_first {"draft"} else {"pending_admission"}).bind::<Bool,_>(input.publication_first).execute(db).await?;
             sql_query("INSERT INTO hagency_agent_v1.management_requests(id,kind,contribution_id,requester_user_id,approver_mxid,state,created_at_ms,expires_at_ms) VALUES($1,'resource_admission',$2,$3,$4,$7,$5,$6)")
-                .bind::<Text,_>(&request_id).bind::<Text,_>(&id).bind::<Text,_>(&p.user_id).bind::<Text,_>(policy.administrator()).bind::<BigInt,_>(now).bind::<BigInt,_>(now+TTL).bind::<Text,_>(if input.publication_first {"draft"} else {"pending"}).execute(db).await?;
+                .bind::<Text,_>(&request_id).bind::<Text,_>(&id).bind::<Text,_>(&p.user_id).bind::<Text,_>(policy.assigned_administrator()).bind::<BigInt,_>(now).bind::<BigInt,_>(now+TTL).bind::<Text,_>(if input.publication_first {"draft"} else {"pending"}).execute(db).await?;
             let result=admission(db,&id,p,policy,now).await?;
-            if !input.publication_first { notify(db,&result.request,[policy.administrator().to_owned()],now).await?; }
+            if !input.publication_first { notify(db,&result.request,policy.administrator_recipients(),now).await?; }
             Self::audit(db,p,"contribution.create",&id,now).await?;
             receipt(db,p,&input.command_id,"contribution.create",&payload_digest,&result).await?;
             Ok(result)
@@ -408,12 +402,11 @@ impl DomainStore {
         if query.needs_my_action {
             return Err(Error::Invalid("invalid_contribution_filter"));
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
-            let rows=sql_query(format!("{CONTRIBUTIONS} WHERE (c.owner_user_id=$1 OR c.coordinator_mxid=$2 OR $2=$3 AND c.state<>'draft') AND c.id>$4 ORDER BY c.id LIMIT $5"))
-                .bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(policy.administrator()).bind::<Text,_>(query.after.as_deref().unwrap_or("")).bind::<BigInt,_>(MAX_PAGE+1).load::<ContributionRow>(db).await?;
+            let rows=sql_query(format!("{CONTRIBUTIONS} WHERE (c.owner_user_id=$1 OR c.coordinator_mxid=$2 OR $3 AND c.state<>'draft') AND c.id>$4 ORDER BY c.id LIMIT $5"))
+                .bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Bool,_>(policy.can_administer(p)).bind::<Text,_>(query.after.as_deref().unwrap_or("")).bind::<BigInt,_>(MAX_PAGE+1).load::<ContributionRow>(db).await?;
             let more=rows.len()>MAX_PAGE as usize;
             let items=rows.into_iter().take(MAX_PAGE as usize).map(|row|decode(&row.payload)).collect::<Result<Vec<Contribution>>>()?;
             let next_after=if more {items.last().map(|v|v.id.clone())}else{None};
@@ -427,9 +420,8 @@ impl DomainStore {
         id: &str,
     ) -> Result<Admission> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 admission(db, id, p, policy, now).await
@@ -443,9 +435,8 @@ impl DomainStore {
         id: &str,
     ) -> Result<ManagementRequest> {
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let now = clock(db).await?;
                 request(db, id, p, policy, now).await
@@ -459,24 +450,65 @@ impl DomainStore {
         query: ManagementQuery,
     ) -> Result<ManagementPage<ManagementRequest>> {
         query.validate()?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
-            Self::authorize(db,p,crate::api::now_ms()).await?;
-            let now=clock(db).await?;
-            let rows=sql_query(format!("{REQUESTS} JOIN hagency_agent_v1.management_contributions c ON c.id=r.contribution_id WHERE (r.requester_user_id=$1 OR c.owner_user_id=$1 OR c.coordinator_mxid=$2 OR r.approver_mxid=$2 AND ($2=$3 OR $9 AND r.kind='project_allocation') OR $9 AND r.kind='project_allocation' AND $2=$3 OR EXISTS(SELECT 1 FROM hagency_agent_v1.management_project_authorities pa WHERE pa.plan_id=r.project_id AND pa.administrator_user_id=$1)) AND (c.state<>'draft' OR c.owner_user_id=$1) AND (NOT $4 OR r.approver_mxid=$2 AND ($2=$3 OR $9 AND r.kind='project_allocation') AND r.state='pending' AND r.expires_at_ms>$5 AND (r.kind='resource_admission' OR c.state='admitted')) AND (r.kind='resource_admission' OR $8 AND r.kind='project_capacity' OR $9 AND r.kind='project_allocation') AND r.id>$6 ORDER BY r.id LIMIT $7"))
-                .bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(policy.administrator()).bind::<Bool,_>(query.needs_my_action).bind::<BigInt,_>(now).bind::<Text,_>(query.after.as_deref().unwrap_or("")).bind::<BigInt,_>(MAX_PAGE+1).bind::<Bool,_>(query.include_projects).bind::<Bool,_>(query.include_allocations && policy.project_reservations()).load::<RequestRow>(db).await?;
-            let more=rows.len()>MAX_PAGE as usize;
-            let mut items=Vec::new();let mut last_scanned=None;
-            for row in rows.into_iter().take(MAX_PAGE as usize) {
-                let mut r=project_request(decode(&row.payload)?,p,policy,now);
-                r.can_decide &= row.resource_available;
-                if let Some(id)=&r.allocation_id {r.can_decide=r.state=="pending" && allocations::actionable(db,id,p,policy,now).await?;}
-                last_scanned=Some(r.id.clone());
-                if !query.needs_my_action || r.can_decide {items.push(r);}
-            }
-            let next_after=if more {last_scanned}else{None};
-            Ok(ManagementPage{protocol:PROTOCOL,observed_at_ms:now,items,next_after})
-        }).await
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::authorize(db, p, crate::api::now_ms()).await?;
+                let now = clock(db).await?;
+                let rows = sql_query(format!(
+                    "{REQUESTS}
+                 JOIN hagency_agent_v1.management_contributions c ON c.id=r.contribution_id
+                 WHERE (r.requester_user_id=$1 OR c.owner_user_id=$1 OR c.coordinator_mxid=$2
+                     OR CASE WHEN r.kind='project_allocation' THEN $9 AND (r.approver_mxid=$2 OR $3)
+                             ELSE $3 AND ($10 OR r.approver_mxid IN ('',$2)) END
+                     OR EXISTS (SELECT 1 FROM hagency_agent_v1.management_project_authorities pa
+                                WHERE pa.plan_id=r.project_id AND pa.administrator_user_id=$1))
+                   AND (c.state<>'draft' OR c.owner_user_id=$1)
+                   AND (NOT $4 OR (
+                       CASE WHEN r.kind='project_allocation' THEN $9 AND r.approver_mxid=$2
+                            ELSE $3 AND ($10 OR r.approver_mxid IN ('',$2)) END
+                       AND r.state='pending' AND r.expires_at_ms>$5
+                       AND (r.kind='resource_admission' OR c.state='admitted')))
+                   AND (r.kind='resource_admission' OR $8 AND r.kind='project_capacity'
+                        OR $9 AND r.kind='project_allocation')
+                   AND r.id>$6
+                 ORDER BY r.id LIMIT $7"
+                ))
+                .bind::<Text, _>(&p.user_id)
+                .bind::<Text, _>(&p.mxid)
+                .bind::<Bool, _>(policy.can_administer(p))
+                .bind::<Bool, _>(query.needs_my_action)
+                .bind::<BigInt, _>(now)
+                .bind::<Text, _>(query.after.as_deref().unwrap_or(""))
+                .bind::<BigInt, _>(MAX_PAGE + 1)
+                .bind::<Bool, _>(query.include_projects)
+                .bind::<Bool, _>(query.include_allocations && policy.project_reservations())
+                .bind::<Bool, _>(policy.uses_pasion_administrators())
+                .load::<RequestRow>(db)
+                .await?;
+                let more = rows.len() > MAX_PAGE as usize;
+                let mut items = Vec::new();
+                let mut last_scanned = None;
+                for row in rows.into_iter().take(MAX_PAGE as usize) {
+                    let mut r = project_request(decode(&row.payload)?, p, policy, now);
+                    r.can_decide &= row.resource_available;
+                    if let Some(id) = &r.allocation_id {
+                        r.can_decide = r.state == "pending"
+                            && allocations::actionable(db, id, p, policy, now).await?;
+                    }
+                    last_scanned = Some(r.id.clone());
+                    if !query.needs_my_action || r.can_decide {
+                        items.push(r);
+                    }
+                }
+                let next_after = if more { last_scanned } else { None };
+                Ok(ManagementPage {
+                    protocol: PROTOCOL,
+                    observed_at_ms: now,
+                    items,
+                    next_after,
+                })
+            })
+            .await
     }
     pub async fn decide_management_request(
         &self,
@@ -492,10 +524,9 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
-            if p.mxid!=policy.administrator() {return Err(Error::Unauthorized("management_administrator_required"));}
+            if !policy.can_administer(p) {return Err(Error::Unauthorized("management_administrator_required"));}
             let now=clock(db).await?;
             if let Some(r)=replay(db,p,&input.command_id,"request.decide",&payload_digest).await? {return Ok(r);}
             let r=request(db,id,p,policy,now).await?;
@@ -539,12 +570,11 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;
             let now=clock(db).await?;
             let (owner,c)=contribution(db,id).await?;
-            if p.user_id!=owner && p.mxid!=policy.administrator() {return Err(Error::Unauthorized("contribution_owner_required"));}
+            if p.user_id!=owner && !policy.can_administer(p) {return Err(Error::Unauthorized("contribution_owner_required"));}
             if let Some(r)=replay(db,p,&input.command_id,"contribution.revoke",&payload_digest).await? {return Ok(r);}
             if c.revision!=input.expected_revision {return Err(Error::Conflict("management_revision_changed"));}
             if c.state=="revoked" {return Err(Error::Conflict("management_action_closed"));}
@@ -557,7 +587,7 @@ impl DomainStore {
             parents::close_for_contribution(db,p,policy,id,now).await?;
             projects::revoke_contribution_projects(db,p,policy,id,now).await?;
             let result=admission(db,id,p,policy,now).await?;
-            notify(db,&result.request,[c.owner_mxid,c.coordinator_mxid,policy.administrator().to_owned()],now).await?;
+            notify(db,&result.request,policy.administrator_recipients().chain([c.owner_mxid,c.coordinator_mxid]),now).await?;
             Self::audit(db,p,"contribution.revoke",id,now).await?;
             receipt(db,p,&input.command_id,"contribution.revoke",&payload_digest,&result).await?;
             Ok(result)

@@ -17,6 +17,7 @@ mod device_resume_tests;
 pub mod domain;
 mod executor_matrix_device;
 pub mod file_delivery;
+mod migrations;
 mod schema;
 pub use domain::project_board;
 mod api_project_board;
@@ -76,7 +77,22 @@ pub enum Error {
     #[error("{0}")]
     Unavailable(&'static str),
     #[error("storage_unavailable")]
-    Database(#[from] diesel::result::Error),
+    Database(#[source] diesel::result::Error),
+}
+impl From<diesel::result::Error> for Error {
+    fn from(error: diesel::result::Error) -> Self {
+        if let diesel::result::Error::DatabaseError(_, info) = &error
+            && info.message() == "agent_crypto_in_progress"
+        {
+            return Self::Unavailable("agent_crypto_in_progress");
+        }
+        Self::Database(error)
+    }
+}
+impl From<horme::Error> for Error {
+    fn from(error: horme::Error) -> Self {
+        hagency_db_runtime::query_error(error).into()
+    }
 }
 impl Error {
     pub fn status(&self) -> u16 {

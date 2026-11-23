@@ -837,7 +837,8 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         .unwrap();
     // Recreate the deployed v25 validator around a retained v2 block. Upgrade
     // through DomainStore::open, including rollback and a second idempotent open.
-    let legacy_schema = include_str!("management_shared_budget_schema.sql");
+    let legacy_schema =
+        include_str!("../migrations/domain/2026-11-19-000123_management_shared_budget/up.sql");
     let legacy_validator = legacy_schema
         .split("CREATE FUNCTION hagency_agent_v1.validate_shared_budget_demand()")
         .nth(1)
@@ -858,7 +859,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
     db.batch_execute(include_str!("management_agent_periods_down.sql"))
         .await
         .unwrap();
-    db.batch_execute("DROP FUNCTION hagency_agent_v1.canonical_shared_block_json(jsonb); ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check; UPDATE hagency_agent_v1.management_deployment SET version=25; ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=25)").await.unwrap();
+    db.batch_execute("DROP FUNCTION hagency_agent_v1.canonical_shared_block_json(jsonb); ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check; DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=25; ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=25)").await.unwrap();
     db.batch_execute("CREATE FUNCTION hagency_agent_v1.canonical_shared_block_json(jsonb) RETURNS text LANGUAGE sql AS 'SELECT ''migration_collision''' ").await.unwrap();
     assert!(
         DomainStore::open(&f.url, "example.test", "_hagency_test_")
@@ -1121,6 +1122,66 @@ fn demand_input(
         start,
     }
 }
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn current_budget_block_is_visible_until_a_new_revision_is_applied() {
+    let (mut f, r, admin, m, i) = Box::pin(fixture()).await;
+    running(&mut f, &m, &i.assignment_id).await;
+    retain_event(&f, &r, &m, "blocked_chat").await;
+    let d = offered(&f).await;
+    let mut budget = i.budget_observation;
+    budget.known_consumed_tokens = budget.allocated_tokens;
+    budget.retained_tokens = budget.allocated_tokens;
+    budget.remaining_tokens = 0;
+    budget.usage_complete = false;
+    f.domain
+        .block_shared_budget_demand(
+            &f.owner.p,
+            &d.offer.demand_id,
+            SharedBudgetDemandBlockInput {
+                demand_digest: d.demand_digest,
+                expected_control_revision: d.offer.control_revision,
+                original_block: d.original_block,
+                execution_budget: d.execution_budget,
+                reason: "budget_blocked".into(),
+                budget: Some(budget),
+            },
+        )
+        .await
+        .unwrap();
+    let room = work::message(&f, &r, "scope").await.room_id;
+    for n in 0..16 {
+        retain_event(&f, &r, &m, &format!("later_chat_{n}")).await;
+    }
+    let query = || {
+        serde_json::from_value(json!({"roomId":room,"executionThread":"$blocked_chat"})).unwrap()
+    };
+    let read = f
+        .domain
+        .shared_approvals(&f.outsider.p, query())
+        .await
+        .unwrap();
+    assert_eq!(read["executions"].as_array().unwrap().len(), 1);
+    assert_eq!(read["executions"][0]["state"], "blocked");
+    assert_eq!(read["executions"][0]["reason"], "budget_blocked");
+    assert_eq!(read["executions"][0]["budgetState"], "exhausted");
+    let hidden = f
+        .domain
+        .shared_approvals(&f.admin.p, query())
+        .await
+        .unwrap();
+    assert_eq!(hidden["executions"], json!([]));
+    apply_delta(&f, &r, &admin, 25, 250).await;
+    let restored = f
+        .domain
+        .shared_approvals(&f.outsider.p, query())
+        .await
+        .unwrap();
+    assert_eq!(restored["executions"][0]["state"], "pending");
+    assert!(restored["executions"][0]["reason"].is_null());
+    assert!(restored["executions"][0].get("budgetState").is_none());
+}
+
 #[tokio::test]
 #[ignore = "dedicated PostgreSQL"]
 async fn budget_execution_v3_idle_promotion_fifo_never_creates_second_start() {

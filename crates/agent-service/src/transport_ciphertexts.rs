@@ -1,8 +1,9 @@
 //! Original AS ciphertext custody. Reading/decrypting never admits model work.
-use super::*;
 use diesel::sql_types::Jsonb;
 use diesel::{BoolExpressionMethods, ExpressionMethods, NullableExpressionMethods, QueryDsl};
 use serde_json::{Value, json};
+
+use super::*;
 pub(crate) const CAPABILITY: &str = "agent-encrypted-inbox-v1";
 const MAX_EVENT: usize = 131072;
 #[derive(Serialize, diesel::Queryable, diesel::QueryableByName)]
@@ -143,17 +144,16 @@ impl TransportStore {
     ) -> Result<()> {
         key(binding)?;
         let (event, digest) = parse(raw)?;
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
-   Self::lock(db).await?;let now=Self::clock(db,now).await?;let scope=Self::scope(db,binding).await?;
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
+   let now=Self::clock(db,now).await?;let scope=Self::scope(db,binding).await?;
    facts_mode(&scope,event["sender"].as_str().ok_or_else(invalid)?,f,now,true)?;
    if scope.service_paused||event["room_id"]!=scope.room_id{return Err(Error::Unauthorized("ciphertext_scope_revoked"));}
    #[derive(diesel::Queryable, diesel::QueryableByName)]struct Source{#[diesel(sql_type=BigInt)] received_at_ms:i64}
    // Original full raw event must still be in a durable verified AS transaction.
    // This same lock serializes against routing compaction and AS acceptance.
    let source=sql_query("SELECT t.received_at_ms FROM hagency_agent_v1.inbound_transactions t JOIN hagency_agent_v1.routing_jobs j ON j.transaction_id=t.id WHERE t.id=$1 AND j.state='pending' AND t.body->'events' @> $2::jsonb").bind::<Text,_>(transaction).bind::<Jsonb,_>(json!([raw])).get_result::<Source>(db).await.optional()?.ok_or(Error::Unauthorized("original_ciphertext_required"))?;
-   if source.received_at_ms<0||source.received_at_ms>now{return Err(invalid());}
+   if source.received_at_ms<0{return Err(invalid());}
+   if source.received_at_ms>now{return Err(Error::Unavailable("event_received_clock_changed"));}
    let puppet=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.agents WHERE puppet_mxid=$1) AS matched").bind::<Text,_>(event["sender"].as_str().ok_or_else(invalid)?).get_result::<Flag>(db).await?;
    if puppet.matched||event["sender"].as_str().is_some_and(|s|s.starts_with("@_hagency_")){return Ok(());}
    #[derive(diesel::Queryable, diesel::QueryableByName)]struct Digest{#[diesel(sql_type=Text)] source_digest:String}
@@ -220,7 +220,6 @@ impl TransportStore {
    }?;
    Ok(())
   }).await
-    }).await
     }
     pub(crate) async fn ciphertext_candidates(
         &self,
@@ -234,14 +233,11 @@ impl TransportStore {
         if limit == 0 || limit > 4 {
             return Err(Error::Invalid("invalid_batch_limit"));
         }
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
    let(now,_)=Self::authenticate(db,p,now).await?;Self::lease(db,p,lease,now).await?;Self::agent_active(db,p,&lease.agent_id).await?;
    let scope=Self::scope(db,binding).await?;if scope.owner_user_id!=p.user_id||scope.agent_id!=lease.agent_id||!scope.active||scope.service_paused{return Err(Error::Unauthorized("ciphertext_scope_revoked"));}
    Ok(sql_query("SELECT c.id,c.binding_id,c.sender_mxid FROM hagency_agent_v1.ciphertext_inbox c JOIN hagency_agent_v1.bindings b ON b.id=c.binding_id JOIN hagency_agent_v1.agents a ON a.id=c.agent_id WHERE c.owner_user_id=$1 AND c.agent_id=$2 AND c.binding_id=$3 AND c.state='pending' AND c.binding_generation=b.generation AND c.agent_generation=a.generation AND c.received_at_ms>$4 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.encrypted_dispatches d JOIN hagency_agent_v1.owner_events e ON e.id=d.dispatch_id WHERE d.inbox_id=c.id AND e.state NOT IN ('encrypted_pending','encrypted_offered')) ORDER BY c.received_at_ms,c.id LIMIT $5").bind::<Text,_>(&p.user_id).bind::<Text,_>(&lease.agent_id).bind::<Text,_>(binding).bind::<BigInt,_>(now.saturating_sub(self.limits.event_ttl_ms)).bind::<BigInt,_>(limit as i64).load(db).await?)
   }).await
-    }).await
     }
     pub(crate) async fn ciphertext_header(
         &self,
@@ -251,21 +247,18 @@ impl TransportStore {
     ) -> Result<Header> {
         key(id)?;
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                    Self::authenticate(db, p, now).await?;
-                    {
-                        use crate::schema::agent_tables::ciphertext_inbox as q;
-                        let params = (id, &p.user_id);
-                        q::table
-                            .select((q::id, q::binding_id, q::sender_mxid))
-                            .filter(((q::id).eq(&params.0)).and((q::owner_user_id).eq(&params.1)))
-                            .get_result(db)
-                            .await
-                    }
-                    .map_err(unauthorized)
-                })
-                .await
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::authenticate(db, p, now).await?;
+                {
+                    use crate::schema::agent_tables::ciphertext_inbox as q;
+                    let params = (id, &p.user_id);
+                    q::table
+                        .select((q::id, q::binding_id, q::sender_mxid))
+                        .filter(((q::id).eq(&params.0)).and((q::owner_user_id).eq(&params.1)))
+                        .get_result(db)
+                        .await
+                }
+                .map_err(unauthorized)
             })
             .await
     }
@@ -279,13 +272,10 @@ impl TransportStore {
     ) -> Result<Ciphertext> {
         key(id)?;
         self.db
-            .with_connection(async |db| {
-                db.transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                    Self::current_ciphertext(db, p, lease, id, f, self.limits.event_ttl_ms, now)
-                        .await
-                        .map(|(event, _)| event)
-                })
-                .await
+            .write_transaction(async |db: &mut AsyncPgConnection| {
+                Self::current_ciphertext(db, p, lease, id, f, self.limits.event_ttl_ms, now)
+                    .await
+                    .map(|(event, _)| event)
             })
             .await
     }

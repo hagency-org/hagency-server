@@ -15,7 +15,7 @@ DO $$ BEGIN
    ON hagency_agent_v1.management_shared_runtimes(assignment_id)
    WHERE payload::jsonb->>'version'='1' AND NOT issuance_void;
   ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;
-  UPDATE hagency_agent_v1.management_deployment SET version=32 WHERE singleton AND version IN(33,34,35,36);
+  DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=32 WHERE singleton AND version IN(33,34,35,36);
   ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=32);
  END IF;
 END $$;

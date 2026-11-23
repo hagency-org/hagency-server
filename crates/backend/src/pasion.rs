@@ -3,13 +3,65 @@ use crate::config::Config;
 use anyhow::Context;
 use figment::{Figment, providers::Serialized};
 use pasion_config::{AppConfig, ConfigurationSection, HttpResource};
-use rand_chacha::rand_core::SeedableRng;
+mod rng;
+use rng::PasionRng;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub const MOUNT: &str = "/auth/";
 pub const ADMIN_CLIENT_ID: &str = "01KMQPADM1N000000000000000";
+
+pub fn management_policy(
+    pasion: &crate::PasionServer,
+    server_name: String,
+) -> hagency_agent_service::management_types::ManagementPolicy {
+    use hagency_agent_service::management_types::ManagementPolicy;
+
+    let repository_factory = pasion.state().repository_factory.clone();
+    ManagementPolicy::pasion(Arc::new(move || {
+        let repository_factory = repository_factory.clone();
+        let server_name = server_name.clone();
+        Box::pin(async move {
+            pasion_administrators(&repository_factory, &server_name)
+                .await
+                .map_err(|error| {
+                    tracing::warn!(%error, "failed to read Pasion administrators");
+                    hagency_agent_service::Error::Unavailable(
+                        "management_administrators_unavailable",
+                    )
+                })
+        })
+    }))
+}
+
+async fn pasion_administrators(
+    factory: &pasion_data::PgRepositoryFactory,
+    server_name: &str,
+) -> anyhow::Result<Vec<hagency_agent_service::management_types::PasionAdministrator>> {
+    use hagency_agent_service::management_types::PasionAdministrator;
+    use pasion_data::{Pagination, RepositoryAccess, RepositoryFactory, user::UserFilter};
+
+    let mut repo = factory.create().await?;
+    let filter = UserFilter::new()
+        .active_only()
+        .non_guest_only()
+        .can_request_admin_only();
+    let mut administrators = Vec::new();
+    let mut pagination = Pagination::first(100);
+    loop {
+        let page = repo.user().list(filter, pagination).await?;
+        pagination.after = page.edges.last().map(|edge| edge.cursor);
+        administrators.extend(page.edges.into_iter().map(|edge| PasionAdministrator {
+            subject: edge.node.sub,
+            mxid: format!("@{}:{server_name}", edge.node.username),
+        }));
+        if !page.has_next_page {
+            return Ok(administrators);
+        }
+    }
+}
 
 /// Pasion currently infers the caller from X-Forwarded-For. The integrated
 /// listener has no trusted proxies, so only its transport peer may supply it.
@@ -140,7 +192,7 @@ pub async fn prepare(host: &mut Config) -> anyhow::Result<Option<Figment>> {
     std::fs::create_dir_all(&host.data_dir)?;
     let path = host.data_dir.join("pasion-secrets.json");
     if !path.exists() {
-        let mut rng = rand_chacha::ChaChaRng::from_entropy();
+        let mut rng = PasionRng::from_os_rng()?;
         let generated = pasion_config::RootConfig::generate(&mut rng).await?;
         let generated = serde_json::to_value(generated)?;
         write_private_once(
@@ -283,7 +335,7 @@ pub async fn bootstrap_admin(
         password.len() >= 12 && manager.is_password_complex_enough(&password)?,
         "bootstrap password does not meet Pasion password policy"
     );
-    let mut rng = rand_chacha::ChaChaRng::from_entropy();
+    let mut rng = PasionRng::from_os_rng()?;
     let (version, hash) = manager.hash(&mut rng, password).await?;
     let pool = pasion_backend::util::diesel_pool_from_config(&config.database).await?;
     let mut repo = PgRepositoryFactory::new(pool).create().await?;

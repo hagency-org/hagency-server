@@ -175,7 +175,7 @@ pub fn PasionAccountsPage() -> Element {
                         },
                     }
                 }
-                select {
+                crate::components::ui::input::Select {
                     class: SELECT_CLASS,
                     aria_label: "Status",
                     value: status.read().clone(),
@@ -188,7 +188,7 @@ pub fn PasionAccountsPage() -> Element {
                     option { value: "locked", {t("pasion.accounts.status_locked")} }
                     option { value: "deactivated", {t("pasion.accounts.status_deactivated")} }
                 }
-                select {
+                crate::components::ui::input::Select {
                     class: SELECT_CLASS,
                     aria_label: "Role",
                     value: admin.read().clone(),
@@ -308,7 +308,7 @@ pub fn PasionAccountsPage() -> Element {
                 "Create a local Pasion account. The matching Matrix user is provisioned on the homeserver automatically."
             }
             div { class: "space-y-4",
-                div { class: "space-y-2",
+                crate::components::ui::input::Field { class: "space-y-2",
                     Label { r#for: "pasion-create-username", "Username" }
                     Input {
                         id: "pasion-create-username".to_string(),
@@ -318,7 +318,7 @@ pub fn PasionAccountsPage() -> Element {
                         disabled: is_creating,
                     }
                 }
-                div { class: "space-y-2",
+                crate::components::ui::input::Field { class: "space-y-2",
                     Label { r#for: "pasion-create-password", "Initial password (optional)" }
                     div { class: "flex gap-2",
                         div { class: "flex-1",

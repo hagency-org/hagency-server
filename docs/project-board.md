@@ -140,7 +140,7 @@ Cloud self-service recovery implementation is required by this feature.
 
 Upgrade Server and Client together. Discovery advertises only `project-board-v5`:
 a fixed-five-column v1 Client must explicitly refuse the incompatible board.
-The additive `schema_v2.sql` seeds every existing board's five columns, replaces
+The additive `crates/agent-service/migrations/board/2026-11-19-000202_schema_v2/up.sql` seeds every existing board's five columns, replaces
 the fixed-state constraint with a project/column foreign key, and retains task
 IDs, versions and immutable original receipts. No Cloud migration is needed.
 

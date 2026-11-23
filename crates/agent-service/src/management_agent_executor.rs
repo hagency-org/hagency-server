@@ -6,11 +6,9 @@ mod matrix;
 mod runtime;
 #[path = "management_shared_execution.rs"]
 mod shared;
-use crate::{
-    management_agent_executor_types::*,
-    management_allocation_types::{ExecutorPollInput, ExecutorRecoverInput, MAX_EXACT},
-    secret_token,
-};
+use crate::management_agent_executor_types::*;
+use crate::management_allocation_types::{ExecutorPollInput, ExecutorRecoverInput, MAX_EXACT};
+use crate::secret_token;
 
 const WORK: &str = "SELECT w.*,i.request_id,i.executor_owner_user_id,i.executor_device_id,i.executor_generation,i.payload,i.digest,i.state AS intent_state FROM hagency_agent_v1.management_agent_executor_commands w JOIN hagency_agent_v1.management_agent_intents i ON i.id=w.intent_id";
 #[derive(QueryableByName)]
@@ -213,6 +211,9 @@ async fn identity_retained(
         || r.revision != c.request_revision
         || r.authority_revision != c.authority_revision
     {
+        return Ok(false);
+    }
+    if c.pool_grant.is_some() && sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_requests q ON q.id=a.request_id WHERE q.room_id=$1 AND q.pool_contribution_id IS NOT NULL AND q.proposed_agent_id<>$2) AS matched").bind::<Text,_>(&r.room_id).bind::<Text,_>(&r.proposed_agent_id).get_result::<Flag>(db).await?.matched {
         return Ok(false);
     }
     if c.pool_grant.is_some()
@@ -497,8 +498,7 @@ impl DomainStore {
         if let Some(id) = &input.after {
             key(id)?;
         }
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
    Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;sweep(db,p,now).await?;Box::pin(super::periods::automatic(db,p,now,&self.server)).await?;
    let w=sql_query(format!("{WORK} WHERE i.executor_owner_user_id=$1 AND i.executor_device_id=$2 AND w.receipt IS NULL AND w.lease_until_ms<=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_request(i.request_id) AND (w.operation<>'agent.period.renew' OR (w.command_payload::jsonb->>'expiresAtMs')::bigint>$3) ORDER BY (w.operation='agent.fence') DESC,(w.id<=$4),w.id LIMIT 1")).bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(now).bind::<Text,_>(input.after.as_deref().unwrap_or("")).get_result::<Work>(db).await.optional()?;
    match w {Some(w)=>Ok(Some(deliver(db,p,policy,&w,&self.server,false).await?)),None=>Ok(None)}
@@ -513,9 +513,8 @@ impl DomainStore {
     ) -> Result<AgentExecutorDelivery> {
         enabled_executor(policy)?;
         key(id)?;
-        let mut db = self.db.lock().await?;
-        (*db)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, crate::api::now_ms()).await?;
                 let w = work(db, id).await?;
                 owner(&w, p)?;
@@ -537,8 +536,7 @@ impl DomainStore {
         key(id)?;
         input.validate()?;
         wire(&input.receipt)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
    Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;let w=work(db,id).await?;owner(&w,p)?;
    let (c,digest)=command(&w,&self.server)?;if digest!=input.command_digest{return Err(Error::Conflict("agent_executor_command_conflict"));}
    let receipt_digest=allocation_digest(&input.receipt)?;
@@ -582,8 +580,7 @@ impl DomainStore {
     ) -> Result<Option<PendingManagedAssignment>> {
         enabled_executor(policy)?;
         key(request)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
    Self::authorize(db,p,crate::api::now_ms()).await?;let r=row(db,request).await?;
    let executor=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents WHERE request_id=$1 AND executor_owner_user_id=$2 AND executor_device_id=$3) AS matched").bind::<Text,_>(request).bind::<Text,_>(&p.user_id).bind::<Nullable<Text>,_>(p.device_id.as_deref()).get_result::<Flag>(db).await?.matched;
    if !executor {visible(db,&r,p).await?;}
@@ -606,8 +603,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async |db:&mut AsyncPgConnection|{
    Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
    if let Some(saved)=replay::<ManagedAgentRequest>(db,p,&input.command_id,"agent.revoke",&digest).await?{return view(db,&saved.id,p,now).await;}
    let r=row(db,id).await?;let a=roles(db,&r.plan_id).await?;

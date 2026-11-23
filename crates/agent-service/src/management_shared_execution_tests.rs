@@ -431,8 +431,10 @@ async fn shared_octos_v5_gates_original_and_successor_from_older_workers() {
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn shared_octos_demand_is_visible_only_to_v5_workers() {
-    use crate::{management_shared_demand_types::SharedDemandPollInput, transport::RoutedEvent};
     use std::collections::BTreeSet;
+
+    use crate::management_shared_demand_types::SharedDemandPollInput;
+    use crate::transport::RoutedEvent;
     #[derive(QueryableByName)]
     struct Puppet {
         #[diesel(sql_type = Text)]
@@ -708,6 +710,120 @@ async fn pool_agent_reaches_private_room_and_runtime_without_any_project() {
             .unwrap()
             .work_available
     );
+    // Discover a completed pool call from the global Work page, then read it
+    // through the same bounded history endpoint used for project Agents.
+    use crate::management_shared_work_types::{SharedWorkIndexQuery, SharedWorkQuery};
+    assert!(
+        f.domain
+            .shared_work_index(&f.outsider.p, &f.policy, SharedWorkIndexQuery::default())
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    for reader in [&f.outsider.p, &f.owner.p, &f.coordinator.p] {
+        let page = f
+            .domain
+            .shared_work_index(
+                reader,
+                &f.policy,
+                SharedWorkIndexQuery {
+                    include_pool_agents: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        let entry = &page.items[0];
+        assert_eq!(entry.request_id, request.id);
+        assert_eq!(entry.project_id, None);
+        assert_eq!(entry.project_name, None);
+        assert_eq!(entry.pool_id.as_deref(), Some(request.pool_id.as_str()));
+        assert!(
+            entry
+                .pool_name
+                .as_ref()
+                .is_some_and(|name| !name.is_empty())
+        );
+        let history = f
+            .domain
+            .shared_work_history(
+                reader,
+                &f.policy,
+                &entry.request_id,
+                SharedWorkQuery::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(history.items.len(), 1);
+        assert_eq!(history.items[0].state, "completed");
+        assert_eq!(
+            history.items[0]
+                .usage
+                .as_ref()
+                .unwrap()
+                .known_consumed_tokens,
+            17
+        );
+        assert!(
+            f.domain
+                .shared_work_index(
+                    reader,
+                    &f.policy,
+                    SharedWorkIndexQuery {
+                        include_pool_agents: true,
+                        after: Some(request.id.clone()),
+                        ..Default::default()
+                    }
+                )
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        assert!(
+            f.domain
+                .shared_work_index(
+                    reader,
+                    &f.policy,
+                    SharedWorkIndexQuery {
+                        include_pool_agents: true,
+                        project_id: Some("unrelated_project".into()),
+                        ..Default::default()
+                    }
+                )
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+    }
+    let unrelated = actor(&f.auth, "unrelated_pool_history_reader").await;
+    for reader in [&f.admin.p, &unrelated.p] {
+        assert!(
+            f.domain
+                .shared_work_index(
+                    reader,
+                    &f.policy,
+                    SharedWorkIndexQuery {
+                        include_pool_agents: true,
+                        ..Default::default()
+                    }
+                )
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        assert!(
+            f.domain
+                .shared_work_history(reader, &f.policy, &request.id, SharedWorkQuery::default())
+                .await
+                .is_err()
+        );
+    }
+
     let stopped = attempts::stop(&f, &runtime, 103).await;
     let next = f
         .domain
@@ -745,7 +861,7 @@ async fn pool_agent_reaches_private_room_and_runtime_without_any_project() {
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn pool_agent_topup_is_approved_only_by_resource_owner_and_preserves_original_reservation() {
     use crate::management_agent_budget_types::*;
-    let (mut f, request, _, _) = Box::pin(prepared_pool(true)).await;
+    let (mut f, request, ..) = Box::pin(prepared_pool(true)).await;
     f.policy = f.policy.with_agent_budget_deltas(true);
     let b = f
         .domain
@@ -882,7 +998,7 @@ async fn pool_agent_topup_is_approved_only_by_resource_owner_and_preserves_origi
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn pool_owner_can_fund_beyond_published_grant_but_manager_cannot() {
     use crate::management_agent_budget_types::*;
-    let (mut f, request, _, _) = Box::pin(prepared_pool(true)).await;
+    let (mut f, request, ..) = Box::pin(prepared_pool(true)).await;
     f.policy = f.policy.with_agent_budget_deltas(true);
     let b = f
         .domain
@@ -1051,7 +1167,7 @@ async fn pool_owner_can_fund_beyond_published_grant_but_manager_cannot() {
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_user_leakage() {
-    let (f, request, assignment, matrix) = Box::pin(prepared_pool(true)).await;
+    let (f, request, assignment, matrix) = Box::pin(prepared_pool_calendar(true, true)).await;
     let runtime = shared_poll(&f).await;
     let activity = save(&f, &runtime, "qualified", 101)
         .await
@@ -1118,7 +1234,53 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         .await
         .unwrap();
     assert_eq!(value["executions"][0]["state"], "started");
-    attempts::stop(&f, &runtime, 103).await;
+    let stopped = attempts::stop(&f, &runtime, 103).await;
+    let pool = f
+        .domain
+        .pool_agent_request(&f.outsider.p, &request.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        pool.current_period.unwrap().remaining_tokens,
+        None,
+        "stopping the process cannot settle its unknown work"
+    );
+    for who in [&f.outsider.p, &f.owner.p] {
+        let index = f
+            .domain
+            .shared_work_index(
+                who,
+                &f.policy,
+                crate::management_shared_work_types::SharedWorkIndexQuery {
+                    include_pool_agents: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let item = index
+            .items
+            .iter()
+            .find(|v| v.request_id == request.id)
+            .expect("pool work is recoverable without a Project");
+        assert!(item.project_id.is_none() && item.project_name.is_none());
+    }
+    assert!(
+        f.domain
+            .shared_work_index(
+                &f.admin.p,
+                &f.policy,
+                crate::management_shared_work_types::SharedWorkIndexQuery {
+                    include_pool_agents: true,
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+
     assert_eq!(
         f.domain
             .pool_agent_request(&f.outsider.p, &request.id)
@@ -1142,8 +1304,92 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         .route_shared_event(&f.policy, &event, now_ms(), &matrix.gateway)
         .await
         .unwrap();
-    sql_query("UPDATE hagency_agent_v1.management_shared_intake SET state='blocked',reason='budget_blocked' WHERE assignment_id=$1 AND event_id=$2")
-        .bind::<Text,_>(&assignment.id).bind::<Text,_>(&event.event_id).execute(&mut db).await.unwrap();
+    let offered = f
+        .domain
+        .poll_shared_demand(
+            &f.owner.p,
+            &f.policy,
+            serde_json::from_value(json!({})).unwrap(),
+        )
+        .await
+        .unwrap()
+        .demand
+        .unwrap();
+    let mut budget = attempts::start(&runtime, &stopped).budget_observation;
+    budget.allocated_tokens = request.requested_tokens;
+    budget.retained_tokens = budget.allocated_tokens;
+    budget.known_consumed_tokens = budget.allocated_tokens;
+    budget.remaining_tokens = 0;
+    f.domain
+        .block_shared_demand(
+            &f.owner.p,
+            &offered.offer.demand_id,
+            crate::management_shared_demand_types::SharedDemandBlockInput {
+                demand_digest: offered.demand_digest,
+                expected_control_revision: offered.offer.control_revision,
+                reason: "budget_blocked".into(),
+                budget: Some(budget),
+                retries: false,
+            },
+        )
+        .await
+        .unwrap();
+    // The administrator is not an applicant or a sender. Joining the bound room
+    // permits only its generic state; leaving it withdraws even that view.
+    let read_room = || async {
+        let input =
+            serde_json::from_value(json!({"roomId":request.room_id,"roomAllowanceAfter":""}))
+                .unwrap();
+        let page = f
+            .domain
+            .shared_approval_room_page(&f.admin.p, input, &matrix.gateway)
+            .await
+            .unwrap();
+        assert_eq!(page["roomAllowanceSupported"], true);
+        assert_eq!(page["executions"], json!([]));
+        page["roomAllowancePage"].clone()
+    };
+    member(
+        &mut matrix.states.lock().unwrap(),
+        &request.room_id,
+        &f.admin.p.mxid,
+        "leave",
+    );
+    assert_eq!(read_room().await["items"], json!([]));
+    member(
+        &mut matrix.states.lock().unwrap(),
+        &request.room_id,
+        &f.admin.p.mxid,
+        "join",
+    );
+    let visible = read_room().await;
+    assert_eq!(visible["items"].as_array().unwrap().len(), 1);
+    assert_eq!(visible["items"][0]["state"], "exhausted");
+    assert_eq!(visible["items"][0].as_object().unwrap().len(), 2);
+    member(
+        &mut matrix.states.lock().unwrap(),
+        &request.room_id,
+        &f.admin.p.mxid,
+        "leave",
+    );
+    assert_eq!(read_room().await["items"], json!([]));
+    for principal in [&f.owner.p, &f.outsider.p] {
+        let detail = f
+            .domain
+            .pool_agent_request(principal, &request.id)
+            .await
+            .unwrap();
+        let notice = detail.allowance_notice.unwrap();
+        assert_eq!(notice.state, "exhausted");
+        let encoded = serde_json::to_value(&notice).unwrap();
+        assert_eq!(encoded.as_object().unwrap().len(), 2);
+    }
+    assert!(
+        f.domain
+            .pool_agent_request(&f.admin.p, &request.id)
+            .await
+            .is_err()
+    );
     for p in [&f.owner.p, &f.outsider.p] {
         let value = f
             .domain
@@ -1152,6 +1398,15 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
             .unwrap();
         assert_eq!(value["executions"][0]["eventId"], event.event_id);
         assert_eq!(value["executions"][0]["reason"], "budget_blocked");
+        let role = if p.user_id == f.owner.p.user_id {
+            "owner"
+        } else {
+            "manager"
+        };
+        assert_eq!(
+            value["executions"][0]["resourceRecovery"],
+            json!({"requestId":request.id,"role":role})
+        );
     }
     let hidden = f
         .domain
@@ -1172,6 +1427,26 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
     }
     assert!(sql_query("SELECT count(*)=1 AS matched FROM hagency_agent_v1.management_shared_work WHERE id=$1 AND state='unknown'")
         .bind::<Text,_>(&work.id).get_result::<Check>(&mut db).await.unwrap().matched);
+    f.domain
+        .change_shared_run_control(
+            &f.outsider.p,
+            &f.policy,
+            &assignment.id,
+            intake_tests::change(
+                "pause_after_denial",
+                offered.offer.control_revision,
+                "paused",
+            ),
+            &matrix.gateway,
+        )
+        .await
+        .unwrap();
+    let refreshed = f
+        .domain
+        .pool_agent_request(&f.owner.p, &request.id)
+        .await
+        .unwrap();
+    assert!(refreshed.allowance_notice.is_none());
 }
 
 #[tokio::test]
@@ -1590,7 +1865,7 @@ async fn pool_schema_upgrade_preserves_existing_capacity_and_rolls_back_atomical
     db.batch_execute(include_str!("management_pool_agents_remove_test.sql"))
         .await
         .unwrap();
-    db.batch_execute("ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=23;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=23);CREATE INDEX pool_agent_room_unique ON hagency_agent_v1.management_requests(id)").await.unwrap();
+    db.batch_execute("ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=23;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=23);CREATE INDEX pool_agent_room_unique ON hagency_agent_v1.management_requests(id)").await.unwrap();
     assert!(
         DomainStore::open(&f.url, "example.test", "_hagency_test_")
             .await
@@ -1643,7 +1918,7 @@ pub(super) async fn remove_migration(db: &mut AsyncPgConnection) {
     db.batch_execute("DROP TABLE IF EXISTS hagency_agent_v1.management_shared_demand_retry_starts,hagency_agent_v1.management_shared_demand_retries;DROP FUNCTION IF EXISTS hagency_agent_v1.validate_shared_demand_retry()").await.unwrap();
     work::remove_migration(db).await;
 
-    db.batch_execute("DROP TRIGGER fence_shared_runtime ON hagency_agent_v1.management_shared_assignments;DROP TRIGGER exclude_shared_runtime_v1 ON hagency_agent_v1.management_agent_runtime_commands;DROP TABLE hagency_agent_v1.management_shared_activity_renewals,hagency_agent_v1.management_shared_process_receipts,hagency_agent_v1.management_shared_runtimes;DROP FUNCTION hagency_agent_v1.fence_shared_runtime(),hagency_agent_v1.exclude_shared_runtime_v1(),hagency_agent_v1.retain_shared_runtime(),hagency_agent_v1.validate_shared_runtime();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;UPDATE hagency_agent_v1.management_deployment SET version=11;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=11)").await.unwrap();
+    db.batch_execute("DROP TRIGGER fence_shared_runtime ON hagency_agent_v1.management_shared_assignments;DROP TRIGGER exclude_shared_runtime_v1 ON hagency_agent_v1.management_agent_runtime_commands;DROP TABLE hagency_agent_v1.management_shared_activity_renewals,hagency_agent_v1.management_shared_process_receipts,hagency_agent_v1.management_shared_runtimes;DROP FUNCTION hagency_agent_v1.fence_shared_runtime(),hagency_agent_v1.exclude_shared_runtime_v1(),hagency_agent_v1.retain_shared_runtime(),hagency_agent_v1.validate_shared_runtime();ALTER TABLE hagency_agent_v1.management_deployment DROP CONSTRAINT management_deployment_version_check;DROP TABLE IF EXISTS public.__diesel_schema_migrations; UPDATE hagency_agent_v1.management_deployment SET version=11;ALTER TABLE hagency_agent_v1.management_deployment ADD CONSTRAINT management_deployment_version_check CHECK(version=11)").await.unwrap();
 }
 async fn prepared() -> (
     Fixture,
@@ -2563,7 +2838,7 @@ async fn shared_runtime_discovery_rotates_three_agents_without_polling_healthy_p
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn pool_owner_direct_funding_is_atomic_idempotent_and_owner_only() {
     use crate::management_agent_budget_types::*;
-    let (mut f, request, _, _) = Box::pin(prepared_pool(true)).await;
+    let (mut f, request, ..) = Box::pin(prepared_pool(true)).await;
     f.policy = f.policy.with_agent_budget_deltas(true);
     let b = f
         .domain
@@ -2730,12 +3005,9 @@ async fn encrypted_pool_intake_requires_assigned_executor_before_any_model_work(
     let (f, request, assignment, matrix) = Box::pin(prepared_pool(true)).await;
     matrix.states.lock().unwrap().get_mut(&request.room_id).unwrap().push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
-    let received =
-        sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS count")
-            .get_result::<Count>(&mut db)
-            .await
-            .unwrap()
-            .count;
+    // Encrypted ingress is stamped by the host clock, not PostgreSQL's rounded
+    // millisecond clock, which can be one millisecond ahead of the source clock.
+    let received = crate::api::now_ms();
     let event = crate::transport::RoutedEvent {
         event_id: "$encrypted_pool".into(),
         room_id: request.room_id.clone(),
@@ -3278,4 +3550,95 @@ fn shared_octos_root_has_a_distinct_closed_policy() {
         allocation_digest(&original).unwrap(),
         fixture["commandDigest"]
     );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn direct_pool_qualification_and_stop_are_delivered_after_a_command_cursor() {
+    let (mut f, request, assignment, _matrix) = Box::pin(prepared_pool(false)).await;
+    f.policy = f.policy.with_agent_runtime_provisioning(true);
+    let d = f
+        .domain
+        .poll_managed_runtime(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await
+        .unwrap()
+        .expect("direct pool can qualify without a Project");
+    assert_eq!(d.command.original().assignment_id, assignment.id);
+    super::submit_runtime(&f, &d, super::result(&d, "qualified", 200))
+        .await
+        .unwrap();
+    let current = f
+        .domain
+        .pool_agent_request(&f.outsider.p, &request.id)
+        .await
+        .unwrap();
+    f.domain
+        .stop_pool_agent(
+            &f.outsider.p,
+            &request.id,
+            crate::management_types::RevokeInput {
+                command_id: "stop_pool_qualification".into(),
+                expected_revision: current.revision,
+            },
+        )
+        .await
+        .unwrap();
+    let stop = f
+        .domain
+        .poll_managed_runtime(
+            &f.owner.p,
+            &f.policy,
+            ExecutorPollInput {
+                after: Some(d.command.id().into()),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("command cursor must not hide assignment stop");
+    assert!(matches!(
+        stop.command,
+        crate::management_agent_runtime_types::ManagedRuntimeCommand::Stop(_)
+    ));
+    assert_eq!(stop.command.original().assignment_id, assignment.id);
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_device_login_releases_only_slot_and_rechecks_after_revocation() {
+    use crate::Error;
+    let (mut f, _, assignment, _) = Box::pin(prepared_pool(true)).await;
+    let pool = f.domain.use_single_slot_pool(&f.url);
+    let server = crate::transport::LoginServer::new().await;
+    let input = || serde_json::from_value(json!({"assignmentId":assignment.id})).unwrap();
+    let mut login = Box::pin(
+        f.domain
+            .shared_crypto_device(&f.owner.p, input(), &server.matrix),
+    );
+    tokio::select! {
+        _ = server.wait_login() => (),
+        result = &mut login => panic!("login did not reach Matrix: {result:?}"),
+    }
+    assert_eq!(pool.status().available, 1);
+    assert!(matches!(
+        f.domain
+            .shared_crypto_device(&f.owner.p, input(), &server.matrix)
+            .await,
+        Err(Error::Conflict("matrix_device_issuance_pending"))
+    ));
+    let mut other = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("UPDATE hagency_agent_v1.devices SET revoked=true WHERE id=$1")
+        .bind::<Text, _>(f.owner.p.device_id.as_deref().unwrap())
+        .execute(&mut other)
+        .await
+        .unwrap();
+    server.resume.notify_one();
+    assert!(matches!(login.await, Err(Error::Unauthorized(_))));
+    #[derive(QueryableByName)]
+    struct Retired {
+        #[diesel(sql_type=Bool)]
+        matched: bool,
+    }
+    let retired = sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.executor_matrix_devices WHERE scope_id=$1 AND kind='shared' AND revoked AND retiring AND issuance_nonce IS NULL) AS matched")
+        .bind::<Text,_>(&assignment.id).get_result::<Retired>(&mut other).await.unwrap();
+    assert!(retired.matched);
 }

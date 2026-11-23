@@ -1,8 +1,11 @@
 //! Server-only Appservice credentials and namespace-confined puppet operations.
-use crate::{Error, Result, domain::Agent};
+use std::time::Duration;
+
 use reqwest::{Client, Method, Url};
 use serde_json::{Value, json};
-use std::time::Duration;
+
+use crate::domain::Agent;
+use crate::{Error, Result};
 #[path = "matrix_crypto.rs"]
 mod crypto;
 #[derive(Clone)]
@@ -137,6 +140,19 @@ impl MatrixClient {
                 "Matrix homeserver rate limited a request"
             );
             return Err(Error::Unavailable("matrix_rate_limited"));
+        }
+        if response.status().is_client_error() && response.status().as_u16() != 403 {
+            let mut bytes = Vec::new();
+            while let Ok(Some(chunk)) = response.chunk().await {
+                if bytes.len() + chunk.len() > 64 * 1024 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            if serde_json::from_slice::<Value>(&bytes).is_ok_and(|v| v["errcode"] == "M_TOO_LARGE")
+            {
+                return Err(Error::Conflict("matrix_event_too_large"));
+            }
         }
         if !response.status().is_success() {
             return Err(if response.status().as_u16() == 403 {

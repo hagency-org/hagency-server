@@ -7,10 +7,13 @@ struct ChatStatus {
     payload: String,
 }
 
+use crate::management_pool_types::budget_state;
+
 pub(super) async fn query(
     db: &mut AsyncPgConnection,
     p: &Principal,
     room: Option<&str>,
+    thread: Option<&str>,
     now: i64,
 ) -> Result<Vec<Value>> {
     let Some(room) = room else {
@@ -29,16 +32,20 @@ pub(super) async fn query(
                 WHEN reply.state IN ('unknown','blocked') THEN 'reply_unknown'
                 WHEN w.state='completed' THEN 'reply_pending'
                 WHEN w.state='started' AND (r.state<>'qualified' OR r.activity_until_ms<=$4) THEN 'unknown'
-                WHEN w.started_at_ms IS NULL AND (i.state='pending' OR w.state IN ('queued','acknowledged'))
-                    AND protocol.reason IS NOT NULL THEN 'blocked'
+                WHEN w.state IS NOT NULL AND w.state NOT IN ('queued','acknowledged') THEN w.state
+                WHEN queue.status IS NOT NULL THEN queue.status
                 WHEN w.state IS NOT NULL THEN w.state
                 ELSE i.state END,
-            'reason', CASE WHEN w.started_at_ms IS NULL AND (i.state='pending' OR w.state IN ('queued','acknowledged'))
-                THEN coalesce(protocol.reason,i.reason) ELSE i.reason END,
-            'budgetBlock', budget_block.payload::jsonb
+            'reason', CASE WHEN queue.status IS NOT NULL THEN queue.reason ELSE i.reason END,
+            'resourceRecovery', CASE WHEN queue.reason='budget_blocked' AND req.id IS NOT NULL
+                THEN jsonb_build_object('requestId',req.id,'role',
+                    CASE WHEN req.administrator_user_id=$1 THEN 'owner' ELSE 'manager' END) END,
+            'budgetBlock', CASE WHEN queue.reason='budget_blocked' THEN budget_block.payload::jsonb END
         )::text AS payload
         FROM hagency_agent_v1.management_shared_intake i
         JOIN hagency_agent_v1.management_shared_assignments a ON a.id=i.assignment_id
+        LEFT JOIN hagency_agent_v1.management_agent_requests req ON req.id=a.request_id
+            AND req.pool_contribution_id IS NOT NULL AND $1 IN (req.manager_user_id,req.administrator_user_id)
         LEFT JOIN LATERAL (
             SELECT hagency_agent_v1.shared_executor_protocol_reason(
                 a.executor_owner_user_id,a.executor_device_id,a.executor_generation,$4) AS reason
@@ -48,20 +55,32 @@ pub(super) async fn query(
         LEFT JOIN hagency_agent_v1.management_shared_work w ON w.id=pin.work_id
         LEFT JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id
         LEFT JOIN hagency_agent_v1.management_shared_replies reply ON reply.work_id=w.id
+        LEFT JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=i.id
+        LEFT JOIN hagency_agent_v1.management_shared_budget_demand_terminals t ON t.demand_id=d.id
         LEFT JOIN LATERAL (
-            SELECT blocks.payload FROM (
-                SELECT b.payload, 0::bigint AS revision
-                FROM hagency_agent_v1.management_shared_demands d
-                JOIN hagency_agent_v1.management_shared_demand_blocks b ON b.demand_id=d.id
-                WHERE d.intake_id=i.id
-                UNION ALL
-                SELECT b.payload, b.budget_revision AS revision
-                FROM hagency_agent_v1.management_shared_demands d
-                JOIN hagency_agent_v1.management_shared_budget_demand_blocks b ON b.demand_id=d.id
-                WHERE d.intake_id=i.id
-            ) blocks ORDER BY revision DESC LIMIT 1
+            SELECT max(br.budget_revision) AS revision
+            FROM hagency_agent_v1.management_agent_budget_commands bc
+            JOIN hagency_agent_v1.management_agent_budget_results br ON br.command_id=bc.id
+            WHERE bc.request_id=a.request_id AND br.state='applied'
+        ) applied ON true
+        LEFT JOIN LATERAL (
+            SELECT b.payload,b.reason FROM hagency_agent_v1.management_shared_demand_blocks b
+            WHERE b.demand_id=d.id AND (b.reason<>'budget_blocked' OR applied.revision IS NULL)
+            UNION ALL
+            SELECT b.payload,b.reason FROM hagency_agent_v1.management_shared_budget_demand_blocks b
+            WHERE b.demand_id=d.id AND b.budget_revision=applied.revision
         ) budget_block ON true
+        LEFT JOIN LATERAL (
+            SELECT CASE WHEN t.reason='expired' THEN 'expired'
+                        WHEN reason IS NULL THEN 'pending' ELSE 'blocked' END AS status, reason
+            FROM (SELECT coalesce(t.reason, protocol.reason, budget_block.reason,
+                CASE WHEN i.reason='budget_blocked' AND applied.revision IS NOT NULL THEN NULL ELSE i.reason END) AS reason) reasons
+            WHERE w.started_at_ms IS NULL AND (w.state IS NULL OR w.state IN ('queued','acknowledged'))
+              AND (i.state='pending' OR (i.state='blocked' AND i.reason='budget_blocked') OR w.state IN ('queued','acknowledged'))
+              AND (reason IS NOT NULL OR (i.state='blocked' AND i.reason='budget_blocked' AND applied.revision IS NOT NULL))
+        ) queue ON true
         WHERE i.event_payload::jsonb->>'room_id'=$3
+          AND ($5::text IS NULL OR coalesce(i.event_payload::jsonb->>'thread_root', i.event_id)=$5)
           AND (a.executor_owner_user_id=$1 OR
                i.event_payload::jsonb->>'sender_mxid'=$2)
         ORDER BY i.received_at_ms DESC, i.id DESC LIMIT 16
@@ -70,6 +89,7 @@ pub(super) async fn query(
     .bind::<Text, _>(&p.mxid)
     .bind::<Text, _>(room)
     .bind::<BigInt, _>(now)
+    .bind::<Nullable<Text>, _>(thread)
     .load::<ChatStatus>(db).await?;
     let mut values = rows
         .into_iter()
@@ -81,23 +101,7 @@ pub(super) async fn query(
                 .unwrap_or(Value::Null);
             // Publish only the reason, never the private liability digest or
             // another message's details. A zero balance is not proof of spending.
-            let budget = &block["budget"];
-            let state = if budget["usageComplete"] == false
-                && budget["knownConsumedTokens"]
-                    .as_i64()
-                    .zip(budget["allocatedTokens"].as_i64())
-                    .is_some_and(|(known, total)| known < total)
-            {
-                Some("usage_unresolved")
-            } else if budget["usageComplete"] == true
-                || block == "known_consumption_exhausted"
-                || block["reason"] == "known_consumption_exhausted"
-            {
-                Some("exhausted")
-            } else {
-                None
-            };
-            if let Some(state) = state {
+            if let Some(state) = budget_state(&block) {
                 value["budgetState"] = json!(state);
             }
             Ok(value)
@@ -122,6 +126,7 @@ pub(super) async fn query(
         CROSS JOIN LATERAL (SELECT hagency_agent_v1.shared_executor_protocol_reason(
             a.executor_owner_user_id,a.executor_device_id,a.executor_generation,$4) AS reason) protocol
         WHERE c.payload::jsonb->>'room_id'=$3 AND c.state<>'ignored'
+            AND ($5::text IS NULL OR c.event_id=$5)
             AND c.received_at_ms>$4-86400000 AND control.mode='running' AND a.state='pending_native'
             AND (a.executor_owner_user_id=$1 OR c.payload::jsonb->>'sender_mxid'=$2)
             AND protocol.reason IS NOT NULL
@@ -129,7 +134,7 @@ pub(super) async fn query(
                 WHERE i.assignment_id=a.id AND i.event_id=c.event_id)
         ORDER BY c.received_at_ms DESC,c.event_id DESC LIMIT 16
     "#).bind::<Text,_>(&p.user_id).bind::<Text,_>(&p.mxid).bind::<Text,_>(room)
-        .bind::<BigInt,_>(now).load::<ChatStatus>(db).await?;
+        .bind::<BigInt,_>(now).bind::<Nullable<Text>,_>(thread).load::<ChatStatus>(db).await?;
     for row in candidates {
         values.push(decode(&row.payload)?);
     }
@@ -141,4 +146,32 @@ pub(super) async fn query(
     });
     values.truncate(16);
     Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn budget_state_preserves_known_lower_bound_and_old_evidence() {
+        let exhausted = "known_consumption_exhausted";
+        for block in [
+            json!(exhausted),
+            json!({"reason":exhausted}),
+            json!({"reason":"budget_blocked","source":exhausted}),
+        ] {
+            assert_eq!(budget_state(&block), Some("exhausted"));
+        }
+        for (known, complete, expected) in [
+            (99, false, Some("usage_unresolved")),
+            (100, false, Some("exhausted")),
+            (104, false, Some("exhausted")),
+            (100, true, Some("exhausted")),
+            (90, true, None),
+        ] {
+            let block = json!({"budget":{"knownConsumedTokens":known,"allocatedTokens":100,"usageComplete":complete}});
+            assert_eq!(budget_state(&block), expected);
+        }
+        assert_eq!(budget_state(&json!({"budget":{"remainingTokens":0}})), None);
+    }
 }

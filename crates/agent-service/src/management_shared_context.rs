@@ -310,7 +310,8 @@ async fn freeze(db: &mut AsyncPgConnection, w: &SharedWorkItem) -> Result<Shared
     })
 }
 impl DomainStore {
-    /// Descriptive preflight, before a native call hold or start. Policy-off reads remain available.
+    /// Descriptive preflight, before a native call hold or start. Policy-off reads remain
+    /// available.
     pub async fn shared_work_input_mode(
         &self,
         p: &Principal,
@@ -336,9 +337,8 @@ impl DomainStore {
         input: SharedWorkEvidenceInput,
         protocol: WorkProtocol,
     ) -> Result<SharedWorkInputMode> {
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 let (_, r, w) = owned(db, p, id, &input, &self.server).await?;
                 protocol.check(&r)?;
                 let mode = mode(db, id).await?;
@@ -357,11 +357,8 @@ impl DomainStore {
         id: &str,
         input: SharedWorkEvidenceInput,
     ) -> Result<SharedReplyObservation> {
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-                    .await?;
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 let (_, _, w) = owned(db, p, id, &input, &self.server).await?;
                 delivery(db, &w).await
             })
@@ -373,9 +370,8 @@ impl DomainStore {
         id: &str,
         input: SharedContextRecoverInput,
     ) -> Result<SharedContextRecord> {
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 let (_, _, w) = owned(
                     db,
                     p,
@@ -450,11 +446,8 @@ impl DomainStore {
         let observed = self
             .shared_work_facts(p, policy, &input.authority, gateway, protocol, Some(id))
             .await?;
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
-                db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)")
-                    .await?;
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, 0).await?;
                 let r = runtime(db, &input.authority.runtime_command_id).await?;
                 protocol.check(&r)?;
@@ -530,9 +523,8 @@ impl DomainStore {
         let observed = self
             .shared_work_facts(p, policy, &input.authority, gateway, protocol, Some(id))
             .await?;
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
-            db.batch_execute("SELECT pg_advisory_xact_lock(5210750088328904)").await?;
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{
+
             Self::authorize(db,p,0).await?;let r=runtime(db,&input.authority.runtime_command_id).await?;protocol.check(&r)?;require_budget_head(db,&r,&self.server).await?;let now=clock(db).await?;
             if !runtime_issuing(db,policy,&r).await?{return Err(Error::Unavailable("shared_execution_issuance_unavailable"));}
             worker_protocol::require(db,p,now).await?;let original=require_activity(db,p,&r,&input.authority,&self.server,now).await?;
@@ -545,7 +537,11 @@ impl DomainStore {
             if newly {
                 let busy=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work WHERE runtime_id=$1 AND (state IN('started','unknown') OR (started_at_ms IS NOT NULL AND NOT usage_complete))) AS matched").bind::<Text,_>(&r.id).get_result::<Flag>(db).await?.matched;
                 if busy{return Err(Error::Conflict("shared_work_unsettled"));}
-                let exhausted=sql_query("SELECT coalesce(sum(w.known_consumed_tokens),0)>=$2 AS matched FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1").bind::<Text,_>(&w.assignment_id).bind::<BigInt,_>(original.execution_budget.as_ref().map_or(original.reserve_command.requested_tokens,|b|b.effective_ceiling_tokens)).get_result::<Flag>(db).await?.matched;
+                let known=match Box::pin(super::super::periods::current_known(db,&original.reserve_command.request_id,now)).await? {
+                    Some(known)=>known,
+                    None=>sql_query("SELECT LEAST(coalesce(sum(w.known_consumed_tokens),0),9007199254740992)::bigint AS now FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id WHERE r.assignment_id=$1").bind::<Text,_>(&w.assignment_id).get_result::<Clock>(db).await?.now,
+                };
+                let exhausted=known>=original.execution_budget.as_ref().map_or(original.reserve_command.requested_tokens,|b|b.effective_ceiling_tokens);
                 if exhausted{return Err(Error::Conflict("shared_budget_exhausted"));}
                 sql_query("INSERT INTO hagency_agent_v1.management_shared_context_starts VALUES($1,$2,$3,$4)").bind::<Text,_>(id).bind::<Text,_>(&saved.context_digest).bind::<Text,_>(&saved.input_digest).bind::<BigInt,_>(input.authority.epoch).execute(db).await?;
                 sql_query("UPDATE hagency_agent_v1.management_shared_work SET state='started',started_at_ms=$2,start_epoch=$3 WHERE id=$1").bind::<Text,_>(id).bind::<BigInt,_>(now).bind::<BigInt,_>(input.authority.epoch).execute(db).await?;
@@ -594,9 +590,11 @@ impl DomainStore {
             value: bool,
         }
         let encrypted = {
-            let mut db = self.db.lock().await?;
-            sql_query("SELECT coalesce((payload::jsonb->>'encrypted')::boolean,false) AS value FROM hagency_agent_v1.management_shared_work WHERE id=$1")
-                .bind::<Text,_>(&input.work_id).get_result::<Encrypted>(&mut *db).await?.value
+            self.db.transaction(async |db| {
+
+                Ok(sql_query("SELECT coalesce((payload::jsonb->>'encrypted')::boolean,false) AS value FROM hagency_agent_v1.management_shared_work WHERE id=$1")
+                    .bind::<Text,_>(&input.work_id).get_result::<Encrypted>(db).await?.value)
+            }).await?
         };
         if encrypted {
             return if budget {

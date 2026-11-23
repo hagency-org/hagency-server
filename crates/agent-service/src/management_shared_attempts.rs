@@ -280,9 +280,8 @@ impl DomainStore {
         input.validate()?;
         let digest = allocation_digest(&input)?;
         let scope = {
-            let mut guard = self.db.lock().await?;
-            (*guard)
-                .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+            self.db
+                .write_transaction(async |db: &mut AsyncPgConnection| {
                     Self::authorize(db, p, 0).await?;
                     if let Some(old) = prior_start(db, &input, &digest, p).await? {
                         return Ok(Err(attempt_delivery(
@@ -321,9 +320,8 @@ impl DomainStore {
                 &scope.puppet_mxid,
             )
             .await?;
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, 0).await?;
                 if let Some(old) = prior_start(db, &input, &digest, p).await? {
                     return attempt_delivery(db, p, policy, &old, &self.server, true, None).await;
@@ -389,8 +387,7 @@ impl DomainStore {
         if let Some(id) = &input.after {
             key(id)?;
         }
-        let mut guard = self.db.lock().await?;
-        (*guard).transaction::<_,Error,_>(async|db:&mut AsyncPgConnection|{
+        self.db.write_transaction(async|db:&mut AsyncPgConnection|{
             Self::authorize(db,p,0).await?;let (device,_)=device(p)?;let now=clock(db).await?;sweep(db,p,now).await?;
             timeouts::sweep(db,Some((p.user_id.as_str(),device)),now).await?;
             // A process stop does not acknowledge its work receipt. Recover
@@ -412,9 +409,8 @@ impl DomainStore {
         if let Some(v) = &input.observation_id {
             key(v)?;
         }
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, 0).await?;
                 let r = runtime(db, id).await?;
                 owner(&original(db, &r).await?, p)?;
@@ -443,9 +439,8 @@ impl DomainStore {
     ) -> Result<SharedAttemptAcknowledgement> {
         enabled(policy)?;
         key(id)?;
-        let mut guard = self.db.lock().await?;
-        (*guard)
-            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| {
+        self.db
+            .write_transaction(async |db: &mut AsyncPgConnection| {
                 Self::authorize(db, p, 0).await?;
                 record_in(db, p, policy, &self.server, id, &input).await
             })

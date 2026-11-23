@@ -1,7 +1,9 @@
 //! Direct resource-pool requests. No project, project administrator or setup
 //! identity is accepted from the caller.
-use crate::{Error, Result, key, management_agent_types::AgentDefinition};
 use serde::{Deserialize, Serialize};
+
+use crate::management_agent_types::AgentDefinition;
+use crate::{Error, Result, key};
 
 pub const POOL_AGENTS_FEATURE: &str = "resource-pool-agents-v1";
 
@@ -20,13 +22,8 @@ pub struct RequestPoolAgent {
 impl RequestPoolAgent {
     pub(crate) fn validate(&self) -> Result<()> {
         key(&self.command_id)?;
-        if !self.room_id.starts_with('!')
-            || !self.room_id.contains(':')
-            || self.room_id.len() > 255
-            || self.room_id.chars().any(char::is_whitespace)
-        {
-            return Err(Error::Invalid("invalid_pool_agent_room"));
-        }
+        crate::domain::matrix_id(&self.room_id, '!')
+            .map_err(|_| Error::Invalid("invalid_pool_agent_room"))?;
         self.definition.validate()?;
         for n in [
             self.expected_pool_revision,
@@ -103,6 +100,10 @@ pub struct PoolRenewal {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PoolAgentRequest {
+    /// Most recent budget-denied start for this allocation. Read-only advisory;
+    /// callers still refresh the authoritative budget and period before acting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowance_notice: Option<PoolAllowanceNotice>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar: Option<crate::recurring_quota::Calendar>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,6 +149,13 @@ pub struct PoolAgentRequest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolAllowanceNotice {
+    pub state: String,
+    pub received_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenewPoolAgent {
     pub command_id: String,
@@ -174,4 +182,21 @@ pub struct ReallocatePoolAgent {
     pub expected_revision: i64,
     pub expected_grant_revision: i64,
     pub renewal_mode: crate::recurring_quota::RenewalMode,
+}
+
+pub(crate) fn budget_state(block: &serde_json::Value) -> Option<&'static str> {
+    let exhausted = "known_consumption_exhausted";
+    if block == exhausted || block["reason"] == exhausted || block["source"] == exhausted {
+        return Some("exhausted");
+    }
+    let budget = &block["budget"];
+    let known = budget["knownConsumedTokens"].as_u64()?;
+    let ceiling = budget["allocatedTokens"].as_u64()?;
+    if known >= ceiling {
+        return Some("exhausted");
+    }
+    match budget["usageComplete"].as_bool() {
+        Some(false) => Some("usage_unresolved"),
+        _ => None,
+    }
 }

@@ -29,19 +29,23 @@ pub async fn register_appservice(
     api_client(BASE, "POST", Some(body)).await
 }
 
-/// Replace an existing registration in place. The `id` in `reg` selects the
-/// target; the homeserver treats the path id as authoritative and preserves
-/// the administrative `disabled` flag.
-pub async fn update_appservice(
+/// The running server supports callback-URL compare-and-swap, not arbitrary registration replacement.
+pub async fn update_appservice_url(
     id: &str,
-    reg: &AppserviceRegistration,
+    url: &str,
+    expected_url: Option<&str>,
 ) -> Result<serde_json::Value, HttpError> {
-    let path = format!("{BASE}/{}", urlencoding::encode(id));
-    let body = serde_json::to_string(reg)
-        .map_err(|e| HttpError::message(format!("Failed to serialize registration: {e}")))?;
-    api_client(&path, "PUT", Some(body)).await
+    let path = format!("{BASE}/{}/url", urlencoding::encode(id));
+    api_client(
+        &path,
+        "PUT",
+        Some(url_update_body(url, expected_url).to_string()),
+    )
+    .await
 }
-
+fn url_update_body(url: &str, expected_url: Option<&str>) -> serde_json::Value {
+    serde_json::json!({"url":url,"expected_url":expected_url})
+}
 pub async fn delete_appservice(id: &str) -> Result<(), HttpError> {
     let path = format!("{BASE}/{}", urlencoding::encode(id));
     let _: serde_json::Value = api_client(&path, "DELETE", None).await?;
@@ -58,4 +62,27 @@ pub async fn enable_appservice(id: &str) -> Result<(), HttpError> {
     let path = format!("{BASE}/{}/enable", urlencoding::encode(id));
     let _: serde_json::Value = api_client(&path, "POST", None).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn url_cas_carries_the_original_value_even_when_null() {
+        assert_eq!(
+            url_update_body("https://bridge.example", None),
+            serde_json::json!({"url":"https://bridge.example","expected_url":null})
+        );
+        assert_eq!(
+            url_update_body("https://new.example", Some("https://old.example"))["expected_url"],
+            "https://old.example"
+        );
+        assert_eq!(
+            url_update_body("https://new.example", None)
+                .as_object()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
 }

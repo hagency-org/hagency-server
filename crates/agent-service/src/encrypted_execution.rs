@@ -165,9 +165,7 @@ impl TransportStore {
         {
             return Err(Error::Invalid("invalid_encrypted_action_fields"));
         }
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
    let(now,_)=Self::authenticate(db,p,now).await?;
    let e=Self::dispatch(db,p,&b.dispatch_id).await?;
    let scope=Self::scope(db,&e.binding_id).await?;
@@ -263,13 +261,10 @@ impl TransportStore {
    let publication=sql_query(format!("{SELECT} WHERE id=$1")).bind::<Text,_>(&id).get_result::<Publication>(db).await?;
    Ok((json!({"publication":publication,"room":scope.room_id,"puppet":scope.puppet_mxid}),true))
   }).await
-    }).await
     }
     pub(crate) async fn encrypted_sent(&self, id: &str, event: &str) -> Result<()> {
         matrix_id(event, '$')?;
-        self.db.with_connection(async |db| {
-
-        db.transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.transaction(async |db:&mut AsyncPgConnection| {
    {
        use crate::schema::agent_tables::encrypted_publications as q;
        let params = (id, event);
@@ -281,7 +276,6 @@ impl TransportStore {
    }?;
    sql_query("UPDATE hagency_agent_v1.owner_events SET state='encrypted_completed',outcome='replied' WHERE id=(SELECT dispatch_id FROM hagency_agent_v1.encrypted_publications WHERE id=$1 AND kind='reply' AND matrix_event_id=$2) AND state IN ('encrypted_running','encrypted_unknown')").bind::<Text,_>(id).bind::<Text,_>(event).execute(db).await?;Ok(())
   }).await
-    }).await
     }
 }
 

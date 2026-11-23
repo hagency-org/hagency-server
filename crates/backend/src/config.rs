@@ -1,9 +1,8 @@
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+
 use anyhow::Context;
 use serde::Deserialize;
-use std::{
-    net::SocketAddr,
-    path::{Path, PathBuf},
-};
 use url::Url;
 
 #[derive(Clone, Deserialize)]
@@ -33,7 +32,7 @@ pub struct HostConfig {
     pub pasion_config: Option<PathBuf>,
     pub palpo_config: PathBuf,
     #[serde(default)]
-    pub management: Option<ManagementConfig>,
+    pub management: ManagementConfig,
     /// GitFab acceptance event signing. Absent leaves it off; existing hosts need no new input.
     #[serde(default)]
     pub gitfab: Option<GitfabConfig>,
@@ -76,14 +75,16 @@ pub struct GitfabConfig {
 pub struct GitfabTeamRole {
     pub capabilities: Vec<String>,
 }
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ManagementConfig {
-    /// One designated administrator; Room power does not confer this authority.
-    pub administrator: String,
+    /// Defaults to enabled when Pasion supplies the server's authentication.
+    pub enabled: Option<bool>,
+    /// Overrides the default Pasion administrator role with one local MXID.
+    pub administrator: Option<String>,
     /// Off until the native shared ledger and reservation capability are ready.
     #[serde(default)]
-    pub enable_project_reservations: bool,
+    pub enable_project_reservations: Option<bool>,
     /// Host-private only until the native parent settlement adapter is proven.
     #[serde(default)]
     pub enable_parent_settlement: bool,
@@ -92,7 +93,7 @@ pub struct ManagementConfig {
     pub enable_project_setup: bool,
     /// Admission-only, unadvertised until complete native managed execution.
     #[serde(default)]
-    pub enable_agent_admission: bool,
+    pub enable_agent_admission: Option<bool>,
     /// Host-private delivery only; does not enable shared model execution.
     #[serde(default)]
     pub enable_agent_executor: bool,
@@ -124,6 +125,12 @@ pub struct ManagementConfig {
     /// until the owners' desktops support succession.
     #[serde(default)]
     pub enable_pool_grant_succession: bool,
+}
+impl ManagementConfig {
+    fn apply_pool_defaults(&mut self, enabled: bool) {
+        self.enable_project_reservations.get_or_insert(enabled);
+        self.enable_agent_admission.get_or_insert(enabled);
+    }
 }
 /// Fully loaded runtime configuration; files stay owned by their components.
 #[derive(Clone)]
@@ -164,6 +171,33 @@ impl Default for QueueConfig {
         }
     }
 }
+impl QueueConfig {
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.max_pending > 0 && self.max_records > 0 && self.max_bytes > 0,
+            "queue limits must be positive"
+        );
+        anyhow::ensure!(
+            (1_000..=120_000).contains(&self.lease_ms),
+            "queue lease_ms must be between one second and two minutes"
+        );
+        anyhow::ensure!(
+            (1_000..=2_592_000_000).contains(&self.event_ttl_ms),
+            "queue event_ttl_ms must be between one second and thirty days"
+        );
+        Ok(())
+    }
+}
+impl HostConfig {
+    pub(crate) fn browser_session_ttl_ms(&self) -> anyhow::Result<u64> {
+        let ttl = self.session_ttl_ms.unwrap_or(1_800_000);
+        anyhow::ensure!(
+            (1_000..=86_400_000).contains(&ttl),
+            "browser session TTL must be between one second and one day"
+        );
+        Ok(ttl)
+    }
+}
 fn board_enabled() -> bool {
     true
 }
@@ -185,6 +219,16 @@ impl Config {
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref().canonicalize()?;
         let mut host = read_host(&path)?;
+        const ENABLE_RESOURCE_POOLS: &str = "HAGENCY_ENABLE_RESOURCE_POOLS";
+        match std::env::var(ENABLE_RESOURCE_POOLS) {
+            Ok(value) => host.management.apply_pool_defaults(
+                value
+                    .parse()
+                    .with_context(|| format!("{ENABLE_RESOURCE_POOLS} must be true or false"))?,
+            ),
+            Err(std::env::VarError::NotPresent) => {}
+            Err(error) => return Err(error).context(ENABLE_RESOURCE_POOLS),
+        }
         let base = path.parent().unwrap();
         for p in [&mut host.public_dir, &mut host.pasion_config]
             .into_iter()
@@ -295,27 +339,18 @@ impl Config {
                 anyhow::bail!("gitfab.stage_timeout_minutes must be at least 1");
             }
         }
-        if let Some(management) = &self.management {
+        if let Some(administrator) = &self.management.administrator {
             hagency_agent_service::management_types::ManagementPolicy::new(
-                management.administrator.clone(),
+                administrator.clone(),
                 self.matrix.server_name.as_str(),
             )?;
         }
 
         origin(&self.public_origin, true)?;
+        self.queue.validate()?;
+        self.browser_session_ttl_ms()?;
         anyhow::ensure!(
-            self.queue.max_pending > 0
-                && self.queue.max_records > 0
-                && self.queue.max_bytes > 0
-                && self.queue.lease_ms > 0,
-            "queue limits must be positive"
-        );
-        anyhow::ensure!(
-            (1_000..=2_592_000_000).contains(&self.queue.event_ttl_ms),
-            "queue event_ttl_ms must be between one second and thirty days"
-        );
-        anyhow::ensure!(
-            self.session_ttl_ms.unwrap_or(1800000) > 0 && self.read_timeout_ms.unwrap_or(8000) > 0,
+            self.read_timeout_ms.unwrap_or(8000) > 0,
             "timeouts must be positive"
         );
         anyhow::ensure!(
@@ -415,8 +450,66 @@ pub fn origin(url: &Url, public: bool) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod encrypted_delivery_tests {
-    use super::HostConfig;
     use hagency_agent_service::transport::EncryptedDelivery;
+
+    use super::HostConfig;
+
+    #[test]
+    fn management_defaults_to_pasion_and_explicit_pool_settings_override_the_environment() {
+        let base = "listen='127.0.0.1:8088'\npublic_origin='http://127.0.0.1:8088'\ndatabase_url='postgres://localhost/hagency'\npalpo_config='palpo.toml'\n";
+        let mut config: HostConfig = toml::from_str(base).unwrap();
+        assert!(config.management.enabled.unwrap_or(true));
+        assert!(config.management.administrator.is_none());
+        assert!(!config.management.enable_agent_admission.unwrap_or(false));
+        config.management.apply_pool_defaults(true);
+        assert_eq!(config.management.enable_project_reservations, Some(true));
+        assert_eq!(config.management.enable_agent_admission, Some(true));
+
+        let mut config: HostConfig = toml::from_str(&format!(
+            "{base}[management]\nenabled=false\nadministrator='@reviewer:example.test'\nenable_agent_admission=false\n"
+        )).unwrap();
+        config.management.apply_pool_defaults(true);
+        assert_eq!(config.management.enabled, Some(false));
+        assert_eq!(
+            config.management.administrator.as_deref(),
+            Some("@reviewer:example.test")
+        );
+        assert_eq!(config.management.enable_project_reservations, Some(true));
+        assert_eq!(config.management.enable_agent_admission, Some(false));
+    }
+
+    #[test]
+    fn startup_and_check_config_share_browser_ttl_boundaries() {
+        let base = "listen='127.0.0.1:8088'\npublic_origin='http://127.0.0.1:8088'\ndatabase_url='postgres://localhost/hagency'\npalpo_config='palpo.toml'\n";
+        for (ttl, valid) in [
+            (0, false),
+            (999, false),
+            (1_000, true),
+            (86_400_000, true),
+            (86_400_001, false),
+        ] {
+            let config: HostConfig =
+                toml::from_str(&format!("{base}session_ttl_ms={ttl}\n")).unwrap();
+            assert_eq!(config.browser_session_ttl_ms().is_ok(), valid, "{ttl}");
+        }
+        for (lease_ms, valid) in [
+            (999, false),
+            (1_000, true),
+            (120_000, true),
+            (120_001, false),
+        ] {
+            assert_eq!(
+                super::QueueConfig {
+                    lease_ms,
+                    ..Default::default()
+                }
+                .validate()
+                .is_ok(),
+                valid,
+                "{lease_ms}"
+            );
+        }
+    }
 
     #[test]
     fn personal_encrypted_delivery_defaults_to_executor_and_accepts_brokered_mode() {

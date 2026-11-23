@@ -1,9 +1,10 @@
 //! Owner ledger epochs: a receipt number is refused as reused only inside the
 //! ledger database its device last declared, and a declaration that replaces
 //! a database ends what the earlier one held.
+use std::collections::{BTreeMap, BTreeSet};
+
 use super::*;
 use crate::management_parent_types::*;
-use std::collections::{BTreeMap, BTreeSet};
 
 const AGENT_RECEIPTS: &str = "SELECT coalesce(string_agg(receipt_ledger_epoch||'/'||(receipt::jsonb->>'ledgerRevision'),',' ORDER BY receipt_ledger_epoch,(receipt::jsonb->>'ledgerRevision')::bigint),'') AS value FROM hagency_agent_v1.management_agent_executor_commands WHERE receipt IS NOT NULL";
 const GRANTS: &str = "SELECT coalesce(string_agg(ledger_epoch||'/'||(receipt::jsonb->>'ledgerRevision'),',' ORDER BY ledger_epoch,(receipt::jsonb->>'ledgerRevision')::bigint),'') AS value FROM hagency_agent_v1.management_resource_grants";
@@ -1028,6 +1029,32 @@ async fn a_fresh_first_declaration_ends_what_the_earlier_database_held() {
         }
     );
     let after = rows(&f).await;
+
+    let undecided = f
+        .domain
+        .managed_agent_settlement(applicant, &h.undecided.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            undecided.known_consumed_tokens,
+            undecided.retained_tokens_floor,
+            undecided.pending_command_id,
+            undecided.can_request,
+        ),
+        (None, None, None, false),
+        "replacement cannot fabricate a numeric observation for an undecided request"
+    );
+    let leased = f
+        .domain
+        .managed_agent_settlement(applicant, &h.leased.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (leased.known_consumed_tokens, leased.retained_tokens_floor),
+        (Some(0), Some(0)),
+        "replacement releases an issued native obligation even without its receipt"
+    );
 
     // Pools: every contribution of the device is withdrawn and marked.
     for contribution in [&h.pool, &pending, &draft] {
@@ -2098,4 +2125,102 @@ async fn schema_35_upgrades_a_populated_schema_34_database_into_epoch_zero() {
         "{refused}"
     );
     assert_eq!(ledger_schema(&mut db).await, (36, 9, true, true, 9, false));
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn ledger_replacement_releases_incomplete_hold_but_retains_confirmed_pool_usage() {
+    let mut f = succession_fixture().await;
+    f.policy = f.policy.with_parent_settlement(true);
+    let (pool, grant) = named_pool(&f, "incomplete_fence", &f.outsider.p, 10).await;
+    let (request, reserve) = asked(&f, &pool, &f.outsider.p, "incomplete_fence_agent").await;
+    report(&f, &reserve, 11).await.unwrap();
+    let r = f
+        .domain
+        .pool_agent_request(&f.outsider.p, &request.id)
+        .await
+        .unwrap();
+    f.domain
+        .stop_pool_agent(
+            &f.outsider.p,
+            &r.id,
+            RevokeInput {
+                command_id: "stop_incomplete_fence".into(),
+                expected_revision: r.revision,
+            },
+        )
+        .await
+        .unwrap();
+    let d = f
+        .domain
+        .poll_managed_agent_executor(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut receipt = fenced(&d, true, 12);
+    let AgentExecutorReceipt::Fence(v) = &mut receipt.receipt else {
+        panic!("expected fence")
+    };
+    v.known_consumed_tokens = 17;
+    v.retained_tokens = Some(100);
+    v.usage_complete = false;
+    v.process_state = "unknown".into();
+    f.domain
+        .record_managed_agent_executor_result(
+            &f.owner.p,
+            &f.policy,
+            match &d.command {
+                AgentExecutorCommand::Fence(c) => &c.command_id,
+                _ => panic!("expected fence"),
+            },
+            receipt,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        f.domain
+            .managed_agent_removal(&f.outsider.p, &r.id)
+            .await
+            .unwrap()
+            .usage
+            .retained_tokens_floor,
+        Some(100)
+    );
+    declare_fresh(&f, &f.owner, 1).await.unwrap();
+    let removal = f
+        .domain
+        .managed_agent_removal(&f.outsider.p, &r.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            removal.usage.known_consumed_tokens,
+            removal.usage.retained_tokens_floor,
+            removal.usage.requires_reconciliation
+        ),
+        (Some(17), Some(17), false)
+    );
+    let settlement = f
+        .domain
+        .managed_agent_settlement(&f.outsider.p, &r.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            settlement.retained_tokens_floor,
+            settlement.can_request,
+            settlement.pending_command_id
+        ),
+        (Some(17), false, None)
+    );
+    let parent = f
+        .domain
+        .management_parent_settlement(&f.owner.p, &f.policy, &grant.id)
+        .await
+        .unwrap();
+    assert_eq!(parent.known_consumed_tokens, Some(17));
+    assert_eq!(
+        parent.known_unused_released_tokens,
+        grant.receipt.allocated_tokens - 17
+    );
 }

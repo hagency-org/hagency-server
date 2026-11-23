@@ -13,7 +13,7 @@ publish = false
 
 [workspace.dependencies]
 # Git branches select upstream sources; Cargo.lock pins exact embedded revisions.
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 anyhow = "1"
 base64 = "0.23"
 camino = "1"
@@ -35,26 +35,28 @@ hex = "0.4"
 js-sys = "0.3.95"
 libc = "0.2"
 log = "0.4.29"
-palpo = { git = "https://github.com/palpo-im/palpo.git", branch = "main" }
-palpo-core = { git = "https://github.com/palpo-im/palpo.git", branch = "main", features = ["markdown", "html"] }
-pasion-backend = { git = "https://github.com/meldry-com/pasion.git", branch = "main", features = ["cedar"] }
-pasion-config = { git = "https://github.com/meldry-com/pasion.git", branch = "main" }
-pasion-data = { git = "https://github.com/meldry-com/pasion.git", branch = "main" }
+palpo = { git = "https://github.com/palpo-im/palpo.git", rev = "50511ee03a237f5d21678308fd09d92ba0111cbe" }
+palpo-core = { git = "https://github.com/palpo-im/palpo.git", rev = "50511ee03a237f5d21678308fd09d92ba0111cbe", features = ["markdown", "html"] }
+pasion-backend = { git = "https://github.com/meldry-com/pasion.git", rev = "591aa3b59c8bb991c46f2b3f2a20facdf652085c", features = ["cedar"] }
+pasion-config = { git = "https://github.com/meldry-com/pasion.git", rev = "591aa3b59c8bb991c46f2b3f2a20facdf652085c" }
+pasion-data = { git = "https://github.com/meldry-com/pasion.git", rev = "591aa3b59c8bb991c46f2b3f2a20facdf652085c" }
 percent-encoding = "2.3"
 rand = "0.10"
-rand_chacha = "0.3"
+rand_chacha = { version = "0.9", features = ["os_rng"] }
+# Pasion still exposes rand_core 0.6 in its public RNG bounds.
+rand_core_06 = { package = "rand_core", version = "0.6.4" }
 regex = "1"
 regex-lite = "0.1.9"
 reqwest = { version = "0.13", features = ["json"] }
 ruma-identifiers-validation = "0.12.1"
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
 ryu-js = "1.0.3"
-salvo = { version = "1.1.0", features = ["serve-static", "test", "affix-state", "size-limiter"] }
+salvo = { version = "1.2.1", features = ["serve-static", "test", "affix-state", "size-limiter"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde-saphyr = "0.0.27"
+serde-saphyr = "2.0.0"
 serde_json = "1.0.149"
 sha2 = "0.11"
-signal-hook = "0.3"
+signal-hook = "0.4"
 subtle = "2"
 tar = "0.4"
 tempfile = "3"

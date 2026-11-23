@@ -15,11 +15,10 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_management_revision"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let current=setup_id(db,id).await?;let plan=plan(db,&current.project_id).await?;
-            if plan.manager_user_id!=p.user_id && p.mxid!=policy.administrator(){return Err(Error::Unauthorized("project_setup_cancel_denied"));}
+            if plan.manager_user_id!=p.user_id && !policy.can_administer(p){return Err(Error::Unauthorized("project_setup_cancel_denied"));}
             if let Some(saved)=replay::<ProjectReadiness>(db,p,&input.command_id,"project.setup.cancel",&payload_digest).await?{return view(db,&saved.project_id,p,policy,now).await;}
             if current.revision!=input.expected_revision{return Err(Error::Conflict("management_revision_changed"));}
             if current.state=="cancelled"{return Err(Error::Conflict("project_setup_cancelled"));}
@@ -52,8 +51,7 @@ impl DomainStore {
             return Err(Error::Invalid("invalid_project_setup"));
         }
         let payload_digest = digest(id, &input)?;
-        let mut db = self.db.lock().await?;
-        (*db).transaction::<_,Error,_>(async |db:&mut AsyncPgConnection| {
+        self.db.write_transaction(async |db:&mut AsyncPgConnection| {
             Self::authorize(db,p,crate::api::now_ms()).await?;let now=clock(db).await?;
             let current=setup_id(db,id).await?;let plan=plan(db,&current.project_id).await?;
             if plan.manager_user_id!=p.user_id{return Err(Error::Unauthorized("project_manager_required"));}

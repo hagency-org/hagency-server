@@ -24,6 +24,16 @@ pub fn NotificationTemplatesPage() -> Element {
     let mut publish_body_template = use_signal(String::new);
     let mut publishing = use_signal(|| false);
 
+    use_effect(move || {
+        let key = publish_template_key();
+        if let Some(Ok(templates)) = templates_data() {
+            let available = template_channels(&templates, &key);
+            if !available.contains(&*publish_channel.peek()) {
+                publish_channel.set(available.first().cloned().unwrap_or_else(|| "email".into()));
+            }
+        }
+    });
+
     let handle_publish = move |_: MouseEvent| {
         let template_key = publish_template_key.read().clone();
         let locale = publish_locale.read().clone();
@@ -33,6 +43,20 @@ pub fn NotificationTemplatesPage() -> Element {
 
         if template_key.trim().is_empty() {
             show_toast("template_key is required", ToastVariant::Error);
+            return;
+        }
+        let supported = templates_data()
+            .and_then(Result::ok)
+            .is_some_and(|templates| {
+                templates.iter().any(|template| {
+                    template.key == template_key && template.channels.contains(&channel)
+                })
+            });
+        if !supported {
+            show_toast(
+                "This Pasion server has not advertised runtime publication for this template and channel. Update Pasion before publishing.",
+                ToastVariant::Error,
+            );
             return;
         }
         if body_template.trim().is_empty() {
@@ -46,7 +70,7 @@ pub fn NotificationTemplatesPage() -> Element {
             "channel": channel,
             "body_template": body_template,
         });
-        if !subject_template.is_empty() {
+        if channel == "email" && !subject_template.is_empty() {
             data["subject_template"] = serde_json::Value::String(subject_template);
         }
 
@@ -68,6 +92,18 @@ pub fn NotificationTemplatesPage() -> Element {
     };
 
     let is_publishing = *publishing.read();
+    let channels = templates_data()
+        .and_then(Result::ok)
+        .map(|templates| template_channels(&templates, &publish_template_key()))
+        .unwrap_or_default();
+    let publication_supported = templates_data()
+        .and_then(Result::ok)
+        .is_some_and(|templates| {
+            templates.iter().any(|template| {
+                template.key == publish_template_key()
+                    && template.channels.contains(&publish_channel())
+            })
+        });
 
     rsx! {
         div { class: "space-y-6",
@@ -122,6 +158,8 @@ pub fn NotificationTemplatesPage() -> Element {
                                                             size: ButtonSize::Sm,
                                                             onclick: move |_| {
                                                                 publish_template_key.set(key_for_publish.clone());
+                                                                publish_locale.set("en".into()); publish_channel.set("email".into());
+                                                                publish_subject_template.set(String::new()); publish_body_template.set(String::new());
                                                                 show_publish.set(true);
                                                             },
                                                             "Publish"
@@ -152,11 +190,12 @@ pub fn NotificationTemplatesPage() -> Element {
             on_close: move |_| {
                 if !is_publishing { show_publish.set(false); }
             },
+                    if !publication_supported {p {class:"text-sm text-muted-foreground", "Select a template and supported channel. Runtime publication requires an updated Pasion server; older servers only store template versions."}}
                     h2 { class: "text-lg font-semibold mb-4", "Publish Notification Template" }
                     div { class: "space-y-4",
-                        div { class: "space-y-2",
-                            label { class: "text-sm font-medium leading-none", "Template Key" }
-                            input {
+                        crate::components::ui::input::Field { class: "space-y-2",
+                            crate::components::ui::input::Label { class: "text-sm font-medium leading-none", "Template Key" }
+                            crate::components::ui::input::Input {
                                 class: "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm",
                                 placeholder: "verification",
                                 value: publish_template_key.read().clone(),
@@ -165,9 +204,9 @@ pub fn NotificationTemplatesPage() -> Element {
                             }
                         }
                         div { class: "grid grid-cols-2 gap-4",
-                            div { class: "space-y-2",
-                                label { class: "text-sm font-medium leading-none", "Locale" }
-                                input {
+                            crate::components::ui::input::Field { class: "space-y-2",
+                                crate::components::ui::input::Label { class: "text-sm font-medium leading-none", "Locale" }
+                                crate::components::ui::input::Input {
                                     class: "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm",
                                     placeholder: "en",
                                     value: publish_locale.read().clone(),
@@ -175,20 +214,21 @@ pub fn NotificationTemplatesPage() -> Element {
                                     disabled: is_publishing,
                                 }
                             }
-                            div { class: "space-y-2",
-                                label { class: "text-sm font-medium leading-none", "Channel" }
-                                select {
+                            crate::components::ui::input::Field { class: "space-y-2",
+                                crate::components::ui::input::Label { class: "text-sm font-medium leading-none", "Channel" }
+                                crate::components::ui::input::Select {
                                     class: "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm",
                                     disabled: is_publishing,
+                                    value: publish_channel(),
                                     onchange: move |evt: FormEvent| publish_channel.set(evt.value()),
-                                    option { value: "email", "Email" }
-                                    option { value: "sms", "SMS" }
+                                    for channel in channels.iter() { option { value:channel.clone(), "{channel}" } }
                                 }
                             }
                         }
-                        div { class: "space-y-2",
-                            label { class: "text-sm font-medium leading-none", "Subject Template (optional)" }
-                            input {
+                        crate::components::ui::input::Field { class: "space-y-2",
+                            hidden: publish_channel()!="email",
+                            crate::components::ui::input::Label { class: "text-sm font-medium leading-none", "Subject Template (optional)" }
+                            crate::components::ui::input::Input {
                                 class: "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm",
                                 placeholder: "Email subject",
                                 value: publish_subject_template.read().clone(),
@@ -196,14 +236,14 @@ pub fn NotificationTemplatesPage() -> Element {
                                 disabled: is_publishing,
                             }
                         }
-                        div { class: "space-y-2",
-                            label { class: "text-sm font-medium leading-none", "Body Template" }
-                            textarea {
+                        crate::components::ui::input::Field { class: "space-y-2",
+                            crate::components::ui::input::Label { class: "text-sm font-medium leading-none", "Body Template" }
+                            crate::components::ui::input::Textarea {
                                 class: "flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-y font-mono",
                                 placeholder: "Template body content...",
                                 disabled: is_publishing,
                                 oninput: move |evt: FormEvent| publish_body_template.set(evt.value()),
-                                "{publish_body_template.read().clone()}"
+                                value: publish_body_template(),
                             }
                         }
                     }
@@ -215,7 +255,7 @@ pub fn NotificationTemplatesPage() -> Element {
                             "Cancel"
                         }
                         Button {
-                            disabled: is_publishing,
+                            disabled: is_publishing || !publication_supported,
                             onclick: handle_publish,
                             if is_publishing {
                                 Spinner { class: "mr-2".to_string() }
@@ -224,5 +264,46 @@ pub fn NotificationTemplatesPage() -> Element {
                         }
                     }
         }
+    }
+}
+
+fn template_channels(
+    templates: &[crate::types::PasionNotificationTemplate],
+    key: &str,
+) -> Vec<String> {
+    templates
+        .iter()
+        .find(|template| template.key == key)
+        .map(|template| {
+            if !template.channels.is_empty() {
+                template.channels.clone()
+            } else if key == "verification" {
+                vec!["email".into(), "sms".into()]
+            } else {
+                vec!["email".into()]
+            }
+        })
+        .unwrap_or_default()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn channels_follow_the_selected_template_instead_of_the_previous_dialog() {
+        let templates = vec![
+            crate::types::PasionNotificationTemplate {
+                key: "verification".into(),
+                description: String::new(),
+                channels: vec!["email".into(), "sms".into()],
+            },
+            crate::types::PasionNotificationTemplate {
+                key: "recovery".into(),
+                description: String::new(),
+                channels: vec!["email".into()],
+            },
+        ];
+        assert!(template_channels(&templates, "verification").contains(&"sms".into()));
+        assert!(!template_channels(&templates, "recovery").contains(&"sms".into()));
+        assert!(template_channels(&templates, "unknown").is_empty());
     }
 }

@@ -14,8 +14,10 @@ hagency-gitfab-events = { path = "../gitfab-events" }
 hagency-gitfab-forge = { path = "../gitfab-forge" }
 chrono.workspace = true
 chrono-tz = { version = "=0.10.4", default-features = false, features = ["std"] }
+horme.workspace = true
 diesel.workspace = true
-diesel-async = { workspace = true, features = ["deadpool"] }
+diesel_migrations = "2.3"
+diesel-async = { workspace = true, features = ["deadpool", "async-connection-wrapper"] }
 tokio.workspace = true
 tracing.workspace = true
 serde.workspace = true

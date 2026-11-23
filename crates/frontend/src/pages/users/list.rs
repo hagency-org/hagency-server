@@ -153,16 +153,15 @@ pub fn UserList() -> Element {
         });
     }
 
-    let search_val = search.read().clone();
     let page_val = *page.read();
     let per_page_val = *per_page.read();
-    let sort_by_val = sort_by.read().clone();
-    let sort_dir_val = sort_dir.read().clone();
 
     let mut users_data = use_resource(move || {
-        let search = search_val.clone();
-        let order_by = sort_by_val.clone();
-        let order = sort_dir_val.clone();
+        let search = search();
+        let page_val = page();
+        let per_page_val = per_page();
+        let order_by = sort_by();
+        let order = sort_dir();
         async move { users::get_users_cached(page_val, per_page_val, &order_by, &order, &search).await }
     });
 
@@ -342,9 +341,9 @@ pub fn UserList() -> Element {
                         },
                     }
                 }
-                div { class: "flex items-center gap-2",
-                    label { class: "text-sm text-muted-foreground whitespace-nowrap", {t("common.rows")} }
-                    select {
+                crate::components::ui::input::Field { class: "flex items-center gap-2",
+                    crate::components::ui::input::Label { class: "text-sm text-muted-foreground whitespace-nowrap", {t("common.rows")} }
+                    crate::components::ui::input::Select {
                         class: "flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm",
                         value: "{per_page_val}",
                         onchange: move |evt: FormEvent| {
