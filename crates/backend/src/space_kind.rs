@@ -31,6 +31,8 @@ fn hidden() -> AppError {
     MatrixError::not_found("Space unavailable").into()
 }
 
+// Preserve Palpo's Matrix status and error body at both HTTP entry points.
+#[expect(clippy::result_large_err, reason = "Palpo exposes AppError by value")]
 async fn member_space(
     room: &OwnedRoomId,
     viewer: &OwnedUserId,
@@ -45,14 +47,14 @@ async fn member_space(
     Ok(create.sender.server_name().to_owned())
 }
 
-async fn registered(depot: &Depot, room: &OwnedRoomId) -> AppResult<bool> {
+async fn registered(depot: &Depot, room: &OwnedRoomId) -> Result<bool, StatusError> {
     let store = depot
-        .obtain::<DomainStore>()
+        .get_typed::<DomainStore>()
         .map_err(|_| StatusError::internal_server_error())?;
     store
         .has_active_project(room.as_str())
         .await
-        .map_err(|_| StatusError::service_unavailable().into())
+        .map_err(|_| StatusError::service_unavailable())
 }
 
 #[handler]
