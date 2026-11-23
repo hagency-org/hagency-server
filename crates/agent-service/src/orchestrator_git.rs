@@ -74,7 +74,8 @@ impl GitHosts {
         for (project, backend, repo) in projects {
             let b = Backend::parse(backend)
                 .ok_or_else(|| format!("{project}: backend must be github or gitcode"))?;
-            let r = Repo::from_ref(repo).map_err(|_| format!("{project}: repo must be owner/name"))?;
+            let r =
+                Repo::from_ref(repo).map_err(|_| format!("{project}: repo must be owner/name"))?;
             self.projects.insert(project.to_owned(), (b, r));
         }
         Ok(self)
@@ -467,7 +468,8 @@ mod tests {
     async fn a_release_publishes_only_the_reviewed_commit() {
         let reviewed = "b".repeat(40);
         let release = |head: &'static str| {
-            let posted = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+            let posted =
+                std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
             let seen = posted.clone();
             let pull = json!({"number": 3, "html_url": "https://github.com/o/r/pull/3",
                 "head": {"ref": "agent/DEMO-02/task-1", "sha": head}});
@@ -488,18 +490,35 @@ mod tests {
         let (h, posted) = release("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         let released = step(&h, &repo, &run(), Stage::Release, 1, Some(&reviewed)).await;
         assert_eq!(released.error, None, "{:?}", released.note);
-        assert_eq!(posted.lock().unwrap()[0]["target_commitish"], reviewed.as_str());
+        assert_eq!(
+            posted.lock().unwrap()[0]["target_commitish"],
+            reviewed.as_str()
+        );
         // A commit pushed after the review: nothing is released, and the step says why.
         let (h, posted) = release("cccccccccccccccccccccccccccccccccccccccc");
         let moved = step(&h, &repo, &run(), Stage::Release, 1, Some(&reviewed)).await;
         assert!(posted.lock().unwrap().is_empty());
-        assert!(moved.error.as_deref().is_some_and(|e| e.contains("is not the reviewed commit")), "{:?}", moved.error);
+        assert!(
+            moved
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("is not the reviewed commit")),
+            "{:?}",
+            moved.error
+        );
         assert_eq!(moved.refs, vec!["https://github.com/o/r/pull/3".to_owned()]);
         // No reviewed commit recorded for the round: nothing is released either.
         let (h, posted) = release("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         let unreviewed = step(&h, &repo, &run(), Stage::Release, 1, None).await;
         assert!(posted.lock().unwrap().is_empty());
-        assert!(unreviewed.error.as_deref().is_some_and(|e| e.contains("no reviewed commit")), "{:?}", unreviewed.error);
+        assert!(
+            unreviewed
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("no reviewed commit")),
+            "{:?}",
+            unreviewed.error
+        );
     }
 
     #[tokio::test]
@@ -607,17 +626,34 @@ mod tests {
             .with_projects([("prj_a", "gitcode", "Owner/Demo")])
             .unwrap();
         assert_eq!(hosts.allows("prj_a", "gitcode", "owner/demo"), Ok(()));
-        assert_eq!(hosts.allows("prj_a", "gitcode", "https://gitcode.com/Owner/Demo.git"), Ok(()));
+        assert_eq!(
+            hosts.allows("prj_a", "gitcode", "https://gitcode.com/Owner/Demo.git"),
+            Ok(())
+        );
         for (project, backend, repo) in [
             ("prj_a", "gitcode", "owner/other"),
             ("prj_a", "github", "owner/demo"),
             ("prj_b", "gitcode", "owner/demo"),
         ] {
-            assert_eq!(hosts.allows(project, backend, repo), Err("gitfab_repo_not_bound"), "{project} {backend} {repo}");
+            assert_eq!(
+                hosts.allows(project, backend, repo),
+                Err("gitfab_repo_not_bound"),
+                "{project} {backend} {repo}"
+            );
         }
-        assert_eq!(hosts.allows("prj_a", "gitlab", "owner/demo"), Err("gitfab_repo_invalid"));
-        assert_eq!(hosts.allows("prj_a", "gitcode", "no-slash"), Err("gitfab_repo_invalid"));
-        assert!(GitHosts::default().with_projects([("prj_a", "svn", "o/r")]).is_err());
+        assert_eq!(
+            hosts.allows("prj_a", "gitlab", "owner/demo"),
+            Err("gitfab_repo_invalid")
+        );
+        assert_eq!(
+            hosts.allows("prj_a", "gitcode", "no-slash"),
+            Err("gitfab_repo_invalid")
+        );
+        assert!(
+            GitHosts::default()
+                .with_projects([("prj_a", "svn", "o/r")])
+                .is_err()
+        );
     }
 
     #[test]
@@ -626,7 +662,10 @@ mod tests {
         r.init.project_id = "prj_a".into();
         r.init.context["gitBackend"] = json!("github");
         r.init.context["repoRef"] = json!("https://github.com/o/r");
-        assert!(check_target(None, &r.init).is_ok(), "no tokens: nothing reaches a platform");
+        assert!(
+            check_target(None, &r.init).is_ok(),
+            "no tokens: nothing reaches a platform"
+        );
         let hosts = |repo: &str| {
             GitHosts {
                 github: Some(host(|r| panic!("no platform call expected: {r:?}"))),
@@ -637,8 +676,14 @@ mod tests {
             .unwrap()
         };
         let other = hosts("o/elsewhere");
-        assert!(matches!(check_target(Some(&other), &r.init), Err(crate::Error::Unauthorized("gitfab_repo_not_bound"))));
-        assert!(target(Some(&other), &r).is_none(), "an unbound target gets no host");
+        assert!(matches!(
+            check_target(Some(&other), &r.init),
+            Err(crate::Error::Unauthorized("gitfab_repo_not_bound"))
+        ));
+        assert!(
+            target(Some(&other), &r).is_none(),
+            "an unbound target gets no host"
+        );
         let bound = hosts("o/r");
         assert!(check_target(Some(&bound), &r.init).is_ok());
         let (_, repo) = target(Some(&bound), &r).expect("the bound repository is the target");

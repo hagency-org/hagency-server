@@ -111,7 +111,12 @@ impl Recorder {
                     && e["status"] == "succeeded"
                     && e["round"].as_u64() == Some(u64::from(round))
             })
-            .filter_map(|e| Some((e["timestamp"].as_str()?.to_owned(), e["commit_sha"].as_str()?.to_owned())))
+            .filter_map(|e| {
+                Some((
+                    e["timestamp"].as_str()?.to_owned(),
+                    e["commit_sha"].as_str()?.to_owned(),
+                ))
+            })
             .max()
             .map(|(_, sha)| sha)
     }

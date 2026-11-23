@@ -307,7 +307,9 @@ async fn run() -> anyhow::Result<()> {
                 )
                 .map_err(|e| anyhow::anyhow!("gitfab.repos.{e}"))?;
                 if gitfab.repos.is_empty() {
-                    tracing::warn!("no [gitfab.repos] binding: every GitFab run will be refused until a project is bound to its repository");
+                    tracing::warn!(
+                        "no [gitfab.repos] binding: every GitFab run will be refused until a project is bound to its repository"
+                    );
                 }
                 tracing::info!(
                     github = hosts.github.is_some(),

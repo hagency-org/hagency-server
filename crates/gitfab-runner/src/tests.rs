@@ -224,17 +224,42 @@ fn a_good_release_is_recorded_and_a_broken_one_is_restored_from_the_previous() {
 fn a_container_that_cannot_start_is_restored_and_still_recorded() {
     let (dir, fake, probe, out, ring) = setup();
     let sbom = dir.path().join("sbom");
-    deploy(&fake, &release("v1"), &dir.path().join("app"), &sbom, &probe, &out).unwrap();
+    deploy(
+        &fake,
+        &release("v1"),
+        &dir.path().join("app"),
+        &sbom,
+        &probe,
+        &out,
+    )
+    .unwrap();
     // The old container is already gone when starting the new one fails.
-    let failed = deploy(&fake, &release("v2"), &dir.path().join("unstartable"), &sbom, &probe, &out)
-        .expect("a failed start is a failed deployment, not an error before the receipt");
+    let failed = deploy(
+        &fake,
+        &release("v2"),
+        &dir.path().join("unstartable"),
+        &sbom,
+        &probe,
+        &out,
+    )
+    .expect("a failed start is a failed deployment, not an error before the receipt");
     assert!(!failed.passed);
     assert_eq!(failed.restored.as_deref(), Some("DEMO-01-v1"));
-    assert!(http_get(probe.port, "/version", Duration::from_secs(1)).unwrap().1.contains("v1"));
+    assert!(
+        http_get(probe.port, "/version", Duration::from_secs(1))
+            .unwrap()
+            .1
+            .contains("v1")
+    );
     let all = signed_receipts(&out, &ring);
     assert_eq!(all.len(), 2, "the failed start has its receipt");
     assert_eq!(all[1]["healthcheck"]["result"], "failed");
-    assert!(all[1]["healthcheck"]["detail"].as_str().unwrap().contains("port is already allocated"));
+    assert!(
+        all[1]["healthcheck"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("port is already allocated")
+    );
     assert_eq!(all[1]["rollback"]["result"], "restored");
 }
 

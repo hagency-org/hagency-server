@@ -517,8 +517,10 @@ pub fn deploy(
     // deployment like a failed health check, restored and recorded, never an early return.
     let result = match engine.replace(&name, &image, probe.port, probe.container_port) {
         Ok(()) => check(probe, &release.tag),
-        Err(e) => Err(json!({"command": format!("start container {name}"), "exit_code": 1,
-            "result": "failed", "detail": e})),
+        Err(e) => Err(
+            json!({"command": format!("start container {name}"), "exit_code": 1,
+            "result": "failed", "detail": e}),
+        ),
     };
     let restored = match &result {
         Ok(_) => None,

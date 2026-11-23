@@ -1121,17 +1121,43 @@ async fn postgres_a_run_room_must_belong_to_its_project_whatever_agents_it_names
         .expect("the fixture Room is a project Room");
     let roles = |b: &str| json!({"coordinator": b, "implementer": b, "reviewer": b});
     let check = |project: &str, room: &str, bindings: Value| {
-        let (t, space, project, room) = (&f.transport, scope.space_id.clone(), project.to_owned(), room.to_owned());
+        let (t, space, project, room) = (
+            &f.transport,
+            scope.space_id.clone(),
+            project.to_owned(),
+            room.to_owned(),
+        );
         async move { check_run_scope(t, &project, &space, &room, &bindings).await }
     };
-    check(&project, &scope.room_id, roles(&f.binding)).await.unwrap();
+    check(&project, &scope.room_id, roles(&f.binding))
+        .await
+        .unwrap();
     // A pool assignment cannot carry a run into a Room outside the project.
-    let refused = check(&project, "!elsewhere:example.test", roles("mas_pool_elsewhere")).await.unwrap_err();
-    assert!(matches!(refused, Error::Unauthorized("run_room_outside_project")), "{refused:?}");
+    let refused = check(
+        &project,
+        "!elsewhere:example.test",
+        roles("mas_pool_elsewhere"),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(refused, Error::Unauthorized("run_room_outside_project")),
+        "{refused:?}"
+    );
     // Nor can the project be another one than the Room's.
-    let refused = check("prj_other", &scope.room_id, roles(&f.binding)).await.unwrap_err();
-    assert!(matches!(refused, Error::Unauthorized("run_room_outside_project")), "{refused:?}");
+    let refused = check("prj_other", &scope.room_id, roles(&f.binding))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, Error::Unauthorized("run_room_outside_project")),
+        "{refused:?}"
+    );
     // In the project's Room, a pool assignment must be one of the Room's pool Agents.
-    let refused = check(&project, &scope.room_id, roles("mas_pool_elsewhere")).await.unwrap_err();
-    assert!(matches!(refused, Error::Unauthorized("binding_outside_run_room")), "{refused:?}");
+    let refused = check(&project, &scope.room_id, roles("mas_pool_elsewhere"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, Error::Unauthorized("binding_outside_run_room")),
+        "{refused:?}"
+    );
 }
