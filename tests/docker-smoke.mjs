@@ -103,7 +103,10 @@ async function exerciseOwner(member,create){
   const space=(await matrix('createRoom','POST',{preset:'private_chat',name:'Docker owner project',creation_content:{type:'m.space'}})).value.room_id;
   const room=(await matrix('createRoom','POST',{preset:'private_chat',name:'Private discussion',invite:[discovery.serviceMxid]})).value.room_id;
   await matrix('rooms/'+encodeURIComponent(space)+'/state/m.space.child/'+encodeURIComponent(room),'PUT',{via:[name]});
+  const kindPath='/_matrix/client/unstable/im.hagency/space_kind?room='+encodeURIComponent(space);
+  assert.deepEqual((await api(kindPath,{token:member.upstream})).value,{agent:false});
   const project=(await owner('projects/adopt','POST',{spaceId:space})).value.project;
+  assert.deepEqual((await api(kindPath,{token:member.upstream})).value,{agent:true});
   await owner('projects/'+project.id+'/rooms/adopt','POST',{roomId:room});
   const created=await api('/hagency/api/v1/agents',{method:'POST',token:device.token,body:{displayName:'Owner Codex puppet',idempotencyKey:'docker-owner-agent',visibility:'public'},status:[200,202]});
   const agent=created.value.creation.agent;assert.equal(created.value.creation.binding,undefined);

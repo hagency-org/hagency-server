@@ -1895,6 +1895,19 @@ impl DomainStore {
             .await
     }
 
+    /// Display metadata only. The host checks current Space membership before disclosure.
+    pub async fn has_active_project(&self, space: &str) -> Result<bool> {
+        use crate::schema::agent_tables::projects as q;
+        self.db
+            .with_connection(async |db| {
+                let active = q::table.filter(q::space_id.eq(space)).filter(q::active);
+                Ok(diesel::select(diesel::dsl::exists(active))
+                    .get_result(db)
+                    .await?)
+            })
+            .await
+    }
+
     /// Host gateway discovery input. Filter this list with fresh Matrix membership
     /// before returning it to clients; authentication alone is not discoverability.
     pub async fn projects(&self, p: &Principal, now: i64) -> Result<Vec<Project>> {
