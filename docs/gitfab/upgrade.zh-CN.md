@@ -6,7 +6,7 @@
 
 | 方面 | 变化 |
 |---|---|
-| 数据库 | 每次启动执行 `orchestrator_schema.sql`（全部 `CREATE … IF NOT EXISTS`）：在 `hagency_agent_v1` 下新增 3 张表、2 个索引，表为空。不修改任何已有表、列或数据 |
+| 数据库 | 启动时由 transport 迁移 `2026-11-23-000414_gitfab_orchestrator` 执行一次（全部 `CREATE … IF NOT EXISTS`，此前已建过表的安装也能直接升级）：在 `hagency_agent_v1` 下新增 3 张表、2 个索引，表为空。不修改任何已有表、列或数据 |
 | 房间消息路由 | 不变。`/gitfab` 开头的消息只有在启用编排器时才被拦截；未启用时与其他消息一样交给 Agent |
 | Agent 准入规则 | 不变。新增的“编排器阶段消息免提及”只对 `orchestrator_stage_events` 中登记过的事件生效，未启用时该表为空 |
 | HTTP | `/hagency/api/v1/projects/{project}/gitfab/runs…` 返回 404 `gitfab_unsupported`；不注册公钥与大屏接口 |

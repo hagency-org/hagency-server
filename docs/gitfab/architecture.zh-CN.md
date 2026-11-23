@@ -53,7 +53,7 @@ GitFab 在 hagency 现有能力上增补“自然语言进、可部署工件出�
 | 平台动作 | `crates/agent-service/src/orchestrator_git.rs` | Execute 成功建/更新 PR，Test 成功读测试状态，Release 成功发 Release；三者都读出 PR 头提交里 Spec 文件的 Git blob 记入事件 `spec_blob`，verify-release 据此发现确认后对 Spec 文件的改动 |
 | Agent 状态 | `crates/agent-service/src/orchestrator_status.rs` | 大屏用的 Running / Pending / Active |
 | HTTP | `crates/agent-service/src/api_gitfab.rs` | 发起、查看、Spec 确认、人工决定 |
-| 存储 | `crates/agent-service/src/orchestrator_schema.sql`、`transport.rs` | 运行、阶段派发、房间命令三张表 |
+| 存储 | `crates/agent-service/migrations/transport/2026-11-23-000414_gitfab_orchestrator/up.sql`、`transport.rs` | 运行、阶段派发、房间命令三张表 |
 | 事件与签名 | `crates/gitfab-events/` | schema 校验、规范化、Ed25519 签名与验签、身份事件、账本、证据包；命令 `gitfab` |
 | Git 平台 | `crates/gitfab-forge/` | GitHub 与 GitCode 一套接口；命令 `gitfab-forge` |
 | 部署 | `crates/gitfab-runner/` | 部署、自动恢复、回退、SBOM 证明；命令 `gitfab-runner` |

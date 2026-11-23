@@ -31,7 +31,7 @@
 
 - 流程规则：`crates/agent-service/src/orchestrator_flow.rs`（纯函数，无 I/O）。
 - worker：`orchestrator.rs`。阶段消息以 `@_hagency_service` 发成 Thread 里的 `m.notice`，带 `org.hagency.gitfab_stage`，不带 mention；普通路由和资源池路由都不会接收它。
-- 存储：`transport.rs` 的 `orchestrator_runs`、`orchestrator_stage_events`（`orchestrator_schema.sql`）。
+- 存储：`transport.rs` 的 `orchestrator_runs`、`orchestrator_stage_events`（迁移 `migrations/transport/2026-11-23-000414_gitfab_orchestrator`）。
 - 防重：一次状态转换和它产生的日志事件一起保存（`pending_events`），之后再写日志；日志按事件键幂等，所以重启后每个事件只写一次、内容不变。阶段消息的事务 ID 由 run、阶段、轮次、次数、Spec 版本决定，重发得到同一个事件。
 - HTTP：`api_gitfab.rs`。
   - `POST /hagency/api/v1/projects/{project}/gitfab/runs`：发起（Space 成员即可）。body：`taskId`、`roomId`、`threadRoot`、`bindings{coordinator,implementer,reviewer}`、`context{goal,gitBackend,repoRef,baselineSha,specRef[,projectId]}`。
