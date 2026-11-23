@@ -82,6 +82,13 @@ GITFAB_WORKSPACE_CACHE=$tmp/cache2 expect 0 "a task branch already pushed is con
 check "it continues from the remote branch" '[ "$(git -C "$tmp/w3" rev-parse HEAD)" = "$(git --git-dir="$tmp/remote.git" rev-parse "$branch")" ]'
 expect 2 "a non-empty directory is not reused" "$ws" "$url" "$base" agent/DEMO-02/task-2 "$tmp/w1"
 
+# A repository address with shell syntax in it is a value in the generated hook, never code.
+odd="$tmp/odd\$(touch\${IFS}PWNED)\"q\".git"
+git clone --quiet --bare "$tmp/remote.git" "$odd" 2>/dev/null
+GITFAB_ALLOWED_REPOS="file://$odd" expect 0 "a repository address with shell syntax opens" "$ws" "file://$odd" "$base" agent/DEMO-02/odd "$tmp/w4"
+expect 0 "pushing from it works" git -C "$tmp/w4" push --quiet origin agent/DEMO-02/odd
+check "nothing in the address ran" '[ -z "$(find "$tmp" -name PWNED)" ]'
+
 if [ "$failures" -ne 0 ]; then
     echo "$failures check(s) failed"
     exit 1

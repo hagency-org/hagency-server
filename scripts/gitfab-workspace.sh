@@ -92,20 +92,23 @@ hooks=$cache/gitfab-hooks/$(printf '%s' "$branch" | git hash-object --stdin)
 mkdir -p "$hooks"
 cat >"$hooks/pre-push" <<HOOK
 #!/usr/bin/env bash
-# GitFab task guard: push only $branch to $want, never delete it or rewrite what the remote has.
+# GitFab task guard: push only the task branch to the authorised repository, never delete it or
+# rewrite what the remote has. Both values are shell-quoted, never spliced into the code.
 set -euo pipefail
+want=$(printf '%q' "$want")
+branch=$(printf '%q' "$branch")
 normalize() { local u=\${1%/}; printf '%s' "\${u%.git}"; }
-[ "\$(normalize "\$2")" = "$want" ] || { echo "gitfab: this worktree pushes only to $want" >&2; exit 1; }
+[ "\$(normalize "\$2")" = "\$want" ] || { echo "gitfab: this worktree pushes only to \$want" >&2; exit 1; }
 zero=0000000000000000000000000000000000000000
 while read -r local_ref local_sha remote_ref remote_sha; do
-    if [ "\$remote_ref" != "refs/heads/$branch" ]; then
-        echo "gitfab: this worktree pushes only $branch, not \${remote_ref#refs/heads/}" >&2; exit 1
+    if [ "\$remote_ref" != "refs/heads/\$branch" ]; then
+        echo "gitfab: this worktree pushes only \$branch, not \${remote_ref#refs/heads/}" >&2; exit 1
     fi
     if [ "\$local_sha" = "\$zero" ]; then
-        echo "gitfab: deleting $branch is not allowed" >&2; exit 1
+        echo "gitfab: deleting \$branch is not allowed" >&2; exit 1
     fi
     if [ "\$remote_sha" != "\$zero" ] && ! git merge-base --is-ancestor "\$remote_sha" "\$local_sha" 2>/dev/null; then
-        echo "gitfab: rewriting $branch on the remote is not allowed; add commits instead" >&2; exit 1
+        echo "gitfab: rewriting \$branch on the remote is not allowed; add commits instead" >&2; exit 1
     fi
 done
 HOOK
