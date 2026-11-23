@@ -672,6 +672,7 @@ impl App {
                 recorder,
                 stage_timeout_ms: *timeout,
                 team: self.gitfab_team.as_deref(),
+                git: self.gitfab_git.as_deref(),
                 shared: self
                     .management
                     .as_ref()

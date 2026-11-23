@@ -69,6 +69,17 @@ pub struct GitfabConfig {
     /// only capabilities the implementer declares. Absent leaves Plans unchecked against a team.
     #[serde(default)]
     pub team: Option<std::collections::BTreeMap<String, GitfabTeamRole>>,
+    /// The repository each Hagency project's runs use with the Git tokens:
+    /// `[gitfab.repos."prj_…"]` with `backend = "github"|"gitcode"` and `repo = "owner/name"`.
+    /// With a token configured, a run may only target its own project's repository.
+    #[serde(default)]
+    pub repos: std::collections::BTreeMap<String, GitfabRepo>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitfabRepo {
+    pub backend: String,
+    pub repo: String,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

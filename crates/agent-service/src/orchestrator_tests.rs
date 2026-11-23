@@ -930,7 +930,10 @@ fn fake_github() -> crate::orchestrator_git::GitHosts {
             crate::orchestrator_git::GitTransport::Fake(std::sync::Arc::new(answer)),
         )),
         gitcode: None,
+        projects: Default::default(),
     }
+    .with_projects([("DEMO-02", "github", "example/gitfab-demo-02")])
+    .unwrap()
 }
 
 #[tokio::test]

@@ -31,7 +31,7 @@
 
 1. 部署新版本，先不加 `[gitfab]`，确认服务与原来一致（房间、Agent、资源池照常）。
 2. 生成事件签名密钥：`gitfab keygen --key-id gitfab-1 --dir /etc/hagency/keys`（私钥 0600）。
-3. 在配置中加入 `[gitfab]`（字段见 `user-guide.zh-CN.md` 第 1 节）。`journal_file` 一旦设置即启用编排器；平台 Token、大屏 Token 均可选，文件必须 0600，否则服务拒绝启动并说明原因。
+3. 在配置中加入 `[gitfab]`（字段见 `user-guide.zh-CN.md` 第 1 节）。`journal_file` 一旦设置即启用编排器；平台 Token、大屏 Token 均可选，文件必须 0600，否则服务拒绝启动并说明原因。配置了平台 Token 时，要用 `[gitfab.repos."<项目 ID>"]`（`backend`、`repo`）为每个项目绑定仓库；没有绑定的项目发起流程会被拒绝。
 4. 重启，日志出现 `GitFab orchestrator enabled`；`GET /hagency/gitfab/v1/public-keys` 返回公钥。
 5. 建一个不加密的项目房间，加入要参与的 Agent，按手册第 3 节发 `/gitfab start`。
 6. （可选）用 cron 把事件日志写入 Git：`scripts/gitfab-journal-git.sh`（手册第 1 节）。

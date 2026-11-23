@@ -298,10 +298,21 @@ async fn run() -> anyhow::Result<()> {
                         .as_deref()
                         .map(|f| (f, gitfab.gitcode_api.as_deref())),
                 )
-                .map_err(|e| anyhow::anyhow!("gitfab token file {e}"))?;
+                .map_err(|e| anyhow::anyhow!("gitfab token file {e}"))?
+                .with_projects(
+                    gitfab
+                        .repos
+                        .iter()
+                        .map(|(p, r)| (p.as_str(), r.backend.as_str(), r.repo.as_str())),
+                )
+                .map_err(|e| anyhow::anyhow!("gitfab.repos.{e}"))?;
+                if gitfab.repos.is_empty() {
+                    tracing::warn!("no [gitfab.repos] binding: every GitFab run will be refused until a project is bound to its repository");
+                }
                 tracing::info!(
                     github = hosts.github.is_some(),
                     gitcode = hosts.gitcode.is_some(),
+                    projects = hosts.projects.len(),
                     "GitFab Pull Requests and Releases enabled"
                 );
                 app = app.with_gitfab_git(hosts);

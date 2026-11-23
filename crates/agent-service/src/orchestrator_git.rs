@@ -33,11 +33,16 @@ impl Transport for GitTransport {
 
 pub type GitHost = Forge<GitTransport>;
 
-/// One host per backend that has a token configured.
+/// One host per backend that has a token configured, and the repository each Hagency project may
+/// target with them.
 #[derive(Default)]
 pub struct GitHosts {
     pub github: Option<GitHost>,
     pub gitcode: Option<GitHost>,
+    /// Hagency project id (`prj_…`) → the one backend and repository its runs may use. A run's
+    /// `gitBackend`/`repoRef` come from whoever starts it, so they must match this binding: otherwise
+    /// any project member could point the server's tokens at any repository they reach.
+    pub projects: std::collections::BTreeMap<String, (Backend, Repo)>,
 }
 
 impl GitHosts {
@@ -57,7 +62,37 @@ impl GitHosts {
         Ok(Self {
             github: github.map(|c| host(Backend::GitHub, c)).transpose()?,
             gitcode: gitcode.map(|c| host(Backend::GitCode, c)).transpose()?,
+            projects: Default::default(),
         })
+    }
+    /// Binds each project to its repository (`[gitfab.repos]`): project id, backend name, `owner/name`
+    /// or a web address.
+    pub fn with_projects<'s>(
+        mut self,
+        projects: impl IntoIterator<Item = (&'s str, &'s str, &'s str)>,
+    ) -> Result<Self, String> {
+        for (project, backend, repo) in projects {
+            let b = Backend::parse(backend)
+                .ok_or_else(|| format!("{project}: backend must be github or gitcode"))?;
+            let r = Repo::from_ref(repo).map_err(|_| format!("{project}: repo must be owner/name"))?;
+            self.projects.insert(project.to_owned(), (b, r));
+        }
+        Ok(self)
+    }
+    /// Whether `project` may target this backend and repository: only the one it is bound to.
+    pub fn allows(&self, project: &str, backend: &str, repo: &str) -> Result<(), &'static str> {
+        let backend = Backend::parse(backend).ok_or("gitfab_repo_invalid")?;
+        let repo = Repo::from_ref(repo).map_err(|_| "gitfab_repo_invalid")?;
+        match self.projects.get(project) {
+            Some((b, r))
+                if *b == backend
+                    && r.owner.eq_ignore_ascii_case(&repo.owner)
+                    && r.name.eq_ignore_ascii_case(&repo.name) =>
+            {
+                Ok(())
+            }
+            _ => Err("gitfab_repo_not_bound"),
+        }
     }
     pub fn get(&self, backend: Backend) -> Option<&GitHost> {
         match backend {
@@ -146,8 +181,28 @@ pub(crate) fn target<'h>(
     hosts: Option<&'h GitHosts>,
     run: &OrchestratorRun,
 ) -> Option<(&'h GitHost, Repo)> {
-    let host = hosts?.get(Backend::parse(context(run, "gitBackend"))?)?;
-    Some((host, Repo::from_ref(context(run, "repoRef")).ok()?))
+    let hosts = hosts?;
+    let (backend, repo) = (context(run, "gitBackend"), context(run, "repoRef"));
+    // Checked when the run started; checked again here in case the binding changed since.
+    if let Err(code) = hosts.allows(&run.init.project_id, backend, repo) {
+        tracing::warn!(run = %run.id, code, "gitfab run target is not the project's repository; no platform call");
+        return None;
+    }
+    let host = hosts.get(Backend::parse(backend)?)?;
+    Some((host, Repo::from_ref(repo).ok()?))
+}
+
+/// Refuses a new run whose repository is not its project's, whenever the server holds Git tokens.
+/// Without tokens nothing reaches a platform, so any reference is accepted.
+pub(crate) fn check_target(
+    hosts: Option<&GitHosts>,
+    init: &crate::transport::OrchestratorRunInit,
+) -> crate::Result<()> {
+    let Some(hosts) = hosts else { return Ok(()) };
+    let text = |k: &str| init.context[k].as_str().unwrap_or("");
+    hosts
+        .allows(&init.project_id, text("gitBackend"), text("repoRef"))
+        .map_err(crate::Error::Unauthorized)
 }
 
 /// The platform action for a stage that just succeeded. Failures become a note and no links; the
@@ -489,6 +544,50 @@ mod tests {
             assert_eq!(step.commit.as_deref(), Some("b".repeat(40).as_str()));
             assert_eq!(step.spec_blob.as_deref(), Some("e".repeat(40).as_str()));
         }
+    }
+
+    #[test]
+    fn a_project_may_target_only_its_bound_repository() {
+        let hosts = GitHosts::default()
+            .with_projects([("prj_a", "gitcode", "Owner/Demo")])
+            .unwrap();
+        assert_eq!(hosts.allows("prj_a", "gitcode", "owner/demo"), Ok(()));
+        assert_eq!(hosts.allows("prj_a", "gitcode", "https://gitcode.com/Owner/Demo.git"), Ok(()));
+        for (project, backend, repo) in [
+            ("prj_a", "gitcode", "owner/other"),
+            ("prj_a", "github", "owner/demo"),
+            ("prj_b", "gitcode", "owner/demo"),
+        ] {
+            assert_eq!(hosts.allows(project, backend, repo), Err("gitfab_repo_not_bound"), "{project} {backend} {repo}");
+        }
+        assert_eq!(hosts.allows("prj_a", "gitlab", "owner/demo"), Err("gitfab_repo_invalid"));
+        assert_eq!(hosts.allows("prj_a", "gitcode", "no-slash"), Err("gitfab_repo_invalid"));
+        assert!(GitHosts::default().with_projects([("prj_a", "svn", "o/r")]).is_err());
+    }
+
+    #[test]
+    fn a_new_run_is_checked_against_the_binding_only_when_tokens_are_configured() {
+        let mut r = run();
+        r.init.project_id = "prj_a".into();
+        r.init.context["gitBackend"] = json!("github");
+        r.init.context["repoRef"] = json!("https://github.com/o/r");
+        assert!(check_target(None, &r.init).is_ok(), "no tokens: nothing reaches a platform");
+        let hosts = |repo: &str| {
+            GitHosts {
+                github: Some(host(|r| panic!("no platform call expected: {r:?}"))),
+                gitcode: None,
+                projects: Default::default(),
+            }
+            .with_projects([("prj_a", "github", repo)])
+            .unwrap()
+        };
+        let other = hosts("o/elsewhere");
+        assert!(matches!(check_target(Some(&other), &r.init), Err(crate::Error::Unauthorized("gitfab_repo_not_bound"))));
+        assert!(target(Some(&other), &r).is_none(), "an unbound target gets no host");
+        let bound = hosts("o/r");
+        assert!(check_target(Some(&bound), &r.init).is_ok());
+        let (_, repo) = target(Some(&bound), &r).expect("the bound repository is the target");
+        assert_eq!((repo.owner.as_str(), repo.name.as_str()), ("o", "r"));
     }
 
     #[test]

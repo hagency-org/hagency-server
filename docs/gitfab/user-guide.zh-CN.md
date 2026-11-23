@@ -26,8 +26,13 @@
    capabilities = ["rust", "http", "docker"]
    [gitfab.team.reviewer]
    capabilities = ["code-review"]
+
+   # 配置了平台 Token 时必填：每个 Hagency 项目（项目 ID，prj_ 开头）只能操作这里绑定的一个仓库
+   [gitfab.repos."prj_01…"]
+   backend = "gitcode"
+   repo = "alexzhang1/gitfab-demo-01"
    ```
-   所有 Token 文件必须是 0600，否则服务拒绝启动并说明原因。
+   所有 Token 文件必须是 0600，否则服务拒绝启动并说明原因。发起流程时填的 `backend=`、`repo=` 必须与本项目在 `[gitfab.repos]` 里绑定的一致，否则拒绝（`gitfab_repo_not_bound`）：仓库由管理员绑定，不由发起人决定，所以项目成员不能借服务器的 Token 去操作别的仓库。
    配置了 `[gitfab.team]` 时：派工规则用到的三个角色都必须声明，未知角色、重复声明或空能力都会拒绝启动；Plan 阶段的派发消息会写明实现角色的能力，Plan 拆出的每个 Module 只能要求这些能力，超出的 Plan 不算完成（重派一次，仍超出则运行失败）。不配置时不做此项检查。
    事件日志与 Runner 回执定时写入 Git（附件 3 第 7.1 节），例如 crontab 每分钟一次：
    ```

@@ -28,6 +28,8 @@ pub(crate) struct Gitfab<'a> {
     pub recorder: &'a Recorder,
     pub stage_timeout_ms: i64,
     pub team: Option<&'a crate::orchestrator_team::Team>,
+    /// The Git hosts and each project's bound repository; a new run must target its project's.
+    pub git: Option<&'a crate::orchestrator_git::GitHosts>,
     pub shared: Option<(
         &'a DomainStore,
         &'a crate::management_types::ManagementPolicy,
@@ -165,6 +167,7 @@ impl Gitfab<'_> {
                     bindings: start.bindings,
                     context: start.context,
                 };
+                crate::orchestrator_git::check_target(self.git, &init)?;
                 let run = self.transport.create_orchestrator_run(&init, now).await?;
                 view(&run)
             }

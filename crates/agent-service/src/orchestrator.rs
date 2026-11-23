@@ -544,6 +544,14 @@ impl<R: StageRoom> Orchestrator<'_, R> {
             bindings: serde_json::Value::Object(bindings),
             context,
         };
+        if let Err(Error::Unauthorized(code)) =
+            crate::orchestrator_git::check_target(self.room.git(), &init)
+        {
+            return refuse(&format!(
+                "本项目绑定的仓库不是 {}（{}），编排器不会用服务器的 Git Token 操作其他仓库（{code}）。请检查 repo= 与 backend=，或请管理员在 [gitfab.repos] 里为本项目绑定仓库。",
+                start.repo, start.backend
+            ));
+        }
         let run = match self.transport.create_orchestrator_run(&init, now).await {
             Ok(run) => run,
             Err(Error::Invalid(_)) => {
