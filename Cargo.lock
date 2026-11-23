@@ -1717,9 +1717,9 @@ dependencies = [
 
 [[package]]
 name = "cookie"
-version = "0.18.2"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
+checksum = "d55f2d6c30eeec7d5c6f98bd4395d4abb1895629eab97ee6522d340623615f8a"
 dependencies = [
  "aes-gcm 0.10.3",
  "base64 0.22.1",
@@ -3278,7 +3278,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3518,9 +3518,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -6243,7 +6243,7 @@ dependencies = [
 [[package]]
 name = "oauth2-types"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "base64ct",
  "indexmap 2.14.2",
@@ -7120,7 +7120,7 @@ dependencies = [
 [[package]]
 name = "pasion-backend"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "anyhow",
  "argon2",
@@ -7230,7 +7230,7 @@ dependencies = [
 [[package]]
 name = "pasion-config"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "anyhow",
  "camino",
@@ -7262,7 +7262,7 @@ dependencies = [
 [[package]]
 name = "pasion-data"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7304,7 +7304,7 @@ dependencies = [
 [[package]]
 name = "pasion-i18n"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "camino",
  "fluent-bundle",
@@ -7324,7 +7324,7 @@ dependencies = [
 [[package]]
 name = "pasion-iana"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "schemars 1.2.2",
  "serde",
@@ -7333,7 +7333,7 @@ dependencies = [
 [[package]]
 name = "pasion-jose"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "base64ct",
  "digest 0.11.3",
@@ -7364,7 +7364,7 @@ dependencies = [
 [[package]]
 name = "pasion-keystore"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "aead 0.5.2",
  "base64ct",
@@ -7392,7 +7392,7 @@ dependencies = [
 [[package]]
 name = "pasion-matrix"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7403,7 +7403,7 @@ dependencies = [
 [[package]]
 name = "pasion-matrix-palpo"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7420,7 +7420,7 @@ dependencies = [
 [[package]]
 name = "pasion-messaging"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7443,7 +7443,7 @@ dependencies = [
 [[package]]
 name = "pasion-policy"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7462,7 +7462,7 @@ dependencies = [
 [[package]]
 name = "pasion-tasks"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7495,7 +7495,7 @@ dependencies = [
 [[package]]
 name = "pasion-templates"
 version = "1.8.0"
-source = "git+https://github.com/meldry-com/pasion.git?rev=591aa3b59c8bb991c46f2b3f2a20facdf652085c#591aa3b59c8bb991c46f2b3f2a20facdf652085c"
+source = "git+https://github.com/meldry-com/pasion.git?rev=596596d27109ee344f8aca6c2a9f4bbb5aba7693#596596d27109ee344f8aca6c2a9f4bbb5aba7693"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -8360,7 +8360,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8933,12 +8933,12 @@ dependencies = [
 
 [[package]]
 name = "ruma-common"
-version = "0.19.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c3b4f00112791b490acce57df1ce3eb3f88899b045bebcff8a29f75369640cc"
+checksum = "74abf470717970204715ca459e6262bfa2914661742a1b76666d393c302a67b7"
 dependencies = [
  "as_variant",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "form_urlencoded",
  "indexmap 2.14.2",
@@ -8961,9 +8961,9 @@ dependencies = [
 
 [[package]]
 name = "ruma-identifiers-validation"
-version = "0.12.1"
+version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d6cff00317675f487c4e7ccfb18875a14c5a14867b51d13f2a826053f03c432"
+checksum = "298498dd2676dc94ffb81649531a37984ec21788cb1735c2ea9c85cbfa462247"
 dependencies = [
  "js_int",
  "thiserror 2.0.21",
@@ -8971,9 +8971,9 @@ dependencies = [
 
 [[package]]
 name = "ruma-macros"
-version = "0.19.0"
+version = "0.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8cfb39eaa9b9fd389126ff941e060b496add5cbbfef559d80c46e571dda459c"
+checksum = "a4625d3bef3388bc04377ba9fa2fcb81d12ddc001047b5f2f52be7aa58651e15"
 dependencies = [
  "as_variant",
  "cfg-if",
@@ -8982,7 +8982,7 @@ dependencies = [
  "quote",
  "ruma-identifiers-validation",
  "serde",
- "syn 2.0.119",
+ "syn 3.0.10",
  "toml 1.1.6+spec-1.1.0",
 ]
 
@@ -9103,7 +9103,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9162,7 +9162,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10534,10 +10534,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11341,9 +11341,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",
@@ -11789,7 +11789,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -23,6 +23,12 @@ covering paste, pin-utils, chrono, chrono-tz and async-std. The review still
 expires on 2026-11-29. The original review started with 14
 vulnerability records.
 
+The 2026-11-23 update pins [Pasion #190](https://github.com/meldry-com/pasion/pull/190)
+at `596596d2`. Its JOSE and keystore source trees match the previously reviewed
+revision. The server resolves ruma-identifiers-validation 0.14.1 through
+ruma-common 0.21.0, plus url 2.5.9 and cookie 0.18.3. These releases address
+RUSTSEC-2026-0588, RUSTSEC-2026-0589, RUSTSEC-2026-0592 and RUSTSEC-2026-0594.
+
 The subsequent [Palpo #700](https://github.com/palpo-im/palpo/pull/700) update
 pins the embedded server and core to `3d44c435`. Matrix token introspection
 now surfaces issuer outages as gateway or service errors. An inactive or expired
