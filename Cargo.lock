@@ -3052,7 +3052,7 @@ dependencies = [
  "digest 0.11.3",
  "elliptic-curve",
  "rfc6979",
- "signature 3.0.0",
+ "signature",
  "spki",
  "zeroize",
 ]
@@ -3064,7 +3064,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29fcf32e6c73d1079f83ab4d782de2d81620346a5f38c6237a86a22f8368980a"
 dependencies = [
  "pkcs8",
- "signature 3.0.0",
+ "signature",
 ]
 
 [[package]]
@@ -3078,7 +3078,7 @@ dependencies = [
  "rand_core 0.10.1",
  "serde",
  "sha2 0.11.1",
- "signature 3.0.0",
+ "signature",
  "subtle",
  "zeroize",
 ]
@@ -5216,24 +5216,6 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "11.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e75fe14a82d81e5f5af639997db37d8b96045938a7ac6ab18cdbe1c7467e05e1"
-dependencies = [
- "aws-lc-rs",
- "base64 0.22.1",
- "getrandom 0.2.17",
- "js-sys",
- "pem 3.0.6",
- "serde",
- "serde_json",
- "signature 2.2.0",
- "simple_asn1",
- "zeroize",
-]
-
-[[package]]
-name = "jsonwebtoken"
 version = "12.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f347a975eb5fa8f5c4eadce6c1152c11c326cf32cf839fb64ff12d5cb8f4ce8b"
@@ -5242,10 +5224,10 @@ dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",
  "js-sys",
- "pem 4.0.0",
+ "pem",
  "serde",
  "serde_json",
- "signature 3.0.0",
+ "signature",
  "simple_asn1",
  "zeroize",
 ]
@@ -5261,7 +5243,7 @@ dependencies = [
  "elliptic-curve",
  "primeorder",
  "sha2 0.11.1",
- "signature 3.0.0",
+ "signature",
  "wnaf",
 ]
 
@@ -6801,7 +6783,7 @@ dependencies = [
 [[package]]
 name = "palpo"
 version = "0.6.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=973019627abd5ce5716d3d6a88c029b0973b4a49#973019627abd5ce5716d3d6a88c029b0973b4a49"
+source = "git+https://github.com/palpo-im/palpo.git?rev=46bd2f607d42d7962a360b1f471d3843a39b48fa#46bd2f607d42d7962a360b1f471d3843a39b48fa"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6838,7 +6820,7 @@ dependencies = [
  "indexmap 2.14.2",
  "ipaddress",
  "itertools 0.15.0",
- "jsonwebtoken 11.1.0",
+ "jsonwebtoken",
  "kdl",
  "lru-cache",
  "maplit",
@@ -6897,7 +6879,7 @@ dependencies = [
 [[package]]
 name = "palpo-core"
 version = "0.6.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=973019627abd5ce5716d3d6a88c029b0973b4a49#973019627abd5ce5716d3d6a88c029b0973b4a49"
+source = "git+https://github.com/palpo-im/palpo.git?rev=46bd2f607d42d7962a360b1f471d3843a39b48fa#46bd2f607d42d7962a360b1f471d3843a39b48fa"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -6922,7 +6904,7 @@ dependencies = [
  "itertools 0.15.0",
  "js_int",
  "js_option",
- "jsonwebtoken 11.1.0",
+ "jsonwebtoken",
  "konst 0.4.3",
  "maplit",
  "mime",
@@ -6962,7 +6944,7 @@ dependencies = [
 [[package]]
 name = "palpo-core-macros"
 version = "0.6.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=973019627abd5ce5716d3d6a88c029b0973b4a49#973019627abd5ce5716d3d6a88c029b0973b4a49"
+source = "git+https://github.com/palpo-im/palpo.git?rev=46bd2f607d42d7962a360b1f471d3843a39b48fa#46bd2f607d42d7962a360b1f471d3843a39b48fa"
 dependencies = [
  "as_variant",
  "palpo-identifiers-validation",
@@ -6977,7 +6959,7 @@ dependencies = [
 [[package]]
 name = "palpo-data"
 version = "0.6.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=973019627abd5ce5716d3d6a88c029b0973b4a49#973019627abd5ce5716d3d6a88c029b0973b4a49"
+source = "git+https://github.com/palpo-im/palpo.git?rev=46bd2f607d42d7962a360b1f471d3843a39b48fa#46bd2f607d42d7962a360b1f471d3843a39b48fa"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7008,7 +6990,7 @@ dependencies = [
  "hyper-util",
  "image",
  "itertools 0.15.0",
- "jsonwebtoken 11.1.0",
+ "jsonwebtoken",
  "lru-cache",
  "maplit",
  "mime",
@@ -7047,7 +7029,7 @@ dependencies = [
 [[package]]
 name = "palpo-identifiers-validation"
 version = "0.6.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=973019627abd5ce5716d3d6a88c029b0973b4a49#973019627abd5ce5716d3d6a88c029b0973b4a49"
+source = "git+https://github.com/palpo-im/palpo.git?rev=46bd2f607d42d7962a360b1f471d3843a39b48fa#46bd2f607d42d7962a360b1f471d3843a39b48fa"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -7055,7 +7037,7 @@ dependencies = [
 [[package]]
 name = "palpo-server-macros"
 version = "0.6.0"
-source = "git+https://github.com/palpo-im/palpo.git?rev=973019627abd5ce5716d3d6a88c029b0973b4a49#973019627abd5ce5716d3d6a88c029b0973b4a49"
+source = "git+https://github.com/palpo-im/palpo.git?rev=46bd2f607d42d7962a360b1f471d3843a39b48fa#46bd2f607d42d7962a360b1f471d3843a39b48fa"
 dependencies = [
  "palpo-identifiers-validation",
  "proc-macro-crate",
@@ -7356,7 +7338,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "sha2 0.11.1",
- "signature 3.0.0",
+ "signature",
  "thiserror 2.0.21",
  "url",
 ]
@@ -7604,16 +7586,6 @@ dependencies = [
  "proc-macro2-diagnostics",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "pem"
-version = "3.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
-dependencies = [
- "base64 0.22.1",
- "serde_core",
 ]
 
 [[package]]
@@ -8926,7 +8898,7 @@ dependencies = [
  "pkcs8",
  "rand_core 0.10.1",
  "sha2 0.11.1",
- "signature 3.0.0",
+ "signature",
  "spki",
  "zeroize",
 ]
@@ -9279,7 +9251,7 @@ dependencies = [
  "http-body-util",
  "hyper-rustls",
  "hyper-util",
- "jsonwebtoken 12.0.0",
+ "jsonwebtoken",
  "rustls",
  "salvo_core",
  "serde",
@@ -10123,15 +10095,6 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
-]
-
-[[package]]
-name = "signature"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
-dependencies = [
- "rand_core 0.6.4",
 ]
 
 [[package]]
