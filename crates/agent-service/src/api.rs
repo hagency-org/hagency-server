@@ -10,6 +10,20 @@ use crate::identity::Verifier;
 use crate::store::{RegisterDevice, Store};
 use crate::{Error, Result};
 
+pub fn validate_native_request(req: &Request, public: &Url) -> Result<()> {
+    let hosts = req.headers().get_all("host").iter().collect::<Vec<_>>();
+    let expected = &public[url::Position::BeforeHost..url::Position::AfterPort];
+    if hosts.len() != 1
+        || hosts[0].to_str().ok() != Some(expected)
+        || req.headers().contains_key("origin")
+        || req.headers().contains_key("cookie")
+        || req.headers().get_all("authorization").iter().count() > 1
+    {
+        return Err(Error::Unauthorized("native_origin_required"));
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct App {
     pub store: Store,
@@ -254,22 +268,9 @@ impl App {
             _ => Err(Error::Invalid("unsupported_operation")),
         }
     }
-    fn native_request(&self, req: &Request) -> Result<()> {
-        let hosts = req.headers().get_all("host").iter().collect::<Vec<_>>();
-        let expected = self.public[url::Position::BeforeHost..url::Position::AfterPort].to_owned();
-        if hosts.len() != 1
-            || hosts[0].to_str().ok() != Some(expected.as_str())
-            || req.headers().contains_key("origin")
-            || req.headers().contains_key("cookie")
-            || req.headers().get_all("authorization").iter().count() > 1
-        {
-            return Err(Error::Unauthorized("native_origin_required"));
-        }
-        Ok(())
-    }
     async fn crypto_call(&self, req: &mut Request) -> Result<(u16, Value)> {
         use crate::domain::agent_crypto::{MAX_BYTES, Operation, PREFIX};
-        self.native_request(req)?;
+        validate_native_request(req, &self.public)?;
         let query = req.uri().query().map(str::to_owned);
         let path = req
             .uri()
@@ -356,7 +357,7 @@ impl App {
         Ok((status, value))
     }
     async fn call(&self, req: &mut Request) -> Result<Value> {
-        self.native_request(req)?;
+        validate_native_request(req, &self.public)?;
         // Proxies may add X-Forwarded-Host. Ignore it: only the actual Host
         // above can establish the configured public authority.
         let path = req.uri().path().to_owned();
