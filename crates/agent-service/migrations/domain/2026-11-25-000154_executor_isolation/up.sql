@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS hagency_agent_v1.executor_isolation_attestations (
  host_label text NOT NULL CHECK(host_label ~ '^[A-Za-z0-9._-]{1,64}$'),
  attested_by_user_id text NOT NULL REFERENCES hagency_agent_v1.users(id),
  attested_at_ms bigint NOT NULL CHECK(attested_at_ms>0),
+ expires_at_ms bigint NOT NULL CHECK(expires_at_ms>attested_at_ms),
  FOREIGN KEY(device_id,owner_user_id) REFERENCES hagency_agent_v1.devices(id,user_id)
 );
 ALTER TABLE hagency_agent_v1.management_shared_executor_protocols

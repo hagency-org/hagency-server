@@ -544,6 +544,31 @@ async fn executor_isolation_requires_current_administrator_attestation() {
             .any(|d| d["deviceId"] == device.as_str() && d["isolationKind"] == "kata")
     );
 
+    // Lapsed attestations stop satisfying the gate at the next worker request.
+    sql_query("UPDATE hagency_agent_v1.executor_isolation_attestations SET attested_at_ms=1, expires_at_ms=2 WHERE device_id=$1")
+        .bind::<Text, _>(&device).execute(&mut db).await.unwrap();
+    assert_eq!(
+        poll(StatusCode::CONFLICT).await["code"],
+        "executor_isolation_required"
+    );
+    let zero = json!({"kind":"kata","hostLabel":"exec-01","expectedGeneration":generation,"validForDays":0});
+    assert_eq!(
+        post_protocol(
+            &service,
+            &path,
+            &f.admin.token,
+            zero,
+            &[],
+            StatusCode::BAD_REQUEST
+        )
+        .await["code"],
+        "invalid_executor_isolation"
+    );
+    let renew = json!({"kind":"firecracker","hostLabel":"exec-02","expectedGeneration":generation,"validForDays":30});
+    let renewed = post_protocol(&service, &path, &f.admin.token, renew, &[], StatusCode::OK).await;
+    assert_eq!(renewed["device"]["isolationKind"], "firecracker");
+    poll(StatusCode::OK).await;
+
     let revoked = post_protocol(
         &service,
         &format!("executor-isolation/{device}/revoke"),
@@ -557,6 +582,30 @@ async fn executor_isolation_requires_current_administrator_attestation() {
     assert_eq!(
         poll(StatusCode::CONFLICT).await["code"],
         "executor_isolation_required"
+    );
+
+    let audit = post_protocol(
+        &service,
+        "executor-isolation/audit",
+        &f.admin.token,
+        json!({}),
+        &[],
+        StatusCode::OK,
+    )
+    .await;
+    let ops: Vec<&str> = audit["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["operation"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ops,
+        [
+            "executor_isolation.revoke",
+            "executor_isolation.attest",
+            "executor_isolation.attest"
+        ]
     );
 
     f.policy = f.policy.with_require_isolated_executor(false);

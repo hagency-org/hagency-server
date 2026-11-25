@@ -236,6 +236,7 @@ pub mod hagency_agent_v1 {
             host_label -> Text,
             attested_by_user_id -> Text,
             attested_at_ms -> Int8,
+            expires_at_ms -> Int8,
         }
     }
 

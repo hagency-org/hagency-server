@@ -68,11 +68,19 @@ deploy key per repository.
 
 ```sh
 curl -sS -X POST https://<server>/hagency/api/v1/management/executor-isolation/query -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' -d '{}'
-curl -sS -X POST https://<server>/hagency/api/v1/management/executor-isolation/<deviceId>/attest -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' -d '{"kind":"kata","hostLabel":"exec-01","expectedGeneration":<generation>}'
+curl -sS -X POST https://<server>/hagency/api/v1/management/executor-isolation/<deviceId>/attest -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' -d '{"kind":"kata","hostLabel":"exec-01","expectedGeneration":<generation>,"validForDays":90}'
 curl -sS -X POST https://<server>/hagency/api/v1/management/executor-isolation/<deviceId>/revoke -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' -d '{}'
 ```
 
-`kind` is `kata` or `firecracker`. Re-enrolment bumps the device generation and
+`kind` is `kata` or `firecracker`. `validForDays` (1-365, default 90) sets the
+attestation lifetime; an expired attestation stops satisfying the gate at the
+worker's next request, so re-attest before it lapses. Review history with:
+
+```sh
+curl -sS -X POST https://<server>/hagency/api/v1/management/executor-isolation/audit -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' -d '{}'
+```
+
+Re-enrolment bumps the device generation and
 voids the attestation. Owners see `isolationKind` / `isolationHost` on their
 devices.
 

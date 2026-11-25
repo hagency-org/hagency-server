@@ -64,11 +64,18 @@ socket；每个仓库使用独立的 git deploy key。
 
 ```sh
 curl -sS -X POST https://<server>/hagency/api/v1/management/executor-isolation/query -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' -d '{}'
-curl -sS -X POST https://<server>/hagency/api/v1/management/executor-isolation/<deviceId>/attest -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' -d '{"kind":"kata","hostLabel":"exec-01","expectedGeneration":<generation>}'
+curl -sS -X POST https://<server>/hagency/api/v1/management/executor-isolation/<deviceId>/attest -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' -d '{"kind":"kata","hostLabel":"exec-01","expectedGeneration":<generation>,"validForDays":90}'
 curl -sS -X POST https://<server>/hagency/api/v1/management/executor-isolation/<deviceId>/revoke -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' -d '{}'
 ```
 
-`kind` 为 `kata` 或 `firecracker`。重新注册会提升设备 generation，使证明失效。
+`kind` 为 `kata` 或 `firecracker`。`validForDays`（1-365，默认 90）设置证明有效期；
+过期的证明会在 worker 下一次请求时不再满足准入，请在到期前重新证明。查看历史：
+
+```sh
+curl -sS -X POST https://<server>/hagency/api/v1/management/executor-isolation/audit -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' -d '{}'
+```
+
+重新注册会提升设备 generation，使证明失效。
 所有者可在自己的设备上看到 `isolationKind` / `isolationHost`。
 
 ## 7. 服务器策略

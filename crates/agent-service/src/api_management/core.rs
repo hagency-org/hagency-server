@@ -79,6 +79,12 @@ pub(super) async fn call(
                 .await?,
         )
         .map_err(|_| Error::Unavailable("encoding_failed"))?,
+        (&Method::POST, ["executor-isolation", "audit"]) => serde_json::to_value(
+            domain
+                .executor_isolation_audit(p, policy, body(req).await?)
+                .await?,
+        )
+        .map_err(|_| Error::Unavailable("encoding_failed"))?,
         (&Method::POST, ["executor-isolation", id, "attest"]) => {
             json!({"device":domain.attest_executor_isolation(p,policy,id,body(req).await?).await?})
         }

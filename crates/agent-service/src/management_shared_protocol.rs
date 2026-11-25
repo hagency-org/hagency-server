@@ -126,7 +126,7 @@ impl DomainStore {
             Self::authorize(db,p,0).await?;
             let device = p.device_id.as_deref().ok_or(Error::Unauthorized("device_required"))?;
             #[derive(QueryableByName)] struct Satisfied { #[diesel(sql_type=Bool)] matched:bool }
-            let row=sql_query("UPDATE hagency_agent_v1.management_shared_executor_protocols e SET isolation_satisfied = NOT $3 OR EXISTS(SELECT 1 FROM hagency_agent_v1.executor_isolation_attestations a WHERE a.device_id=e.device_id AND a.owner_user_id=e.owner_user_id AND a.generation=e.generation) WHERE e.device_id=$1 AND e.owner_user_id=$2 RETURNING e.isolation_satisfied AS matched")
+            let row=sql_query("UPDATE hagency_agent_v1.management_shared_executor_protocols e SET isolation_satisfied = NOT $3 OR EXISTS(SELECT 1 FROM hagency_agent_v1.executor_isolation_attestations a WHERE a.device_id=e.device_id AND a.owner_user_id=e.owner_user_id AND a.generation=e.generation AND a.expires_at_ms>(extract(epoch from clock_timestamp())*1000)::bigint) WHERE e.device_id=$1 AND e.owner_user_id=$2 RETURNING e.isolation_satisfied AS matched")
                 .bind::<Text,_>(device).bind::<Text,_>(&p.user_id).bind::<Bool,_>(required)
                 .get_result::<Satisfied>(db).await.optional()?;
             Ok(row.map_or(!required,|r|r.matched))
