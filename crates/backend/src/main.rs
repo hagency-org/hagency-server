@@ -154,7 +154,8 @@ async fn run() -> anyhow::Result<()> {
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("missing Pasion introspection credential"))?,
             conf.matrix.server_name.to_string(),
-        )?;
+        )?
+        .with_authorization_window(conf.identity_window_ms()?)?;
         Some(hagency_agent_service::api::App::new(
             agent_store,
             verifier,

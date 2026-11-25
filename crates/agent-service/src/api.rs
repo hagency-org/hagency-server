@@ -453,7 +453,11 @@ impl App {
                 .await
                 .map_err(|_| Error::Invalid("invalid_arguments"))?;
             let started = std::time::Instant::now();
-            let identity = self.verifier.verify(&body.access_token, now_ms()).await?;
+            let window = self.verifier.window_for(requested_window(req));
+            let identity = self
+                .verifier
+                .verify_within(&body.access_token, now_ms(), window)
+                .await?;
             tracing::debug!(
                 stage = "session_create_store",
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -480,7 +484,11 @@ impl App {
                 .await
                 .map_err(|_| Error::Invalid("invalid_arguments"))?;
             let started = std::time::Instant::now();
-            let identity = self.verifier.verify(&body.access_token, now_ms()).await?;
+            let window = self.verifier.window_for(requested_window(req));
+            let identity = self
+                .verifier
+                .verify_within(&body.access_token, now_ms(), window)
+                .await?;
             tracing::debug!(
                 stage = "session_renew_store",
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -1235,6 +1243,16 @@ impl App {
     }
 }
 /// The one `roomId` parameter of a Room lookup; any other query is malformed.
+/// The authorization window a client asks for when it presents its proof.
+/// A client that sends nothing readable keeps the default window.
+fn requested_window(req: &Request) -> Option<i64> {
+    req.headers()
+        .get("x-hagency-authorization-window-ms")?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()
+}
 fn room_query(req: &Request) -> Result<String> {
     let mut room = None;
     for (key, value) in url::form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes()) {
