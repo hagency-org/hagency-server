@@ -50,6 +50,9 @@ pub(super) async fn call(
                 features.push(crate::management_shared_work_types::SHARED_WORK_HISTORY_FEATURE);
                 features.push(crate::management_shared_work_types::POOL_WORK_HISTORY_FEATURE);
             }
+            if policy.require_isolated_executor() {
+                features.push("executor-isolation-required-v1");
+            }
             json!({"protocol":PROTOCOL,"account":p.mxid,"device":p.device_id,"deviceGeneration":p.device_generation,"administrator":policy.session_administrator(p),"canAdmitResources":policy.can_administer(p),"canApproveProjects":false,"features":features})
         }
         _ => return Ok(None),

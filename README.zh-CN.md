@@ -110,6 +110,10 @@ schema 35 允许所有者设备更换本地账本数据库。设备通过
 `management_schema_incompatible` 拒绝；`management_executor_ledgers_down.sql`
 是测试夹具，一旦有设备声明过账本就拒绝执行。
 
+新增的无版本号附加迁移允许管理员证明某个执行设备运行在 Kata 或 Firecracker
+微虚拟机内。设置 `[management] require_isolated_executor = true`（默认关闭）后，
+共享执行任务只会派给已证明的设备；见[远程执行平面](docs/REMOTE_EXECUTION.zh-CN.md)。
+
 替换已声明数据库的声明，或带有 `"fresh": true` 的首次声明，会在同一事务中结束
 旧数据库为该设备留下的内容：资源池和授权被撤销，池化 Agent 被停用，
 项目分配和上级结算被关闭，未应答的命令不再下发，也不再接受回执

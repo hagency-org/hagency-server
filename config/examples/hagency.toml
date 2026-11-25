@@ -28,3 +28,4 @@ event_ttl_ms = 86400000
 # enabled = false                        # Optional management opt-out.
 # enable_project_reservations = true     # Enable both flags for resource pools.
 # enable_agent_admission = true
+# require_isolated_executor = true        # Only attested Kata/Firecracker executors get shared work.

@@ -428,3 +428,146 @@ async fn discovery_observations_require_the_current_worker_and_a_successful_lane
         serde_json::from_str(&read().get_result::<Raw>(&mut db).await.unwrap().value).unwrap();
     assert_eq!(reset, json!([null, null]));
 }
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn executor_isolation_requires_current_administrator_attestation() {
+    let (mut f, request, _assignment, matrix) = Box::pin(prepared_pool(true)).await;
+    f.policy = f.policy.with_require_isolated_executor(true);
+    let service = svc(&f, matrix.gateway.clone());
+    let device = f.owner.p.device_id.clone().unwrap();
+    let generation = f.owner.p.device_generation.unwrap();
+    let poll = |status| {
+        post_protocol(
+            &service,
+            "shared-execution/demands/poll",
+            &f.owner.token,
+            json!({}),
+            &[CURRENT],
+            status,
+        )
+    };
+    assert_eq!(
+        poll(StatusCode::CONFLICT).await["code"],
+        "executor_isolation_required"
+    );
+
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let event = crate::transport::RoutedEvent {
+        event_id: "$needs_isolation".into(),
+        room_id: request.room_id.clone(),
+        sender_mxid: f.outsider.p.mxid.clone(),
+        body: "Hold until attested".into(),
+        mentioned_mxids: Default::default(),
+        thread_root: Some("$isolation_thread".into()),
+        encrypted: false,
+        is_edit: false,
+    };
+    let at = received(&mut db).await;
+    f.domain
+        .route_shared_event(&f.policy, &event, at, &matrix.gateway)
+        .await
+        .unwrap();
+    assert_eq!(
+        notice(&f, &f.outsider.p, &request.room_id).await["executions"][0]["reason"],
+        "executor_isolation_required"
+    );
+
+    let path = format!("executor-isolation/{device}/attest");
+    let good = json!({"kind":"kata","hostLabel":"exec-01","expectedGeneration":generation});
+    let denied = post_protocol(
+        &service,
+        &path,
+        &f.owner.token,
+        good.clone(),
+        &[],
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    assert_eq!(denied["code"], "management_administrator_required");
+    let bad = json!({"kind":"kata","hostLabel":"bad label","expectedGeneration":generation});
+    assert_eq!(
+        post_protocol(
+            &service,
+            &path,
+            &f.admin.token,
+            bad,
+            &[],
+            StatusCode::BAD_REQUEST
+        )
+        .await["code"],
+        "invalid_executor_isolation"
+    );
+    let stale = json!({"kind":"kata","hostLabel":"exec-01","expectedGeneration":generation + 1});
+    assert_eq!(
+        post_protocol(
+            &service,
+            &path,
+            &f.admin.token,
+            stale,
+            &[],
+            StatusCode::CONFLICT
+        )
+        .await["code"],
+        "execution_device_generation_changed"
+    );
+    let ok = post_protocol(&service, &path, &f.admin.token, good, &[], StatusCode::OK).await;
+    assert_eq!(ok["device"]["isolationKind"], "kata");
+    assert_eq!(ok["device"]["isolationHost"], "exec-01");
+    assert_eq!(ok["device"]["ownerMxid"], f.owner.p.mxid);
+
+    poll(StatusCode::OK).await;
+    let owned = f
+        .domain
+        .owner_devices(&f.owner.p, crate::api::now_ms())
+        .await
+        .unwrap();
+    assert!(
+        owned
+            .iter()
+            .any(|d| d.id == device && d.isolation_kind.as_deref() == Some("kata"))
+    );
+    let listed = post_protocol(
+        &service,
+        "executor-isolation/query",
+        &f.admin.token,
+        json!({}),
+        &[],
+        StatusCode::OK,
+    )
+    .await;
+    assert!(
+        listed["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["deviceId"] == device.as_str() && d["isolationKind"] == "kata")
+    );
+
+    let revoked = post_protocol(
+        &service,
+        &format!("executor-isolation/{device}/revoke"),
+        &f.admin.token,
+        json!({}),
+        &[],
+        StatusCode::OK,
+    )
+    .await;
+    assert!(revoked["device"]["isolationKind"].is_null());
+    assert_eq!(
+        poll(StatusCode::CONFLICT).await["code"],
+        "executor_isolation_required"
+    );
+
+    f.policy = f.policy.with_require_isolated_executor(false);
+    let service = svc(&f, matrix.gateway.clone());
+    post_protocol(
+        &service,
+        "shared-execution/demands/poll",
+        &f.owner.token,
+        json!({}),
+        &[CURRENT],
+        StatusCode::OK,
+    )
+    .await;
+}
