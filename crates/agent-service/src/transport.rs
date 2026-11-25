@@ -51,7 +51,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_lease_ms: 60_000,
+            max_lease_ms: 120_000,
             max_owner_events: 10_000,
             event_ttl_ms: 86_400_000,
             max_message_bytes: 64 * 1024,

@@ -12,6 +12,11 @@ public_dir = "../../resources/frontend/public"
 # "ciphertext_inbox" for the server-brokered personal-Agent protocol instead.
 # Pooled Agents always use an executor-held device.
 # personal_encrypted_delivery = "executor_device"
+# How long a verified sign-in is trusted before it must be proven again, for
+# clients that ask for more than the default 30000 (at most 120000). A longer
+# window lets an owner computer that stalls keep its Agents; a sign-in revoked
+# at the identity service also stays usable for that long.
+# authorization_window_ms = 30000
 
 [queue]
 # Do not start stale offline requests; trusted server receipt time, 24h default.

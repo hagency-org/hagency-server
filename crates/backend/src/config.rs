@@ -24,6 +24,10 @@ pub struct HostConfig {
     pub data_dir: PathBuf,
     #[serde(default)]
     pub session_ttl_ms: Option<u64>,
+    /// How long a verified sign-in is trusted before it must be proven again,
+    /// for a client that asks for more than the default thirty seconds.
+    #[serde(default)]
+    pub authorization_window_ms: Option<i64>,
     #[serde(default)]
     pub read_timeout_ms: Option<u64>,
     #[serde(default)]
@@ -155,6 +159,20 @@ impl HostConfig {
             "browser session TTL must be between one second and one day"
         );
         Ok(ttl)
+    }
+    /// The longest authorization window this host grants to a client that asks.
+    pub fn identity_window_ms(&self) -> anyhow::Result<i64> {
+        use hagency_agent_service::identity::{
+            DEFAULT_AUTHORIZATION_WINDOW_MS, MAX_AUTHORIZATION_WINDOW_MS,
+        };
+        let window = self
+            .authorization_window_ms
+            .unwrap_or(DEFAULT_AUTHORIZATION_WINDOW_MS);
+        anyhow::ensure!(
+            (DEFAULT_AUTHORIZATION_WINDOW_MS..=MAX_AUTHORIZATION_WINDOW_MS).contains(&window),
+            "authorization_window_ms must be between thirty seconds and two minutes"
+        );
+        Ok(window)
     }
 }
 fn board_enabled() -> bool {
@@ -288,6 +306,7 @@ impl Config {
         origin(&self.public_origin, true)?;
         self.queue.validate()?;
         self.browser_session_ttl_ms()?;
+        self.identity_window_ms()?;
         anyhow::ensure!(
             self.read_timeout_ms.unwrap_or(8000) > 0,
             "timeouts must be positive"
@@ -430,6 +449,18 @@ mod encrypted_delivery_tests {
             let config: HostConfig =
                 toml::from_str(&format!("{base}session_ttl_ms={ttl}\n")).unwrap();
             assert_eq!(config.browser_session_ttl_ms().is_ok(), valid, "{ttl}");
+        }
+        let config: HostConfig = toml::from_str(base).unwrap();
+        assert_eq!(config.identity_window_ms().unwrap(), 30_000);
+        for (window, valid) in [
+            (29_999, false),
+            (30_000, true),
+            (120_000, true),
+            (120_001, false),
+        ] {
+            let config: HostConfig =
+                toml::from_str(&format!("{base}authorization_window_ms={window}\n")).unwrap();
+            assert_eq!(config.identity_window_ms().is_ok(), valid, "{window}");
         }
         for (lease_ms, valid) in [
             (999, false),
