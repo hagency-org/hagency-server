@@ -1226,10 +1226,11 @@ async fn chat_status_case(begun: bool) {
     .await
     .unwrap()
     .payload;
-    let read = async |p: &Principal| {
+    let rows = async |p: &Principal| {
         let query = serde_json::from_value(json!({"roomId":request.room_id})).unwrap();
-        f.domain.shared_approvals(p, query).await.unwrap()["executions"][0].clone()
+        f.domain.shared_approvals(p, query).await.unwrap()["executions"].clone()
     };
+    let read = async |p: &Principal| rows(p).await[0].clone();
     // Each row names its Agent. A message that has not ended is not sent again.
     for who in [&f.outsider.p, &f.owner.p] {
         let row = read(who).await;
@@ -1270,7 +1271,25 @@ async fn chat_status_case(begun: bool) {
             (&owner["reason"], &owner["canSendAgain"]),
             (&json!("never_started"), &json!(false))
         );
-        // Not while the Agent is stopped: a new message would end the same way.
+        // One criterion for every message that ended without a turn: also
+        // one that was still waiting when the Agent was stopped, and one that
+        // arrived while it was stopped. None is offered while the Agent is
+        // stopped (a new message would end the same way), each is once it
+        // runs again.
+        let mut later = event.clone();
+        later.event_id = "$status_waiting".into();
+        f.domain
+            .route_shared_event(&f.policy, &later, now_ms(), &matrix.gateway)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                &read(&f.outsider.p).await["state"],
+                &read(&f.outsider.p).await["canSendAgain"]
+            ),
+            (&json!("pending"), &json!(false)),
+            "a message that still waits is not sent again"
+        );
         let revision = f
             .domain
             .shared_run_control(&f.outsider.p, &assignment.id)
@@ -1291,11 +1310,49 @@ async fn chat_status_case(begun: bool) {
                 )
                 .await
                 .unwrap();
-            let row = read(&f.outsider.p).await;
+            if mode == "paused" {
+                later.event_id = "$status_while_stopped".into();
+                f.domain
+                    .route_shared_event(&f.policy, &later, now_ms(), &matrix.gateway)
+                    .await
+                    .unwrap();
+            }
+            let all = rows(&f.outsider.p).await;
+            let seen: Vec<_> = all
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    (
+                        row["eventId"].as_str().unwrap(),
+                        row["state"].as_str().unwrap(),
+                        row["reason"].as_str().unwrap(),
+                        row["canSendAgain"].as_bool().unwrap(),
+                    )
+                })
+                .collect();
             assert_eq!(
-                (&row["reason"], &row["canSendAgain"]),
-                (&json!("never_started"), &json!(offered)),
+                seen,
+                [
+                    (
+                        "$status_while_stopped",
+                        "paused",
+                        "paused_at_receipt",
+                        offered
+                    ),
+                    ("$status_waiting", "cancelled", "explicit_stop", offered),
+                    ("$status_work", "cancelled", "never_started", offered),
+                ],
                 "{mode}"
+            );
+            // Never to the resource's owner, who sent none of them.
+            assert!(
+                rows(&f.owner.p)
+                    .await
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|row| row["canSendAgain"] == false)
             );
         }
     }

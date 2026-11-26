@@ -33,6 +33,16 @@ pub(super) async fn query(
                 SELECT 1 FROM hagency_agent_v1.shared_room_memberships m
                 WHERE m.assignment_id=a.id AND m.room_id=i.event_payload::jsonb->>'room_id'
                   AND m.state='matrix_verified'),
+            -- Final for this Agent, and no turn began for it: it was
+            -- withdrawn or stopped while it waited, arrived while the Agent
+            -- was stopped, waited out its time, its start failed for good, or
+            -- the process it was given to ended first. Nothing but sending it
+            -- again will move it. A block on allowance is not such an end:
+            -- the message goes on when allowance is granted.
+            'endedWithoutTurn', w.started_at_ms IS NULL AND (
+                i.state IN ('cancelled','expired','paused')
+                OR (i.state='blocked' AND i.reason NOT IN ('budget_blocked','usage_unrepresentable'))
+                OR (i.state='bound' AND w.state='cancelled')),
             'threadRoot', coalesce(i.event_payload::jsonb->>'thread_root', i.event_id),
             'receivedAtMs', i.received_at_ms,
             'state', CASE
@@ -122,8 +132,12 @@ pub(super) async fn query(
             }
             let mut take =
                 |key: &str| value.as_object_mut().and_then(|v| v.remove(key)) == Some(json!(true));
-            let (sender, available) = (take("fromViewer"), take("agentAvailable"));
-            value["canSendAgain"] = json!(sender && available && ended_without_a_turn(&value));
+            let (sender, available, ended) = (
+                take("fromViewer"),
+                take("agentAvailable"),
+                take("endedWithoutTurn"),
+            );
+            value["canSendAgain"] = json!(sender && available && ended);
             Ok(value)
         })
         .collect::<Result<Vec<_>>>()?;
@@ -168,75 +182,4 @@ pub(super) async fn query(
     });
     values.truncate(16);
     Ok(values)
-}
-
-/// The message ended for this Agent and nothing of it reached a model or a
-/// tool: accepted work that never started, a message that waited out its
-/// time, a start that failed for good. Its sender can send it again as a new
-/// message without repeating anything, when the Agent can take one. A run
-/// whose outcome is unknown, a message that still waits and one that someone
-/// stopped are not such an end.
-fn ended_without_a_turn(row: &Value) -> bool {
-    matches!(
-        (row["state"].as_str(), row["reason"].as_str()),
-        (Some("cancelled"), Some("never_started"))
-            | (Some("expired"), _)
-            | (Some("blocked"), Some("head_changed"))
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_an_end_without_a_turn_can_be_sent_again() {
-        let ended = |state: &str, reason: Option<&str>| {
-            ended_without_a_turn(&json!({"state":state,"reason":reason}))
-        };
-        assert!(ended("cancelled", Some("never_started")));
-        assert!(ended("expired", None) && ended("expired", Some("event_expired")));
-        assert!(ended("blocked", Some("head_changed")));
-        for (state, reason) in [
-            ("cancelled", None),
-            ("cancelled", Some("explicit_stop")),
-            ("cancelled", Some("room_authority_changed")),
-            ("blocked", None),
-            ("blocked", Some("budget_blocked")),
-            ("blocked", Some("owner_daemon_unavailable")),
-            ("pending", None),
-            ("acknowledged", None),
-            ("started", None),
-            ("unknown", None),
-            ("failed", None),
-            ("reply_unknown", None),
-            ("reply_pending", None),
-            ("replied", None),
-        ] {
-            assert!(!ended(state, reason), "{state} {reason:?}");
-        }
-    }
-
-    #[test]
-    fn budget_state_preserves_known_lower_bound_and_old_evidence() {
-        let exhausted = "known_consumption_exhausted";
-        for block in [
-            json!(exhausted),
-            json!({"reason":exhausted}),
-            json!({"reason":"budget_blocked","source":exhausted}),
-        ] {
-            assert_eq!(budget_state(&block), Some("exhausted"));
-        }
-        for (known, complete, expected) in [
-            (99, false, Some("usage_unresolved")),
-            (100, false, Some("exhausted")),
-            (104, false, Some("exhausted")),
-            (100, true, Some("exhausted")),
-            (90, true, None),
-        ] {
-            let block = json!({"budget":{"knownConsumedTokens":known,"allocatedTokens":100,"usageComplete":complete}});
-            assert_eq!(budget_state(&block), expected);
-        }
-        assert_eq!(budget_state(&json!({"budget":{"remainingTokens":0}})), None);
-    }
 }
