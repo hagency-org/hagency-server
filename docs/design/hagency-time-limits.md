@@ -208,16 +208,19 @@ computed in the database, on the database's clock. The two clocks are expected
 to be one machine's or kept in step; a server process whose clock runs ahead
 can lengthen a session up to its token's expiry and no further.
 
-The computer measures a proof, an activity lease, a ticket and a command's
-start window from the moment it sent the request, with the time the server put
-in its answer, and counts them down on a monotonic clock; its wall clock
-decides none of those. An Agent execution lease is the exception today: its
-answer carries no server time, so its end is read against the computer's wall
-clock, give or take one second. A computer whose clock is ahead loses that
-much of every such lease, and one whose clock is behind by more than a second
-is refused a full-length lease. Making the rule hold for it takes the server's
-time in the lease answer and a computer that measures from the send instant,
-as it does for the others.
+The computer holds an end two ways: counted from the moment it sent the
+request, with the time the server put in its answer, and read against its
+wall clock. The counted time does not advance while the computer sleeps; the
+wall clock does, and is the second witness for exactly that. The earlier of
+the two ends the lease. The wall clock may only end a lease early: it extends
+none and refuses none.
+
+Two bounds follow. A computer whose clock is ahead loses that much of every
+lease, and a whole lease when it is ahead by a lease's length; that cannot be
+told from having slept. And the answer that grants an Agent execution lease
+carries no server time, so for that lease the wall clock is the only witness:
+a computer whose clock is behind by more than a second is refused a
+full-length lease. Lifting the second takes the server's time in that answer.
 
 A lease on the computer ends when the server's lease ends. The local session
 that authorizes a request bounds that request, never the run it belongs to.
@@ -285,7 +288,8 @@ renewal offers (7 days).
 | 3. A process that ended before the turn began is tried again | implemented on the server (migration `2026-11-26-000157`, `shared-demand-retry-v2`) for a computer that says, in each demand start and read, that it takes messages back (`reoffers`): the message is a waiting message again at the fence, a retry is opened by the evidence that the process stopped, and a message whose computer does not come back for it ends after a bound (`retry_lapsed`). A computer says it from the Hagency Desktop change that is in review; an earlier daemon does not, and for it the message ends as before |
 | 3. A message that ended without a turn can be sent again | implemented: its status names the Agent and says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent is in the room and not stopped). This covers a message that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its time, and one whose start failed for good. Hagency Desktop uses it to name the Agent in the room and to offer the sender "Send again" |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
-| 5. A lease ends when the server's lease ends | in review in Hagency Desktop. The Agent execution lease is still read against the computer's wall clock (rule 5) |
+| 5. A lease ends when the server's lease ends | in review in Hagency Desktop |
+| 5. The wall clock only ends a lease early | holds for a proof, a ticket and a start window. In review in Hagency Desktop: its store still refuses an activity lease that reads longer than allowed by the wall clock, which a slow clock makes of every fresh lease. Open: the Agent execution lease (rule 5) |
 
 ## What this design does not do
 

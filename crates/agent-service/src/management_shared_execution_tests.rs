@@ -1718,6 +1718,74 @@ async fn pool_agent_is_fenced_by_a_revoked_owner_session_and_not_by_a_shorter_on
     assert_eq!(fence_record(&mut db, &request.id).await, record);
 }
 
+/// The same rule through the calls a person makes, not through the table:
+/// signing in on another computer, and signing out there, leave this
+/// computer's Agents alone, and signing out of this computer's session fences
+/// them.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn pool_agent_is_fenced_by_signing_out_its_own_session_only() {
+    #[derive(QueryableByName)]
+    struct SavedState {
+        #[diesel(sql_type=Text)]
+        payload: String,
+    }
+    async fn intent(db: &mut AsyncPgConnection, request: &str) -> String {
+        sql_query("SELECT i.state AS payload FROM hagency_agent_v1.management_agent_intents i WHERE request_id=$1")
+            .bind::<Text, _>(request)
+            .get_result::<SavedState>(db)
+            .await
+            .unwrap()
+            .payload
+    }
+    let (f, request, _assignment, _matrix) = Box::pin(prepared_pool(false)).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let before = intent(&mut db, &request.id).await;
+    assert_ne!(before, "fenced");
+    // The same person signs in on a second computer: a session and a device
+    // of their own.
+    let elsewhere = f
+        .auth
+        .sign_in(
+            Identity {
+                issuer: "https://example.test/auth/".into(),
+                subject: f.owner.p.subject.clone(),
+                mxid: f.owner.p.mxid.clone(),
+                client_id: "management-test".into(),
+                valid_until_ms: now_ms() + 1_000_000,
+            },
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    f.auth
+        .register_device(
+            &elsewhere.token,
+            RegisterDevice {
+                installation_id: "second-computer".into(),
+                name: "Second computer".into(),
+            },
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(intent(&mut db, &request.id).await, before);
+    // Signing out there revokes that session only.
+    f.auth.sign_out(&elsewhere.token).await.unwrap();
+    assert_eq!(intent(&mut db, &request.id).await, before);
+    // Signing out of the session this computer's device belongs to fences
+    // the Agents it executes, and says why.
+    f.auth.sign_out(&f.owner.session).await.unwrap();
+    assert_eq!(intent(&mut db, &request.id).await, "fenced");
+    let record = fence_record(&mut db, &request.id).await;
+    assert_eq!(record["cause"], "dependency");
+    assert_eq!(record["facts"]["sessionRevoked"], true);
+    assert_eq!(record["facts"]["deviceRevoked"], false);
+    // Signing out again changes nothing.
+    f.auth.sign_out(&f.owner.session).await.unwrap();
+    assert_eq!(fence_record(&mut db, &request.id).await, record);
+}
+
 /// The records of the fences of the processes of `assignment`, oldest first.
 async fn runtime_fence_records(
     db: &mut AsyncPgConnection,

@@ -52,6 +52,8 @@ mod reply_format;
 pub mod store;
 pub mod transport;
 #[cfg(test)]
+mod unavailable_codes_tests;
+#[cfg(test)]
 mod upgrade_tests;
 pub mod worker_runtime;
 mod workers;
