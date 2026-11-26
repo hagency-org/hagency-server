@@ -3,6 +3,15 @@
 //! attempt naming the not_started one. Only the executor's own evidence, sent
 //! with its explicit request, opens a retry: the time bound never does, and an
 //! executor that never asks keeps today's terminal behavior.
+//!
+//! The same holds for an attempt whose process did start and then ended
+//! before a turn began for the event (time-limit rule 3: the line between
+//! what is redone and what is never guessed is the start of a turn). The
+//! evidence is then the process's `stopped` receipt, and whether a turn began
+//! is the server's own record, not the executor's claim: a start is recorded
+//! before the turn and refused once the process is fenced. If the event had
+//! been given to that process, the database released it at the fence
+//! (migration 2026-11-26-000157), so it is a waiting event again here.
 use super::*;
 
 #[derive(QueryableByName)]
@@ -48,9 +57,11 @@ struct Retry {
     #[diesel(sql_type=Text)]
     receipt_id: String,
 }
-/// Open retry `n` after the not_started receipt `receipt` of `previous`, or
-/// end the demand once the cap is reached. A demand that is no longer current
-/// (stopped, cancelled, expired, moved on) is left to its own state.
+/// Open retry `n` after the receipt `receipt` of `previous` (not_started, or
+/// stopped with no turn begun for the event; the insert's trigger checks
+/// which), or end the demand once the cap is reached. A demand that is no
+/// longer current (stopped, cancelled, expired, moved on, or bound to work
+/// that did begin) is left to its own state.
 async fn open(
     db: &mut AsyncPgConnection,
     p: &Principal,
@@ -90,9 +101,10 @@ async fn open(
     Ok(())
 }
 impl DomainStore {
-    /// Record the executor's not_started evidence for the demand's latest
-    /// attempt (exactly as the attempt result route does, on its cleanup
-    /// ticket) and, in the same transaction, re-offer the same event.
+    /// Record the executor's evidence that the demand's latest attempt never
+    /// started, or stopped (exactly as the attempt result route does, with
+    /// the same ticket) and, in the same transaction, re-offer the same
+    /// event if no turn began for it.
     pub async fn retry_shared_demand(
         &self,
         p: &Principal,

@@ -332,33 +332,23 @@ async fn refresh(db: &mut AsyncPgConnection, d: &Demand, q: &Queued, h: &Runtime
     if s.is_none() || h.state != "stopped" || retries::offered(db, &d.id).await?.is_some() {
         return Ok(());
     }
-    // An attempt that never reported a process, stopped by the time bound,
-    // waits for the executor's evidence: not_started may still retry its
-    // event, and only the executor can prove it (ADR-193 amendment).
-    if h.process_digest.is_none()
-        && h.activity_epoch == 0
-        && attempts::latest_evidence(db, &h.id, None).await?.is_none()
-    {
+    // An attempt the time bound stopped waits for the executor's evidence
+    // that it stopped, whether or not it had reported a process: with that
+    // evidence the executor may ask for the event to be retried (ADR-193
+    // amendment; time-limit rule 3). Evidence that came without such a
+    // request ends the event.
+    if timeouts::awaiting_evidence(db, h).await? {
         return Ok(());
     }
     block(db, d, q, "head_changed", "\"head_changed\"").await
 }
-/// The time bound stopped `runtime` without a work binding. If it reported a
-/// process, end the demand that started it now (as a later poll would). A v2
-/// attempt that never did keeps its demand for the executor's evidence (see
-/// refresh): only that evidence may retry the event. Only a still-current,
-/// unbound, unblocked demand changes.
+/// The time bound stopped `runtime` without a work binding. A demand of the
+/// assignment protocol keeps waiting for the executor's evidence (see
+/// refresh): with it the executor may ask for the event to be retried, and
+/// without such a request the next poll ends the event. A budget demand has
+/// no retry and ends now. Only a still-current, unbound, unblocked demand
+/// changes.
 pub(super) async fn interrupt(db: &mut AsyncPgConnection, runtime: &str) -> Result<()> {
-    let v2 = sql_query("SELECT s.demand_id AS id FROM (SELECT demand_id,runtime_id FROM hagency_agent_v1.management_shared_demand_starts UNION ALL SELECT demand_id,runtime_id FROM hagency_agent_v1.management_shared_demand_retry_starts) s JOIN hagency_agent_v1.management_shared_demands d ON d.id=s.demand_id JOIN hagency_agent_v1.management_shared_intake q ON q.id=d.intake_id JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=s.runtime_id WHERE s.runtime_id=$1 AND (r.process_digest IS NOT NULL OR r.activity_epoch>0) AND q.state='pending' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks k WHERE k.demand_id=d.id) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_controls c WHERE c.assignment_id=q.assignment_id AND c.mode='running' AND c.revision=q.control_revision)")
-        .bind::<Text, _>(runtime)
-        .get_result::<Id>(db)
-        .await
-        .optional()?;
-    if let Some(id) = v2 {
-        let d = load(db, &id.id).await?;
-        let q = queued(db, &d.intake_id).await?;
-        block(db, &d, &q, "head_changed", "\"head_changed\"").await?;
-    }
     let v3 = sql_query("SELECT s.demand_id AS id FROM hagency_agent_v1.management_shared_budget_demand_starts s WHERE s.runtime_id=$1 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_bindings b WHERE b.demand_id=s.demand_id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=s.demand_id)")
         .bind::<Text, _>(runtime)
         .get_result::<Id>(db)

@@ -124,7 +124,13 @@ impl SharedDemandRetryInput {
         if !valid_digest(&self.demand_digest)
             || !(1..=MAX_EXACT).contains(&self.expected_control_revision)
             || !(1..=MAX_DEMAND_RETRIES + 1).contains(&self.retry)
-            || self.result.receipt.state != "not_started"
+            // The evidence that nothing was claimed, or that a process ran
+            // and stopped. For the second the server itself decides whether
+            // a turn began for the event; the executor's word is not taken.
+            || !matches!(
+                self.result.receipt.state.as_str(),
+                "not_started" | "stopped"
+            )
         {
             return Err(Error::Invalid("invalid_shared_demand_retry"));
         }

@@ -393,6 +393,9 @@ impl App {
                 .is_some_and(|p| p.shared_demand_retries())
             {
                 capabilities.insert(13, "shared-demand-retry-v1");
+                // A retry may also be asked for with the evidence that a
+                // process stopped before a turn began for the event.
+                capabilities.insert(14, "shared-demand-retry-v2");
             }
             let transport = self.transport.is_some();
             let transport_matrix = transport && self.matrix_client.is_some();

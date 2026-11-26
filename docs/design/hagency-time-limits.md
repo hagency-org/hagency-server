@@ -106,44 +106,51 @@ nothing is running on that client yet.
 
 ### 3. What can be redone is redone; what cannot is never guessed
 
-The line between the two is **acceptance**: the moment a process takes a
-message as its work.
+The line between the two is **the start of the turn**: the record the server
+makes, at the computer's request and before the Agent's program is given the
+message, that work on it begins. The computer starts the turn only when the
+answer says the record was made now.
 
-Before acceptance everything is redone:
+Before the start everything is redone:
 
-- **A start that was not claimed, or that failed before its process
-  reported**, is reported as `not_started` once its claim window has ended,
-  and the same message goes to a new attempt. One message has its first
-  attempt and at most three more. While an attempt is being offered again,
-  the room shows the message as waiting for the Agent, never as failed.
-  Three starts are not tried again today and end the message: one whose
-  process reported and then ended before it was given the message, any failed
-  start of an Agent with an applied budget, and any failed start on a
-  computer whose daemon does not ask for retries.
+- **A start of a process that was not claimed, or that failed before its
+  process reported**, is reported as `not_started` once its claim window has
+  ended, and the same message goes to a new attempt.
+- **A process that ended before the turn began**, whether or not it had been
+  given the message, is reported as stopped, and the same message goes to a
+  new attempt. Whether a turn had begun is not taken on the computer's word:
+  the server reads its own record. A start is recorded only for a process
+  that holds a live lease, a fence ends the lease, and the server makes one
+  change at a time; so a fenced process whose message has no recorded start
+  never began it and never will. At the fence the server takes the message
+  back from that process, keeping a record of what it had handed out, and it
+  is a waiting message again in its old place: a Stop cancels it with the
+  others, and its time and its period end it.
+- One message has its first attempt and at most three more. While an attempt
+  is being offered again, the room shows the message as waiting for the
+  Agent, never as failed.
 - **An answer that did not arrive** is asked for again with the exact same
   request, and the server answers a replay with what it already did.
 
-After acceptance:
+A new attempt is made only when the computer asks for one with its evidence
+that the earlier process stopped. The server never hands a message to a
+computer a second time unasked: a computer that did not ask has its own
+record of that message, and would refuse it. Two kinds of start are therefore
+not tried again and end the message: any failed start of an Agent with an
+applied budget, whose protocol has no retry, and any that a computer does not
+ask about (see the state of the implementation for which daemons ask for
+what). For those the message's status says that the Agent did not process it,
+names the Agent, and its sender can send it again with one action. A message
+sent again is a new message. The server decides who is offered that, and
+offers it only while the Agent is in the room and has not been stopped.
+
+After the start:
 
 - **Work that began and whose end is unknown** is never run again by the
   server: it may have acted, or cost something. Its sender is told that the
-  outcome is unknown, and decides.
-- **Work that was accepted and never began** when its process ended is the one
-  case this design leaves open. The owner's policy is that what is confirmed
-  not to have run is run again without anyone asking. The confirmation exists:
-  the server never recorded a start and refuses one after the process is
-  fenced, and the computer keeps a record of each message it began. What is
-  missing is a way to give the message to the next process, because one
-  message has one binding to one process on both sides, and that rule is what
-  protects its sender from a second answer and a second charge. Giving it a
-  second binding safely means new records and a proof from both sides, and is
-  a decision of its own. Until it is taken:
-  - the computer does not end a process over a step that could not be made
-    (rule 4), which is how this case arose in production;
-  - when a process does end, the message's status says so, names the Agent,
-    and its sender can send it again with one action. A message sent again is
-    a new message. The server decides who is offered that, and offers it only
-    while the Agent is in the room and has not been stopped.
+  outcome is unknown, and decides. This includes a start whose record was
+  made and whose answer never reached the computer: the computer did not
+  begin the turn, and the server cannot know that.
 
 ### 4. A check that cannot be made is not a refusal
 
@@ -258,8 +265,9 @@ renewal offers (7 days).
 | 2. A session's end only grows; fencing only on withdrawal | implemented (migration `2026-11-26-000155`) |
 | 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window, and renewing them early enough for it to matter, is in review |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
-| 3. A failed start is tried again | implemented for a start that never reported a process (demand retries); see rule 3 for the three that are not |
-| 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its time, one whose start failed for good) says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent is in the room and not stopped); Hagency Desktop uses that to name the Agent in the room and to offer the sender "Send again" |
+| 3. A start that was never claimed is tried again | implemented (demand retries, `shared-demand-retry-v1`) |
+| 3. A process that ended before the turn began is tried again | implemented on the server (migration `2026-11-26-000157`, `shared-demand-retry-v2`): the message is a waiting message again at the fence, and a retry is opened by the evidence that the process stopped. A computer asks for it from the Hagency Desktop change that is in review; an earlier daemon asks only for a start that was never claimed, and for it the message ends as before |
+| 3. A message that ended without a turn can be sent again | implemented: its status names the Agent and says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent is in the room and not stopped). This covers a message that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its time, and one whose start failed for good. Hagency Desktop uses it to name the Agent in the room and to offer the sender "Send again" |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop. The Agent execution lease is still read against the computer's wall clock (rule 5) |
 
