@@ -1195,6 +1195,7 @@ async fn a_fresh_first_declaration_ends_what_the_earlier_database_held() {
         [
             "domain_audit",
             "management_agent_executor_commands",
+            "management_agent_fences",
             "management_agent_intents",
             "management_agent_matrix",
             "management_contributions",

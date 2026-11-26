@@ -1698,6 +1698,99 @@ async fn pool_agent_is_fenced_by_a_revoked_owner_session_and_not_by_a_shorter_on
         .await
         .unwrap();
     assert_eq!(intent(&mut db, &request.id).await, "fenced");
+    // The fence left a record: when, that a dependency did it, and which one
+    // was not as it should be.
+    let record = fence_record(&mut db, &request.id).await;
+    assert_eq!(record["cause"], "dependency");
+    assert_eq!(record["recent"], true);
+    assert_eq!(record["facts"]["sessionRevoked"], true);
+    assert_eq!(record["facts"]["deviceRevoked"], false);
+    assert_eq!(record["facts"]["ownerActive"], true);
+    // A reservation is fenced once, and so is its record.
+    sql_query(
+        "UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE request_id=$1",
+    )
+    .bind::<Text, _>(&request.id)
+    .execute(&mut db)
+    .await
+    .unwrap();
+    assert_eq!(fence_record(&mut db, &request.id).await, record);
+}
+
+/// The records of the fences of the processes of `assignment`, oldest first.
+async fn runtime_fence_records(
+    db: &mut AsyncPgConnection,
+    assignment: &str,
+) -> Vec<serde_json::Value> {
+    #[derive(QueryableByName)]
+    struct Saved {
+        #[diesel(sql_type=Text)]
+        payload: String,
+    }
+    sql_query(
+        "SELECT json_build_object('cause',f.cause,'facts',f.facts::jsonb)::text AS payload \
+         FROM hagency_agent_v1.management_shared_runtime_fences f \
+         JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=f.runtime_id \
+         WHERE r.assignment_id=$1 ORDER BY f.fenced_at_ms,f.runtime_id",
+    )
+    .bind::<Text, _>(assignment)
+    .load::<Saved>(db)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|saved| serde_json::from_str(&saved.payload).unwrap())
+    .collect()
+}
+/// The record of the fence of `request`'s reservation, or null.
+async fn fence_record(db: &mut AsyncPgConnection, request: &str) -> serde_json::Value {
+    #[derive(QueryableByName)]
+    struct Saved {
+        #[diesel(sql_type=Text)]
+        payload: String,
+    }
+    let saved = sql_query(
+        "SELECT json_build_object('cause',f.cause,'facts',f.facts::jsonb,'at',f.fenced_at_ms,\
+         'recent',f.fenced_at_ms BETWEEN (extract(epoch from clock_timestamp())*1000)::bigint-60000 \
+         AND (extract(epoch from clock_timestamp())*1000)::bigint)::text AS payload \
+         FROM hagency_agent_v1.management_agent_fences f \
+         JOIN hagency_agent_v1.management_agent_intents i ON i.id=f.intent_id WHERE i.request_id=$1",
+    )
+    .bind::<Text, _>(request)
+    .load::<Saved>(db)
+    .await
+    .unwrap();
+    saved
+        .into_iter()
+        .next()
+        .map_or(serde_json::Value::Null, |saved| {
+            serde_json::from_str(&saved.payload).unwrap()
+        })
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_fence_the_service_makes_is_recorded_as_its_own() {
+    let (f, request, _assignment, _matrix) = Box::pin(prepared_pool(false)).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    // No record before a fence.
+    assert!(fence_record(&mut db, &request.id).await.is_null());
+    // A statement of the service's own, as its sweeps and its cancel make it.
+    sql_query("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE request_id=$1 AND state<>'fenced'")
+        .bind::<Text, _>(&request.id)
+        .execute(&mut db)
+        .await
+        .unwrap();
+    let record = fence_record(&mut db, &request.id).await;
+    assert_eq!(record["cause"], "service");
+    assert_eq!(record["recent"], true);
+    // Nothing the reservation depends on had changed.
+    assert_eq!(record["facts"]["sessionRevoked"], false);
+    assert_eq!(record["facts"]["sessionEnded"], false);
+    assert_eq!(record["facts"]["deviceRevoked"], false);
+    assert_eq!(record["facts"]["deviceGenerationChanged"], false);
+    assert_eq!(record["facts"]["startEnded"], false);
+    assert!(record["facts"]["requestState"].is_string());
+    assert!(record["facts"]["poolState"].is_string());
 }
 
 #[tokio::test]
@@ -2016,6 +2109,15 @@ async fn pool_private_chat_without_mentions_retains_promotes_and_resumes_only_ap
         )
         .await
         .unwrap();
+    // A Stop ends the process while its lease still has time, and the record
+    // says so: a rule of the database fenced it, the Agent was paused, and
+    // the message it had been given never began.
+    let fences = runtime_fence_records(&mut db, &assignment.id).await;
+    let last = fences.last().expect("the Stop fenced a process");
+    assert_eq!(last["cause"], "dependency", "{fences:?}");
+    assert_eq!(last["facts"]["controlMode"], "paused");
+    assert!(last["facts"]["leaseEndedMsAgo"].as_i64().unwrap() < 0);
+    assert_eq!(last["facts"]["workNeverStarted"], 1);
     event.event_id = "$plain_pool_paused".into();
     f.domain
         .route_shared_event(&f.policy, &event, received(&mut db).await, &matrix.gateway)
@@ -2522,6 +2624,15 @@ async fn shared_runtime_receipt_and_renewal_replay_never_extend_or_reuse_old_aut
     let cleanup = shared_poll(&f).await;
     assert!(cleanup.cleanup_allowed);
     assert!(!cleanup.execution_allowed);
+    // The fence says what ended the process: the service found its lease
+    // over, and by how long.
+    let fences = runtime_fence_records(&mut db, &d.command.assignment_id).await;
+    assert_eq!(fences.len(), 1, "{fences:?}");
+    assert_eq!(fences[0]["cause"], "service");
+    assert_eq!(fences[0]["facts"]["stateBefore"], "qualified");
+    assert_eq!(fences[0]["facts"]["stopped"], false);
+    assert!(fences[0]["facts"]["leaseEndedMsAgo"].as_i64().unwrap() > 0);
+    assert!(fences[0]["facts"]["startWindowEndedMsAgo"].is_null());
 }
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
