@@ -391,6 +391,15 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
+        hagency_agent_v1.management_agent_fences (intent_id) {
+            intent_id -> Text,
+            fenced_at_ms -> Int8,
+            cause -> Text,
+            facts -> Text,
+        }
+    }
+
+    diesel::table! {
         hagency_agent_v1.management_agent_intents (id) {
             id -> Text,
             request_id -> Text,
@@ -1212,6 +1221,15 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
+        hagency_agent_v1.management_shared_runtime_fences (runtime_id) {
+            runtime_id -> Text,
+            fenced_at_ms -> Int8,
+            cause -> Text,
+            facts -> Text,
+        }
+    }
+
+    diesel::table! {
         hagency_agent_v1.management_shared_runtimes (id) {
             id -> Text,
             assignment_id -> Text,
@@ -1743,6 +1761,7 @@ pub mod hagency_agent_v1 {
         management_agent_budget_tickets,
         management_agent_decisions,
         management_agent_executor_commands,
+        management_agent_fences,
         management_agent_intents,
         management_agent_matrix,
         management_agent_matrix_checks,
@@ -1808,6 +1827,7 @@ pub mod hagency_agent_v1 {
         management_shared_replies,
         management_shared_reply_deliveries,
         management_shared_result_tickets,
+        management_shared_runtime_fences,
         management_shared_runtimes,
         management_shared_work,
         management_shared_work_receipts,

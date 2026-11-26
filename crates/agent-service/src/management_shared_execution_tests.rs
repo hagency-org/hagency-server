@@ -1164,6 +1164,212 @@ async fn pool_owner_can_fund_beyond_published_grant_but_manager_cannot() {
     );
 }
 
+async fn chat_status_case(begun: bool) {
+    #[derive(QueryableByName)]
+    struct Puppet {
+        #[diesel(sql_type=Text)]
+        payload: String,
+    }
+    let (f, request, assignment, matrix) = Box::pin(prepared_pool_calendar(true, true)).await;
+    let runtime = shared_poll(&f).await;
+    let activity = save(&f, &runtime, "qualified", 101)
+        .await
+        .unwrap()
+        .activity
+        .unwrap();
+    let event = crate::transport::RoutedEvent {
+        event_id: "$status_work".into(),
+        room_id: request.room_id.clone(),
+        sender_mxid: f.outsider.p.mxid.clone(),
+        body: "Research this".into(),
+        mentioned_mxids: Default::default(),
+        thread_root: None,
+        encrypted: false,
+        is_edit: false,
+    };
+    f.domain
+        .route_shared_event(&f.policy, &event, now_ms(), &matrix.gateway)
+        .await
+        .unwrap();
+    let work = f
+        .domain
+        .poll_shared_work(
+            &f.owner.p,
+            &f.policy,
+            activity.authority.clone(),
+            &matrix.gateway,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let input = SharedWorkInput {
+        authority: activity.authority.clone(),
+        work_id: work.id.clone(),
+        work_digest: allocation_digest(&work).unwrap(),
+    };
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input.clone(), &matrix.gateway)
+        .await
+        .unwrap();
+    if begun {
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input.clone(), &matrix.gateway)
+            .await
+            .unwrap();
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let puppet = sql_query(
+        "SELECT puppet_mxid AS payload FROM hagency_agent_v1.management_agent_matrix WHERE assignment_id=$1",
+    )
+    .bind::<Text, _>(&assignment.id)
+    .get_result::<Puppet>(&mut db)
+    .await
+    .unwrap()
+    .payload;
+    let rows = async |p: &Principal| {
+        let query = serde_json::from_value(json!({"roomId":request.room_id})).unwrap();
+        f.domain.shared_approvals(p, query).await.unwrap()["executions"].clone()
+    };
+    let read = async |p: &Principal| rows(p).await[0].clone();
+    // Each row names its Agent. A message that has not ended is not sent again.
+    for who in [&f.outsider.p, &f.owner.p] {
+        let row = read(who).await;
+        assert_eq!(row["eventId"], "$status_work");
+        assert_eq!(row["agentMxid"], json!(puppet));
+        assert_eq!(row["reason"], Value::Null);
+        assert_eq!(row["canSendAgain"], false);
+        // What the answer is worked out from stays on the server.
+        assert!(row.get("fromViewer").is_none() && row.get("agentAvailable").is_none());
+    }
+    // The process ends.
+    attempts::stop(&f, &runtime, 103).await;
+    let ended = read(&f.outsider.p).await;
+    if begun {
+        // It may have acted: unknown, never "never started", and not sent again.
+        assert_eq!(
+            (&ended["state"], &ended["reason"], &ended["canSendAgain"]),
+            (&json!("unknown"), &Value::Null, &json!(false))
+        );
+    } else {
+        assert_eq!(
+            (&ended["state"], &ended["reason"]),
+            (&json!("cancelled"), &json!("never_started"))
+        );
+        // The reason is a fact: a start is refused from now on.
+        assert!(
+            f.domain
+                .start_current_work(&f.owner.p, &f.policy, input, &matrix.gateway)
+                .await
+                .is_err()
+        );
+        assert_eq!(read(&f.outsider.p).await["reason"], "never_started");
+        // Its sender can send it again; the resource's owner, who did not
+        // send it, cannot.
+        assert_eq!(ended["canSendAgain"], true);
+        let owner = read(&f.owner.p).await;
+        assert_eq!(
+            (&owner["reason"], &owner["canSendAgain"]),
+            (&json!("never_started"), &json!(false))
+        );
+        // One criterion for every message that ended without a turn: also
+        // one that was still waiting when the Agent was stopped, and one that
+        // arrived while it was stopped. None is offered while the Agent is
+        // stopped (a new message would end the same way), each is once it
+        // runs again.
+        let mut later = event.clone();
+        later.event_id = "$status_waiting".into();
+        f.domain
+            .route_shared_event(&f.policy, &later, now_ms(), &matrix.gateway)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                &read(&f.outsider.p).await["state"],
+                &read(&f.outsider.p).await["canSendAgain"]
+            ),
+            (&json!("pending"), &json!(false)),
+            "a message that still waits is not sent again"
+        );
+        let revision = f
+            .domain
+            .shared_run_control(&f.outsider.p, &assignment.id)
+            .await
+            .unwrap()
+            .revision;
+        for (command, revision, mode, offered) in [
+            ("status_pause", revision, "paused", false),
+            ("status_resume", revision + 1, "running", true),
+        ] {
+            f.domain
+                .change_shared_run_control(
+                    &f.outsider.p,
+                    &f.policy,
+                    &assignment.id,
+                    intake_tests::change(command, revision, mode),
+                    &matrix.gateway,
+                )
+                .await
+                .unwrap();
+            if mode == "paused" {
+                later.event_id = "$status_while_stopped".into();
+                f.domain
+                    .route_shared_event(&f.policy, &later, now_ms(), &matrix.gateway)
+                    .await
+                    .unwrap();
+            }
+            let all = rows(&f.outsider.p).await;
+            let seen: Vec<_> = all
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    (
+                        row["eventId"].as_str().unwrap(),
+                        row["state"].as_str().unwrap(),
+                        row["reason"].as_str().unwrap(),
+                        row["canSendAgain"].as_bool().unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                seen,
+                [
+                    (
+                        "$status_while_stopped",
+                        "paused",
+                        "paused_at_receipt",
+                        offered
+                    ),
+                    ("$status_waiting", "cancelled", "explicit_stop", offered),
+                    ("$status_work", "cancelled", "never_started", offered),
+                ],
+                "{mode}"
+            );
+            // Never to the resource's owner, who sent none of them.
+            assert!(
+                rows(&f.owner.p)
+                    .await
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|row| row["canSendAgain"] == false)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn chat_status_names_agent_and_sender_and_says_accepted_work_never_started() {
+    Box::pin(chat_status_case(false)).await;
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn chat_status_keeps_work_that_began_unknown_when_its_process_ends() {
+    Box::pin(chat_status_case(true)).await;
+}
+
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_user_leakage() {
@@ -1492,6 +1698,99 @@ async fn pool_agent_is_fenced_by_a_revoked_owner_session_and_not_by_a_shorter_on
         .await
         .unwrap();
     assert_eq!(intent(&mut db, &request.id).await, "fenced");
+    // The fence left a record: when, that a dependency did it, and which one
+    // was not as it should be.
+    let record = fence_record(&mut db, &request.id).await;
+    assert_eq!(record["cause"], "dependency");
+    assert_eq!(record["recent"], true);
+    assert_eq!(record["facts"]["sessionRevoked"], true);
+    assert_eq!(record["facts"]["deviceRevoked"], false);
+    assert_eq!(record["facts"]["ownerActive"], true);
+    // A reservation is fenced once, and so is its record.
+    sql_query(
+        "UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE request_id=$1",
+    )
+    .bind::<Text, _>(&request.id)
+    .execute(&mut db)
+    .await
+    .unwrap();
+    assert_eq!(fence_record(&mut db, &request.id).await, record);
+}
+
+/// The records of the fences of the processes of `assignment`, oldest first.
+async fn runtime_fence_records(
+    db: &mut AsyncPgConnection,
+    assignment: &str,
+) -> Vec<serde_json::Value> {
+    #[derive(QueryableByName)]
+    struct Saved {
+        #[diesel(sql_type=Text)]
+        payload: String,
+    }
+    sql_query(
+        "SELECT json_build_object('cause',f.cause,'facts',f.facts::jsonb)::text AS payload \
+         FROM hagency_agent_v1.management_shared_runtime_fences f \
+         JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=f.runtime_id \
+         WHERE r.assignment_id=$1 ORDER BY f.fenced_at_ms,f.runtime_id",
+    )
+    .bind::<Text, _>(assignment)
+    .load::<Saved>(db)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|saved| serde_json::from_str(&saved.payload).unwrap())
+    .collect()
+}
+/// The record of the fence of `request`'s reservation, or null.
+async fn fence_record(db: &mut AsyncPgConnection, request: &str) -> serde_json::Value {
+    #[derive(QueryableByName)]
+    struct Saved {
+        #[diesel(sql_type=Text)]
+        payload: String,
+    }
+    let saved = sql_query(
+        "SELECT json_build_object('cause',f.cause,'facts',f.facts::jsonb,'at',f.fenced_at_ms,\
+         'recent',f.fenced_at_ms BETWEEN (extract(epoch from clock_timestamp())*1000)::bigint-60000 \
+         AND (extract(epoch from clock_timestamp())*1000)::bigint)::text AS payload \
+         FROM hagency_agent_v1.management_agent_fences f \
+         JOIN hagency_agent_v1.management_agent_intents i ON i.id=f.intent_id WHERE i.request_id=$1",
+    )
+    .bind::<Text, _>(request)
+    .load::<Saved>(db)
+    .await
+    .unwrap();
+    saved
+        .into_iter()
+        .next()
+        .map_or(serde_json::Value::Null, |saved| {
+            serde_json::from_str(&saved.payload).unwrap()
+        })
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_fence_the_service_makes_is_recorded_as_its_own() {
+    let (f, request, _assignment, _matrix) = Box::pin(prepared_pool(false)).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    // No record before a fence.
+    assert!(fence_record(&mut db, &request.id).await.is_null());
+    // A statement of the service's own, as its sweeps and its cancel make it.
+    sql_query("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE request_id=$1 AND state<>'fenced'")
+        .bind::<Text, _>(&request.id)
+        .execute(&mut db)
+        .await
+        .unwrap();
+    let record = fence_record(&mut db, &request.id).await;
+    assert_eq!(record["cause"], "service");
+    assert_eq!(record["recent"], true);
+    // Nothing the reservation depends on had changed.
+    assert_eq!(record["facts"]["sessionRevoked"], false);
+    assert_eq!(record["facts"]["sessionEnded"], false);
+    assert_eq!(record["facts"]["deviceRevoked"], false);
+    assert_eq!(record["facts"]["deviceGenerationChanged"], false);
+    assert_eq!(record["facts"]["startEnded"], false);
+    assert!(record["facts"]["requestState"].is_string());
+    assert!(record["facts"]["poolState"].is_string());
 }
 
 #[tokio::test]
@@ -1810,6 +2109,15 @@ async fn pool_private_chat_without_mentions_retains_promotes_and_resumes_only_ap
         )
         .await
         .unwrap();
+    // A Stop ends the process while its lease still has time, and the record
+    // says so: a rule of the database fenced it, the Agent was paused, and
+    // the message it had been given never began.
+    let fences = runtime_fence_records(&mut db, &assignment.id).await;
+    let last = fences.last().expect("the Stop fenced a process");
+    assert_eq!(last["cause"], "dependency", "{fences:?}");
+    assert_eq!(last["facts"]["controlMode"], "paused");
+    assert!(last["facts"]["leaseEndedMsAgo"].as_i64().unwrap() < 0);
+    assert_eq!(last["facts"]["workNeverStarted"], 1);
     event.event_id = "$plain_pool_paused".into();
     f.domain
         .route_shared_event(&f.policy, &event, received(&mut db).await, &matrix.gateway)
@@ -2316,6 +2624,15 @@ async fn shared_runtime_receipt_and_renewal_replay_never_extend_or_reuse_old_aut
     let cleanup = shared_poll(&f).await;
     assert!(cleanup.cleanup_allowed);
     assert!(!cleanup.execution_allowed);
+    // The fence says what ended the process: the service found its lease
+    // over, and by how long.
+    let fences = runtime_fence_records(&mut db, &d.command.assignment_id).await;
+    assert_eq!(fences.len(), 1, "{fences:?}");
+    assert_eq!(fences[0]["cause"], "service");
+    assert_eq!(fences[0]["facts"]["stateBefore"], "qualified");
+    assert_eq!(fences[0]["facts"]["stopped"], false);
+    assert!(fences[0]["facts"]["leaseEndedMsAgo"].as_i64().unwrap() > 0);
+    assert!(fences[0]["facts"]["startWindowEndedMsAgo"].is_null());
 }
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
