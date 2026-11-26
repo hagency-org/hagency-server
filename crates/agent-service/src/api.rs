@@ -1261,20 +1261,15 @@ fn requested_window(req: &Request) -> Option<i64> {
         .parse()
         .ok()
 }
-/// A client that sends `x-hagency-activity-window: session` checks an activity
-/// lease issued to its device against the authorization window it was
-/// granted, and gets that window for it. Any other client checks against
-/// thirty seconds, and keeps thirty seconds.
-fn activity_window(req: &Request, granted: i64) -> i64 {
-    let follows = req
-        .headers()
+/// A client that sends `x-hagency-activity-window: session` takes an activity
+/// lease issued to its device as long as the authorization window it was
+/// granted, and follows that window: the answer is the window. Any other
+/// client checks each lease against thirty seconds and follows none.
+fn activity_window(req: &Request, granted: i64) -> Option<i64> {
+    req.headers()
         .get("x-hagency-activity-window")
-        .is_some_and(|value| value.as_bytes() == b"session");
-    if follows {
-        granted
-    } else {
-        crate::identity::DEFAULT_AUTHORIZATION_WINDOW_MS
-    }
+        .is_some_and(|value| value.as_bytes() == b"session")
+        .then_some(granted)
 }
 fn room_query(req: &Request) -> Result<String> {
     let mut room = None;

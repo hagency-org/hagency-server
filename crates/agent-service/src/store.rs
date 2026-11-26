@@ -79,10 +79,12 @@ struct Device {
     #[diesel(sql_type=BigInt)]
     generation: i64,
 }
-/// The window a session keeps for the activity leases issued to its device:
-/// never under the default, and never over the longest window a server grants.
-fn activity_window(ms: i64) -> i64 {
-    ms.clamp(DEFAULT_AUTHORIZATION_WINDOW_MS, MAX_AUTHORIZATION_WINDOW_MS)
+/// The window a session follows for the activity leases issued to its
+/// device, if its client follows one: never under the default, and never
+/// over the longest window a server grants. `None` is a client that checks
+/// each lease against thirty seconds.
+fn activity_window(ms: Option<i64>) -> Option<i64> {
+    ms.map(|ms| ms.clamp(DEFAULT_AUTHORIZATION_WINDOW_MS, MAX_AUTHORIZATION_WINDOW_MS))
 }
 impl Store {
     /// Explicit, one-way rename of this deployment's embedded auth mount.
@@ -167,8 +169,7 @@ impl Store {
         })
     }
     pub async fn sign_in(&self, identity: Identity, now: i64) -> Result<SessionGrant> {
-        self.sign_in_with_window(identity, DEFAULT_AUTHORIZATION_WINDOW_MS, now)
-            .await
+        self.sign_in_with_window(identity, None, now).await
     }
     /// `sign_in` for a client that follows its authorization window:
     /// `activity_window_ms` is the window it was granted, and an activity
@@ -176,7 +177,7 @@ impl Store {
     pub async fn sign_in_with_window(
         &self,
         identity: Identity,
-        activity_window_ms: i64,
+        activity_window_ms: Option<i64>,
         now: i64,
     ) -> Result<SessionGrant> {
         let activity_window_ms = activity_window(activity_window_ms);
@@ -333,7 +334,7 @@ impl Store {
             .await
     }
     pub async fn renew(&self, credential: &str, identity: Identity, now: i64) -> Result<i64> {
-        self.renew_with_window(credential, identity, DEFAULT_AUTHORIZATION_WINDOW_MS, now)
+        self.renew_with_window(credential, identity, None, now)
             .await
     }
     /// `renew` for a client that follows its authorization window. Each
@@ -345,7 +346,7 @@ impl Store {
         &self,
         credential: &str,
         identity: Identity,
-        activity_window_ms: i64,
+        activity_window_ms: Option<i64>,
         now: i64,
     ) -> Result<i64> {
         let activity_window_ms = activity_window(activity_window_ms);
@@ -397,7 +398,8 @@ impl Store {
                     valid_until_ms: i64,
                 }
                 // The window is not merged that way: it is what the client
-                // that renews now says, which may be shorter than before.
+                // that renews now says. It may follow a shorter window than
+                // before, or none (an older client took the session over).
                 // What that does to a lease in hand is `activity_until`'s.
                 let kept = sql_query(
                     "UPDATE hagency_agent_v1.sessions \
@@ -406,7 +408,7 @@ impl Store {
                 )
                 .bind::<BigInt, _>(identity.valid_until_ms)
                 .bind::<Text, _>(&p.session_id)
-                .bind::<BigInt, _>(activity_window_ms)
+                .bind::<Nullable<BigInt>, _>(activity_window_ms)
                 .get_result::<Kept>(db)
                 .await?;
                 Ok(kept.valid_until_ms)

@@ -78,10 +78,12 @@ async fn clock(db: &mut AsyncPgConnection) -> Result<i64> {
 /// ticket, a delivery lease), and keeps thirty seconds.
 ///
 /// `held` is the end of the lease being renewed, or zero. A session that
-/// follows its window is never given an end before the one it holds: its
-/// window may have been made shorter since. A session that does not is an
-/// older client, which checks each end against thirty seconds, and gets
-/// thirty seconds from now as it always did.
+/// follows a window is never given an end before the one it holds: its
+/// window may have been made shorter since, down to thirty seconds, and
+/// lowering a window shortens nothing that was already given. A session
+/// that follows none is an older client, which checks each end against
+/// thirty seconds and would refuse a longer one: it gets thirty seconds
+/// from now as it always did, also when that is before the end it holds.
 async fn activity_until(
     db: &mut AsyncPgConnection,
     p: &Principal,
@@ -89,8 +91,8 @@ async fn activity_until(
     held: i64,
 ) -> Result<i64> {
     Ok(sql_query(
-        "SELECT least(valid_until_ms,CASE WHEN activity_window_ms>$3 \
-         THEN greatest($2+activity_window_ms,$4) ELSE $2+$3 END) AS now \
+        "SELECT least(valid_until_ms,CASE WHEN activity_window_ms IS NULL \
+         THEN $2+$3 ELSE greatest($2+activity_window_ms,$4) END) AS now \
          FROM hagency_agent_v1.sessions WHERE id=$1",
     )
     .bind::<Text, _>(&p.session_id)

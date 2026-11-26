@@ -93,11 +93,11 @@ async fn shared_activity_v1_idle_renewal_survives_original_spawn_deadline() {
 
 /// What the session endpoints record for a client that follows the
 /// authorization window it was granted.
-async fn follow_window(f: &Fixture, window_ms: i64) {
+async fn follow_window(f: &Fixture, window_ms: impl Into<Option<i64>>) {
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     let changed =
         sql_query("UPDATE hagency_agent_v1.sessions SET activity_window_ms=$1 WHERE id=$2")
-            .bind::<BigInt, _>(window_ms)
+            .bind::<diesel::sql_types::Nullable<BigInt>, _>(window_ms.into())
             .bind::<Text, _>(&f.owner.p.session_id)
             .execute(&mut db)
             .await
@@ -216,6 +216,36 @@ async fn shared_activity_lease_is_not_cut_when_the_window_of_its_session_is_made
     let (shorter, observed) = renew_activity(&f, &m, &activity, "shorter_renew").await;
     assert!(shorter.expires_at_ms >= activity.expires_at_ms);
     assert!(shorter.expires_at_ms - observed <= 120_000);
+    // Lowered all the way to thirty seconds, the session still follows a
+    // window, and the lease it holds is still not cut.
+    follow_window(&f, 30_000).await;
+    let (lowest, observed) = renew_activity(&f, &m, &shorter, "lowest_renew").await;
+    assert!(lowest.expires_at_ms >= shorter.expires_at_ms);
+    assert!(lowest.expires_at_ms - observed > 30_000);
+}
+
+/// A lease never outlasts the session it is renewed under. A session that
+/// ends sooner than the lease in hand (its end is set here; in service it is
+/// another session of the device) cuts the lease to its own end. That is not
+/// a window being lowered: the authority itself ends.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_activity_lease_ends_with_the_session_it_is_renewed_under() {
+    let (f, _request, _admin, _assignment, m) = Box::pin(prepared()).await;
+    follow_window(&f, 120_000).await;
+    let (_delivery, activity) = qualify(&f).await;
+    assert!(activity.expires_at_ms - now_ms() > 60_000);
+    let end = now_ms() + 20_000;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("UPDATE hagency_agent_v1.sessions SET valid_until_ms=$1 WHERE id=$2")
+        .bind::<BigInt, _>(end)
+        .bind::<Text, _>(&f.owner.p.session_id)
+        .execute(&mut db)
+        .await
+        .unwrap();
+    let (cut, _observed) = renew_activity(&f, &m, &activity, "session_end_renew").await;
+    assert!(cut.expires_at_ms <= end);
+    assert!(cut.expires_at_ms < activity.expires_at_ms);
 }
 
 /// A renewal of the session without the header: an older client took the
@@ -230,7 +260,7 @@ async fn shared_activity_lease_is_thirty_seconds_from_now_once_its_session_follo
     follow_window(&f, 120_000).await;
     let (_delivery, activity) = qualify(&f).await;
     assert!(activity.expires_at_ms - now_ms() > 60_000);
-    follow_window(&f, 30_000).await;
+    follow_window(&f, None).await;
     let (older, observed) = renew_activity(&f, &m, &activity, "older_renew").await;
     assert!((1..=30_000).contains(&(older.expires_at_ms - observed)));
     assert!(older.expires_at_ms < activity.expires_at_ms);

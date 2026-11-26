@@ -192,12 +192,12 @@ next renewed.
 | Authorization window | 30 s by default; up to 120 s when `authorization_window_ms` is configured and the client asks with `x-hagency-authorization-window-ms` | held | host configuration and the client's request |
 | Session end | see above; only grows | held | server |
 | Agent execution lease | `least(session end, now + asked length)`; a length outside 1 s to 120 s is refused | held | server, from the client's request |
-| Activity lease of a working process | `least(session end, now + window)`, and never past the pool reservation it runs under. Today `least(session end, now + 30 s)`; see the state table | held | server |
+| Activity lease of a working process | for a session whose client follows its window (it sends `x-hagency-activity-window: session` when it presents its proof): `least(session end, now + window)`, and a renewal never ends before the lease it renews. For a session that follows none (an older client, which refuses a longer lease): `least(session end, now + 30 s)`. Never past the pool reservation it runs under | held | server |
 | Start window of a start command | 30 s from issue | offered | server |
 | Ticket for one exchange about a process | 30 s; the ticket that lets a process report ready also ends with its command's start window | offered | server |
 | A command, challenge or grant handed out by a poll | not handed out again for 30 s (not cut to the session's end), then handed out again until it is answered | offered | server |
 | Renewal of an Agent execution lease | every 5 s, or after half of what is left when that is sooner | — | computer |
-| Renewal of an activity lease | when 20 s or less of it are left. Under a longer window this has to become "when it has lost 10 s", or the longer lease tolerates no longer silence than the short one; see the state table | — | computer |
+| Renewal of an activity lease | when 20 s or less of it are left. Under a longer window that tolerates no longer silence than a 30 s lease does, so it becomes: a third of the way through the lease, and no later than 10 s after its grant, which for a 30 s lease is the moment it is renewed today (in review in Hagency Desktop; see the state table) | — | computer |
 | Token refresh | as soon as a proof has lost 10 s of the window, at most once a minute for that reason; and always when a proof has 20 s or less left | — | computer |
 | Local session of the daemon | 60 s, reused while 30 s are left, at most 16 at a time | bounds a request | computer |
 | Grace before a silent process is given up | 180 s after its last evidence | recovery | server |
@@ -210,7 +210,7 @@ What must stay ordered:
 |---|---|---|
 | 30 s ≤ window ≤ 120 s | shorter loses Agents on a busy computer; longer delays noticing a revocation | a host configuration outside the range is refused |
 | access token life > window | otherwise a full proof never exists | the server only sees each token's expiry and cuts the session to it; the computer's refresh rule keeps the lead near the window |
-| A held lease is renewed while at least two more renewals fit before its end | two lost renewals in a row must not lose a lease | the Agent execution lease is renewed every 5 s, which meets it under every window. The activity lease does not meet it today: it is renewed once, with 20 s left |
+| A held lease is renewed while at least two more renewals fit before its end | two lost renewals in a row must not lose a lease | the Agent execution lease is renewed every 5 s, which meets it under every window. The activity lease meets it once the computer renews it a third of the way through, at most 10 s after its grant (in review in Hagency Desktop); renewed with 20 s left, a lease longer than 30 s does not |
 | claim window ≤ window | an offer must not outlive what it would become | the claim window equals the smallest window; it is a literal in several server files, not yet one constant |
 
 Clocks that are not part of this design, because no computer's authority
@@ -224,7 +224,7 @@ renewal offers (7 days).
 | Rule | State |
 |---|---|
 | 2. A session's end only grows; fencing only on revocation | implemented with this document (migration `2026-11-26-000155`) |
-| 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window, and renewing them early enough for it to matter, is in review |
+| 1. Held follows the window | the session and Agent execution leases do. The server issues an activity lease as long as the window to a session that follows it. The computer taking such a lease, holding it to its end and renewing it early enough for the length to matter is in review in Hagency Desktop; until then every session follows none and every activity lease is 30 s |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A failed start is tried again | implemented (demand retries) |
 | 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again, its status has no reason, and the room says only that the message was not processed |

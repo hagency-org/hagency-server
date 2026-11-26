@@ -342,18 +342,18 @@ async fn postgres_expired_original_session_http_renew_preserves_exact_device_and
     task.abort();
 }
 /// Renews as a client that sends these headers, and returns the window the
-/// session then keeps for the activity leases issued to its device.
+/// session then follows for the activity leases issued to its device, if any.
 async fn activity_window_after_renewal(
     app: &Service,
     url: &str,
     token: &str,
     window: Option<&str>,
     activity_window: Option<&str>,
-) -> i64 {
+) -> Option<i64> {
     #[derive(diesel::QueryableByName)]
     struct Row {
-        #[diesel(sql_type=BigInt)]
-        activity_window_ms: i64,
+        #[diesel(sql_type=diesel::sql_types::Nullable<BigInt>)]
+        activity_window_ms: Option<i64>,
     }
     let mut request =
         TestClient::post("https://example.test/hagency/api/v1/sessions/current/renew")
@@ -391,29 +391,34 @@ async fn postgres_activity_window_is_the_granted_window_only_for_a_client_that_f
         activity_window_after_renewal(app, &url, &owner.token, window, activity_window)
     };
     // A client that asks for the longer window and says nothing more checks
-    // a lease against thirty seconds, and keeps thirty seconds.
-    assert_eq!(kept(&longer, Some("120000"), None).await, 30_000);
-    // A client that follows its window gets what it was granted, no more.
+    // a lease against thirty seconds: it follows no window.
+    assert_eq!(kept(&longer, Some("120000"), None).await, None);
+    // A client that follows its window follows what it was granted, no more.
     assert_eq!(
         kept(&longer, Some("120000"), Some("session")).await,
-        120_000
+        Some(120_000)
     );
-    assert_eq!(kept(&longer, Some("60000"), Some("session")).await, 60_000);
-    assert_eq!(kept(&longer, None, Some("session")).await, 30_000);
+    assert_eq!(
+        kept(&longer, Some("60000"), Some("session")).await,
+        Some(60_000)
+    );
+    // One that asked for no longer window follows the thirty seconds it has.
+    // That is not the same as following none: see `activity_until`.
+    assert_eq!(kept(&longer, None, Some("session")).await, Some(30_000));
     // Any other value of the header is not that statement.
-    assert_eq!(kept(&longer, Some("120000"), Some("120000")).await, 30_000);
+    assert_eq!(kept(&longer, Some("120000"), Some("120000")).await, None);
     // A host that grants thirty seconds has nothing longer to follow.
     let default = service(store.clone(), &upstream);
     assert_eq!(
         kept(&default, Some("120000"), Some("session")).await,
-        30_000
+        Some(30_000)
     );
-    // Each renewal says it again: one without it is back at thirty seconds.
+    // Each renewal says it again: one without it follows none.
     assert_eq!(
         kept(&longer, Some("120000"), Some("session")).await,
-        120_000
+        Some(120_000)
     );
-    assert_eq!(kept(&longer, Some("120000"), None).await, 30_000);
+    assert_eq!(kept(&longer, Some("120000"), None).await, None);
     store.sign_out(&owner.token).await.unwrap();
     task.abort();
 }

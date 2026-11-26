@@ -187,7 +187,7 @@
             "name": "x-hagency-activity-window",
             "in": "header",
             "required": false,
-            "description": "The value session states that the client checks an activity lease of pooled work against the authorization window of its session. An activity lease then lasts as long as the window this request was granted, never longer. Absent or any other value keeps 30000. A command's start window, a ticket and a delivery lease are offers that are made again when they run out, and stay at 30000 either way. The statement holds until the next renewal, which says it again or not; a lease already issued is not cut by a renewal.",
+            "description": "The value session states that the client checks an activity lease of pooled work against the authorization window of its session. An activity lease then lasts as long as the window this request was granted, never longer. Absent or any other value keeps 30000. A command's start window, a ticket and a delivery lease are offers that are made again when they run out, and stay at 30000 either way. The statement holds until the next renewal of the session, which says it again or not. While it holds, also under a window that was made shorter, the renewal of a lease never ends before the lease it renews. A session that no longer says it gets 30000 from then on.",
             "schema": {
               "type": "string",
               "enum": [
@@ -304,7 +304,7 @@
             "name": "x-hagency-activity-window",
             "in": "header",
             "required": false,
-            "description": "The value session states that the client checks an activity lease of pooled work against the authorization window of its session. An activity lease then lasts as long as the window this request was granted, never longer. Absent or any other value keeps 30000. A command's start window, a ticket and a delivery lease are offers that are made again when they run out, and stay at 30000 either way. The statement holds until the next renewal, which says it again or not; a lease already issued is not cut by a renewal.",
+            "description": "The value session states that the client checks an activity lease of pooled work against the authorization window of its session. An activity lease then lasts as long as the window this request was granted, never longer. Absent or any other value keeps 30000. A command's start window, a ticket and a delivery lease are offers that are made again when they run out, and stay at 30000 either way. The statement holds until the next renewal of the session, which says it again or not. While it holds, also under a window that was made shorter, the renewal of a lease never ends before the lease it renews. A session that no longer says it gets 30000 from then on.",
             "schema": {
               "type": "string",
               "enum": [
@@ -22607,7 +22607,7 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "517cb0fe49d69e0b2ebabe6ef233e97f3a0b44a7bd64a0018f4102d3a2bb3f41",
+    "crates/agent-service/src/api.rs": "bc786dc05ec78021523d29eba92fcf74f1c6f274cc425eecf3292e4dfa147163",
     "crates/agent-service/src/api_transport.rs": "6ae8f015419f7d02db2e1dc252e27c24659beab94658264195cff8046c84ddf7",
     "crates/agent-service/src/transport_history.rs": "1d61b13ea345751e23d7d9078acb5c389d1fc8e71a827a25db9ebfb3c389266e",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
