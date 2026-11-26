@@ -47,7 +47,7 @@ The two have different clocks:
 | | Clock | Ends at | When it is missed |
 |---|---|---|---|
 | Held | the **authorization window**: how long the server trusts a proof of sign-in without hearing from the computer again. 30 seconds by default, up to two minutes when the host is configured for it and the client asks | `least(session end, now + session's window)` | the run is unknown; nothing is run again |
-| Offered | the **claim window**: a fixed 30 seconds | `least(session end, now + 30 s)` | it is offered again (rule 3) |
+| Offered | the **claim window**: a fixed 30 seconds | `now + 30 s`; a ticket is also cut to the session's end | it is offered again (rule 3) |
 
 Consequences that are intended:
 
@@ -59,11 +59,14 @@ Consequences that are intended:
   The window is therefore also the longest time a revocation at the identity
   service can go unnoticed. A sign-out or a device revocation on this server
   takes effect at once.
-- Commands are the only long-lived records with an end written into them (the
-  first command of an Agent's process is quoted by every later one). Because
-  commands are offers, their `expires − issued` never exceeds 30 seconds, and a
-  binary that predates a longer authorization window can read every command a
-  later binary wrote.
+- The commands that start a process (the first one of a run and each later
+  attempt) are long-lived records with an end written into them, and every
+  later command quotes the first. Because they are offers, their
+  `expires − issued` never exceeds 30 seconds, and a binary that predates a
+  longer authorization window can read every command a later binary wrote.
+  The command that reserves an Agent in a pool is not an offer of this kind:
+  it ends with the reservation (the pool's period or the end of the
+  delegation) and no rule here changes it.
 
 ### 2. A session's end only grows
 
@@ -75,6 +78,18 @@ and the session runs out by itself.
 Ending a session early is a revocation and nothing else. Agents are fenced
 when a session, device or user is revoked, never because a number became
 smaller.
+
+A session never ends later than a proof that was accepted for it allowed:
+its end is the latest `min(access token expiry, time of proof + window)` among
+those proofs, so it runs at most one window past the last proof.
+
+A renewal is answered with the end the session has, because the server cuts
+every lease to that end and the computer refuses a lease that outlives the
+end it was told. One reader can be outrun by this: a client that reads no
+window longer than 30 seconds (Hagency Desktop before 0.5.0-rc.19) and takes
+over a session that a newer client renewed cannot read the answer until the
+session's end is within its reach. That is at most 90 seconds, once, and
+nothing is running on that client yet.
 
 ### 3. What can be redone is redone; what cannot is never guessed
 
@@ -122,24 +137,38 @@ On the computer every failed step is one of three things, decided in one place:
 | not asked | the step could not be made now (no free local session, a credential being refreshed, a busy writer) | wait and ask again, until the authority in hand ends |
 | no answer | the step was sent and its outcome is not known | ask again with the exact same request |
 
-A failure the server makes with a status of 500 or more is "no answer",
-whatever its code. A local session that was replaced is "not asked" for the
-step, which can be asked again under the new one; to the question "does the
-authority this ran under still stand" it is the answer, and the answer is no.
+The server answers 503 for two different things: it could not serve the
+request (its database, a worker, a queue, Matrix), or its policy does not serve
+the route (an operator switched pooled execution, its issuance or a retry
+route off). The first is "no answer". The second is a decision: it is how an
+operator drains pooled work and how a computer learns that a route is off. A
+status alone does not say which, so the computer keeps the list of the
+server's policy codes. A 5xx failure whose code is not on that list is "no
+answer": asked again for a bounded while, never taken for a refusal that was
+not made.
+
+A local session that was replaced is "not asked" for the step, which can be
+asked again under the new one; to the question "does the authority this ran
+under still stand" it is the answer, and the answer is no.
 
 Waiting never lengthens an authority and never keeps a local session between
 attempts.
 
 Known bounds: all starts on one computer share one lane, and a start that
 waits holds it for at most the claim window. The daemon keeps at most 16 local
-sessions and admits at most 64 packages.
+sessions, and its bridge serves at most 64 managers.
 
 ### 5. Whose clock
 
-The server's database clock decides every end. The computer never trusts its
-own wall clock for an end: it keeps the time that was left when the answer
-arrived and counts it down on a monotonic clock from the moment the request
-was sent.
+The server decides every end, and the computer's own wall clock decides none.
+A session's end is computed by the server process from the proof, on that
+process's clock, and is never later than the access token's own expiry. Every
+other end is computed in the database, on the database's clock. The two clocks
+are expected to be one machine's or kept in step; a server process whose clock
+runs ahead can lengthen a session up to its token's expiry and no further.
+
+The computer keeps the time that was left when an answer arrived and counts
+it down on a monotonic clock from the moment the request was sent.
 
 A lease on the computer ends when the server's lease ends. The local session
 that authorizes a request bounds that request, never the run it belongs to.
@@ -162,18 +191,18 @@ next renewed.
 | Access token life | the identity service's choice | — | identity service |
 | Authorization window | 30 s by default; up to 120 s when `authorization_window_ms` is configured and the client asks with `x-hagency-authorization-window-ms` | held | host configuration and the client's request |
 | Session end | see above; only grows | held | server |
-| Agent execution lease | `least(session end, now + asked length)`, asked length at most 120 s | held | server, from the client's request |
+| Agent execution lease | `least(session end, now + asked length)`; a length outside 1 s to 120 s is refused | held | server, from the client's request |
 | Activity lease of a working process | `least(session end, now + window)`, and never past the pool reservation it runs under. Today `least(session end, now + 30 s)`; see the state table | held | server |
 | Start window of a start command | 30 s from issue | offered | server |
 | Ticket for one exchange about a process | 30 s; the ticket that lets a process report ready also ends with its command's start window | offered | server |
-| A command, challenge or grant handed out by a poll | not handed out again for 30 s, then handed out again until it is answered | offered | server |
-| Renewal pace of leases | every 10 s | — | computer |
-| Token refresh | as soon as a proof has lost 10 s of the window, at most once a minute | — | computer |
+| A command, challenge or grant handed out by a poll | not handed out again for 30 s (not cut to the session's end), then handed out again until it is answered | offered | server |
+| Renewal of an Agent execution lease | every 5 s, or after half of what is left when that is sooner | — | computer |
+| Renewal of an activity lease | when 20 s or less of it are left. Under a longer window this has to become "when it has lost 10 s", or the longer lease tolerates no longer silence than the short one; see the state table | — | computer |
+| Token refresh | as soon as a proof has lost 10 s of the window, at most once a minute for that reason; and always when a proof has 20 s or less left | — | computer |
 | Local session of the daemon | 60 s, reused while 30 s are left, at most 16 at a time | bounds a request | computer |
 | Grace before a silent process is given up | 180 s after its last evidence | recovery | server |
 | Attempts for one message | the first and at most 3 more | recovery | server |
 | How long a message waits for an Agent | 24 h | recovery | server |
-| Lease for sending an answer to the room | 30 s, asked again by its holder | offered | server |
 
 What must stay ordered:
 
@@ -181,21 +210,22 @@ What must stay ordered:
 |---|---|---|
 | 30 s ≤ window ≤ 120 s | shorter loses Agents on a busy computer; longer delays noticing a revocation | a host configuration outside the range is refused |
 | access token life > window | otherwise a full proof never exists | the server only sees each token's expiry and cuts the session to it; the computer's refresh rule keeps the lead near the window |
-| 3 × renewal pace ≤ 30 s | two lost renewals in a row must not lose a lease under the shortest window | fixed pace on the computer |
-| claim window ≤ window | an offer must not outlive what it would become | the claim window equals the smallest window |
+| A held lease is renewed while at least two more renewals fit before its end | two lost renewals in a row must not lose a lease | the Agent execution lease is renewed every 5 s, which meets it under every window. The activity lease does not meet it today: it is renewed once, with 20 s left |
+| claim window ≤ window | an offer must not outlive what it would become | the claim window equals the smallest window; it is a literal in several server files, not yet one constant |
 
 Clocks that are not part of this design, because no computer's authority
-depends on them: the server's own worker leases, the freshness of Matrix
-membership facts (30 s), the retention of configuration reports and of renewal
-offers (7 days).
+depends on them: the server's own worker leases (among them the 30-second
+lease its send loop takes to post an answer to the room), the freshness of
+Matrix membership facts (30 s), the retention of configuration reports and of
+renewal offers (7 days).
 
 ## State of the implementation
 
 | Rule | State |
 |---|---|
 | 2. A session's end only grows; fencing only on revocation | implemented with this document (migration `2026-11-26-000155`) |
-| 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window is in review |
-| 1. Offered keeps 30 s | holds today for every command, ticket and poll |
+| 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window, and renewing them early enough for it to matter, is in review |
+| 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A failed start is tried again | implemented (demand retries) |
 | 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again, its status has no reason, and the room says only that the message was not processed |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
