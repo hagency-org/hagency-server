@@ -350,14 +350,7 @@ async fn deliver(
             || policy.agent_admission()
                 && policy.project_reservations()
                 && p.device_generation == Some(w.executor_generation));
-    let mut until = sql_query(
-        "SELECT least(valid_until_ms,$2+30000) AS now FROM hagency_agent_v1.sessions WHERE id=$1",
-    )
-    .bind::<Text, _>(&p.session_id)
-    .bind::<BigInt, _>(now)
-    .get_result::<Clock>(db)
-    .await?
-    .now;
+    let mut until = ticket_until(db, p, now).await?;
     if executable && let AgentExecutorCommand::Reserve(c) = &c {
         until = until.min(c.expires_at_ms);
     }

@@ -454,6 +454,7 @@ impl App {
                 .map_err(|_| Error::Invalid("invalid_arguments"))?;
             let started = std::time::Instant::now();
             let window = self.verifier.window_for(requested_window(req));
+            let ticket_window = ticket_window(req, window);
             let identity = self
                 .verifier
                 .verify_within(&body.access_token, now_ms(), window)
@@ -463,7 +464,10 @@ impl App {
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "OAuth proof verified; creating owner session"
             );
-            let grant = self.store.sign_in(identity, now_ms()).await?;
+            let grant = self
+                .store
+                .sign_in_with_window(identity, ticket_window, now_ms())
+                .await?;
             tracing::debug!(
                 stage = "session_create_store",
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -485,6 +489,7 @@ impl App {
                 .map_err(|_| Error::Invalid("invalid_arguments"))?;
             let started = std::time::Instant::now();
             let window = self.verifier.window_for(requested_window(req));
+            let ticket_window = ticket_window(req, window);
             let identity = self
                 .verifier
                 .verify_within(&body.access_token, now_ms(), window)
@@ -494,7 +499,10 @@ impl App {
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "OAuth proof verified; renewing owner session"
             );
-            let until = self.store.renew(&credential, identity, now).await?;
+            let until = self
+                .store
+                .renew_with_window(&credential, identity, ticket_window, now)
+                .await?;
             tracing::debug!(
                 stage = "session_renew_store",
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -1252,6 +1260,21 @@ fn requested_window(req: &Request) -> Option<i64> {
         .ok()?
         .parse()
         .ok()
+}
+/// A client that sends `x-hagency-ticket-window: session` checks what is
+/// issued to its device for pooled work against the authorization window it
+/// was granted, and gets that window for it. Any other client checks against
+/// thirty seconds, and keeps thirty seconds.
+fn ticket_window(req: &Request, granted: i64) -> i64 {
+    let follows = req
+        .headers()
+        .get("x-hagency-ticket-window")
+        .is_some_and(|value| value.as_bytes() == b"session");
+    if follows {
+        granted
+    } else {
+        crate::identity::DEFAULT_AUTHORIZATION_WINDOW_MS
+    }
 }
 fn room_query(req: &Request) -> Result<String> {
     let mut room = None;

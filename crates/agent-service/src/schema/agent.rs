@@ -1501,6 +1501,7 @@ pub mod hagency_agent_v1 {
             client_id -> Text,
             valid_until_ms -> Int8,
             revoked -> Bool,
+            ticket_window_ms -> Int8,
         }
     }
 

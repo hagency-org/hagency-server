@@ -75,8 +75,12 @@ fn budget_execution_v3_rejects_genesis_foreign_pin_increased_old_wire_and_exhaus
     bad.budget_observation.retained_tokens = 1256;
     bad.budget_observation.remaining_tokens = 0;
     assert!(bad.validate("example.test").is_err());
+    // A start window is as long as the longest authorization window at most.
+    let mut long = c.clone();
+    long.expires_at_ms = long.issued_at_ms + crate::identity::MAX_AUTHORIZATION_WINDOW_MS;
+    assert!(long.validate("example.test").is_ok());
     let mut bad = c;
-    bad.expires_at_ms += 1;
+    bad.expires_at_ms = bad.issued_at_ms + crate::identity::MAX_AUTHORIZATION_WINDOW_MS + 1;
     assert!(bad.validate("example.test").is_err());
     let mut raw = f["command"].clone();
     raw["ignoredApproval"] = json!(true);

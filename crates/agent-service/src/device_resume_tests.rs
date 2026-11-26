@@ -329,3 +329,79 @@ async fn postgres_expired_original_session_http_renew_preserves_exact_device_and
     current(&app, &device.token, "", StatusCode::UNAUTHORIZED).await;
     task.abort();
 }
+/// Renews as a client that sends these headers, and returns the window the
+/// session then keeps for what is issued to its device.
+async fn ticket_window_after_renewal(
+    app: &Service,
+    url: &str,
+    token: &str,
+    window: Option<&str>,
+    ticket_window: Option<&str>,
+) -> i64 {
+    #[derive(diesel::QueryableByName)]
+    struct Row {
+        #[diesel(sql_type=BigInt)]
+        ticket_window_ms: i64,
+    }
+    let mut request =
+        TestClient::post("https://example.test/hagency/api/v1/sessions/current/renew")
+            .add_header("host", "example.test", true)
+            .bearer_auth(token);
+    if let Some(window) = window {
+        request = request.add_header("x-hagency-authorization-window-ms", window, true);
+    }
+    if let Some(ticket_window) = ticket_window {
+        request = request.add_header("x-hagency-ticket-window", ticket_window, true);
+    }
+    let response = request
+        .json(&json!({"accessToken":"synthetic-fresh-upstream-token"}))
+        .send(app)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::OK));
+    let mut db = AsyncPgConnection::establish(url).await.unwrap();
+    sql_query("SELECT ticket_window_ms FROM hagency_agent_v1.sessions WHERE token_hash=$1")
+        .bind::<Text, _>(crate::hash(token))
+        .get_result::<Row>(&mut db)
+        .await
+        .unwrap()
+        .ticket_window_ms
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_ticket_window_is_the_granted_window_only_for_a_client_that_follows_it() {
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let store = Store::open(&url, "example.test", ISSUER).await.unwrap();
+    let name = format!("ticket_{}", secret_token());
+    let owner = store.sign_in(identity(&name), now_ms()).await.unwrap();
+    let (upstream, task) = upstream(name, Arc::new(AtomicBool::new(false))).await;
+    let longer = service_within(store.clone(), &upstream, 120_000);
+    let kept = |app, window, ticket_window| {
+        ticket_window_after_renewal(app, &url, &owner.token, window, ticket_window)
+    };
+    // A client that asks for the longer window and says nothing more checks
+    // what it is issued against thirty seconds, and keeps thirty seconds.
+    assert_eq!(kept(&longer, Some("120000"), None).await, 30_000);
+    // A client that follows its window gets what it was granted, no more.
+    assert_eq!(
+        kept(&longer, Some("120000"), Some("session")).await,
+        120_000
+    );
+    assert_eq!(kept(&longer, Some("60000"), Some("session")).await, 60_000);
+    assert_eq!(kept(&longer, None, Some("session")).await, 30_000);
+    // Any other value of the header is not that statement.
+    assert_eq!(kept(&longer, Some("120000"), Some("120000")).await, 30_000);
+    // A host that grants thirty seconds has nothing longer to follow.
+    let default = service(store.clone(), &upstream);
+    assert_eq!(
+        kept(&default, Some("120000"), Some("session")).await,
+        30_000
+    );
+    // Each renewal says it again: one without it is back at thirty seconds.
+    assert_eq!(
+        kept(&longer, Some("120000"), Some("session")).await,
+        120_000
+    );
+    assert_eq!(kept(&longer, Some("120000"), None).await, 30_000);
+    store.sign_out(&owner.token).await.unwrap();
+    task.abort();
+}

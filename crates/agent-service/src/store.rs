@@ -1,3 +1,4 @@
+use crate::identity::{DEFAULT_AUTHORIZATION_WINDOW_MS, MAX_AUTHORIZATION_WINDOW_MS};
 use crate::{Error, Result, entity_id, hash, identity::Identity, key, secret_token};
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl, SelectableHelper};
 use diesel::{
@@ -77,6 +78,11 @@ struct Device {
     id: String,
     #[diesel(sql_type=BigInt)]
     generation: i64,
+}
+/// The window a session keeps for what is issued to its device: never under
+/// the default, and never over the longest window a server grants.
+fn ticket_window(ms: i64) -> i64 {
+    ms.clamp(DEFAULT_AUTHORIZATION_WINDOW_MS, MAX_AUTHORIZATION_WINDOW_MS)
 }
 impl Store {
     /// Explicit, one-way rename of this deployment's embedded auth mount.
@@ -161,6 +167,19 @@ impl Store {
         })
     }
     pub async fn sign_in(&self, identity: Identity, now: i64) -> Result<SessionGrant> {
+        self.sign_in_with_window(identity, DEFAULT_AUTHORIZATION_WINDOW_MS, now)
+            .await
+    }
+    /// `sign_in` for a client that follows its authorization window:
+    /// `ticket_window_ms` is the window it was granted, and what is issued to
+    /// its device for pooled work lasts that long instead of thirty seconds.
+    pub async fn sign_in_with_window(
+        &self,
+        identity: Identity,
+        ticket_window_ms: i64,
+        now: i64,
+    ) -> Result<SessionGrant> {
+        let ticket_window_ms = ticket_window(ticket_window_ms);
         if identity.issuer != self.issuer || identity.valid_until_ms <= now {
             return Err(Error::Unauthorized("authentication_required"));
         }
@@ -244,6 +263,7 @@ impl Store {
                             q::token_hash.eq(&params.2),
                             q::client_id.eq(&params.3),
                             q::valid_until_ms.eq(&params.4),
+                            q::ticket_window_ms.eq(ticket_window_ms),
                         ))
                         .execute(db)
                         .await
@@ -313,6 +333,20 @@ impl Store {
             .await
     }
     pub async fn renew(&self, credential: &str, identity: Identity, now: i64) -> Result<i64> {
+        self.renew_with_window(credential, identity, DEFAULT_AUTHORIZATION_WINDOW_MS, now)
+            .await
+    }
+    /// `renew` for a client that follows its authorization window. Each
+    /// renewal says so again, so a session keeps the longer window only while
+    /// the client that holds it checks against it.
+    pub async fn renew_with_window(
+        &self,
+        credential: &str,
+        identity: Identity,
+        ticket_window_ms: i64,
+        now: i64,
+    ) -> Result<i64> {
+        let ticket_window_ms = ticket_window(ticket_window_ms);
         if identity.issuer != self.issuer || identity.valid_until_ms <= now {
             return Err(Error::Unauthorized("authentication_required"));
         }
@@ -355,7 +389,10 @@ impl Store {
                     let params = (identity.valid_until_ms, &p.session_id);
                     diesel::update(q::table)
                         .filter((q::id).eq(&params.1))
-                        .set((q::valid_until_ms.eq(&params.0),))
+                        .set((
+                            q::valid_until_ms.eq(&params.0),
+                            q::ticket_window_ms.eq(ticket_window_ms),
+                        ))
                         .execute(db)
                         .await
                 }?;

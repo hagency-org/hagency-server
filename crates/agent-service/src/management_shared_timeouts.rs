@@ -17,9 +17,11 @@ pub(super) const UNCERTAIN_GRACE_MS: i64 = 180_000;
 // a live process and never extend the bound. Activity leases and work
 // transitions are the server's process evidence. A fence clears the current
 // activity end; the first lease is minted inside the window and lasts at most
-// 30 s, and every renewal keeps its own end.
+// 30 s, or as long as the run's own start window when its session follows a
+// longer authorization window; every renewal keeps its own end. The executor
+// derives the same moment from the command it holds.
 const LAST_EVIDENCE: &str = "GREATEST(r.expires_at_ms,r.activity_until_ms,\
- CASE WHEN r.activity_epoch>0 THEN r.expires_at_ms+30000 ELSE 0 END,\
+ CASE WHEN r.activity_epoch>0 THEN r.expires_at_ms+GREATEST(30000,r.expires_at_ms-r.created_at_ms) ELSE 0 END,\
  coalesce((SELECT max(x.expires_at_ms) FROM hagency_agent_v1.management_shared_activity_renewals x WHERE x.runtime_id=r.id),0),\
  coalesce((SELECT max(GREATEST(coalesce(w.acknowledged_at_ms,0),coalesce(w.started_at_ms,0),coalesce(w.completed_at_ms,0))) FROM hagency_agent_v1.management_shared_work w WHERE w.runtime_id=r.id),0))";
 

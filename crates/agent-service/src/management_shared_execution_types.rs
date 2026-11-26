@@ -91,7 +91,7 @@ impl SharedRuntimeCommand {
             || !exact(self.issued_at_ms)
             || !exact(self.expires_at_ms)
             || self.expires_at_ms <= self.issued_at_ms
-            || self.expires_at_ms - self.issued_at_ms > 30_000
+            || self.expires_at_ms - self.issued_at_ms > crate::identity::MAX_AUTHORIZATION_WINDOW_MS
             // A pool Agent's lifetime follows its pool's capacity chain; its issuer
             // caps this command by that lifetime instead (E8).
             || (self.reserve_command.pool_grant.is_none()

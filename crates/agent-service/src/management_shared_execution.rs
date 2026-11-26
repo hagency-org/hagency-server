@@ -315,16 +315,6 @@ async fn latest(
     let r=sql_query("SELECT payload FROM hagency_agent_v1.management_shared_process_receipts WHERE runtime_id=$1 AND ($2::text IS NULL OR id=$2) ORDER BY ledger_revision DESC LIMIT 1").bind::<Text,_>(id).bind::<Nullable<Text>,_>(observation).get_result::<Json>(db).await.optional()?;
     r.map(|v| decode(&v.payload)).transpose()
 }
-async fn until(db: &mut AsyncPgConnection, p: &Principal, now: i64) -> Result<i64> {
-    Ok(sql_query(
-        "SELECT least(valid_until_ms,$2+30000) AS now FROM hagency_agent_v1.sessions WHERE id=$1",
-    )
-    .bind::<Text, _>(&p.session_id)
-    .bind::<BigInt, _>(now)
-    .get_result::<Clock>(db)
-    .await?
-    .now)
-}
 async fn fence_runtime(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
     sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET permanent_fence=true,activity_until_ms=0 WHERE id=$1").bind::<Text,_>(id).execute(db).await?;
     Ok(())
@@ -363,9 +353,9 @@ async fn delivery(
         && r.state != "stopped";
     let token = secret_token();
     let until = if allowed {
-        until(db, p, now).await?.min(c.expires_at_ms)
+        ticket_until(db, p, now).await?.min(c.expires_at_ms)
     } else {
-        until(db, p, now).await?
+        ticket_until(db, p, now).await?
     };
     tickets::issue(
         db,
@@ -425,8 +415,15 @@ async fn mint_activity(
     }
     // Exact receipt replay may recover a current lease, never extend its end.
     let expiry = if r.activity_epoch == 0 {
-        until(db, p, now)
+        // No longer than the run's own start window, or thirty seconds
+        // when that is shorter: the sweep and the executor both read the
+        // end of what a first lease can prove from the command alone.
+        ticket_until(db, p, now)
             .await?
+            .min(
+                now + (c.expires_at_ms - c.issued_at_ms)
+                    .max(crate::identity::DEFAULT_AUTHORIZATION_WINDOW_MS),
+            )
             .min(reserve_lifetime(db, &c.reserve_command, now).await?)
     } else {
         r.activity_until_ms
@@ -536,7 +533,7 @@ impl DomainStore {
                 };
                 let receipt:ManagedAgentReservationReceipt=decode(w.receipt.as_deref().ok_or(Error::Conflict("agent_reservation_required"))?)?;
                 let lifetime=reserve_lifetime(db,&reserve,now).await?;
-                let c=SharedRuntimeCommand {version,capability:capability.into(),operation:"agent.execution.provision".into(),command_id:format!("sex_{}",entity_id()?),assignment_id:id.assignment_id,assignment_generation:1,agent_reservation_id:receipt.agent_reservation_id.ok_or(Error::Conflict("agent_reservation_required"))?,reserve_command_digest:w.digest,reserve_receipt_digest:w.receipt_digest.ok_or(Error::Conflict("agent_reservation_required"))?,policy:execution_policy.into(),issued_at_ms:now,expires_at_ms:(now+30000).min(lifetime),reserve_command:reserve};c.validate(&self.server)?;
+                let c=SharedRuntimeCommand {version,capability:capability.into(),operation:"agent.execution.provision".into(),command_id:format!("sex_{}",entity_id()?),assignment_id:id.assignment_id,assignment_generation:1,agent_reservation_id:receipt.agent_reservation_id.ok_or(Error::Conflict("agent_reservation_required"))?,reserve_command_digest:w.digest,reserve_receipt_digest:w.receipt_digest.ok_or(Error::Conflict("agent_reservation_required"))?,policy:execution_policy.into(),issued_at_ms:now,expires_at_ms:(now+ticket_window(db,p).await?).min(lifetime),reserve_command:reserve};c.validate(&self.server)?;
                 let digest=allocation_digest(&c)?;
                 sql_query("INSERT INTO hagency_agent_v1.management_shared_runtimes(id,assignment_id,payload,digest,created_at_ms,expires_at_ms) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&c.command_id).bind::<Text,_>(&c.assignment_id).bind::<Text,_>(wire(&c)?).bind::<Text,_>(&digest).bind::<BigInt,_>(now).bind::<BigInt,_>(c.expires_at_ms).execute(db).await?;
                 let r=runtime(db,&c.command_id).await?;return Ok(Some(delivery(db,p,policy,&r,&self.server,false,None).await?));
@@ -689,7 +686,7 @@ impl DomainStore {
             if r.last_renewal_id.as_deref()==Some(&input.renewal_id)&&r.last_renewal_epoch==Some(input.authority.epoch) {return activity(&r,input.authority.token);}
             let reused=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_activity_renewals WHERE id=$1) AS matched").bind::<Text,_>(&input.renewal_id).get_result::<Flag>(db).await?.matched;
             if reused {return Err(Error::Conflict("shared_activity_renewal_changed"));}
-            let expiry=until(db,p,now).await?.min(reserve_lifetime(db,&c.reserve_command,now).await?);
+            let expiry=ticket_until(db, p, now).await?.min(reserve_lifetime(db,&c.reserve_command,now).await?);
             if r.activity_epoch>=MAX_EXACT {return Err(Error::Conflict("shared_activity_epoch_exhausted"));}
             sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET activity_epoch=activity_epoch+1,activity_until_ms=$2,last_renewal_id=$3,last_renewal_epoch=$4 WHERE id=$1").bind::<Text,_>(&r.id).bind::<BigInt,_>(expiry).bind::<Text,_>(&input.renewal_id).bind::<BigInt,_>(input.authority.epoch).execute(db).await?;
             sql_query("INSERT INTO hagency_agent_v1.management_shared_activity_renewals(id,runtime_id,from_epoch,to_epoch,expires_at_ms,authority_hash) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&input.renewal_id).bind::<Text,_>(&r.id).bind::<BigInt,_>(input.authority.epoch).bind::<BigInt,_>(input.authority.epoch+1).bind::<BigInt,_>(expiry).bind::<Text,_>(hash(&input.authority.token)).execute(db).await?;

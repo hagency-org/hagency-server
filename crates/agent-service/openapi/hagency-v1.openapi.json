@@ -182,6 +182,18 @@
               "type": "integer",
               "format": "int64"
             }
+          },
+          {
+            "name": "x-hagency-ticket-window",
+            "in": "header",
+            "required": false,
+            "description": "The value session states that the client checks what it is issued for pooled work (a command's start window, a ticket, an activity lease) against the authorization window of its session. Each of them then lasts as long as the window this request was granted, never longer. Absent or any other value keeps 30000 for each. The statement holds until the next renewal, which says it again or not.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "session"
+              ]
+            }
           }
         ],
         "responses": {
@@ -286,6 +298,18 @@
             "schema": {
               "type": "integer",
               "format": "int64"
+            }
+          },
+          {
+            "name": "x-hagency-ticket-window",
+            "in": "header",
+            "required": false,
+            "description": "The value session states that the client checks what it is issued for pooled work (a command's start window, a ticket, an activity lease) against the authorization window of its session. Each of them then lasts as long as the window this request was granted, never longer. Absent or any other value keeps 30000 for each. The statement holds until the next renewal, which says it again or not.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "session"
+              ]
             }
           }
         ],
@@ -22583,7 +22607,7 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "66d3b5e74466bc44d4049662754205d28319316eb573f44d1941afb13e432034",
+    "crates/agent-service/src/api.rs": "b22811256818246d74f6714ced939bfceac7a4a17e4e163ddb03d77f0a2db4b2",
     "crates/agent-service/src/api_transport.rs": "6ae8f015419f7d02db2e1dc252e27c24659beab94658264195cff8046c84ddf7",
     "crates/agent-service/src/transport_history.rs": "1d61b13ea345751e23d7d9078acb5c389d1fc8e71a827a25db9ebfb3c389266e",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",

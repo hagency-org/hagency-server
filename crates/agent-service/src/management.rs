@@ -67,6 +67,35 @@ async fn clock(db: &mut AsyncPgConnection) -> Result<i64> {
             .now,
     )
 }
+/// How long anything issued to this session's device for pooled work may
+/// last: a ticket, an activity lease, a delivery lease, a start window.
+///
+/// There is one clock, the authorization window the session was granted. A
+/// host that still holds its authorization then still holds what was issued
+/// under it. A session that has not said it follows that window is an older
+/// client, which checks every such end against thirty seconds, and keeps
+/// thirty seconds.
+async fn ticket_window(db: &mut AsyncPgConnection, p: &Principal) -> Result<i64> {
+    Ok(
+        sql_query("SELECT ticket_window_ms AS now FROM hagency_agent_v1.sessions WHERE id=$1")
+            .bind::<Text, _>(&p.session_id)
+            .get_result::<Clock>(db)
+            .await?
+            .now,
+    )
+}
+/// The end of a ticket or lease issued now: the session's window from now,
+/// and never past the proof the session holds. With a followed window the
+/// two are the same moment as of the last renewal, so what was issued and
+/// the authorization it was issued under run out together.
+async fn ticket_until(db: &mut AsyncPgConnection, p: &Principal, now: i64) -> Result<i64> {
+    Ok(sql_query("SELECT least(valid_until_ms,$2+ticket_window_ms) AS now FROM hagency_agent_v1.sessions WHERE id=$1")
+        .bind::<Text, _>(&p.session_id)
+        .bind::<BigInt, _>(now)
+        .get_result::<Clock>(db)
+        .await?
+        .now)
+}
 fn wire<T: Serialize>(value: &T) -> Result<String> {
     wire_with_limit(value, MAX_BYTES)
 }
