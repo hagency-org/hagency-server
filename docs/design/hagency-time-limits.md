@@ -211,6 +211,17 @@ operator's switch is the authorization window itself: lowering it shortens
 nothing that was already given (rule 2) and takes effect as each session is
 next renewed.
 
+The open case of rule 3 follows the same order. If the owner chooses to have
+accepted work that never began run again, a computer says that it takes such
+a message back with `reoffers` on its demand start, poll, recover and block
+requests. This server already reads that field and acts on nothing in it: a
+start that carries it is stored and compared exactly as it was sent, so a
+start is answered again the same way by a server that acts on the field and
+by one that does not, and a start without it keeps the bytes it always had.
+A server that acts on `reoffers` is therefore put into service only after
+this one, and is moved back only to this release or a later one (see "Going
+back").
+
 ## Every time limit on the path of a pooled message
 
 "Window" is the session's authorization window; "session end" is
@@ -262,7 +273,7 @@ renewal offers (7 days).
 | 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window, and renewing them early enough for it to matter, is in review |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A failed start is tried again | implemented for a start that never reported a process (demand retries); see rule 3 for the three that are not |
-| 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its time, one whose start failed for good) says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent is in the room and not stopped); Hagency Desktop uses that to name the Agent in the room and to offer the sender "Send again" |
+| 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. The server reads the field by which a computer would say that it takes such a message back (`reoffers`) and acts on nothing in it (rule 6). Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its time, one whose start failed for good) says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent is in the room and not stopped); Hagency Desktop uses that to name the Agent in the room and to offer the sender "Send again" |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop |
 | 5. The wall clock only ends a lease early | holds for a proof, a ticket and a start window. In review in Hagency Desktop: its store still refuses an activity lease that reads longer than allowed by the wall clock, which a slow clock makes of every fresh lease. Open: the Agent execution lease (rule 5) |
@@ -311,3 +322,8 @@ Going back:
   everything a newer one wrote, because an offer never exceeds 30 seconds.
 - Do not run the down migration of `2026-11-26-000155` while pool Agents
   exist: it puts back the rule that fences on a smaller end.
+- A server that acts on `reoffers` (rule 3, if it is chosen) goes back only
+  to a release that reads the field (rule 6) or a later one. A release
+  before that refuses every demand request that carries `reoffers`, and a
+  computer sends a saved start again with its original bytes; to go back
+  further, first let every start that said `reoffers` finish.

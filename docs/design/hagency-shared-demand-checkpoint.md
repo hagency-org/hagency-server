@@ -11,11 +11,11 @@ All following paths have prefix `/hagency/api/v1/management/shared-execution`. T
 | Method/path | Exact input | Output |
 | --- | --- | --- |
 | GET `assignments/{id}/control/readiness` | no query/body | `{readiness:{control,canRun,canStop,requiresLocalStop,runBlockingReason,intakeEnabled,automaticDeliveryEnabled}}` |
-| POST `demands/poll` | `{after?: assignmentId}` | `{demand: status|null,nextAfter: assignmentId|null}` |
-| POST `demands/{id}/recover` | `{demandDigest}` | `{demand:status}` |
-| POST `demands/{id}/start` | `{demandDigest,expectedControlRevision,start:SharedAttemptStartInput,retry?}` | `{delivery:SharedAttemptDelivery}` |
+| POST `demands/poll` | `{after?: assignmentId,retries?,reoffers?}` | `{demand: status|null,nextAfter: assignmentId|null}` |
+| POST `demands/{id}/recover` | `{demandDigest,retries?,reoffers?}` | `{demand:status}` |
+| POST `demands/{id}/start` | `{demandDigest,expectedControlRevision,start:SharedAttemptStartInput,retry?,reoffers?}` | `{delivery:SharedAttemptDelivery}` |
 | POST `demands/{id}/retry` | `{demandDigest,expectedControlRevision,retry,attemptId,result:SharedAttemptResultInput}` | `{acknowledgement,demand:status}` |
-| POST `demands/{id}/block` | `{demandDigest,expectedControlRevision,reason,budget}` | `{demand:status}` |
+| POST `demands/{id}/block` | `{demandDigest,expectedControlRevision,reason,budget,retries?,reoffers?}` | `{demand:status}` |
 | POST `work/{id}/demand` | `{workDigest,runtimeCommandDigest}` | `{demand:null|{offer,demandDigest,binding}}` |
 
 `status` contains the exact offer/digest, state, nullable runtimeCommandId, nullable binding and, once retried, `retry`. States are offered, start_committed, retry_offered, bound, cancelled, expired, head_changed, budget_blocked, usage_unrepresentable and blocked. They describe recorded progress, never fresh native authority. The block request supports budget_blocked with a valid zero-remaining aggregate or usage_unrepresentable with null budget. A current original executor can impose a restriction; this cannot add capacity or manufacture process evidence.
@@ -72,3 +72,11 @@ ADR-193 amendment, v2 demands only: an event whose attempt provably never starte
 - Rollback: let retries finish first. The previous binary ends an unbound retry as `head_changed` and reports a retry-bound demand with the original start's runtime. Never drop the retry tables.
 - Schema: two additive tables, their triggers and the replaced validator, applied by `management_shared_demand_retry_schema.sql` at every start. There is no version change; the previous binary ignores them.
 - Matrix 429 responses map to `matrix_rate_limited` (retryable, 503); the delay and endpoint name are logged, never ids or bodies.
+
+## Reading `reoffers` (2026-11-26)
+
+Time-limit rule 3 leaves one case to the owner: a message whose process ended after it was handed over and before its turn began. If the owner chooses to have such a message run again in the next process, its executor says that it takes messages back with `reoffers: true` on the demand start, poll, recover and block inputs. This server reads the field and acts on nothing in it, so that it can be in service before any server that acts on it (time-limit rule 6, readers before writers):
+
+- A start keeps the field in its stored payload and in its `allocation_digest`, and omits it when false, so a start without it keeps its bytes and digest (`shared_demand_reoffers_is_read_and_kept_as_sent`). A replay with the same bytes is the same start; one that differs only in `reoffers` is `shared_demand_start_changed` (`shared_demand_start_that_says_reoffers_replays_as_sent`). A start recorded by a server that acts on the field is therefore answered again here exactly as there, and the reverse.
+- A block is stored as sent and omits the field when false as well. Poll and recover take it and ignore it. Every other unknown field is still refused.
+- A server that acts on `reoffers` goes back only to this release or a later one. A server from before this release refuses every demand request that carries the field, and an executor sends a saved start again with its original bytes, so before going back further let every start that said `reoffers` finish.
