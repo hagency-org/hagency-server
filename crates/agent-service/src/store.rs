@@ -350,16 +350,26 @@ impl Store {
                 if identity.valid_until_ms <= crate::api::now_ms() {
                     return Err(Error::Unauthorized("authorization_expired"));
                 }
-                {
-                    use crate::schema::agent_tables::sessions as q;
-                    let params = (identity.valid_until_ms, &p.session_id);
-                    diesel::update(q::table)
-                        .filter((q::id).eq(&params.1))
-                        .set((q::valid_until_ms.eq(&params.0),))
-                        .execute(db)
-                        .await
-                }?;
-                Ok(identity.valid_until_ms)
+                // A renewal only ever lengthens a session. A proof that ends
+                // sooner than one already accepted (an older access token
+                // arriving late, a window the host lowered, a clock set back)
+                // withdraws nothing: the session keeps the end it has and runs
+                // out by itself. Ending a session early is `sign_out`.
+                #[derive(diesel::QueryableByName)]
+                struct Kept {
+                    #[diesel(sql_type = BigInt)]
+                    valid_until_ms: i64,
+                }
+                let kept = sql_query(
+                    "UPDATE hagency_agent_v1.sessions \
+                     SET valid_until_ms=GREATEST(valid_until_ms,$1) WHERE id=$2 \
+                     RETURNING valid_until_ms",
+                )
+                .bind::<BigInt, _>(identity.valid_until_ms)
+                .bind::<Text, _>(&p.session_id)
+                .get_result::<Kept>(db)
+                .await?;
+                Ok(kept.valid_until_ms)
         })).await
     }
     pub async fn register_device(
