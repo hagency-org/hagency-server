@@ -411,6 +411,15 @@ impl Store {
                 .bind::<Nullable<BigInt>, _>(activity_window_ms)
                 .get_result::<Kept>(db)
                 .await?;
+                if kept.valid_until_ms > identity.valid_until_ms {
+                    // So that an operator sees why a session outlives the
+                    // proof it was last renewed with.
+                    tracing::info!(
+                        stage = "session_renew_kept_end",
+                        kept_beyond_proof_ms = kept.valid_until_ms - identity.valid_until_ms,
+                        "Session renewal kept a later end than its proof sets"
+                    );
+                }
                 Ok(kept.valid_until_ms)
         })).await
     }
