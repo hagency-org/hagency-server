@@ -81,6 +81,7 @@ fn start_input(
         expected_control_revision: d.offer.control_revision,
         start: attempts::start(original, stop),
         retry: None,
+        reoffers: false,
     }
 }
 #[test]
@@ -155,6 +156,7 @@ async fn shared_demand_idle_promotion_preserves_original_event_and_one_work() {
             SharedDemandRecoverInput {
                 demand_digest: offered.demand_digest,
                 retries: true,
+                reoffers: true,
             },
         )
         .await
@@ -225,6 +227,7 @@ async fn recovered(f: &Fixture, o: &SharedDemandStatus) -> SharedDemandStatus {
             SharedDemandRecoverInput {
                 demand_digest: o.demand_digest.clone(),
                 retries: true,
+                reoffers: true,
             },
         )
         .await
@@ -265,7 +268,8 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
                     &o.offer.demand_id,
                     SharedDemandRecoverInput {
                         demand_digest: o.demand_digest.clone(),
-                        retries: true
+                        retries: true,
+                        reoffers: true,
                     }
                 )
                 .await
@@ -316,7 +320,8 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
                 &o.offer.demand_id,
                 SharedDemandRecoverInput {
                     demand_digest: o.demand_digest.clone(),
-                    retries: true
+                    retries: true,
+                    reoffers: true,
                 }
             )
             .await
@@ -384,7 +389,8 @@ async fn shared_demand_http_roles_exact_device_generation_and_disabled_history()
                 &o.offer.demand_id,
                 SharedDemandRecoverInput {
                     demand_digest: o.demand_digest,
-                    retries: true
+                    retries: true,
+                    reoffers: true,
                 }
             )
             .await
@@ -709,6 +715,7 @@ async fn shared_demand_budget_block_retains_unknown_or_overflow_without_start_id
             .into(),
             budget: (!unknown).then_some(budget),
             retries: false,
+            reoffers: false,
         };
         for _ in 0..2 {
             assert_eq!(
@@ -1007,6 +1014,7 @@ async fn shared_demand_blocked_assignment_does_not_starve_another_owner_assignme
                 reason: "usage_unrepresentable".into(),
                 budget: None,
                 retries: false,
+                reoffers: false,
             },
         )
         .await
@@ -1028,6 +1036,7 @@ async fn shared_demand_blocked_assignment_does_not_starve_another_owner_assignme
             SharedDemandPollInput {
                 after: Some(b.id.clone()),
                 retries: false,
+                reoffers: false,
             },
         )
         .await
@@ -1042,6 +1051,7 @@ async fn shared_demand_blocked_assignment_does_not_starve_another_owner_assignme
             SharedDemandPollInput {
                 after: later.next_after,
                 retries: false,
+                reoffers: false,
             },
         )
         .await

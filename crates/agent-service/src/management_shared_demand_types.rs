@@ -56,6 +56,13 @@ pub struct SharedDemandStartInput {
     /// predecessor. Omitted for the original start (bytes unchanged).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<i64>,
+    /// The executor takes a message back when the process this start begins
+    /// ends before a turn began for it (`shared-demand-retry-v2`): only then
+    /// is the message released at that process's fence and offered again.
+    /// Omitted when false, so a start that does not say it keeps its bytes
+    /// and the terminal behaviour.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reoffers: bool,
 }
 impl SharedDemandStartInput {
     pub fn validate_for(&self, o: &SharedDemandOffer) -> Result<()> {
@@ -157,6 +164,10 @@ pub struct SharedDemandPollInput {
     pub after: Option<String>,
     #[serde(default)]
     pub retries: bool,
+    /// The executor takes messages back (see `SharedDemandStartInput`); only
+    /// then may a status show one that was.
+    #[serde(default)]
+    pub reoffers: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -165,6 +176,10 @@ pub struct SharedDemandRecoverInput {
     /// The executor runs retries; only then may a status say so.
     #[serde(default)]
     pub retries: bool,
+    /// The executor takes messages back; only then may a status show one
+    /// that was.
+    #[serde(default)]
+    pub reoffers: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -188,6 +203,10 @@ pub struct SharedDemandBlockInput {
     pub budget: Option<SharedBudgetObservation>,
     #[serde(default)]
     pub retries: bool,
+    /// As on the poll. The block is stored as sent, so false is omitted and
+    /// the bytes of an executor that does not say it are unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reoffers: bool,
 }
 /// Role/configuration observations only, never native liveness or free capacity.
 #[derive(Clone, Debug, Serialize, Deserialize)]

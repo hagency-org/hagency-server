@@ -2,15 +2,28 @@
 //! never claimed, claimed with an unknown process, or whose stop is
 //! unconfirmed never holds an Agent's queue indefinitely.
 //!
-//! After the grace period the server fences and stops the attempt and ends the
-//! demand that started it. It invents no receipt, process identity or usage:
-//! the executor then supplies explicit evidence, `not_started` when nothing
+//! After the grace period the server fences and stops the attempt. It ends a
+//! budget demand the attempt started, and a v2 demand whose attempt reported
+//! a process unless that demand's start said its executor takes messages
+//! back. Such a demand, and one whose attempt never reported a process, waits
+//! for the executor's evidence, and the wait of the first is bounded too (see
+//! `REOFFER_GRACE_MS`). The server invents no receipt, process identity or
+//! usage: the executor supplies explicit evidence, `not_started` when nothing
 //! was claimed or a `stopped` receipt with reason `uncertain_timeout`, and the
 //! next attempt names that evidence as its predecessor stop.
 use super::*;
 
 /// Grace after the attempt's own deadline or the last process evidence.
 pub(super) const UNCERTAIN_GRACE_MS: i64 = 180_000;
+/// How long a message whose process stopped, and whose start said that its
+/// executor takes messages back, waits for the executor beyond the time bound
+/// above: for its evidence that the process stopped and its retry's start.
+/// It is counted from the time bound's own end (the last process evidence and
+/// `UNCERTAIN_GRACE_MS`) and from the retry's opening, whichever is later.
+/// Then the event ends (`head_changed`, `retry_lapsed`) and the queue moves
+/// on. A retry whose start is committed has a process of its own again and is
+/// not lapsed.
+pub(super) const REOFFER_GRACE_MS: i64 = UNCERTAIN_GRACE_MS;
 
 // Execute tickets never outlive `expires_at_ms`, so the attempt deadline also
 // bounds every execute lease. Observe and cleanup tickets are not evidence of
@@ -48,7 +61,8 @@ pub(super) async fn awaiting_evidence(db: &mut AsyncPgConnection, r: &Runtime) -
 }
 
 /// Stop every due attempt (optionally only one executor's) and end the demand
-/// each one started. Bounded per call; a later call continues.
+/// each one started where `demands::interrupt` says so. Bounded per call; a
+/// later call continues.
 pub(super) async fn sweep(
     db: &mut AsyncPgConnection,
     executor: Option<(&str, &str)>,
@@ -73,6 +87,38 @@ async fn candidates(
         .load::<Id>(db).await?)
 }
 
+// A demand whose latest start said that its executor takes messages back,
+// whose process has stopped, and which is still waiting: no binding, no
+// block. `$1` narrows it to one demand.
+const LAPSED: &str = "SELECT d.id FROM hagency_agent_v1.management_shared_intake q \
+ JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=q.id \
+ JOIN LATERAL (SELECT runtime_id FROM (SELECT 0::bigint AS retry,runtime_id FROM hagency_agent_v1.management_shared_demand_starts WHERE demand_id=d.id \
+  UNION ALL SELECT retry,runtime_id FROM hagency_agent_v1.management_shared_demand_retry_starts WHERE demand_id=d.id) x ORDER BY retry DESC LIMIT 1) s ON true \
+ JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=s.runtime_id \
+ WHERE q.state='pending' AND ($1::text IS NULL OR d.id=$1) AND r.state='stopped' \
+  AND hagency_agent_v1.shared_start_reoffers(d.id,r.id) \
+  AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings b WHERE b.demand_id=d.id) \
+  AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks k WHERE k.demand_id=d.id)";
+
+/// True when such a waiting demand's bounded wait has ended.
+pub(super) async fn reoffer_lapsed(
+    db: &mut AsyncPgConnection,
+    demand: &str,
+    now: i64,
+) -> Result<bool> {
+    Ok(!lapsed(db, Some(demand), now).await?.is_empty())
+}
+
+async fn lapsed(db: &mut AsyncPgConnection, demand: Option<&str>, now: i64) -> Result<Vec<Id>> {
+    Ok(sql_query(format!("{LAPSED} AND GREATEST({LAST_EVIDENCE}+$3,coalesce((SELECT max(t.created_at_ms) FROM hagency_agent_v1.management_shared_demand_retries t WHERE t.demand_id=d.id AND t.previous_runtime_id=r.id),0))+$4<=$2 ORDER BY d.id LIMIT 64"))
+        .bind::<Nullable<Text>, _>(demand)
+        .bind::<BigInt, _>(now)
+        .bind::<BigInt, _>(UNCERTAIN_GRACE_MS)
+        .bind::<BigInt, _>(REOFFER_GRACE_MS)
+        .load::<Id>(db)
+        .await?)
+}
+
 async fn stop(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
     sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET state='stopped',permanent_fence=true,activity_until_ms=0 WHERE id=$1")
         .bind::<Text,_>(id).execute(db).await?;
@@ -81,7 +127,8 @@ async fn stop(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
 
 impl DomainStore {
     /// Background enforcement: no executor poll or healthy client is needed
-    /// to stop an uncertain attempt and release its Agent's queue.
+    /// to stop an uncertain attempt and release its Agent's queue, or to end a
+    /// message whose executor did not come back for it in time.
     pub(crate) async fn sweep_shared_attempt_timeouts(&self) -> Result<()> {
         let ids = self
             .db
@@ -96,6 +143,24 @@ impl DomainStore {
                     let now = clock(db).await?;
                     if due(db, &id.id, now).await? {
                         stop(db, &id.id).await?;
+                    }
+                    Ok(())
+                })
+                .await?;
+        }
+        let ids = self
+            .db
+            .transaction(async |db| {
+                let now = clock(db).await?;
+                lapsed(db, None, now).await
+            })
+            .await?;
+        for id in ids {
+            self.db
+                .write_transaction(async |db| {
+                    let now = clock(db).await?;
+                    if reoffer_lapsed(db, &id.id, now).await? {
+                        demands::lapse(db, &id.id).await?;
                     }
                     Ok(())
                 })

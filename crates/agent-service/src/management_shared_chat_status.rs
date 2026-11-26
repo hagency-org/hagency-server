@@ -60,6 +60,12 @@ pub(super) async fn query(
                 -- for accepted work only, so nothing of this message has run
                 -- or will.
                 WHEN w.state='cancelled' AND w.started_at_ms IS NULL THEN 'never_started'
+                -- Given back by a process that ended before its turn, then
+                -- ended without one: every process it was given to was
+                -- proven not to have begun it.
+                WHEN i.state='blocked' AND i.reason='head_changed' AND EXISTS(
+                    SELECT 1 FROM hagency_agent_v1.management_shared_demand_released_bindings x
+                    WHERE x.demand_id=d.id) THEN 'never_started'
                 ELSE i.reason END,
             'resourceRecovery', CASE WHEN queue.reason='budget_blocked' AND req.id IS NOT NULL
                 THEN jsonb_build_object('requestId',req.id,'role',

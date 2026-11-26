@@ -1536,6 +1536,7 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
                 reason: "budget_blocked".into(),
                 budget: Some(budget),
                 retries: false,
+                reoffers: false,
             },
         )
         .await
@@ -2068,6 +2069,7 @@ async fn pool_private_chat_without_mentions_retains_promotes_and_resumes_only_ap
                 expected_control_revision: demand.offer.control_revision,
                 start: attempts::start(&runtime, &stopped),
                 retry: None,
+                reoffers: false,
             },
             &matrix.gateway,
         )

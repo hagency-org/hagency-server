@@ -1,8 +1,15 @@
 -- Back to permanent bindings. Messages that are waiting again stay waiting;
--- the record of released bindings is kept, because the bindings it replaced
--- are gone.
+-- the record of released bindings is kept, with its guards and the functions
+-- they use, because the bindings it replaced are gone.
 DROP TRIGGER IF EXISTS fence_shared_release ON hagency_agent_v1.management_shared_runtimes;
 DROP FUNCTION IF EXISTS hagency_agent_v1.release_unstarted_shared_work();
+CREATE OR REPLACE FUNCTION hagency_agent_v1.fence_shared_unissued_work() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW.started_at_ms IS NOT NULL AND OLD.started_at_ms IS NULL
+ AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work_refusals WHERE work_id=NEW.id)
+ THEN RAISE EXCEPTION 'shared_work_definitively_not_started';END IF;
+ RETURN NEW;
+END;$$;
 DROP TRIGGER IF EXISTS retain_shared_demand_binding ON hagency_agent_v1.management_shared_demand_bindings;
 CREATE TRIGGER retain_shared_demand_binding BEFORE UPDATE OR DELETE ON hagency_agent_v1.management_shared_demand_bindings FOR EACH ROW EXECUTE FUNCTION hagency_agent_v1.retain_shared_demand();
 DROP FUNCTION IF EXISTS hagency_agent_v1.retain_shared_demand_binding();

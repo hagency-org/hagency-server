@@ -53,6 +53,7 @@ async fn next_offer(f: &Fixture) -> SharedDemandStatus {
                 SharedDemandPollInput {
                     after: None,
                     retries: true,
+                    reoffers: true,
                 },
             )
             .await
@@ -92,6 +93,7 @@ fn after(
             },
         },
         retry: None,
+        reoffers: false,
     }
 }
 async fn runtime_state(f: &Fixture, id: &str) -> (String, bool) {
@@ -337,8 +339,7 @@ async fn shared_attempt_v2_uncertain_process_blocks_only_until_grace_then_server
         runtime_state(&f, &issued.command.command_id).await,
         ("stopped".into(), true)
     );
-    // Its event waits for the executor's evidence that the process stopped.
-    assert_eq!(recovered(&f, &lost).await.state, "start_committed");
+    assert_eq!(recovered(&f, &lost).await.state, "head_changed");
     assert!(
         conflict(
             f.domain
@@ -359,10 +360,8 @@ async fn shared_attempt_v2_uncertain_process_blocks_only_until_grace_then_server
         record(&f, &issued, timeout).await.unwrap().receipt_digest,
         ack.receipt_digest
     );
-    // The evidence came without a request to retry: the event ends.
     let next = next_offer(&f).await;
     assert_eq!(next.offer.event_id, "$uncertain_next");
-    assert_eq!(recovered(&f, &lost).await.state, "head_changed");
     let started = f
         .domain
         .start_shared_demand(

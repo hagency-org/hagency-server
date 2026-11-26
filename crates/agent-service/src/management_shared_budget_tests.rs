@@ -7,7 +7,7 @@ struct Clock {
 use crate::management_shared_work_types::{SharedWorkRecoverInput, SharedWorkResultUpload};
 use crate::{management_agent_budget_types::*, management_shared_budget_types::*};
 
-async fn apply_delta(
+pub(super) async fn apply_delta(
     f: &Fixture,
     r: &ManagedAgentRequest,
     admin: &Actor,
@@ -823,6 +823,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         reason: "budget_blocked".into(),
         budget: Some(old_start.budget_observation.clone()),
         retries: false,
+        reoffers: false,
     };
     let original_block_payload = serde_json::to_string(&original_block_input).unwrap();
     let original_block_digest = crate::hash(&original_block_payload);
@@ -1063,6 +1064,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
             SharedDemandRecoverInput {
                 demand_digest: old.demand_digest,
                 retries: true,
+                reoffers: true,
             },
         )
         .await
@@ -1282,6 +1284,7 @@ async fn budget_execution_v3_stop_run_aba_retains_original_event_and_rejects_old
             SharedDemandRecoverInput {
                 demand_digest: old.demand_digest.clone(),
                 retries: true,
+                reoffers: true,
             },
         )
         .await
@@ -1347,6 +1350,7 @@ async fn budget_execution_v3_unrelated_head_advance_retains_terminal_original_of
             SharedDemandRecoverInput {
                 demand_digest: old.demand_digest.clone(),
                 retries: true,
+                reoffers: true,
             },
         )
         .await
