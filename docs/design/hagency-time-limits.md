@@ -84,6 +84,12 @@ device or user is revoked, its device is registered anew, or the request,
 grant, pool, plan, project or room behind it ends. It is never fenced because
 a number became smaller.
 
+A fence is not undone, so it is never silent. The fence of a reservation and
+the fence of a process each leave a record of when it happened, whether a rule
+of the database or the service did it, and what things looked like at that
+moment: for a reservation everything it stands on, for a process among other
+things how long its lease had been over (`OPERATIONS.md`).
+
 A session never ends later than a proof that was accepted for it allowed:
 its end is the latest `min(access token expiry, time of proof + window)` among
 those proofs, so it runs at most one window past the last proof. It can lie
