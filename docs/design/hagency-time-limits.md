@@ -125,7 +125,8 @@ After acceptance:
     (rule 4), which is how this case arose in production;
   - when a process does end, the message's status says so, names the Agent,
     and its sender can send it again with one action. A message sent again is
-    a new message.
+    a new message. The server decides who is offered that, and offers it only
+    while the Agent is in the room and has not been stopped.
 
 ### 4. A check that cannot be made is not a refusal
 
@@ -227,6 +228,6 @@ renewal offers (7 days).
 | 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window, and renewing them early enough for it to matter, is in review |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A failed start is tried again | implemented (demand retries) |
-| 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again, its status has no reason, and the room says only that the message was not processed |
+| 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. Its status has the reason `never_started`, names the Agent, and says whether its reader can send the message again (`canSendAgain`: nothing of it ran, the reader sent it, and the Agent is in the room and not stopped); Hagency Desktop uses that to name the Agent in the room and to offer the sender "Send again" |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop |

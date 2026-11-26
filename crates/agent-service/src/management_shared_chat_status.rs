@@ -21,10 +21,18 @@ pub(super) async fn query(
     };
     // RoutedEvent uses snake_case. Do not return message bodies, provider output
     // or other participants' intake. Resource owners need not join the room.
+    // Each row names its Agent by Matrix ID, which every member of the room
+    // already sees, and says whether its reader can send the message again.
     let rows = sql_query(r#"
         SELECT jsonb_build_object(
-            'agentId', a.agent_id, 'roomId', i.event_payload::jsonb->>'room_id',
+            'agentId', a.agent_id, 'agentMxid', mx.puppet_mxid,
+            'roomId', i.event_payload::jsonb->>'room_id',
             'eventId', i.event_id,
+            'fromViewer', i.event_payload::jsonb->>'sender_mxid'=$2,
+            'agentAvailable', control.mode='running' AND EXISTS(
+                SELECT 1 FROM hagency_agent_v1.shared_room_memberships m
+                WHERE m.assignment_id=a.id AND m.room_id=i.event_payload::jsonb->>'room_id'
+                  AND m.state='matrix_verified'),
             'threadRoot', coalesce(i.event_payload::jsonb->>'thread_root', i.event_id),
             'receivedAtMs', i.received_at_ms,
             'state', CASE
@@ -36,7 +44,13 @@ pub(super) async fn query(
                 WHEN queue.status IS NOT NULL THEN queue.status
                 WHEN w.state IS NOT NULL THEN w.state
                 ELSE i.state END,
-            'reason', CASE WHEN queue.status IS NOT NULL THEN queue.reason ELSE i.reason END,
+            'reason', CASE WHEN queue.status IS NOT NULL THEN queue.reason
+                -- Accepted, never begun, and withdrawn: its process ended,
+                -- or its budget or period changed first. A start is recorded
+                -- for accepted work only, so nothing of this message has run
+                -- or will.
+                WHEN w.state='cancelled' AND w.started_at_ms IS NULL THEN 'never_started'
+                ELSE i.reason END,
             'resourceRecovery', CASE WHEN queue.reason='budget_blocked' AND req.id IS NOT NULL
                 THEN jsonb_build_object('requestId',req.id,'role',
                     CASE WHEN req.administrator_user_id=$1 THEN 'owner' ELSE 'manager' END) END,
@@ -44,6 +58,8 @@ pub(super) async fn query(
         )::text AS payload
         FROM hagency_agent_v1.management_shared_intake i
         JOIN hagency_agent_v1.management_shared_assignments a ON a.id=i.assignment_id
+        LEFT JOIN hagency_agent_v1.management_agent_matrix mx ON mx.assignment_id=a.id
+        LEFT JOIN hagency_agent_v1.management_shared_controls control ON control.assignment_id=a.id
         LEFT JOIN hagency_agent_v1.management_agent_requests req ON req.id=a.request_id
             AND req.pool_contribution_id IS NOT NULL AND $1 IN (req.manager_user_id,req.administrator_user_id)
         LEFT JOIN LATERAL (
@@ -104,6 +120,10 @@ pub(super) async fn query(
             if let Some(state) = budget_state(&block) {
                 value["budgetState"] = json!(state);
             }
+            let mut take =
+                |key: &str| value.as_object_mut().and_then(|v| v.remove(key)) == Some(json!(true));
+            let (sender, available) = (take("fromViewer"), take("agentAvailable"));
+            value["canSendAgain"] = json!(sender && available && ended_without_a_turn(&value));
             Ok(value)
         })
         .collect::<Result<Vec<_>>>()?;
@@ -112,9 +132,11 @@ pub(super) async fn query(
     // pretend that its encrypted body has already been admitted as work.
     let candidates=sql_query(r#"
         SELECT jsonb_build_object(
-            'agentId',a.agent_id,'roomId',c.payload::jsonb->>'room_id',
+            'agentId',a.agent_id,'agentMxid',m.puppet_mxid,
+            'roomId',c.payload::jsonb->>'room_id',
             'eventId',c.event_id,'threadRoot',c.event_id,
-            'receivedAtMs',c.received_at_ms,'state','blocked','reason',protocol.reason
+            'receivedAtMs',c.received_at_ms,'state','blocked','reason',protocol.reason,
+            'canSendAgain',false
         )::text AS payload
         FROM hagency_agent_v1.management_shared_e2ee_candidates c
         JOIN hagency_agent_v1.management_shared_assignments a ON a.id=c.assignment_id
@@ -148,9 +170,52 @@ pub(super) async fn query(
     Ok(values)
 }
 
+/// The message ended for this Agent and nothing of it reached a model or a
+/// tool: accepted work that never started, a message that waited out its
+/// time, a start that failed for good. Its sender can send it again as a new
+/// message without repeating anything, when the Agent can take one. A run
+/// whose outcome is unknown, a message that still waits and one that someone
+/// stopped are not such an end.
+fn ended_without_a_turn(row: &Value) -> bool {
+    matches!(
+        (row["state"].as_str(), row["reason"].as_str()),
+        (Some("cancelled"), Some("never_started"))
+            | (Some("expired"), _)
+            | (Some("blocked"), Some("head_changed"))
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_end_without_a_turn_can_be_sent_again() {
+        let ended = |state: &str, reason: Option<&str>| {
+            ended_without_a_turn(&json!({"state":state,"reason":reason}))
+        };
+        assert!(ended("cancelled", Some("never_started")));
+        assert!(ended("expired", None) && ended("expired", Some("event_expired")));
+        assert!(ended("blocked", Some("head_changed")));
+        for (state, reason) in [
+            ("cancelled", None),
+            ("cancelled", Some("explicit_stop")),
+            ("cancelled", Some("room_authority_changed")),
+            ("blocked", None),
+            ("blocked", Some("budget_blocked")),
+            ("blocked", Some("owner_daemon_unavailable")),
+            ("pending", None),
+            ("acknowledged", None),
+            ("started", None),
+            ("unknown", None),
+            ("failed", None),
+            ("reply_unknown", None),
+            ("reply_pending", None),
+            ("replied", None),
+        ] {
+            assert!(!ended(state, reason), "{state} {reason:?}");
+        }
+    }
 
     #[test]
     fn budget_state_preserves_known_lower_bound_and_old_evidence() {

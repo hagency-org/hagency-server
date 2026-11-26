@@ -1164,6 +1164,155 @@ async fn pool_owner_can_fund_beyond_published_grant_but_manager_cannot() {
     );
 }
 
+async fn chat_status_case(begun: bool) {
+    #[derive(QueryableByName)]
+    struct Puppet {
+        #[diesel(sql_type=Text)]
+        payload: String,
+    }
+    let (f, request, assignment, matrix) = Box::pin(prepared_pool_calendar(true, true)).await;
+    let runtime = shared_poll(&f).await;
+    let activity = save(&f, &runtime, "qualified", 101)
+        .await
+        .unwrap()
+        .activity
+        .unwrap();
+    let event = crate::transport::RoutedEvent {
+        event_id: "$status_work".into(),
+        room_id: request.room_id.clone(),
+        sender_mxid: f.outsider.p.mxid.clone(),
+        body: "Research this".into(),
+        mentioned_mxids: Default::default(),
+        thread_root: None,
+        encrypted: false,
+        is_edit: false,
+    };
+    f.domain
+        .route_shared_event(&f.policy, &event, now_ms(), &matrix.gateway)
+        .await
+        .unwrap();
+    let work = f
+        .domain
+        .poll_shared_work(
+            &f.owner.p,
+            &f.policy,
+            activity.authority.clone(),
+            &matrix.gateway,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let input = SharedWorkInput {
+        authority: activity.authority.clone(),
+        work_id: work.id.clone(),
+        work_digest: allocation_digest(&work).unwrap(),
+    };
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input.clone(), &matrix.gateway)
+        .await
+        .unwrap();
+    if begun {
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input.clone(), &matrix.gateway)
+            .await
+            .unwrap();
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let puppet = sql_query(
+        "SELECT puppet_mxid AS payload FROM hagency_agent_v1.management_agent_matrix WHERE assignment_id=$1",
+    )
+    .bind::<Text, _>(&assignment.id)
+    .get_result::<Puppet>(&mut db)
+    .await
+    .unwrap()
+    .payload;
+    let read = async |p: &Principal| {
+        let query = serde_json::from_value(json!({"roomId":request.room_id})).unwrap();
+        f.domain.shared_approvals(p, query).await.unwrap()["executions"][0].clone()
+    };
+    // Each row names its Agent. A message that has not ended is not sent again.
+    for who in [&f.outsider.p, &f.owner.p] {
+        let row = read(who).await;
+        assert_eq!(row["eventId"], "$status_work");
+        assert_eq!(row["agentMxid"], json!(puppet));
+        assert_eq!(row["reason"], Value::Null);
+        assert_eq!(row["canSendAgain"], false);
+        // What the answer is worked out from stays on the server.
+        assert!(row.get("fromViewer").is_none() && row.get("agentAvailable").is_none());
+    }
+    // The process ends.
+    attempts::stop(&f, &runtime, 103).await;
+    let ended = read(&f.outsider.p).await;
+    if begun {
+        // It may have acted: unknown, never "never started", and not sent again.
+        assert_eq!(
+            (&ended["state"], &ended["reason"], &ended["canSendAgain"]),
+            (&json!("unknown"), &Value::Null, &json!(false))
+        );
+    } else {
+        assert_eq!(
+            (&ended["state"], &ended["reason"]),
+            (&json!("cancelled"), &json!("never_started"))
+        );
+        // The reason is a fact: a start is refused from now on.
+        assert!(
+            f.domain
+                .start_current_work(&f.owner.p, &f.policy, input, &matrix.gateway)
+                .await
+                .is_err()
+        );
+        assert_eq!(read(&f.outsider.p).await["reason"], "never_started");
+        // Its sender can send it again; the resource's owner, who did not
+        // send it, cannot.
+        assert_eq!(ended["canSendAgain"], true);
+        let owner = read(&f.owner.p).await;
+        assert_eq!(
+            (&owner["reason"], &owner["canSendAgain"]),
+            (&json!("never_started"), &json!(false))
+        );
+        // Not while the Agent is stopped: a new message would end the same way.
+        let revision = f
+            .domain
+            .shared_run_control(&f.outsider.p, &assignment.id)
+            .await
+            .unwrap()
+            .revision;
+        for (command, revision, mode, offered) in [
+            ("status_pause", revision, "paused", false),
+            ("status_resume", revision + 1, "running", true),
+        ] {
+            f.domain
+                .change_shared_run_control(
+                    &f.outsider.p,
+                    &f.policy,
+                    &assignment.id,
+                    intake_tests::change(command, revision, mode),
+                    &matrix.gateway,
+                )
+                .await
+                .unwrap();
+            let row = read(&f.outsider.p).await;
+            assert_eq!(
+                (&row["reason"], &row["canSendAgain"]),
+                (&json!("never_started"), &json!(offered)),
+                "{mode}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn chat_status_names_agent_and_sender_and_says_accepted_work_never_started() {
+    Box::pin(chat_status_case(false)).await;
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn chat_status_keeps_work_that_began_unknown_when_its_process_ends() {
+    Box::pin(chat_status_case(true)).await;
+}
+
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_user_leakage() {
