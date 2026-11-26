@@ -267,12 +267,24 @@ async fn postgres_longer_authorization_window_needs_the_host_and_the_request_hea
     let longer = service_within(store.clone(), &upstream, 120_000);
     let ahead = renewed_ahead(&longer, &owner.token, None).await;
     assert!((1..=30_000).contains(&ahead), "{ahead}");
-    let ahead = renewed_ahead(&longer, &owner.token, Some("120000")).await;
-    assert!((100_000..=120_000).contains(&ahead), "{ahead}");
-    let ahead = renewed_ahead(&longer, &owner.token, Some("60000")).await;
-    assert!((40_000..=60_000).contains(&ahead), "{ahead}");
     let ahead = renewed_ahead(&longer, &owner.token, Some("soon")).await;
     assert!((1..=30_000).contains(&ahead), "{ahead}");
+    let ahead = renewed_ahead(&longer, &owner.token, Some("60000")).await;
+    assert!((40_000..=60_000).contains(&ahead), "{ahead}");
+    let ahead = renewed_ahead(&longer, &owner.token, Some("120000")).await;
+    assert!((100_000..=120_000).contains(&ahead), "{ahead}");
+    // A renewal never shortens a session. One that asks for less, cannot be
+    // read, asks for nothing, or reaches a host that grants less is answered
+    // with the end the session already has.
+    for (app, window) in [
+        (&longer, Some("60000")),
+        (&longer, Some("soon")),
+        (&longer, None),
+        (&default, Some("120000")),
+    ] {
+        let ahead = renewed_ahead(app, &owner.token, window).await;
+        assert!((100_000..=120_000).contains(&ahead), "{window:?}: {ahead}");
+    }
     store.sign_out(&owner.token).await.unwrap();
     task.abort();
 }

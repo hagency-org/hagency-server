@@ -283,7 +283,7 @@
       "post": {
         "operationId": "renewSession",
         "summary": "renewSession",
-        "description": "Fresh matching issuer/subject/mxid/client proof can renew an expired, unrevoked session. Does not revive a revoked session or device generation.",
+        "description": "Fresh matching issuer/subject/mxid/client proof can renew an expired, unrevoked session. Does not revive a revoked session or device generation. A renewal never shortens a session: validUntilMs is the later of the end the session already had and the end this proof grants.",
         "security": [
           {
             "userBearer": []
