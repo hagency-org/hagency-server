@@ -509,7 +509,7 @@ impl DomainStore {
         }
         self.db.write_transaction(async|db:&mut AsyncPgConnection| {Self::authorize(db,p,0).await?;let w=work_row(db,id).await?;let r=runtime(db,&w.runtime_id).await?;owner(&original(db,&r).await?,p)?;item(&w,&r)?;
             if r.digest!=input.runtime_command_digest || w.digest!=input.work_digest || w.started_at_ms.is_none() && !refusals::exists(db,id).await? {return Err(Error::Conflict("shared_work_changed"));}
-            let now=clock(db).await?;let token=secret_token();let expiry=ticket_until(db, p, now).await?;
+            let now=clock(db).await?;let token=secret_token();let expiry=until(db,p,now).await?;
             sql_query("UPDATE hagency_agent_v1.management_shared_work SET lease_hash=$2,lease_until_ms=$3 WHERE id=$1").bind::<Text,_>(id).bind::<Text,_>(hash(&token)).bind::<BigInt,_>(expiry).execute(db).await?;
             Ok(SharedWorkResultTicket {work_id:w.id.clone(),work_digest:w.digest,token,lease_until_ms:expiry,recorded:latest_work_receipt(db,id,input.observation_id.as_deref()).await?,state:w.state,reply_state:reply_state(db,id).await?})
         }).await

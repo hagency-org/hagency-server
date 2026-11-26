@@ -79,9 +79,9 @@ struct Device {
     #[diesel(sql_type=BigInt)]
     generation: i64,
 }
-/// The window a session keeps for what is issued to its device: never under
-/// the default, and never over the longest window a server grants.
-fn ticket_window(ms: i64) -> i64 {
+/// The window a session keeps for the activity leases issued to its device:
+/// never under the default, and never over the longest window a server grants.
+fn activity_window(ms: i64) -> i64 {
     ms.clamp(DEFAULT_AUTHORIZATION_WINDOW_MS, MAX_AUTHORIZATION_WINDOW_MS)
 }
 impl Store {
@@ -171,15 +171,15 @@ impl Store {
             .await
     }
     /// `sign_in` for a client that follows its authorization window:
-    /// `ticket_window_ms` is the window it was granted, and what is issued to
-    /// its device for pooled work lasts that long instead of thirty seconds.
+    /// `activity_window_ms` is the window it was granted, and an activity
+    /// lease issued to its device lasts that long instead of thirty seconds.
     pub async fn sign_in_with_window(
         &self,
         identity: Identity,
-        ticket_window_ms: i64,
+        activity_window_ms: i64,
         now: i64,
     ) -> Result<SessionGrant> {
-        let ticket_window_ms = ticket_window(ticket_window_ms);
+        let activity_window_ms = activity_window(activity_window_ms);
         if identity.issuer != self.issuer || identity.valid_until_ms <= now {
             return Err(Error::Unauthorized("authentication_required"));
         }
@@ -263,7 +263,7 @@ impl Store {
                             q::token_hash.eq(&params.2),
                             q::client_id.eq(&params.3),
                             q::valid_until_ms.eq(&params.4),
-                            q::ticket_window_ms.eq(ticket_window_ms),
+                            q::activity_window_ms.eq(activity_window_ms),
                         ))
                         .execute(db)
                         .await
@@ -338,15 +338,17 @@ impl Store {
     }
     /// `renew` for a client that follows its authorization window. Each
     /// renewal says so again, so a session keeps the longer window only while
-    /// the client that holds it checks against it.
+    /// the client that holds it checks against it: an older client that takes
+    /// the session over is back at thirty seconds at its first renewal. A
+    /// lease already issued is not cut by that (`activity_until`).
     pub async fn renew_with_window(
         &self,
         credential: &str,
         identity: Identity,
-        ticket_window_ms: i64,
+        activity_window_ms: i64,
         now: i64,
     ) -> Result<i64> {
-        let ticket_window_ms = ticket_window(ticket_window_ms);
+        let activity_window_ms = activity_window(activity_window_ms);
         if identity.issuer != self.issuer || identity.valid_until_ms <= now {
             return Err(Error::Unauthorized("authentication_required"));
         }
@@ -391,7 +393,7 @@ impl Store {
                         .filter((q::id).eq(&params.1))
                         .set((
                             q::valid_until_ms.eq(&params.0),
-                            q::ticket_window_ms.eq(ticket_window_ms),
+                            q::activity_window_ms.eq(activity_window_ms),
                         ))
                         .execute(db)
                         .await

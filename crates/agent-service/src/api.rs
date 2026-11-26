@@ -454,7 +454,7 @@ impl App {
                 .map_err(|_| Error::Invalid("invalid_arguments"))?;
             let started = std::time::Instant::now();
             let window = self.verifier.window_for(requested_window(req));
-            let ticket_window = ticket_window(req, window);
+            let activity_window = activity_window(req, window);
             let identity = self
                 .verifier
                 .verify_within(&body.access_token, now_ms(), window)
@@ -466,7 +466,7 @@ impl App {
             );
             let grant = self
                 .store
-                .sign_in_with_window(identity, ticket_window, now_ms())
+                .sign_in_with_window(identity, activity_window, now_ms())
                 .await?;
             tracing::debug!(
                 stage = "session_create_store",
@@ -489,7 +489,7 @@ impl App {
                 .map_err(|_| Error::Invalid("invalid_arguments"))?;
             let started = std::time::Instant::now();
             let window = self.verifier.window_for(requested_window(req));
-            let ticket_window = ticket_window(req, window);
+            let activity_window = activity_window(req, window);
             let identity = self
                 .verifier
                 .verify_within(&body.access_token, now_ms(), window)
@@ -501,7 +501,7 @@ impl App {
             );
             let until = self
                 .store
-                .renew_with_window(&credential, identity, ticket_window, now)
+                .renew_with_window(&credential, identity, activity_window, now)
                 .await?;
             tracing::debug!(
                 stage = "session_renew_store",
@@ -1261,14 +1261,14 @@ fn requested_window(req: &Request) -> Option<i64> {
         .parse()
         .ok()
 }
-/// A client that sends `x-hagency-ticket-window: session` checks what is
-/// issued to its device for pooled work against the authorization window it
-/// was granted, and gets that window for it. Any other client checks against
+/// A client that sends `x-hagency-activity-window: session` checks an activity
+/// lease issued to its device against the authorization window it was
+/// granted, and gets that window for it. Any other client checks against
 /// thirty seconds, and keeps thirty seconds.
-fn ticket_window(req: &Request, granted: i64) -> i64 {
+fn activity_window(req: &Request, granted: i64) -> i64 {
     let follows = req
         .headers()
-        .get("x-hagency-ticket-window")
+        .get("x-hagency-activity-window")
         .is_some_and(|value| value.as_bytes() == b"session");
     if follows {
         granted

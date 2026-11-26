@@ -16,12 +16,13 @@ pub(super) const UNCERTAIN_GRACE_MS: i64 = 180_000;
 // bounds every execute lease. Observe and cleanup tickets are not evidence of
 // a live process and never extend the bound. Activity leases and work
 // transitions are the server's process evidence. A fence clears the current
-// activity end; the first lease is minted inside the window and lasts at most
-// 30 s, or as long as the run's own start window when its session follows a
-// longer authorization window; every renewal keeps its own end. The executor
-// derives the same moment from the command it holds.
+// activity end, so each lease keeps its own: the first one and every renewal
+// are rows of the renewals table, and the latest of their ends is read here.
+// A first lease that an earlier server minted has no row. It was minted
+// inside the window and lasted at most 30 s, and that bound stays for every
+// runtime as the least the evidence reaches, as it always was.
 const LAST_EVIDENCE: &str = "GREATEST(r.expires_at_ms,r.activity_until_ms,\
- CASE WHEN r.activity_epoch>0 THEN r.expires_at_ms+GREATEST(30000,r.expires_at_ms-r.created_at_ms) ELSE 0 END,\
+ CASE WHEN r.activity_epoch>0 THEN r.expires_at_ms+30000 ELSE 0 END,\
  coalesce((SELECT max(x.expires_at_ms) FROM hagency_agent_v1.management_shared_activity_renewals x WHERE x.runtime_id=r.id),0),\
  coalesce((SELECT max(GREATEST(coalesce(w.acknowledged_at_ms,0),coalesce(w.started_at_ms,0),coalesce(w.completed_at_ms,0))) FROM hagency_agent_v1.management_shared_work w WHERE w.runtime_id=r.id),0))";
 

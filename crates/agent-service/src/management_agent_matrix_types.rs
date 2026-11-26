@@ -47,7 +47,7 @@ impl ManagedAgentMatrixChallenge {
             || self.puppet_mxid.len() > 255
             || !(1..=MAX_EXACT).contains(&self.issued_at_ms)
             || self.expires_at_ms <= self.issued_at_ms
-            || self.expires_at_ms - self.issued_at_ms > crate::identity::MAX_AUTHORIZATION_WINDOW_MS
+            || self.expires_at_ms - self.issued_at_ms > 30_000
             // Pool Agents: capped by the pool chain's lifetime at issuance (E8).
             || (self.reserve_command.pool_grant.is_none()
                 && self.expires_at_ms > self.reserve_command.expires_at_ms)

@@ -106,9 +106,9 @@ pub(super) async fn attempt_delivery(
             || awaiting);
     let token = secret_token();
     let expiry = if executable {
-        ticket_until(db, p, now).await?.min(c.expires_at_ms)
+        until(db, p, now).await?.min(c.expires_at_ms)
     } else {
-        ticket_until(db, p, now).await?
+        until(db, p, now).await?
     };
     tickets::issue(
         db,
@@ -263,7 +263,7 @@ pub(super) async fn commit_start(
         execution_budget: input.execution_budget.clone(),
         start_intent_id: input.start_intent_id.clone(),
         issued_at_ms: now,
-        expires_at_ms: (now + ticket_window(db, p).await?).min(lifetime),
+        expires_at_ms: (now + 30000).min(lifetime),
         original_runtime_command: original,
     };
     c.validate(server)?;
