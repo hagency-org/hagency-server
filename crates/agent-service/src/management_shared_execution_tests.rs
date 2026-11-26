@@ -1451,6 +1451,51 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
 
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn pool_agent_is_fenced_by_a_revoked_owner_session_and_not_by_a_shorter_one() {
+    #[derive(QueryableByName)]
+    struct SavedState {
+        #[diesel(sql_type=Text)]
+        payload: String,
+    }
+    async fn intent(db: &mut AsyncPgConnection, request: &str) -> String {
+        sql_query("SELECT i.state AS payload FROM hagency_agent_v1.management_agent_intents i WHERE request_id=$1")
+            .bind::<Text, _>(request)
+            .get_result::<SavedState>(db)
+            .await
+            .unwrap()
+            .payload
+    }
+    let (f, request, _assignment, _matrix) = Box::pin(prepared_pool(false)).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let before = intent(&mut db, &request.id).await;
+    assert_ne!(before, "fenced");
+    // An end that moves earlier and is still ahead: what a renewal under a
+    // lowered window, or with an older access token, used to write.
+    sql_query(
+        "UPDATE hagency_agent_v1.sessions SET valid_until_ms=valid_until_ms-60000 WHERE id=$1",
+    )
+    .bind::<Text, _>(&f.owner.p.session_id)
+    .execute(&mut db)
+    .await
+    .unwrap();
+    assert_eq!(intent(&mut db, &request.id).await, before);
+    // A row written again with nothing revoked.
+    sql_query("UPDATE hagency_agent_v1.sessions SET revoked=revoked WHERE id=$1")
+        .bind::<Text, _>(&f.owner.p.session_id)
+        .execute(&mut db)
+        .await
+        .unwrap();
+    assert_eq!(intent(&mut db, &request.id).await, before);
+    sql_query("UPDATE hagency_agent_v1.sessions SET revoked=true WHERE id=$1")
+        .bind::<Text, _>(&f.owner.p.session_id)
+        .execute(&mut db)
+        .await
+        .unwrap();
+    assert_eq!(intent(&mut db, &request.id).await, "fenced");
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn pool_agent_expired_owner_session_waits_without_revoking_reserved_agent() {
     #[derive(QueryableByName)]
     struct SavedState {
@@ -1459,15 +1504,10 @@ async fn pool_agent_expired_owner_session_waits_without_revoking_reserved_agent(
     }
     let (f, request, assignment, matrix) = Box::pin(prepared_pool(false)).await;
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
-    // Arrange natural expiry without the separate explicit-shortening/revocation trigger.
-    db.batch_execute("ALTER TABLE hagency_agent_v1.sessions DISABLE TRIGGER USER")
-        .await
-        .unwrap();
+    // A session that ran out fences nothing, however its end came to be in
+    // the past: only a revocation does.
     sql_query("UPDATE hagency_agent_v1.sessions SET valid_until_ms=(extract(epoch from clock_timestamp())*1000)::bigint-1 WHERE id=$1")
         .bind::<Text,_>(&f.owner.p.session_id).execute(&mut db).await.unwrap();
-    db.batch_execute("ALTER TABLE hagency_agent_v1.sessions ENABLE TRIGGER USER")
-        .await
-        .unwrap();
     f.domain
         .reconcile_managed_agent_matrix(
             &assignment.id,
