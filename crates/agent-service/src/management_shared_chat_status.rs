@@ -16,12 +16,33 @@ struct Shown {
 
 use crate::management_pool_types::budget_state;
 
+/// Whether the Agent's reservation stands now: the check a new message meets
+/// when it arrives and the polls make before they offer one (neither the
+/// reservation nor its intent is fenced, and its time is not over).
+async fn reservation_stands(
+    db: &mut AsyncPgConnection,
+    id: &str,
+    server: &str,
+    now: i64,
+) -> Result<bool> {
+    use super::super::super::intake;
+    let stands = match intake::assignment(db, id).await {
+        Ok(w) => intake::retainable(db, id, &w, server, now).await,
+        Err(e) => Err(e),
+    };
+    match stands {
+        Err(Error::Conflict(_) | Error::NotFound(_)) => Ok(false),
+        stands => stands,
+    }
+}
+
 pub(super) async fn query(
     db: &mut AsyncPgConnection,
     p: &Principal,
     room: Option<&str>,
     thread: Option<&str>,
     now: i64,
+    server: &str,
 ) -> Result<Vec<Value>> {
     let Some(room) = room else {
         return Ok(Vec::new());
@@ -46,8 +67,10 @@ pub(super) async fn query(
     .await?;
     // A message is answered in the period it arrived in. Each Agent's period
     // is read now, as its poll would read it, so that an end no poll has
-    // recorded yet is read all the same.
+    // recorded yet is read all the same; and so is whether its reservation
+    // stands.
     let mut periods = std::collections::HashMap::new();
+    let mut standing = Vec::new();
     let mut shown_rows = serde_json::Map::new();
     for s in shown {
         let start = match periods.get(&s.assignment_id) {
@@ -55,6 +78,9 @@ pub(super) async fn query(
             None => {
                 let start =
                     super::super::super::intake::period_start(db, &s.assignment_id, now).await?;
+                if reservation_stands(db, &s.assignment_id, server, now).await? {
+                    standing.push(s.assignment_id.clone());
+                }
                 periods.insert(s.assignment_id, start);
                 start
             }
@@ -73,6 +99,12 @@ pub(super) async fn query(
             'fromViewer', i.event_payload::jsonb->>'sender_mxid'=$2,
             'agentAvailable', serves.available,
             'endReason', ended.reason,
+            -- A copy sent now could run. After a block on usage it could
+            -- only once the Agent's period has turned since: the calls the
+            -- computer could not account for stay in the period they were
+            -- made in, and an Agent without periods has a single one.
+            'copyCanRun', ended.reason IS DISTINCT FROM 'usage_unrepresentable'
+                OR i.received_at_ms<shown.period_start::bigint,
             'threadRoot', coalesce(i.event_payload::jsonb->>'thread_root', i.event_id),
             'receivedAtMs', i.received_at_ms,
             'state', CASE
@@ -158,15 +190,15 @@ pub(super) async fn query(
                 -- for an older one.
                 WHEN control.mode IS DISTINCT FROM 'running' OR control.revision<>i.control_revision
                     THEN 'explicit_stop'
-                -- Started, or blocked on usage, under a protocol an applied
-                -- budget retired: it can neither be bound there nor started
-                -- in the budget's (the budget poll ends it so).
-                WHEN applied.revision IS NOT NULL AND (i.reason='usage_unrepresentable' OR EXISTS(
-                    SELECT 1 FROM hagency_agent_v1.management_shared_demand_starts s WHERE s.demand_id=d.id))
+                -- Started under a protocol an applied budget retired: it can
+                -- neither be bound there nor started in the budget's (the
+                -- budget poll ends it so).
+                WHEN applied.revision IS NOT NULL AND EXISTS(
+                    SELECT 1 FROM hagency_agent_v1.management_shared_demand_starts s WHERE s.demand_id=d.id)
                     THEN 'head_changed'
                 END AS reason) e
             WHERE e.reason IS NOT NULL AND w.id IS NULL
-              AND (i.state='pending' OR (i.state='blocked' AND i.reason IN ('budget_blocked','usage_unrepresentable')))
+              AND (i.state='pending' OR (i.state='blocked' AND i.reason='budget_blocked'))
         ) lapse ON true
         LEFT JOIN LATERAL (
             SELECT CASE WHEN t.reason='event_expired' THEN 'expired'
@@ -174,11 +206,12 @@ pub(super) async fn query(
                         WHEN reason IS NULL THEN 'pending' ELSE 'blocked' END AS status, reason
             FROM (SELECT coalesce(t.reason, lapse.reason, protocol.reason, budget_block.reason,
                 CASE WHEN i.reason='budget_blocked' AND applied.revision IS NOT NULL THEN NULL ELSE i.reason END) AS reason) reasons
-            -- A v3 end also ends a message v2 had blocked (the budget poll
-            -- ends one that v3 cannot take up), and names that end.
+            -- A message v2 blocked other than on allowance has ended there,
+            -- and keeps the reason v2 gave it, also once the budget poll has
+            -- recorded an end of its own for it.
             WHERE w.started_at_ms IS NULL AND (w.state IS NULL OR w.state IN ('queued','acknowledged'))
               AND (i.state='pending'
-                   OR (i.state='blocked' AND (i.reason='budget_blocked' OR t.reason IS NOT NULL OR lapse.reason IS NOT NULL))
+                   OR (i.state='blocked' AND i.reason='budget_blocked')
                    OR w.state IN ('queued','acknowledged'))
               AND (reason IS NOT NULL OR (i.state='blocked' AND i.reason='budget_blocked' AND applied.revision IS NOT NULL))
         ) queue ON true
@@ -192,24 +225,28 @@ pub(super) async fn query(
                 -- Given to a process that ended, or refused it, first.
                 WHEN w.id IS NOT NULL THEN 'never_started'
                 WHEN i.state IN ('cancelled','expired','paused') THEN i.reason
-                -- A v2 end names its cause: head_changed, retry_exhausted
-                -- or retry_unsupported, and for a message given back also
-                -- retry_lapsed or reoffer_unsupported.
-                WHEN i.state='blocked' AND i.reason NOT IN ('budget_blocked','usage_unrepresentable')
+                -- A v2 end names its cause: head_changed, retry_exhausted,
+                -- retry_unsupported, or usage_unrepresentable (a block on
+                -- usage, which nothing lifts in its period), and for a
+                -- message given back also retry_lapsed or reoffer_unsupported.
+                WHEN i.state='blocked' AND i.reason<>'budget_blocked'
                     THEN coalesce((SELECT b.payload::jsonb#>>'{}' FROM hagency_agent_v1.management_shared_demand_blocks b
                         WHERE b.demand_id=d.id AND jsonb_typeof(b.payload::jsonb)='string'), i.reason)
                 WHEN t.reason IS NOT NULL THEN t.reason
                 ELSE lapse.reason END AS reason
         ) ended ON true
         -- The Agent can serve a new message in this room now: its reservation
-        -- stands (neither it nor its intent is fenced), its executor's ledger
+        -- stands (neither it nor its intent is fenced, and its time is not
+        -- over: $5, read by the check a new message meets when it arrives
+        -- and the polls make before they offer one), its executor's ledger
         -- was not replaced, it runs, and it is a verified member of the room.
         -- An Agent with an applied budget serves too, through its own queue.
         -- The one definition of an available Agent, which also decides
         -- whether a message is given back at its process's fence (migration
         -- 2026-11-26-000157).
         LEFT JOIN LATERAL (
-            SELECT hagency_agent_v1.shared_agent_serves(a.id, i.event_payload::jsonb->>'room_id') AS available
+            SELECT hagency_agent_v1.shared_agent_serves(a.id, i.event_payload::jsonb->>'room_id')
+                AND a.id=ANY($5::text[]) AS available
         ) serves ON true
         WHERE a.executor_owner_user_id=$1 OR i.event_payload::jsonb->>'sender_mxid'=$2
         ORDER BY i.received_at_ms DESC, i.id DESC
@@ -218,6 +255,7 @@ pub(super) async fn query(
     .bind::<Text, _>(&p.mxid)
     .bind::<Text, _>(Value::Object(shown_rows).to_string())
     .bind::<BigInt, _>(now)
+    .bind::<Array<Text>, _>(standing)
     .load::<ChatStatus>(db).await?;
     let mut values = rows
         .into_iter()
@@ -233,12 +271,13 @@ pub(super) async fn query(
                 value["budgetState"] = json!(state);
             }
             let mut take = |key: &str| value.as_object_mut().and_then(|v| v.remove(key));
-            let (sender, available) = (
+            let (sender, available, runs) = (
                 take("fromViewer") == Some(json!(true)),
                 take("agentAvailable") == Some(json!(true)),
+                take("copyCanRun") == Some(json!(true)),
             );
             let end = take("endReason").filter(Value::is_string);
-            value["canSendAgain"] = json!(sender && available && end.is_some());
+            value["canSendAgain"] = json!(sender && available && runs && end.is_some());
             if let Some(end) = end {
                 value["endReason"] = end;
             }

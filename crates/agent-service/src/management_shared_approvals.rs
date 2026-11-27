@@ -315,7 +315,7 @@ impl DomainStore {
                     result.push(json!({"approval":payload,"digest":a.digest,"decision":a.decision,"canDecide":can}));
                 }
             }
-            let executions = chat_status::query(db, p, input.room_id.as_deref(), input.execution_thread.as_deref(), now).await?;
+            let executions = chat_status::query(db, p, input.room_id.as_deref(), input.execution_thread.as_deref(), now, &self.server).await?;
             Ok(json!({"approvals":result,"executions":executions,"executionThreadFilter":true}))
         }).await
     }

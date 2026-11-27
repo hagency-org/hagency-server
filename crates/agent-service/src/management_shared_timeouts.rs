@@ -74,7 +74,15 @@ pub(super) async fn sweep(
 ) -> Result<()> {
     let ids = candidates(db, executor, now).await?;
     for id in ids {
-        stop(db, &id.id).await?;
+        // A savepoint each: an attempt that cannot be stopped is rolled back
+        // alone and logged as the background sweep logs it, and neither the
+        // other attempts nor the poll that sweeps are held back by it.
+        let stopped = db
+            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| stop(db, &id.id).await)
+            .await;
+        if let Err(error) = stopped {
+            tracing::warn!(runtime_id = %id.id, code = %error, "Shared attempt time bound failed");
+        }
     }
     Ok(())
 }
