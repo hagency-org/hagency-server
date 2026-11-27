@@ -24,7 +24,7 @@ Agent 创建与绑定提交的是**持久化接入意图**。首次通常返回 
 
 ## 执行、审批及回复恢复
 
-执行租约被限定到当前 owner/device/generation/epoch，expiry 不超过用户授权 deadline。用户授权窗口默认 30000ms；主机配置 `authorization_window_ms`（30000..120000）后，客户端在 `sessions/pasion` 与 `sessions/current/renew` 请求上带 `x-hagency-authorization-window-ms` 才会得到更长的窗口，未带该请求头的客户端仍是 30000ms。默认租约 TTL 最大 120000ms、poll batch 最大 100；底层可配置，因此文档不会把默认值当作永远固定的协议上限。JSON 请求上限 131072 字节；reply 默认文本上限 65536 UTF-8 字节。poll 的 bindingId 必填，服务端验证其 owner/Agent 归属并在 limit 之前过滤，不能让其他 Room 事件占满所选 Room 的 batch。请求 TTL 从原始 Appservice 持久接收时间开始，默认 24h、部署可配置 1s..30d，迟到 routing 不能重新开始 TTL。过期 queued/offered/acknowledged 请求被取消，不能领取、ACK 或新开始；running 请求过期后不能取得新的模型/工具执行权，但已经开始的已知原文允许在当前权限下发送或恢复，不产生新推理。
+执行租约被限定到当前 owner/device/generation/epoch，expiry 不超过用户授权 deadline。用户授权窗口默认 30000ms；主机配置 `authorization_window_ms`（30000..120000）后，客户端在 `sessions/pasion` 与 `sessions/current/renew` 请求上带 `x-hagency-authorization-window-v2-ms`（表示它在各次调用间共用一个本地会话）才会得到更长的窗口；只带旧请求头 `x-hagency-authorization-window-ms` 的客户端仍是 30000ms，两个都带时以 v2 为准，v2 的值无法读取时为 30000ms。默认租约 TTL 最大 120000ms、poll batch 最大 100；底层可配置，因此文档不会把默认值当作永远固定的协议上限。JSON 请求上限 131072 字节；reply 默认文本上限 65536 UTF-8 字节。poll 的 bindingId 必填，服务端验证其 owner/Agent 归属并在 limit 之前过滤，不能让其他 Room 事件占满所选 Room 的 batch。请求 TTL 从原始 Appservice 持久接收时间开始，默认 24h、部署可配置 1s..30d，迟到 routing 不能重新开始 TTL。过期 queued/offered/acknowledged 请求被取消，不能领取、ACK 或新开始；running 请求过期后不能取得新的模型/工具执行权，但已经开始的已知原文允许在当前权限下发送或恢复，不产生新推理。
 
 客户端先持久化收到的 dispatch，再 ACK；在 start 前持久化 executionId。`newlyStarted: false` 必须复用已有记录，不得重新调用模型或重放工具。`authorize-tool` 只核验这个正在执行的 dispatch/execution 的当前 Matrix 与设备权限，不开始新执行，不授予 token 额度，也不替代本机策略或 owner 对精确 proposal 的一次性确认。
 
