@@ -338,9 +338,9 @@ BEGIN
     PERFORM hagency_agent_v1.note_shared_reoffer(jsonb_build_object('kind','released',
      'demand',b.demand_id,'work',b.work_id,'runtime',NEW.id));
    EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'shared_demand_release_skipped demand=% sqlstate=%',b.demand_id,SQLSTATE;
+    RAISE WARNING 'shared_demand_release_skipped demand=% work=% sqlstate=%',b.demand_id,b.work_id,SQLSTATE;
     PERFORM hagency_agent_v1.note_shared_reoffer(jsonb_build_object('kind','release_failed',
-     'demand',b.demand_id,'runtime',NEW.id,'reason',SQLSTATE));
+     'demand',b.demand_id,'work',b.work_id,'runtime',NEW.id,'reason',SQLSTATE));
    END;
   END LOOP;
  EXCEPTION WHEN OTHERS THEN

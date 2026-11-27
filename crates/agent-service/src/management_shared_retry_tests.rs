@@ -1113,6 +1113,100 @@ async fn shared_demand_v2_start_that_does_not_take_messages_back_keeps_them_as_b
     assert_eq!(next_offer(&f).await.offer.event_id, "$kept_next");
 }
 
+/// How an operator finds a message that met the conditions to be given back
+/// and could not be (`docs/OPERATIONS.md`): the fence records that counted
+/// one, and the messages their process still holds that never began.
+const NOT_GIVEN_BACK: &str =
+    "SELECT f.runtime_id, f.fenced_at_ms, x.demand_id, x.work_id, q.event_id
+FROM hagency_agent_v1.management_shared_runtime_fences f
+JOIN hagency_agent_v1.management_shared_demand_bindings x ON x.runtime_id = f.runtime_id
+JOIN hagency_agent_v1.management_shared_work w ON w.id = x.work_id
+JOIN hagency_agent_v1.management_shared_demands d ON d.id = x.demand_id
+JOIN hagency_agent_v1.management_shared_intake q ON q.id = d.intake_id
+WHERE (f.facts::jsonb ->> 'releaseFailed')::bigint > 0
+  AND w.started_at_ms IS NULL";
+
+/// A message whose release fails ends as it did before, and the operator
+/// learns of it: the service logs a warning with its ids and the SQLSTATE,
+/// the fence record counts it, and the query of the operations guide finds
+/// it.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_v2_message_that_cannot_be_given_back_is_logged_and_found() {
+    let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "not_given_back").await;
+    let (lost, issued, first, _) = given(&f, &m, &d, &stopped, true).await;
+    // A fault in the release of this one message only.
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute(&format!(
+        "CREATE FUNCTION hagency_agent_v1.test_refuse_release() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN IF NEW.work_id='{}' THEN RAISE EXCEPTION 'refused by the test' USING ERRCODE='P0001'; END IF; RETURN NEW; END $$;
+         CREATE TRIGGER test_refuse_release BEFORE INSERT ON hagency_agent_v1.management_shared_demand_released_bindings
+          FOR EACH ROW EXECUTE FUNCTION hagency_agent_v1.test_refuse_release();",
+        first.id
+    ))
+    .await
+    .unwrap();
+    let recorded = record(&f, &issued, attempts::result(&issued, "stopped", 220)).await;
+    db.batch_execute(
+        "DROP TRIGGER test_refuse_release ON hagency_agent_v1.management_shared_demand_released_bindings;
+         DROP FUNCTION hagency_agent_v1.test_refuse_release();",
+    )
+    .await
+    .unwrap();
+    recorded.unwrap();
+    // It ends as before: still bound to the process that ended.
+    assert_eq!(released(&f, &first.id).await, 0);
+    assert!(still_bound(&f, &first.id).await);
+    assert_eq!(work_state(&f, &first.id).await, "cancelled");
+    assert_eq!(
+        fence_says(&fence_facts(&f, &issued.command.command_id).await),
+        ("computer".into(), 0, 1)
+    );
+    // The service log names it by its ids and the SQLSTATE, nothing else.
+    let notes = crate::database::emitted(&lost.offer.demand_id);
+    assert_eq!(
+        notes,
+        vec![crate::database::ReofferNote {
+            kind: "release_failed".into(),
+            demand: Some(lost.offer.demand_id.clone()),
+            work: Some(first.id.clone()),
+            runtime: Some(issued.command.command_id.clone()),
+            reason: Some("P0001".into()),
+        }]
+    );
+    // The guide's query finds it.
+    #[derive(QueryableByName)]
+    struct Found {
+        #[diesel(sql_type = Text)]
+        runtime_id: String,
+        #[diesel(sql_type = Text)]
+        demand_id: String,
+        #[diesel(sql_type = Text)]
+        work_id: String,
+        #[diesel(sql_type = Text)]
+        event_id: String,
+    }
+    let found = sql_query(NOT_GIVEN_BACK)
+        .load::<Found>(&mut db)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|row| row.runtime_id == issued.command.command_id)
+        .map(|row| (row.demand_id, row.work_id, row.event_id))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        found,
+        vec![(
+            lost.offer.demand_id.clone(),
+            first.id.clone(),
+            "$not_given_back".to_string()
+        )]
+    );
+}
+
 // Whether the Agent of `assignment` serves in `room` now, by the rule the
 // chat status reads; the status also makes the service's check of the
 // reservation, which agrees.

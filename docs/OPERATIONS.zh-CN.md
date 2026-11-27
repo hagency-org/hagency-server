@@ -159,7 +159,7 @@ PostgreSQL runner 创建并删除专用随机测试库，不对现有业务库�
 
 资源池 Agent 的进程被作废（fenced）时，同样在 `hagency_agent_v1.management_shared_runtime_fences` 留下一条记录：`fenced_at_ms`；`cause` 为 `dependency`（数据库规则所为：Agent 被停止，或它的预留被收回）或 `service`（服务所为：发现租约已过期，或超时兜底放弃了该进程）；`facts` 记下 `stateBefore`、`stopped`、`leaseEndedMsAgo`（作废时活动租约已过期多久；为负表示租约当时还有时间，即原因不是租约）、`startWindowEndedMsAgo`、`controlMode`、`assignmentState`、`reservationFenced`，以及该进程已拿到但从未开始的消息数（`workNeverStarted`）和结果未知的消息数（`workUnknown`）。从迁移 `2026-11-26-000157` 起，记录还说明是谁结束了该进程（`stopSource`：`computer` 表示它的电脑报告了停止，`time_bound` 表示服务器的超时兜底放弃了它，`server` 表示服务或数据库规则的其他决定），它有几条消息被放回队列（`released`），以及有几条满足放回条件却未能放回（`releaseFailed`）。据此可以判断是哪个时限结束了一次运行。迁移 `2026-11-26-000156` 的回退只停止写入这两类新记录，已有记录保留。
 
-进程在轮次开始之前就结束时，它拿到的消息只有在 `[management]` 下设置了 `enable_shared_demand_reoffers` 时才会被放回队列并再次提供（[Agent 执行的时限](design/hagency-time-limits.md) 规则 3）。该开关默认关闭，并且只在需求重试的各开关都打开时生效；它关闭时需求重试照常工作。只有在能读取电脑 `reoffers` 字段的版本已经上线之后才打开它。消息只有在其 Agent 能为它服务时才会被放回：判断规则与聊天状态决定是否向发送者提供“再次发送”的规则相同（预留仍然有效且未到期、执行端的账本未被替换、Agent 正在运行并且是该房间已验证的成员；`shared_agent_serves()`），并且只在该 Agent 没有已应用的预算时；停止（Stop）不会放回任何消息。打开期间，发现接口列出 `shared-demand-retry-v2`，服务只按 ID 和原因记录日志：每条被放回的消息（`message given back to the queue at its process's fence`），以及每条未能放回的消息（带 SQLSTATE 的警告；该消息随后照旧结束）。无论开关是否打开，被放回的消息之后若被队列在未开始轮次的情况下结束，也会记一行（`message that was given back to the queue ended`，原因取自它的阻止记录：`retry_lapsed`、`retry_exhausted`、`reoffer_unsupported`、`retry_unsupported` 或 `head_changed`）；被停止或过期的消息与任何等待中的消息一样结束，不记这一行。回退时：先关闭开关并重启服务；等到没有仍在等待的被放回消息，即下面的查询返回 0（每条都会在几分钟内结束）：
+进程在轮次开始之前就结束时，它拿到的消息只有在 `[management]` 下设置了 `enable_shared_demand_reoffers` 时才会被放回队列并再次提供（[Agent 执行的时限](design/hagency-time-limits.md) 规则 3）。该开关默认关闭，并且只在需求重试的各开关都打开时生效；它关闭时需求重试照常工作。只有在能读取电脑 `reoffers` 字段的版本已经上线之后才打开它。消息只有在其 Agent 能为它服务时才会被放回：判断规则与聊天状态决定是否向发送者提供“再次发送”的规则相同（预留仍然有效且未到期、执行端的账本未被替换、Agent 正在运行并且是该房间已验证的成员；`shared_agent_serves()`），并且只在该 Agent 没有已应用的预算时；停止（Stop）不会放回任何消息。打开期间，发现接口列出 `shared-demand-retry-v2`，服务只按 ID 和原因记录日志：每条被放回的消息（`message given back to the queue at its process's fence`），以及每条未能放回的消息：一条警告 `message could not be given back to the queue; it ends as before`，带该消息的 `demand` 和 `work` ID、它的进程（`runtime`）以及 SQLSTATE（`kind` 为 `release_failed`；若查找这类消息本身失败，则为 `release_search_failed`，只带进程）。这样的消息随后照旧结束，其进程的作废记录在 `releaseFailed` 中计入它。无论开关是否打开，被放回的消息之后若被队列在未开始轮次的情况下结束，也会记一行（`message that was given back to the queue ended`，原因取自它的阻止记录：`retry_lapsed`、`retry_exhausted`、`reoffer_unsupported`、`retry_unsupported` 或 `head_changed`）；被停止或过期的消息与任何等待中的消息一样结束，不记这一行。回退时：先关闭开关并重启服务；等到没有仍在等待的被放回消息，即下面的查询返回 0（每条都会在几分钟内结束）：
 
 ```sql
 SELECT count(*) FROM hagency_agent_v1.management_shared_intake q
@@ -170,6 +170,19 @@ WHERE q.state = 'pending' AND EXISTS (
 ```
 
 然后把程序退回到能读取 `reoffers` 的版本或更新的版本；要退得更早，必须先等所有带 `reoffers` 的需求启动结束，因为电脑会按原始字节重发已保存的启动，而更早的版本拒绝这个字段。`2026-11-26-000157` 的回退步骤只能在程序退回之后再运行（也可以不运行），因为本版本启动时会重新应用这个迁移。回退步骤移除放回消息的触发器，恢复它放宽的守卫和之前的作废记录，并保留 `management_shared_demand_released_bindings` 及其守卫和函数。不运行它，较旧的程序也不会放回任何消息，因为只有本版本会设置触发器所需的会话设置（`hagency.shared_demand_reoffers`）。
+
+之后要找出未能放回队列的消息（例如日志已经轮转之后），可以读取在 `releaseFailed` 中计入了它们的作废记录。每一行是已结束的进程仍持有、且从未开始的一条消息，只列出 ID：
+
+```sql
+SELECT f.runtime_id, f.fenced_at_ms, x.demand_id, x.work_id, q.event_id
+FROM hagency_agent_v1.management_shared_runtime_fences f
+JOIN hagency_agent_v1.management_shared_demand_bindings x ON x.runtime_id = f.runtime_id
+JOIN hagency_agent_v1.management_shared_work w ON w.id = x.work_id
+JOIN hagency_agent_v1.management_shared_demands d ON d.id = x.demand_id
+JOIN hagency_agent_v1.management_shared_intake q ON q.id = d.intake_id
+WHERE (f.facts::jsonb ->> 'releaseFailed')::bigint > 0
+  AND w.started_at_ms IS NULL;
+```
 
 离线未开始请求的期限由 `queue.event_ttl_ms` 配置，默认 24 小时，范围 1 秒至 30 天，按可信 AS 入站时间计时，路由重试不延长。过期请求不能领取、ACK 或开始新的模型/工具动作；已开始任务的已知原结果仍须核验当前权限后结算及发送，unknown 与成本保留不自动释放。设备 poll 必须指定 `bindingId`，只领取明确启动的 Room。发现所有者成员资格或关联失效、傀儡被移除后，撤销受影响 binding 并递增 generation，进入 leaving 并在确认实际退群后 left；重新加入不自动恢复，需显式重新绑定/采纳，旧 dispatch 不复活。发送还核验傀儡当前 `m.room.message` power level；已观测撤权的旧回复不会在恢复权限后自动发送。
 

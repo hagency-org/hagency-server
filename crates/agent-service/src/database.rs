@@ -298,7 +298,7 @@ impl ReofferNote {
                 "message given back to the queue at its process's fence"
             ),
             "release_failed" | "release_search_failed" => tracing::warn!(
-                kind = %self.kind, demand = %demand, runtime = %runtime, sqlstate = %reason,
+                kind = %self.kind, demand = %demand, work = %work, runtime = %runtime, sqlstate = %reason,
                 "message could not be given back to the queue; it ends as before"
             ),
             _ => tracing::info!(
