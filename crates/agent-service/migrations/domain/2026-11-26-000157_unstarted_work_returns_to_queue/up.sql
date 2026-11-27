@@ -12,10 +12,10 @@
 -- `on` in each of its transactions; nothing else sets it) and three things
 -- hold. The executor said, in the start that began the process, that it takes
 -- messages back (`reoffers`); an executor that did not say so keeps the
--- terminal behaviour, byte for byte. The Agent still serves: its assignment
--- is live, its request was not withdrawn, its Matrix identity is verified,
--- its ledger was not replaced and no budget change was applied to it. And
--- the work was still to run.
+-- terminal behaviour, byte for byte. The Agent still serves, by the rule by
+-- which the chat status offers to send a message again
+-- (`shared_agent_serves()` below), and no budget change was applied to it.
+-- And the work was still to run.
 --
 -- A message given back is a waiting message: it keeps its place, its
 -- attempts are counted (the first and at most three more), a Stop cancels it
@@ -59,20 +59,32 @@ CREATE OR REPLACE FUNCTION hagency_agent_v1.shared_start_reoffers(demand text, r
   WHERE s.payload::jsonb @> '{"reoffers":true}'::jsonb)
 $$;
 
--- Whether the Agent of `assignment` still serves: its assignment is live, its
--- request was not withdrawn (its intent is not fenced), its Matrix identity
--- is verified, its ledger was not replaced, and no budget change was applied
--- (an applied budget moves its messages to the budget protocol). A message
--- is given back only to an Agent that serves.
-CREATE OR REPLACE FUNCTION hagency_agent_v1.shared_agent_serves(assignment text) RETURNS boolean LANGUAGE sql STABLE AS $$
+-- Whether the Agent of `assignment` can serve a new message in `room` now:
+-- its reservation stands (neither it nor the intent behind it is fenced), its
+-- executor's ledger was not replaced, it runs (it was not stopped), and it is
+-- a verified member of the room. An Agent with an applied budget serves too,
+-- through its own queue. This is the one rule for both: the chat status
+-- offers to send a message again by it, and a message is given back only to
+-- an Agent that serves by it.
+CREATE OR REPLACE FUNCTION hagency_agent_v1.shared_agent_serves(assignment text, room text) RETURNS boolean LANGUAGE sql STABLE AS $$
  SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a
-  JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=a.request_id
-  JOIN hagency_agent_v1.management_agent_matrix m ON m.assignment_id=a.id
-  WHERE a.id=assignment AND a.state='pending_native' AND i.state<>'fenced' AND m.state='matrix_verified'
+  JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id
+  WHERE a.id=assignment AND a.state='pending_native' AND c.mode='running'
    AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id)
-   AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_budget_commands c
-    JOIN hagency_agent_v1.management_agent_budget_results r ON r.command_id=c.id
-    WHERE c.request_id=a.request_id AND r.state='applied'))
+   AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents i
+    WHERE i.request_id=a.request_id AND i.state<>'fenced')
+   AND EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m
+    WHERE m.assignment_id=a.id AND m.room_id=room AND m.state='matrix_verified'))
+$$;
+
+-- Whether a budget change was applied to the Agent of `assignment`. Its
+-- messages then go through the budget protocol, which has no retry, so none
+-- is given back.
+CREATE OR REPLACE FUNCTION hagency_agent_v1.shared_agent_budget_applied(assignment text) RETURNS boolean LANGUAGE sql STABLE AS $$
+ SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a
+  JOIN hagency_agent_v1.management_agent_budget_commands c ON c.request_id=a.request_id
+  JOIN hagency_agent_v1.management_agent_budget_results r ON r.command_id=c.id
+  WHERE a.id=assignment AND r.state='applied')
 $$;
 
 -- The bindings that were released, exactly as they were. This is the history
@@ -96,7 +108,8 @@ BEGIN
    JOIN hagency_agent_v1.management_shared_demands d ON d.id=b.demand_id
    JOIN hagency_agent_v1.management_shared_intake q ON q.id=d.intake_id
    WHERE b.demand_id=NEW.demand_id AND b.work_id=NEW.work_id AND b.runtime_id=NEW.runtime_id AND b.payload=NEW.payload AND b.digest=NEW.digest
-    AND q.state='bound' AND hagency_agent_v1.shared_agent_serves(q.assignment_id))
+    AND q.state='bound' AND hagency_agent_v1.shared_agent_serves(q.assignment_id,q.event_payload::jsonb->>'room_id')
+    AND NOT hagency_agent_v1.shared_agent_budget_applied(q.assignment_id))
   OR NOT hagency_agent_v1.shared_start_reoffers(NEW.demand_id,NEW.runtime_id)
   OR NOT hagency_agent_v1.shared_work_never_began(NEW.work_id)
   OR NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work w WHERE w.id=NEW.work_id AND w.state IN('queued','acknowledged')) THEN
@@ -233,8 +246,9 @@ $$;
 -- that was given to a process started for it by a start that said it takes
 -- messages back is released, and only while its Agent serves: such a demand
 -- has a start to retry. A fence that ends the Agent itself (a withdrawn
--- request, a replaced ledger) releases nothing: those steps are recorded
--- before the processes are fenced.
+-- request, a replaced ledger) or stops it releases nothing: those steps are
+-- recorded before the processes are fenced (a Stop changes the Agent's
+-- control first, and the message its process held ends as before).
 CREATE OR REPLACE FUNCTION hagency_agent_v1.release_unstarted_shared_work() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE b record; at_ms bigint := (extract(epoch from clock_timestamp())*1000)::bigint;
 BEGIN
@@ -264,7 +278,8 @@ BEGIN
    WHERE x.runtime_id=NEW.id AND q.state='bound' AND w.state IN('queued','acknowledged')
     AND hagency_agent_v1.shared_work_never_began(x.work_id)
     AND hagency_agent_v1.shared_start_reoffers(x.demand_id,NEW.id)
-    AND hagency_agent_v1.shared_agent_serves(q.assignment_id)
+    AND hagency_agent_v1.shared_agent_serves(q.assignment_id,q.event_payload::jsonb->>'room_id')
+    AND NOT hagency_agent_v1.shared_agent_budget_applied(q.assignment_id)
   LOOP
    -- All four steps or none.
    BEGIN

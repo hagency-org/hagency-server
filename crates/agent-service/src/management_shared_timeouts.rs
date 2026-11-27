@@ -22,7 +22,8 @@ pub(super) const UNCERTAIN_GRACE_MS: i64 = 180_000;
 /// that process's time bound (its last evidence and `UNCERTAIN_GRACE_MS`) or
 /// from the executor's first request for a retry, whichever is later. Later
 /// attempts do not move it. Then the event ends (`head_changed`,
-/// `retry_lapsed`), no new attempt starts for it, and the queue moves on. An
+/// `retry_lapsed`, or the budget's `head_changed` once a budget was applied
+/// to its Agent), no new attempt starts for it, and the queue moves on. An
 /// attempt whose start is committed has a process of its own and is not
 /// lapsed while it runs; if it ends without its turn after the bound, the
 /// event ends at once.

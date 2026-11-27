@@ -91,9 +91,11 @@ pub(super) async fn query(
                 -- or will.
                 WHEN w.state='cancelled' AND w.started_at_ms IS NULL THEN 'never_started'
                 -- A message given back by a process that ended before its
-                -- turn, which then ended without one, keeps `head_changed`
-                -- (its demand's block says why): every reader's Desktop reads
-                -- that state as "not processed".
+                -- turn, which then ended without one, reads as any end of a
+                -- waiting message: `head_changed`, which every reader's
+                -- Desktop reads as "not processed", with its block's cause as
+                -- `endReason` (`retry_lapsed`, `retry_exhausted`,
+                -- `reoffer_unsupported` or `head_changed`).
                 ELSE i.reason END,
             'resourceRecovery', CASE WHEN queue.reason='budget_blocked' AND req.id IS NOT NULL
                 THEN jsonb_build_object('requestId',req.id,'role',
@@ -201,15 +203,11 @@ pub(super) async fn query(
         -- stands (neither it nor its intent is fenced), its executor's ledger
         -- was not replaced, it runs, and it is a verified member of the room.
         -- An Agent with an applied budget serves too, through its own queue.
-        -- The one definition of an available Agent.
+        -- The one definition of an available Agent, which also decides
+        -- whether a message is given back at its process's fence (migration
+        -- 2026-11-26-000157).
         LEFT JOIN LATERAL (
-            SELECT a.state='pending_native' AND control.mode='running'
-                AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id)
-                AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents ai
-                    WHERE ai.request_id=a.request_id AND ai.state<>'fenced')
-                AND EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m
-                    WHERE m.assignment_id=a.id AND m.room_id=i.event_payload::jsonb->>'room_id'
-                      AND m.state='matrix_verified') AS available
+            SELECT hagency_agent_v1.shared_agent_serves(a.id, i.event_payload::jsonb->>'room_id') AS available
         ) serves ON true
         WHERE a.executor_owner_user_id=$1 OR i.event_payload::jsonb->>'sender_mxid'=$2
         ORDER BY i.received_at_ms DESC, i.id DESC

@@ -91,7 +91,7 @@ async fn open(
     // A message given back whose wait is over ends now, as a read or the
     // sweep would end it, and nothing is opened for it.
     if timeouts::reoffer_lapsed(db, &d.id, now).await? {
-        return block(db, d, &q, "head_changed", "\"retry_lapsed\"").await;
+        return end_wait(db, d, &q).await;
     }
     let Ok(w) = authorize(db, p, &q, server, now, true).await else {
         return Ok(());

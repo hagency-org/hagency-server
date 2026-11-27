@@ -928,9 +928,19 @@ async fn shared_demand_v2_released_work_is_a_waiting_event_again_for_a_stop_and_
         let stopped = attempts::stop(&f, &d, 201).await;
         retain(&f, &r, &m, &format!("released_{stop}")).await;
         let (lost, issued, first, _) = given(&f, &m, &d, &stopped, true).await;
+        let event = format!("$released_{stop}");
+        // The executor reports on the plain result route that the process
+        // ended before its turn: the message is given back.
+        let evidence = attempts::result(&issued, "stopped", 220);
+        record(&f, &issued, evidence.clone()).await.unwrap();
+        assert_eq!(released(&f, &first.id).await, 1);
+        assert_eq!(
+            fence_says(&fence_facts(&f, &issued.command.command_id).await),
+            ("computer".into(), 1, 0)
+        );
         if stop {
-            // A Stop ends the process and cancels the event with every other
-            // waiting one. A retry asked for afterwards opens nothing.
+            // A Stop cancels it with every other waiting message, and a
+            // retry asked for afterwards opens nothing.
             f.domain
                 .change_shared_run_control(
                     &f.owner.p,
@@ -941,25 +951,20 @@ async fn shared_demand_v2_released_work_is_a_waiting_event_again_for_a_stop_and_
                 )
                 .await
                 .unwrap();
-            assert_eq!(released(&f, &first.id).await, 1);
-            // The server ended it, and gave the message back.
-            assert_eq!(
-                fence_says(&fence_facts(&f, &issued.command.command_id).await),
-                ("server".into(), 1, 0)
-            );
             assert_eq!(recovered(&f, &lost).await.state, "cancelled");
+            let reply = retry(&f, &lost, &issued, 1, evidence).await.unwrap();
+            assert_eq!(
+                (reply.demand.state.as_str(), reply.demand.retry),
+                ("cancelled", None)
+            );
+            assert_eq!(retries_opened(&f, &lost.offer.demand_id).await, 0);
+            assert_eq!(
+                status_of(&f, &first.room_id, &f.outsider.p, &event).await,
+                json!(["cancelled", "explicit_stop", "explicit_stop", false])
+            );
             continue;
         }
-        // An executor that reports the stop on the plain result route and
-        // does not ask for the retry ends the event at its next poll.
-        record(&f, &issued, attempts::result(&issued, "stopped", 220))
-            .await
-            .unwrap();
-        assert_eq!(released(&f, &first.id).await, 1);
-        assert_eq!(
-            fence_says(&fence_facts(&f, &issued.command.command_id).await),
-            ("computer".into(), 1, 0)
-        );
+        // Without a request for the retry, it ends at the next poll.
         assert!(
             f.domain
                 .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
@@ -970,6 +975,10 @@ async fn shared_demand_v2_released_work_is_a_waiting_event_again_for_a_stop_and_
         );
         let ended = recovered(&f, &lost).await;
         assert_eq!((ended.state.as_str(), ended.retry), ("head_changed", None));
+        assert_eq!(
+            status_of(&f, &first.room_id, &f.outsider.p, &event).await,
+            json!(["blocked", "head_changed", "head_changed", true])
+        );
     }
 }
 
@@ -1002,17 +1011,6 @@ async fn shared_demand_binding_and_its_event_are_released_only_with_the_proof() 
     assert_eq!(released(&f, &work.id).await, 0);
 }
 
-// The chat status row of `event`, as `p` reads it.
-async fn chat_row(f: &Fixture, p: &Principal, room: &str, event: &str) -> Value {
-    let query = serde_json::from_value(json!({ "roomId": room })).unwrap();
-    let rows = f.domain.shared_approvals(p, query).await.unwrap()["executions"].clone();
-    rows.as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["eventId"] == event)
-        .cloned()
-        .unwrap()
-}
 #[derive(QueryableByName)]
 struct Text1 {
     #[diesel(sql_type=Text)]
@@ -1102,10 +1100,9 @@ async fn shared_demand_v2_start_that_does_not_take_messages_back_keeps_them_as_b
     assert!(still_bound(&f, &first.id).await);
     assert_eq!(work_state(&f, &first.id).await, "cancelled");
     assert_eq!(recovered(&f, &lost).await.state, "bound");
-    let row = chat_row(&f, &f.outsider.p, &first.room_id, "$kept_first").await;
     assert_eq!(
-        (&row["state"], &row["reason"], &row["canSendAgain"]),
-        (&json!("cancelled"), &json!("never_started"), &json!(true))
+        status_of(&f, &first.room_id, &f.outsider.p, "$kept_first").await,
+        json!(["cancelled", "never_started", "never_started", true])
     );
     assert!(
         f.domain
@@ -1116,17 +1113,84 @@ async fn shared_demand_v2_start_that_does_not_take_messages_back_keeps_them_as_b
     assert_eq!(next_offer(&f).await.offer.event_id, "$kept_next");
 }
 
+// Whether the Agent of `assignment` serves in `room`, by the rule the chat
+// status reads.
+async fn serves(f: &Fixture, assignment: &str, room: &str) -> bool {
+    #[derive(QueryableByName)]
+    struct Serves {
+        #[diesel(sql_type = diesel::sql_types::Bool)]
+        matched: bool,
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("SELECT hagency_agent_v1.shared_agent_serves($1,$2) AS matched")
+        .bind::<Text, _>(assignment)
+        .bind::<Text, _>(room)
+        .get_result::<Serves>(&mut db)
+        .await
+        .unwrap()
+        .matched
+}
+
+/// One rule decides whether a message is given back at its process's fence
+/// and whether its sender is offered to send it again: the Agent serves
+/// (`shared_agent_serves()`, which the chat status calls). In each case the
+/// message is given back exactly when the Agent serves by that rule and no
+/// budget was applied to it, and the status reads the same rule.
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn shared_demand_v2_agent_that_no_longer_serves_gets_nothing_back() {
-    for case in ["withdrawn", "ledger", "budget"] {
-        let (mut f, r, admin, _a, m) = Box::pin(setup()).await;
+    // (case, the Agent serves, the message is given back)
+    for (case, serving, back) in [
+        ("serving", true, true),
+        ("stopped", false, false),
+        ("room", false, false),
+        ("withdrawn", false, false),
+        ("ledger", false, false),
+        ("budget", true, false),
+    ] {
+        let (mut f, r, admin, a, m) = Box::pin(setup()).await;
         f.policy = f.policy.clone().with_agent_budget_deltas(true);
         let (d, _) = qualify(&f).await;
         let stopped = attempts::stop(&f, &d, 201).await;
-        retain(&f, &r, &m, &format!("served_{case}")).await;
+        let event = format!("$served_{case}");
+        retain(&f, &r, &m, &event[1..]).await;
         let (_lost, issued, first, _) = given(&f, &m, &d, &stopped, true).await;
+        let report = attempts::result(&issued, "stopped", 220);
         match case {
+            "serving" => {
+                // Its computer reports that the process ended before the turn.
+                record(&f, &issued, report).await.unwrap();
+            }
+            "stopped" => {
+                // Its owner stops it. The Stop changes the Agent's control,
+                // then ends its processes: a stopped Agent is given nothing
+                // back.
+                f.domain
+                    .change_shared_run_control(
+                        &f.owner.p,
+                        &f.policy,
+                        &a.id,
+                        intake_tests::change("served_stop", 2, "paused"),
+                        &m.gateway,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    fence_says(&fence_facts(&f, &issued.command.command_id).await),
+                    ("server".into(), 0, 0)
+                );
+            }
+            "room" => {
+                // Its membership of the room is no longer confirmed (as the
+                // Matrix check records it); then its process ends.
+                let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+                sql_query("UPDATE hagency_agent_v1.management_agent_matrix SET state='waiting_native' WHERE assignment_id=$1")
+                    .bind::<Text, _>(&a.id)
+                    .execute(&mut db)
+                    .await
+                    .unwrap();
+                record(&f, &issued, report).await.unwrap();
+            }
             "withdrawn" => {
                 // Its manager withdraws the request: the Agent's processes
                 // are fenced with it.
@@ -1161,9 +1225,23 @@ async fn shared_demand_v2_agent_that_no_longer_serves_gets_nothing_back() {
                 f.domain.reset_management_test_clock().await.unwrap();
             }
         }
-        assert_eq!(released(&f, &first.id).await, 0, "{case}");
+        assert_eq!(serves(&f, &a.id, &first.room_id).await, serving, "{case}");
+        assert_eq!(released(&f, &first.id).await, i64::from(back), "{case}");
+        let status = status_of(&f, &first.room_id, &f.outsider.p, &event).await;
+        if back {
+            // A waiting message again: nothing ended, nothing to send again.
+            assert_eq!(status, json!(["pending", null, null, false]), "{case}");
+            continue;
+        }
         assert!(still_bound(&f, &first.id).await, "{case}");
         assert_eq!(work_state(&f, &first.id).await, "cancelled", "{case}");
+        // It ends as before, and its sender is offered to send it again
+        // exactly when the Agent serves.
+        assert_eq!(
+            status,
+            json!(["cancelled", "never_started", "never_started", serving]),
+            "{case}"
+        );
     }
 }
 
@@ -1193,10 +1271,9 @@ async fn shared_demand_v2_message_given_back_waits_for_its_executor_a_bounded_ti
             ("time_bound".into(), 1, 0)
         );
         assert_eq!(recovered(&f, &lost).await.state, "start_committed");
-        let row = chat_row(&f, &f.outsider.p, &first.room_id, &format!("${event}")).await;
         assert_eq!(
-            (&row["state"], &row["canSendAgain"]),
-            (&json!("pending"), &json!(false))
+            status_of(&f, &first.room_id, &f.outsider.p, &format!("${event}")).await,
+            json!(["pending", null, null, false])
         );
         if comes_back {
             // The executor comes back in time, proves the stop and starts the
@@ -1250,11 +1327,11 @@ async fn shared_demand_v2_message_given_back_waits_for_its_executor_a_bounded_ti
             Some("\"retry_lapsed\"")
         );
         // No turn began for it anywhere, and its sender can send it again.
-        // The reason stays the one every Desktop reads as "not processed".
-        let row = chat_row(&f, &f.outsider.p, &first.room_id, &format!("${event}")).await;
+        // The reason stays the one every Desktop reads as "not processed",
+        // and the end is the block's.
         assert_eq!(
-            (&row["state"], &row["reason"], &row["canSendAgain"]),
-            (&json!("blocked"), &json!("head_changed"), &json!(true))
+            status_of(&f, &first.room_id, &f.outsider.p, &format!("${event}")).await,
+            json!(["blocked", "head_changed", "retry_lapsed", true])
         );
         f.domain.reset_management_test_clock().await.unwrap();
         assert_eq!(
@@ -1320,10 +1397,9 @@ async fn shared_demand_v2_executor_that_does_not_take_messages_back_never_sees_o
             block_payload(&f, &lost.offer.demand_id).await.as_deref(),
             Some("\"reoffer_unsupported\"")
         );
-        let row = chat_row(&f, &f.outsider.p, &first.room_id, &format!("${event}")).await;
         assert_eq!(
-            (&row["state"], &row["reason"], &row["canSendAgain"]),
-            (&json!("blocked"), &json!("head_changed"), &json!(true))
+            status_of(&f, &first.room_id, &f.outsider.p, &format!("${event}")).await,
+            json!(["blocked", "head_changed", "reoffer_unsupported", true])
         );
         assert_eq!(
             next_offer(&f).await.offer.event_id,
@@ -1738,10 +1814,9 @@ async fn shared_demand_v2_reoffer_switched_off_keeps_v1_retries_and_ends_message
         block_payload(&f, &lost.offer.demand_id).await.as_deref(),
         Some("\"retry_lapsed\"")
     );
-    let row = chat_row(&f, &f.outsider.p, &first.room_id, "$off_given_back").await;
     assert_eq!(
-        (&row["state"], &row["reason"], &row["canSendAgain"]),
-        (&json!("blocked"), &json!("head_changed"), &json!(true))
+        status_of(&f, &first.room_id, &f.outsider.p, "$off_given_back").await,
+        json!(["blocked", "head_changed", "retry_lapsed", true])
     );
     // A start that says it takes messages back is kept as before: its
     // process ends before the turn, the retry route refuses its stop, and
@@ -1809,10 +1884,9 @@ async fn shared_demand_v2_reoffer_switched_off_keeps_v1_retries_and_ends_message
         fence_says(&fence_facts(&f, &next.command.command_id).await),
         ("computer".into(), 0, 0)
     );
-    let row = chat_row(&f, &f.outsider.p, &first.room_id, "$off_kept").await;
     assert_eq!(
-        (&row["state"], &row["reason"], &row["canSendAgain"]),
-        (&json!("cancelled"), &json!("never_started"), &json!(true))
+        status_of(&f, &first.room_id, &f.outsider.p, "$off_kept").await,
+        json!(["cancelled", "never_started", "never_started", true])
     );
     // A start that never happened is still run again.
     let lost = next_offer(&f).await;
@@ -1837,10 +1911,15 @@ async fn shared_demand_v2_reoffer_switched_off_keeps_v1_retries_and_ends_message
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn shared_demand_v2_budget_applied_after_a_release_opens_no_retry_and_the_message_ends() {
     let (mut f, r, admin, _a, m) = Box::pin(setup()).await;
-    f.policy = f.policy.clone().with_agent_budget_deltas(true);
+    f.policy = f
+        .policy
+        .clone()
+        .with_agent_budget_deltas(true)
+        .with_shared_budget_execution(true);
     let (d, _) = qualify(&f).await;
     let stopped = attempts::stop(&f, &d, 201).await;
     retain(&f, &r, &m, "budget_after_release").await;
+    retain(&f, &r, &m, "budget_after_release_next").await;
     let (lost, issued, first, _) = given(&f, &m, &d, &stopped, true).await;
     // The process ends before its turn and its executor reports it; the
     // message is taken back.
@@ -1848,8 +1927,15 @@ async fn shared_demand_v2_budget_applied_after_a_release_opens_no_retry_and_the_
     record(&f, &issued, evidence.clone()).await.unwrap();
     assert_eq!(released(&f, &first.id).await, 1);
     // A budget change is applied to the Agent before the executor asks for
-    // the retry: the stop is already recorded, and no retry is opened.
+    // the retry. From then on the message reads as ended, as every message
+    // the earlier protocol had started when the budget was applied, and it
+    // keeps that one reading whichever record ends it below.
     budget_tests::apply_delta(&f, &r, &admin, 25, 230).await;
+    let ended = json!(["blocked", "head_changed", "head_changed", true]);
+    let reading =
+        async || status_of(&f, &first.room_id, &f.outsider.p, "$budget_after_release").await;
+    assert_eq!(reading().await, ended);
+    // The stop is already recorded, and no retry is opened.
     let reply = retry(&f, &lost, &issued, 1, evidence).await.unwrap();
     assert_eq!(
         (reply.demand.state.as_str(), reply.demand.retry),
@@ -1874,7 +1960,18 @@ async fn shared_demand_v2_budget_applied_after_a_release_opens_no_retry_and_the_
             .await,
         "shared_budget_execution_required"
     ));
-    // The message ends at its bound.
+    // The budget's queue does not wait behind it: it records that end and
+    // offers the next message.
+    let offered = f
+        .domain
+        .poll_shared_budget_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await
+        .unwrap()
+        .demand
+        .expect("the next message is offered");
+    assert_eq!(offered.offer.event_id, "$budget_after_release_next");
+    assert_eq!(reading().await, ended);
+    // For its executor the message ends at its bound, with the same reason.
     let bound = issued.command.expires_at_ms + 30_000 + 180_000 + 180_000;
     f.domain.set_management_test_clock(bound - 1).await.unwrap();
     f.domain.sweep_shared_attempt_timeouts().await.unwrap();
@@ -1885,7 +1982,15 @@ async fn shared_demand_v2_budget_applied_after_a_release_opens_no_retry_and_the_
     assert_eq!(recovered(&f, &lost).await.state, "head_changed");
     assert_eq!(
         block_payload(&f, &lost.offer.demand_id).await.as_deref(),
-        Some("\"retry_lapsed\"")
+        Some("\"head_changed\"")
+    );
+    assert_eq!(reading().await, ended);
+    assert_eq!(
+        logged(&lost.offer.demand_id),
+        vec![
+            ("released".into(), None),
+            ("ended".into(), Some("head_changed".into()))
+        ]
     );
 }
 
@@ -1931,10 +2036,9 @@ async fn shared_demand_v2_period_turn_ends_a_message_given_back() {
     // Not by its wait: the sweep finds nothing left to end.
     f.domain.sweep_shared_attempt_timeouts().await.unwrap();
     assert_eq!(block_payload(&f, &lost.offer.demand_id).await, None);
-    let row = chat_row(&f, &f.outsider.p, &first.room_id, "$period_given_back").await;
     assert_eq!(
-        (&row["state"], &row["reason"]),
-        (&json!("expired"), &json!("event_expired"))
+        status_of(&f, &first.room_id, &f.outsider.p, "$period_given_back").await,
+        json!(["expired", "event_expired", "event_expired", true])
     );
     f.domain.reset_management_test_clock().await.unwrap();
 }
@@ -2001,6 +2105,10 @@ async fn shared_demand_v2_message_taken_back_after_each_stop_ends_at_the_retry_c
         assert_eq!(released(&f, &w.id).await, 1);
     }
     assert_eq!(work_items(&f, "$capped").await, 4);
+    assert_eq!(
+        status_of(&f, &work[0].room_id, &f.outsider.p, "$capped").await,
+        json!(["blocked", "head_changed", "retry_exhausted", true])
+    );
     assert_eq!(next_offer(&f).await.offer.event_id, "$capped_next");
 }
 

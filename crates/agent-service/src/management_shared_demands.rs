@@ -316,21 +316,25 @@ async fn awaits_first_start(db: &mut AsyncPgConnection, q: &Queued, h: &Runtime)
 /// (`head_changed`). Once the turn has begun, or the message has ended, the
 /// next one is offered. Asked only for an executor that takes messages back
 /// while the re-offer is on; an existing demand is left to its own course.
+/// The held message is the one the release would give back, by the same
+/// conditions, its room's included.
 async fn holds_unbegun_reoffer(
     db: &mut AsyncPgConnection,
     q: &Queued,
     h: &Runtime,
 ) -> Result<bool> {
     Ok(sql_query("SELECT NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demands WHERE intake_id=$1) \
-        AND hagency_agent_v1.shared_agent_serves($3) \
         AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings b \
           JOIN hagency_agent_v1.management_shared_work w ON w.id=b.work_id \
+          JOIN hagency_agent_v1.management_shared_demands d ON d.id=b.demand_id \
+          JOIN hagency_agent_v1.management_shared_intake i ON i.id=d.intake_id \
           WHERE b.runtime_id=$2 AND w.state IN('queued','acknowledged') AND w.started_at_ms IS NULL AND w.latest_receipt IS NULL \
             AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work_refusals x WHERE x.work_id=w.id) \
-            AND hagency_agent_v1.shared_start_reoffers(b.demand_id,b.runtime_id)) AS matched")
+            AND hagency_agent_v1.shared_start_reoffers(b.demand_id,b.runtime_id) \
+            AND hagency_agent_v1.shared_agent_serves(i.assignment_id,i.event_payload::jsonb->>'room_id') \
+            AND NOT hagency_agent_v1.shared_agent_budget_applied(i.assignment_id)) AS matched")
         .bind::<Text, _>(&q.id)
         .bind::<Text, _>(&h.id)
-        .bind::<Text, _>(&q.assignment_id)
         .get_result::<Flag>(db)
         .await?
         .matched)
@@ -402,7 +406,7 @@ async fn refresh(
         // rule 3), and then start the retry. The wait is bounded, so a
         // message never waits for an executor that does not come back.
         if timeouts::reoffer_lapsed(db, &d.id, now).await? {
-            return block(db, d, q, "head_changed", "\"retry_lapsed\"").await;
+            return end_wait(db, d, q).await;
         }
         if retries::offered(db, &d.id).await?.is_some()
             || timeouts::awaiting_evidence(db, h).await?
@@ -462,7 +466,22 @@ pub(super) async fn interrupt(db: &mut AsyncPgConnection, runtime: &str) -> Resu
 pub(super) async fn lapse(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
     let d = load(db, id).await?;
     let q = queued(db, &d.intake_id).await?;
-    block(db, &d, &q, "head_changed", "\"retry_lapsed\"").await
+    end_wait(db, &d, &q).await
+}
+/// End a message given back whose wait is over. It ends by its wait
+/// (`retry_lapsed`), unless a budget was applied to its Agent since: then it
+/// ends as every message the earlier protocol had started when the budget
+/// was applied (`head_changed`), which its status has read since then and
+/// the budget's queue records as it moves on. So it reads one way whichever
+/// record ends it first.
+async fn end_wait(db: &mut AsyncPgConnection, d: &Demand, q: &Queued) -> Result<()> {
+    let w = intake::assignment(db, &q.assignment_id).await?;
+    let payload = if has_applied_budget(db, &w.request_id).await? {
+        "\"head_changed\""
+    } else {
+        "\"retry_lapsed\""
+    };
+    block(db, d, q, "head_changed", payload).await
 }
 // Restriction remains effective when the feature is disabled; old linked
 // processes/work cannot fall back to legacy authority after Stop or rearming.
