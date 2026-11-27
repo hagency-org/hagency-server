@@ -191,8 +191,12 @@ allocation and of that allocation's grant. An Agent with an applied budget
 serves too, through its own queue. The offer is part of the status of the
 reader's 16 newest messages in the room (their own, and every message to an
 Agent they own); an older message is not offered. The server takes a message
-back only from an Agent that serves by this same rule, which is written
-once, and only while no budget was applied to it.
+back only from an Agent that serves by this same rule, and only while no
+budget was applied to it. The rule is written once, in the database
+(`shared_agent_serves()`), the reservation's time included; the status also
+makes the check a new message meets when it arrives, which in addition holds
+the reservation to the command, the people and the device it was approved
+for.
 
 Every message that ended without a turn ends the same way for this rule,
 whichever record ended it: work that was given to a process that never
