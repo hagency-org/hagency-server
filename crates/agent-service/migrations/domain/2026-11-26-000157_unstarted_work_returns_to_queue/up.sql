@@ -59,22 +59,62 @@ CREATE OR REPLACE FUNCTION hagency_agent_v1.shared_start_reoffers(demand text, r
   WHERE s.payload::jsonb @> '{"reoffers":true}'::jsonb)
 $$;
 
--- Whether the Agent of `assignment` can serve a new message in `room` now:
--- its reservation stands (neither it nor the intent behind it is fenced), its
--- executor's ledger was not replaced, it runs (it was not stopped), and it is
--- a verified member of the room. An Agent with an applied budget serves too,
--- through its own queue. This is the one rule for both: the chat status
--- offers to send a message again by it, and a message is given back only to
--- an Agent that serves by it.
-CREATE OR REPLACE FUNCTION hagency_agent_v1.shared_agent_serves(assignment text, room text) RETURNS boolean LANGUAGE sql STABLE AS $$
+-- Whether the Agent of `assignment` can serve a new message in `room` at
+-- `at_ms`: its reservation stands (neither it nor the intent behind it is
+-- fenced, and its time is not over), its executor's ledger was not replaced,
+-- it runs (it was not stopped), and it is a verified member of the room. An
+-- Agent with an applied budget serves too, through its own queue. This is
+-- the one rule for both: the chat status offers to send a message again by
+-- it, and a message is given back only to an Agent that serves by it.
+--
+-- The reservation's time is read as the service reads it before it offers a
+-- message (`retainable` and `reserve_lifetime`): the end of its reserve
+-- command; for a pool Agent that follows its pool's grants (its command
+-- names a renewal mode, or grant succession is on) once it was reserved,
+-- the end of the run of grants it was reserved under, so at the turn of a
+-- period it serves again once the next grant is in place; for a pool Agent
+-- also a grant of its pool in force then that continues the one its command
+-- was issued under (that grant itself, unless it was reserved); and for a
+-- project Agent also the end of its allocation and of that allocation's
+-- grant. The chat status makes the service's whole check besides, which
+-- also holds the reservation to the command, the people and the device it
+-- was approved for.
+--
+-- The time is an argument, so that the reader decides on one clock: the
+-- service passes the time it read, and the triggers below the service's
+-- clock, which only its tests set (`hagency.test_clock_ms`), and otherwise
+-- the database's. The earlier form without it is replaced.
+DROP FUNCTION IF EXISTS hagency_agent_v1.shared_agent_serves(text,text);
+CREATE OR REPLACE FUNCTION hagency_agent_v1.shared_agent_serves(assignment text, room text, at_ms bigint) RETURNS boolean LANGUAGE sql STABLE AS $$
  SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a
   JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id
-  WHERE a.id=assignment AND a.state='pending_native' AND c.mode='running'
+  JOIN hagency_agent_v1.management_agent_requests r ON r.id=a.request_id
+  JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=a.request_id AND i.state<>'fenced'
+  JOIN hagency_agent_v1.management_agent_executor_commands w ON w.intent_id=i.id AND w.operation='agent.reserve'
+  WHERE a.id=shared_agent_serves.assignment AND a.state='pending_native' AND c.mode='running'
    AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id)
-   AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents i
-    WHERE i.request_id=a.request_id AND i.state<>'fenced')
    AND EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m
-    WHERE m.assignment_id=a.id AND m.room_id=room AND m.state='matrix_verified'))
+    WHERE m.assignment_id=a.id AND m.room_id=shared_agent_serves.room AND m.state='matrix_verified')
+   AND CASE WHEN i.payload::jsonb ? 'poolGrant' THEN
+    ((i.payload::jsonb->>'expiresAtMs')::bigint>shared_agent_serves.at_ms
+      OR ((coalesce(current_setting('hagency.pool_chain_lifetime',true),'off')='on' OR i.payload::jsonb ? 'renewalMode')
+       AND w.receipt::jsonb->>'state'='reserved'))
+    AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_resource_grants g
+     WHERE g.contribution_id=r.pool_contribution_id AND g.state='active'
+      AND g.period_start_ms<=shared_agent_serves.at_ms AND g.expires_at_ms>shared_agent_serves.at_ms
+      AND (g.id=i.payload::jsonb->'poolGrant'->>'grantId' OR w.receipt::jsonb->>'state'='reserved')
+      AND EXISTS(WITH RECURSIVE up(id,predecessor,depth) AS (
+        SELECT g.id,g.predecessor_grant_id,0
+        UNION ALL SELECT p.id,p.predecessor_grant_id,up.depth+1
+        FROM hagency_agent_v1.management_resource_grants p JOIN up ON p.id=up.predecessor WHERE up.depth<4096)
+       SELECT 1 FROM up WHERE up.id=i.payload::jsonb->'poolGrant'->>'grantId'))
+   ELSE
+    (i.payload::jsonb->>'expiresAtMs')::bigint>shared_agent_serves.at_ms
+    AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_allocations al
+     JOIN hagency_agent_v1.management_resource_grants g ON g.id=al.grant_id
+     WHERE al.id=r.allocation_id AND al.expires_at_ms>shared_agent_serves.at_ms
+      AND g.expires_at_ms>shared_agent_serves.at_ms)
+   END)
 $$;
 
 -- Whether a budget change was applied to the Agent of `assignment`. Its
@@ -98,6 +138,10 @@ CREATE TABLE IF NOT EXISTS hagency_agent_v1.management_shared_demand_released_bi
 );
 CREATE INDEX IF NOT EXISTS shared_demand_released_bindings_demand ON hagency_agent_v1.management_shared_demand_released_bindings(demand_id);
 CREATE OR REPLACE FUNCTION hagency_agent_v1.validate_shared_demand_release() RETURNS trigger LANGUAGE plpgsql AS $$
+-- The service's clock, which only its tests set; the reservation's time is
+-- read by it, as the service reads it.
+DECLARE serves_at bigint := COALESCE(NULLIF(current_setting('hagency.test_clock_ms',true),'')::bigint,
+ (extract(epoch from clock_timestamp())*1000)::bigint);
 BEGIN
  -- The release's own conditions, checked again: the exact binding of a
  -- message that is still bound, an Agent that still serves, a start that
@@ -108,7 +152,7 @@ BEGIN
    JOIN hagency_agent_v1.management_shared_demands d ON d.id=b.demand_id
    JOIN hagency_agent_v1.management_shared_intake q ON q.id=d.intake_id
    WHERE b.demand_id=NEW.demand_id AND b.work_id=NEW.work_id AND b.runtime_id=NEW.runtime_id AND b.payload=NEW.payload AND b.digest=NEW.digest
-    AND q.state='bound' AND hagency_agent_v1.shared_agent_serves(q.assignment_id,q.event_payload::jsonb->>'room_id')
+    AND q.state='bound' AND hagency_agent_v1.shared_agent_serves(q.assignment_id,q.event_payload::jsonb->>'room_id',serves_at)
     AND NOT hagency_agent_v1.shared_agent_budget_applied(q.assignment_id))
   OR NOT hagency_agent_v1.shared_start_reoffers(NEW.demand_id,NEW.runtime_id)
   OR NOT hagency_agent_v1.shared_work_never_began(NEW.work_id)
@@ -251,6 +295,9 @@ $$;
 -- control first, and the message its process held ends as before).
 CREATE OR REPLACE FUNCTION hagency_agent_v1.release_unstarted_shared_work() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE b record; at_ms bigint := (extract(epoch from clock_timestamp())*1000)::bigint;
+ -- The service's clock, which only its tests set; the reservation's time is
+ -- read by it, as the service reads it.
+ serves_at bigint := COALESCE(NULLIF(current_setting('hagency.test_clock_ms',true),'')::bigint,at_ms);
 BEGIN
  -- The operator's switch. The service sets it in every transaction it runs;
  -- a binary that does not know it (an older release) never sets it, and
@@ -278,7 +325,7 @@ BEGIN
    WHERE x.runtime_id=NEW.id AND q.state='bound' AND w.state IN('queued','acknowledged')
     AND hagency_agent_v1.shared_work_never_began(x.work_id)
     AND hagency_agent_v1.shared_start_reoffers(x.demand_id,NEW.id)
-    AND hagency_agent_v1.shared_agent_serves(q.assignment_id,q.event_payload::jsonb->>'room_id')
+    AND hagency_agent_v1.shared_agent_serves(q.assignment_id,q.event_payload::jsonb->>'room_id',serves_at)
     AND NOT hagency_agent_v1.shared_agent_budget_applied(q.assignment_id)
   LOOP
    -- All four steps or none.

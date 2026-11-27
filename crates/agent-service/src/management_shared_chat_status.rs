@@ -36,6 +36,38 @@ async fn reservation_stands(
     }
 }
 
+#[cfg(test)]
+impl DomainStore {
+    /// Both reads of whether the Agent of `assignment` serves a new message
+    /// in `room` at `now`, in one of the service's transactions: the rule
+    /// written once in the database, which the release at a process's fence
+    /// reads alone, and the service's check of the reservation, which this
+    /// status reads with it.
+    pub(crate) async fn shared_agent_serves_at(
+        &self,
+        assignment: &str,
+        room: &str,
+        now: i64,
+    ) -> Result<(bool, bool)> {
+        self.db
+            .transaction(async |db| {
+                let serves =
+                    sql_query("SELECT hagency_agent_v1.shared_agent_serves($1,$2,$3) AS matched")
+                        .bind::<Text, _>(assignment)
+                        .bind::<Text, _>(room)
+                        .bind::<BigInt, _>(now)
+                        .get_result::<Flag>(db)
+                        .await?
+                        .matched;
+                Ok((
+                    serves,
+                    reservation_stands(db, assignment, &self.server, now).await?,
+                ))
+            })
+            .await
+    }
+}
+
 pub(super) async fn query(
     db: &mut AsyncPgConnection,
     p: &Principal,
@@ -237,15 +269,17 @@ pub(super) async fn query(
         ) ended ON true
         -- The Agent can serve a new message in this room now: its reservation
         -- stands (neither it nor its intent is fenced, and its time is not
-        -- over: $5, read by the check a new message meets when it arrives
-        -- and the polls make before they offer one), its executor's ledger
-        -- was not replaced, it runs, and it is a verified member of the room.
-        -- An Agent with an applied budget serves too, through its own queue.
-        -- The one definition of an available Agent, which also decides
-        -- whether a message is given back at its process's fence (migration
-        -- 2026-11-26-000157).
+        -- over), its executor's ledger was not replaced, it runs, and it is a
+        -- verified member of the room. An Agent with an applied budget serves
+        -- too, through its own queue. The one definition of an available
+        -- Agent, which also decides whether a message is given back at its
+        -- process's fence (migration 2026-11-26-000157). Here it is read
+        -- together with $5, the check that a new message meets when it
+        -- arrives and the polls make before they offer one, which also
+        -- holds the reservation to the command, the people and the device
+        -- it was approved for.
         LEFT JOIN LATERAL (
-            SELECT hagency_agent_v1.shared_agent_serves(a.id, i.event_payload::jsonb->>'room_id')
+            SELECT hagency_agent_v1.shared_agent_serves(a.id, i.event_payload::jsonb->>'room_id', $4)
                 AND a.id=ANY($5::text[]) AS available
         ) serves ON true
         WHERE a.executor_owner_user_id=$1 OR i.event_payload::jsonb->>'sender_mxid'=$2

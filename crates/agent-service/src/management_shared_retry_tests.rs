@@ -1113,22 +1113,17 @@ async fn shared_demand_v2_start_that_does_not_take_messages_back_keeps_them_as_b
     assert_eq!(next_offer(&f).await.offer.event_id, "$kept_next");
 }
 
-// Whether the Agent of `assignment` serves in `room`, by the rule the chat
-// status reads.
+// Whether the Agent of `assignment` serves in `room` now, by the rule the
+// chat status reads; the status also makes the service's check of the
+// reservation, which agrees.
 async fn serves(f: &Fixture, assignment: &str, room: &str) -> bool {
-    #[derive(QueryableByName)]
-    struct Serves {
-        #[diesel(sql_type = diesel::sql_types::Bool)]
-        matched: bool,
-    }
-    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
-    sql_query("SELECT hagency_agent_v1.shared_agent_serves($1,$2) AS matched")
-        .bind::<Text, _>(assignment)
-        .bind::<Text, _>(room)
-        .get_result::<Serves>(&mut db)
+    let (serves, stands) = f
+        .domain
+        .shared_agent_serves_at(assignment, room, db_now(f).await)
         .await
-        .unwrap()
-        .matched
+        .unwrap();
+    assert!(stands || !serves, "the rule serves where the check refuses");
+    serves
 }
 
 /// One rule decides whether a message is given back at its process's fence
@@ -1144,6 +1139,7 @@ async fn shared_demand_v2_agent_that_no_longer_serves_gets_nothing_back() {
         ("serving", true, true),
         ("stopped", false, false),
         ("room", false, false),
+        ("time", false, false),
         ("withdrawn", false, false),
         ("ledger", false, false),
         ("budget", true, false),
@@ -1189,6 +1185,14 @@ async fn shared_demand_v2_agent_that_no_longer_serves_gets_nothing_back() {
                     .execute(&mut db)
                     .await
                     .unwrap();
+                record(&f, &issued, report).await.unwrap();
+            }
+            "time" => {
+                // Its reservation's time is over: the allocation it stands
+                // on has ended. Then its process ends. Nothing reads its
+                // Matrix readiness in between, which would withdraw the
+                // reservation for good.
+                status_tests::allocation_ends(&f, &r, db_now(&f).await - 1).await;
                 record(&f, &issued, report).await.unwrap();
             }
             "withdrawn" => {
@@ -1243,6 +1247,57 @@ async fn shared_demand_v2_agent_that_no_longer_serves_gets_nothing_back() {
             "{case}"
         );
     }
+}
+
+/// The rule reads a project Agent's reservation as the service's check does,
+/// at the time it is given: the Agent serves until its allocation ends, and
+/// from that instant on it does not. The end is moved to a minute from now,
+/// before the reservation's other ends (its reserve command's and its
+/// grant's), so that the allocation's end is the one read.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_agent_serves_reads_a_project_allocation_end_as_the_service_does() {
+    let (f, r, _admin, a, _m) = Box::pin(setup()).await;
+    let room = work::message(&f, &r, "allocation_end").await.room_id;
+    let now = db_now(&f).await;
+    let end = now + 60_000;
+    status_tests::allocation_ends(&f, &r, end).await;
+    for (at, serving) in [(now, true), (end - 1, true), (end, false)] {
+        assert_eq!(
+            f.domain
+                .shared_agent_serves_at(&a.id, &room, at)
+                .await
+                .unwrap(),
+            (serving, serving),
+            "{} ms after now",
+            at - now
+        );
+    }
+}
+
+/// The rule reads a pool Agent's reservation as the service's check does: it
+/// serves up to the turn of its period; at the turn its reservation's time
+/// is over, until its pool's grant for the next period is in place, and then
+/// it serves again.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_agent_serves_reads_a_pool_reservation_across_the_turn_as_the_service_does() {
+    let (f, request, assignment, _m) = Box::pin(prepared_pool_calendar(true, true)).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let now = now_ms();
+    let turn = period_end(&mut db, &assignment.id, now).await;
+    let at = async |at: i64| {
+        f.domain
+            .shared_agent_serves_at(&assignment.id, &request.room_id, at)
+            .await
+            .unwrap()
+    };
+    assert_eq!(at(now).await, (true, true), "before the turn");
+    assert_eq!(at(turn - 1).await, (true, true), "1 ms before the turn");
+    assert_eq!(at(turn).await, (false, false), "at the turn");
+    renew_pool_grant(&f, &request, turn).await;
+    assert_eq!(at(turn).await, (true, true), "at the turn, renewed");
+    assert_eq!(at(turn - 1).await, (true, true), "before the turn, renewed");
 }
 
 #[tokio::test]

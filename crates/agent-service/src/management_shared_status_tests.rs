@@ -177,7 +177,7 @@ async fn chat_status_lists_the_readers_sixteen_newest_messages() {
 
 /// Moves the end of the allocation that `r`'s Agent is reserved under to
 /// `at`, and returns the end it had.
-async fn allocation_ends(f: &Fixture, r: &ManagedAgentRequest, at: i64) -> i64 {
+pub(super) async fn allocation_ends(f: &Fixture, r: &ManagedAgentRequest, at: i64) -> i64 {
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     let before = sql_query("SELECT al.expires_at_ms AS count FROM hagency_agent_v1.management_allocations al JOIN hagency_agent_v1.management_agent_requests r ON r.allocation_id=al.id WHERE r.id=$1")
         .bind::<Text, _>(&r.id)
