@@ -135,7 +135,7 @@ async fn lapsed(db: &mut AsyncPgConnection, demand: Option<&str>, now: i64) -> R
 
 async fn stop(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
     // The fence's record says that the time bound gave this process up
-    // (`stopSource`, migration 2026-11-26-000157).
+    // (`stopSource`, migration 2026-11-27-000159).
     sql_query("SELECT set_config('hagency.time_bound_stop',$1,true)")
         .bind::<Text, _>(id)
         .execute(db)

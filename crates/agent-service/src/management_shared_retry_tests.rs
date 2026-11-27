@@ -1434,6 +1434,12 @@ async fn shared_demand_v2_message_given_back_waits_for_its_executor_a_bounded_ti
             evidence.token = cleanup.token;
             let reply = retry(&f, &lost, &issued, 1, evidence).await.unwrap();
             assert_eq!(reply.demand.state, "retry_offered");
+            // Offered again, it reads as waiting: not as a message that
+            // never began, and its sender is not offered to send it again.
+            assert_eq!(
+                status_of(&f, &first.room_id, &f.outsider.p, &format!("${event}")).await,
+                json!(["pending", null, null, false])
+            );
             let started = f
                 .domain
                 .start_shared_demand(
@@ -1452,6 +1458,11 @@ async fn shared_demand_v2_message_given_back_waits_for_its_executor_a_bounded_ti
                 .await
                 .unwrap();
             assert!(started.execution_allowed);
+            // So it reads once the retry has a process.
+            assert_eq!(
+                status_of(&f, &first.room_id, &f.outsider.p, &format!("${event}")).await,
+                json!(["pending", null, null, false])
+            );
         }
         // A grace later the wait is over, unless the retry has a process.
         f.domain
@@ -1476,8 +1487,8 @@ async fn shared_demand_v2_message_given_back_waits_for_its_executor_a_bounded_ti
             Some("\"retry_lapsed\"")
         );
         // No turn began for it anywhere, and its sender can send it again.
-        // The reason stays the one every Desktop reads as "not processed",
-        // and the end is the block's.
+        // The reason stays `head_changed`, as for any end of a waiting
+        // message, and the end is the block's.
         assert_eq!(
             status_of(&f, &first.room_id, &f.outsider.p, &format!("${event}")).await,
             json!(["blocked", "head_changed", "retry_lapsed", true])

@@ -12,7 +12,7 @@
 //! whether a turn began is the server's own record, not the executor's claim:
 //! a start is recorded before the turn and refused once the process is
 //! fenced. If the event had been given to that process, the database released
-//! it at the fence (migration 2026-11-26-000157), so it is a waiting event
+//! it at the fence (migration 2026-11-27-000159), so it is a waiting event
 //! again here. A `stopped` receipt for any other start is refused on this
 //! route, as before.
 use super::*;

@@ -176,10 +176,12 @@ implementation for which daemons ask for what). For those, and for a
 message that was taken back and then ends, the message's status says that
 the Agent did not process it, names the Agent, and names the record that
 ended it. One taken back reads as any other end of a waiting message of the
-earlier protocol: state `blocked`, reason `head_changed`, which Hagency
-Desktop reads as "did not process" for every reader, and as the record that
-ended it the reason of its block (`retry_lapsed`, `retry_exhausted`,
-`retry_unsupported`, `reoffer_unsupported` or `head_changed`). Its sender
+earlier protocol: state `blocked`, reason `head_changed`, and as the record
+that ended it the reason of its block (`retry_lapsed`, `retry_exhausted`,
+`retry_unsupported`, `reoffer_unsupported` or `head_changed`). Hagency
+Desktop reads that as "did not process" when the status names the Agent; a
+released Hagency Desktop up to rc.19 shows "Message could not start. Check
+the resource and Agent connection." instead. Its sender
 can send it again with one action. A message sent again is a new message.
 The server decides who is offered that, and offers it only while the Agent
 can serve a new message: its reservation stands, by the same check that a
@@ -383,7 +385,7 @@ renewal offers (7 days).
 | 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window is in review (#97), and renewing them early enough for it to matter is in review in Hagency Desktop |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A start that was never claimed is tried again | implemented (demand retries, `shared-demand-retry-v1`) |
-| 3. A process that ended before the turn began is tried again | implemented on the server (migration `2026-11-26-000157`, `shared-demand-retry-v2`), off unless the operator sets `enable_shared_demand_reoffers`, for a computer that says, in each demand start and read, that it takes messages back (`reoffers`): the message is a waiting message again at the fence, a retry is opened by the evidence that the process stopped, a message whose computer does not come back for it ends after one bound counted from its first process (`retry_lapsed`), and while a process holds a message before its turn the next one is not offered. A computer says it from the Hagency Desktop change that is in review; an earlier daemon does not, and for it the message ends as before |
+| 3. A process that ended before the turn began is tried again | implemented on the server (migration `2026-11-27-000159`, `shared-demand-retry-v2`), off unless the operator sets `enable_shared_demand_reoffers`, for a computer that says, in each demand start and read, that it takes messages back (`reoffers`): the message is a waiting message again at the fence, a retry is opened by the evidence that the process stopped, a message whose computer does not come back for it ends after one bound counted from its first process (`retry_lapsed`), and while a process holds a message before its turn the next one is not offered. A computer says it from the Hagency Desktop change that is in review; an earlier daemon does not, and for it the message ends as before |
 | 3. A message that ended without a turn can be sent again | implemented. Every message that ended without a turn (one given to a process that never began it, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one taken back that then ended, and one blocked on usage) names the Agent, says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent can serve a new message, see rule 3; after a block on usage, only once the Agent's period has turned since the message arrived) and which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance once its time was over), `head_changed`, `retry_exhausted`, `usage_unrepresentable` or, for one taken back, `retry_lapsed`). Hagency Desktop uses `canSendAgain` to name the Agent in the room and to offer the sender "Send again" |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop |
@@ -516,7 +518,7 @@ Going back:
 3. **Then move the binary back**, to the reader release (rule 6) or a later
    one. Going further back needs every start that said `reoffers` finished
    first: a computer sends a saved start again with its original bytes.
-4. **The down migration of `2026-11-26-000157` later, if at all.** It
+4. **The down migration of `2026-11-27-000159` later, if at all.** It
    removes the trigger that takes messages back, puts the four guards it
    relaxed and the guard on work starts back as they were, and puts back
    the fence record of `2026-11-26-000156` without the release counts and

@@ -156,11 +156,12 @@ pub(super) async fn query(
                 WHEN w.state='cancelled' AND w.started_at_ms IS NULL THEN 'never_started'
                 -- A message given back by a process that ended before its
                 -- turn, which then ended without one, reads as any end of a
-                -- waiting message: `head_changed`, which every reader's
-                -- Desktop reads as "not processed", with its block's cause as
+                -- waiting message: `head_changed`, with its block's cause as
                 -- `endReason` (`retry_lapsed`, `retry_exhausted`,
                 -- `retry_unsupported`, `reoffer_unsupported` or
-                -- `head_changed`).
+                -- `head_changed`). Hagency Desktop reads that as "did not
+                -- process" when the row names the Agent; a released Hagency
+                -- Desktop up to rc.19 shows "Message could not start".
                 ELSE i.reason END,
             'resourceRecovery', CASE WHEN queue.reason='budget_blocked' AND req.id IS NOT NULL
                 THEN jsonb_build_object('requestId',req.id,'role',
@@ -289,7 +290,7 @@ pub(super) async fn query(
         -- verified member of the room. An Agent with an applied budget serves
         -- too, through its own queue. The one definition of an available
         -- Agent, which also decides whether a message is given back at its
-        -- process's fence (migration 2026-11-26-000157). Here it is read
+        -- process's fence (migration 2026-11-27-000159). Here it is read
         -- together with $5, the check that a new message meets when it
         -- arrives and the polls make before they offer one, which also
         -- holds the reservation to the command, the people and the device
