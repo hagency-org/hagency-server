@@ -283,12 +283,12 @@ back").
 | Authorization window | 30 s by default; up to 120 s when `authorization_window_ms` is configured and the client asks with `x-hagency-authorization-window-ms` | held | host configuration and the client's request |
 | Session end | see above; only grows | held | server |
 | Agent execution lease | `least(session end, now + asked length)`; a length outside 1 s to the host's `max_lease_ms` (120 s unless configured lower) is refused | held | server, from the client's request |
-| Activity lease of a working process | `least(session end, now + window)`, and never past the pool reservation it runs under. Today `least(session end, now + 30 s)`; see the state table | held | server |
+| Activity lease of a working process | `least(session end, now + 30 s)` whatever the window, and never past the pool reservation it runs under. A lease that follows the window, `least(session end, now + window)` for a session whose client asks for it, is in review (#97); see the state table | held | server |
 | Start window of a start command | 30 s from issue, or the end of the reservation it runs under when that is sooner (so also the challenge that checks an Agent's Matrix membership) | offered | server |
 | Ticket for one exchange about a process | 30 s; the ticket that lets a process report ready also ends with its command's start window | offered | server |
 | A command, challenge or grant handed out by a poll | not handed out again for 30 s or until the session's end, whichever is sooner (the hand-outs of allocation and parent commands and of replies use the plain 30 s), then handed out again until it is answered | offered | server |
 | Renewal of an Agent execution lease | every 5 s, or after half of what is left when that is sooner | — | computer |
-| Renewal of an activity lease | when 20 s or less of it are left. Under a longer window this has to become "when it has lost 10 s", or the longer lease tolerates no longer silence than the short one; see the state table | — | computer |
+| Renewal of an activity lease | when 20 s or less of it are left; for today's 30 s lease that is 10 s after its grant. A lease as long as a longer window, renewed so, tolerates no longer silence than the 30 s one, so with such leases the rule has to become "when it has lost 10 s" (in review in Hagency Desktop); see the state table | — | computer |
 | Token refresh | as soon as a proof has lost 10 s of the window, at most once a minute for that reason; and always when a proof has 20 s or less left | — | computer |
 | Local session of the daemon | 60 s, reused while 30 s are left, at most 16 at a time | bounds a request | computer |
 | Grace before a silent process is given up | 180 s after the end of its last lease or start window, or after its last recorded step when that is later. The server gives such processes up in the background and in its computer's attempt polls; in both, one it cannot give up is logged and does not hold back the others | recovery | server |
@@ -306,7 +306,7 @@ What must stay ordered:
 | 30 s ≤ window ≤ 120 s | shorter loses Agents on a busy computer; longer delays noticing a revocation | a host configuration outside the range is refused |
 | `max_lease_ms` ≥ window | an Agent execution lease shorter than the window gives away the tolerance the window bought | not enforced; both default so that it holds |
 | access token life > window | otherwise a full proof never exists | the server only sees each token's expiry and cuts the session to it; the computer's refresh rule keeps the lead near the window |
-| A held lease is renewed while at least two more renewals fit before its end | two lost renewals in a row must not lose a lease | the Agent execution lease is renewed every 5 s, which meets it under every window. The activity lease does not meet it today: it is renewed once, with 20 s left |
+| A held lease is renewed while at least two more renewals fit before its end | two lost renewals in a row must not lose a lease | the Agent execution lease is renewed every 5 s, which meets it under every window. The activity lease meets it today: it is 30 s long and renewed when 20 s are left, 10 s after its grant. A lease as long as a longer window (in review, #97) meets it only once the computer renews it when it has lost 10 s (in review in Hagency Desktop) |
 | claim window ≤ window | an offer must not outlive what it would become | the server's `CLAIM_WINDOW_MS` (30 s) names the claim window, and the server is not built when it is longer than the default window, the smallest a host grants. The database holds several records to the same 30 s (see below) |
 
 Clocks that are not part of this design, because no computer's authority
@@ -320,7 +320,7 @@ renewal offers (7 days).
 | Rule | State |
 |---|---|
 | 2. A session's end only grows; fencing only on withdrawal | implemented (migration `2026-11-26-000155`) |
-| 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window, and renewing them early enough for it to matter, is in review |
+| 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window is in review (#97), and renewing them early enough for it to matter is in review in Hagency Desktop |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A failed start is tried again | implemented for a start that never reported a process (demand retries); see rule 3 for the three that are not |
 | 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. The server reads the field by which a computer would say that it takes such a message back (`reoffers`) and acts on nothing in it (rule 6). Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one blocked on usage without a budget) says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent can serve a new message, see rule 3; after a block on usage, only once the Agent's period has turned since the message arrived) and which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance, or by an applied budget on usage, once its time was over), `head_changed`, `retry_exhausted` or `usage_unrepresentable`); Hagency Desktop uses `canSendAgain` to name the Agent in the room and to offer the sender "Send again" |
@@ -345,8 +345,9 @@ Each of these is a bound that was looked at and left, with its reason.
   activity lease is `least(session end, now + 30 s)` whatever the window,
   and the computer renews it when 20 s or less of it are left (the premise;
   a runtime that renews later has less). Once activity leases follow the
-  window and are renewed when they have lost 10 s (in review), the lead
-  becomes the window less about 10 s: about 110 s under a 120 s window.
+  window (in review, #97) and are renewed when they have lost 10 s (in review
+  in Hagency Desktop), the lead becomes the window less about 10 s: about
+  110 s under a 120 s window.
   What such a process had been given and not begun is rule 3's subject.
 - **An Agent with an applied budget has no further attempts.** Its protocol
   has no retry: a start that fails ends the message. Its status says so and
@@ -403,7 +404,7 @@ Going back:
   none. Its up step can run again over the kept records and puts the rules
   back.
 - Migration `2026-11-26-000154`, which comes with activity leases that follow
-  the window (in review), has a lower number than `000155` and `000156`. A
+  the window (in review, #97), has a lower number than `000155` and `000156`. A
   database that already has those applies it out of version order, because
   the server applies every migration it has not recorded, whatever its
   number. That is harmless: it only replaces the CHECK constraint on the
