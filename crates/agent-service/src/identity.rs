@@ -7,6 +7,14 @@ use std::time::Duration;
 pub const DEFAULT_AUTHORIZATION_WINDOW_MS: i64 = 30_000;
 /// The longest window a host may be configured to grant.
 pub const MAX_AUTHORIZATION_WINDOW_MS: i64 = 120_000;
+/// The claim window: how long the server offers what a computer has to take
+/// up (a start command's start window, the Matrix-membership challenge, a
+/// ticket, a command, grant or reply handed out by a poll), whatever the
+/// authorization window. What is not taken up is offered again. An offer
+/// must not outlive what it would become, so this is never longer than the
+/// shortest window. Database checks hold several records to the same 30 s.
+pub const CLAIM_WINDOW_MS: i64 = 30_000;
+const _: () = assert!(CLAIM_WINDOW_MS <= DEFAULT_AUTHORIZATION_WINDOW_MS);
 
 /// Constructed only after trusted Pasion introspection AND Matrix whoami.
 /// Not deserializable: HTTP request bodies cannot assert their own authority.

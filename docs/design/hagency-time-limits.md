@@ -47,7 +47,7 @@ The two have different clocks:
 | | Clock | Ends at | When it is missed |
 |---|---|---|---|
 | Held | the **authorization window**: how long the server trusts a proof of sign-in without hearing from the computer again. 30 seconds by default, up to two minutes when the host is configured for it and the client asks | never later than the session's end, and the session's end is never more than one window after its last proof | the run is unknown; nothing is run again |
-| Offered | the **claim window**: a fixed 30 seconds | `now + 30 s`, or the session's end when that is sooner. Three kinds are cut to something else (see the table of limits): a command that starts a process and the challenge that checks an Agent's Matrix membership end at `now + 30 s` or the end of the reservation they run under, and the poll hand-outs of allocation and parent commands use the plain 30 s | it is offered again (rule 3) |
+| Offered | the **claim window** (`CLAIM_WINDOW_MS`): a fixed 30 seconds | `now + 30 s`, or the session's end when that is sooner. Some kinds are cut to something else (see the table of limits): a command that starts a process and the challenge that checks an Agent's Matrix membership end at `now + 30 s` or the end of the reservation they run under, and the poll hand-outs of allocation and parent commands and of replies use the plain 30 s | it is offered again (rule 3) |
 
 Consequences that are intended:
 
@@ -246,7 +246,7 @@ next renewed.
 | Activity lease of a working process | `least(session end, now + window)`, and never past the pool reservation it runs under. Today `least(session end, now + 30 s)`; see the state table | held | server |
 | Start window of a start command | 30 s from issue, or the end of the reservation it runs under when that is sooner (so also the challenge that checks an Agent's Matrix membership) | offered | server |
 | Ticket for one exchange about a process | 30 s; the ticket that lets a process report ready also ends with its command's start window | offered | server |
-| A command, challenge or grant handed out by a poll | not handed out again for 30 s or until the session's end, whichever is sooner (the hand-outs of allocation and parent commands use the plain 30 s), then handed out again until it is answered | offered | server |
+| A command, challenge or grant handed out by a poll | not handed out again for 30 s or until the session's end, whichever is sooner (the hand-outs of allocation and parent commands and of replies use the plain 30 s), then handed out again until it is answered | offered | server |
 | Renewal of an Agent execution lease | every 5 s, or after half of what is left when that is sooner | — | computer |
 | Renewal of an activity lease | when 20 s or less of it are left. Under a longer window this has to become "when it has lost 10 s", or the longer lease tolerates no longer silence than the short one; see the state table | — | computer |
 | Token refresh | as soon as a proof has lost 10 s of the window, at most once a minute for that reason; and always when a proof has 20 s or less left | — | computer |
@@ -267,7 +267,7 @@ What must stay ordered:
 | `max_lease_ms` ≥ window | an Agent execution lease shorter than the window gives away the tolerance the window bought | not enforced; both default so that it holds |
 | access token life > window | otherwise a full proof never exists | the server only sees each token's expiry and cuts the session to it; the computer's refresh rule keeps the lead near the window |
 | A held lease is renewed while at least two more renewals fit before its end | two lost renewals in a row must not lose a lease | the Agent execution lease is renewed every 5 s, which meets it under every window. The activity lease does not meet it today: it is renewed once, with 20 s left |
-| claim window ≤ window | an offer must not outlive what it would become | the claim window equals the smallest window; it is a literal in several server files, not yet one constant |
+| claim window ≤ window | an offer must not outlive what it would become | the server's `CLAIM_WINDOW_MS` (30 s) names the claim window, and the server is not built when it is longer than the default window, the smallest a host grants. The database holds several records to the same 30 s (see below) |
 
 Clocks that are not part of this design, because no computer's authority
 depends on them: the server's own worker leases (among them the 30-second
@@ -315,8 +315,14 @@ Each of these is a bound that was looked at and left, with its reason.
   blocked other than on allowance, when the budget was applied ends the same
   way (`head_changed`): the budget's queue cannot take it up, and offers the
   next message instead of waiting behind it.
-- **The claim window is not one constant.** It is the literal 30 000 in
-  several server files.
+- **The claim window is one constant with one exception.** The tickets about
+  a pooled process still spell out 30 s, because the helper that ends them
+  also ends that process's activity lease, which is held and is to follow
+  the window. The database holds the start window of a runtime command
+  and of a pooled process's command, and the tickets about a process, a
+  budget and a settlement, to 30 s as well (migrations
+  `2026-11-19-000114`, `000115`, `000118`, `000122` and `000124`): a
+  longer claim window needs a migration too.
 
 ## Bringing a change of the window into service
 

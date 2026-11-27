@@ -1234,7 +1234,7 @@ async fn delivery(
                 )
                 && allocation_live(db, &a, &g, now).await?);
     let token = secret_token();
-    let until = now + 30000;
+    let until = now + crate::identity::CLAIM_WINDOW_MS;
     sql_query("UPDATE hagency_agent_v1.management_executor_commands SET state=CASE WHEN state='pending' THEN 'issued' ELSE state END,lease_hash=$2,lease_until_ms=$3 WHERE id=$1").bind::<Text,_>(&w.id).bind::<Text,_>(hash(&token)).bind::<BigInt,_>(until).execute(db).await?;
     Ok(ExecutorDelivery {
         command: decode(&w.command)?,
