@@ -266,6 +266,7 @@ async fn run() -> anyhow::Result<()> {
                     .with_agent_matrix_provisioning(management.enable_agent_matrix_provisioning)
                     .with_agent_runtime_provisioning(management.enable_agent_runtime_provisioning)
                     .with_shared_execution(management.enable_shared_execution)
+                    .with_require_isolated_executor(management.require_isolated_executor)
                     .with_shared_successors(management.enable_shared_successors)
                     .with_shared_durable_intake(management.enable_shared_durable_intake)
                     .with_shared_demands(management.enable_shared_demands)

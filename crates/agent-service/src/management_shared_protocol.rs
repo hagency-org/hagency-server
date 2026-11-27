@@ -55,10 +55,10 @@ struct Reason {
     reason: Option<String>,
 }
 fn named(reason: &str) -> Error {
-    Error::Conflict(if reason == "owner_daemon_unavailable" {
-        "owner_daemon_unavailable"
-    } else {
-        "owner_daemon_update_required"
+    Error::Conflict(match reason {
+        "owner_daemon_unavailable" => "owner_daemon_unavailable",
+        "executor_isolation_required" => "executor_isolation_required",
+        _ => "owner_daemon_update_required",
     })
 }
 pub(crate) async fn require(db: &mut AsyncPgConnection, p: &Principal, now: i64) -> Result<()> {
@@ -114,6 +114,22 @@ impl DomainStore {
                 .bind::<Text,_>(&p.session_id).bind::<Bool,_>(qualified).bind::<BigInt,_>(now)
                 .bind::<BigInt,_>(now+FRESH_MS).execute(db).await?;
             Ok(())
+        }).await
+    }
+    /// Stores the admission verdict for the protocol row this request just observed.
+    pub(crate) async fn observe_executor_isolation(
+        &self,
+        p: &Principal,
+        required: bool,
+    ) -> Result<bool> {
+        self.db.write_transaction(async |db: &mut AsyncPgConnection| {
+            Self::authorize(db,p,0).await?;
+            let device = p.device_id.as_deref().ok_or(Error::Unauthorized("device_required"))?;
+            #[derive(QueryableByName)] struct Satisfied { #[diesel(sql_type=Bool)] matched:bool }
+            let row=sql_query("UPDATE hagency_agent_v1.management_shared_executor_protocols e SET isolation_satisfied = NOT $3 OR EXISTS(SELECT 1 FROM hagency_agent_v1.executor_isolation_attestations a WHERE a.device_id=e.device_id AND a.owner_user_id=e.owner_user_id AND a.generation=e.generation AND a.expires_at_ms>(extract(epoch from clock_timestamp())*1000)::bigint) WHERE e.device_id=$1 AND e.owner_user_id=$2 RETURNING e.isolation_satisfied AS matched")
+                .bind::<Text,_>(device).bind::<Text,_>(&p.user_id).bind::<Bool,_>(required)
+                .get_result::<Satisfied>(db).await.optional()?;
+            Ok(row.map_or(!required,|r|r.matched))
         }).await
     }
 }

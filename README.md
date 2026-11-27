@@ -113,6 +113,12 @@ refuses a schema 35 database with `management_schema_incompatible`, and
 `management_executor_ledgers_down.sql` is a test fixture that refuses to run
 once any ledger has been declared.
 
+An additive, unversioned migration lets an administrator attest that an executor
+device runs inside a Kata or Firecracker microVM. With
+`[management] require_isolated_executor = true` (off by default) shared-execution
+work goes only to attested devices; see
+[Remote execution plane](docs/REMOTE_EXECUTION.md).
+
 A declaration that replaces a declared database, or a first declaration sent
 with `"fresh": true`, ends what the earlier database held for that device, in
 the same transaction: its pools and grants are revoked, its pooled Agents are

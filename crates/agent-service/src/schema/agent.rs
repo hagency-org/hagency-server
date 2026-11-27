@@ -228,6 +228,19 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
+        hagency_agent_v1.executor_isolation_attestations (device_id) {
+            device_id -> Text,
+            owner_user_id -> Text,
+            generation -> Int8,
+            kind -> Text,
+            host_label -> Text,
+            attested_by_user_id -> Text,
+            attested_at_ms -> Int8,
+            expires_at_ms -> Int8,
+        }
+    }
+
+    diesel::table! {
         hagency_agent_v1.executor_matrix_devices (scope_id, device_id) {
             scope_id -> Text,
             puppet_mxid -> Text,
@@ -1146,6 +1159,7 @@ pub mod hagency_agent_v1 {
             expires_at_ms -> Int8,
             ordinary_poll_at_ms -> Nullable<Int8>,
             budget_poll_at_ms -> Nullable<Int8>,
+            isolation_satisfied -> Bool,
         }
     }
 
@@ -1582,6 +1596,7 @@ pub mod hagency_agent_v1 {
     diesel::joinable!(execution_leases -> agents (agent_id));
     diesel::joinable!(execution_leases -> devices (device_id));
     diesel::joinable!(execution_leases -> users (owner_user_id));
+    diesel::joinable!(executor_isolation_attestations -> users (attested_by_user_id));
     diesel::joinable!(file_chunks -> file_outbox (file_id));
     diesel::joinable!(file_delivery_denials -> owner_events (owner_event_id));
     diesel::joinable!(file_outbox -> owner_events (owner_event_id));
@@ -1747,6 +1762,7 @@ pub mod hagency_agent_v1 {
         event_attachments,
         execution_history_snapshots,
         execution_leases,
+        executor_isolation_attestations,
         executor_matrix_devices,
         file_chunks,
         file_delivery_denials,

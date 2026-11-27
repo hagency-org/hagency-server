@@ -41,6 +41,7 @@ pub struct ManagementPolicy {
     agent_matrix_provisioning: bool,
     agent_runtime_provisioning: bool,
     shared_execution: bool,
+    require_isolated_executor: bool,
     shared_successors: bool,
     shared_durable_intake: bool,
     shared_demands: bool,
@@ -73,6 +74,7 @@ impl ManagementPolicy {
             agent_matrix_provisioning: false,
             agent_runtime_provisioning: false,
             shared_execution: false,
+            require_isolated_executor: false,
             shared_successors: false,
             shared_durable_intake: false,
             shared_demands: false,
@@ -139,6 +141,14 @@ impl ManagementPolicy {
     }
     pub fn shared_execution(&self) -> bool {
         self.shared_execution
+    }
+    /// Shared-execution admission only for executors with a current administrator isolation attestation (Kata/Firecracker).
+    pub fn with_require_isolated_executor(mut self, enabled: bool) -> Self {
+        self.require_isolated_executor = enabled;
+        self
+    }
+    pub fn require_isolated_executor(&self) -> bool {
+        self.require_isolated_executor
     }
     pub fn with_agent_runtime_provisioning(mut self, enabled: bool) -> Self {
         self.agent_runtime_provisioning = enabled;

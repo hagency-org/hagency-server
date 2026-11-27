@@ -14,6 +14,7 @@ All guide commands run from the repository root.
 | Isolated three-database restore evidence | [Restore rehearsal](BACKUP_RESTORE_VALIDATION.md) | [三库演练](BACKUP_RESTORE_VALIDATION.zh-CN.md) |
 | Local starts, readiness, HTTPS and container routing | [Local deployment](LOCAL_DEPLOYMENT.md) | [本地部署与排障](LOCAL_DEPLOYMENT.zh-CN.md) |
 | Runnable checks, isolated fixtures and cleanup | [Testing](TESTING.md) | [本地测试](TESTING.zh-CN.md) |
+| Kata/Firecracker executors on separate hosts and isolation attestation | [Remote execution](REMOTE_EXECUTION.md) | [远程执行平面](REMOTE_EXECUTION.zh-CN.md) |
 
 Guide shortcuts: [configuration](guide.md#configuration-and-initial-administrator),
 [Docker](guide.md#compose-deployment), [development](guide.md#development),

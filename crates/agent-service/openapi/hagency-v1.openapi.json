@@ -18648,13 +18648,39 @@
           },
           "revoked": {
             "type": "boolean"
+          },
+          "isolationKind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "kata",
+                  "firecracker"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "isolationHost": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "id",
           "name",
           "generation",
-          "revoked"
+          "revoked",
+          "isolationKind",
+          "isolationHost"
         ],
         "additionalProperties": false,
         "x-rust-dto": {
@@ -18664,7 +18690,9 @@
             "id",
             "name",
             "generation",
-            "revoked"
+            "revoked",
+            "isolation_kind",
+            "isolation_host"
           ],
           "strictInput": false
         }

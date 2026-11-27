@@ -73,6 +73,24 @@ pub(super) async fn call(
         (&Method::POST, ["requests", id, "decide"]) => {
             json!({"admission":domain.decide_management_request(p,policy,id,body(req).await?).await?})
         }
+        (&Method::POST, ["executor-isolation", "query"]) => serde_json::to_value(
+            domain
+                .executor_isolation_devices(p, policy, body(req).await?)
+                .await?,
+        )
+        .map_err(|_| Error::Unavailable("encoding_failed"))?,
+        (&Method::POST, ["executor-isolation", "audit"]) => serde_json::to_value(
+            domain
+                .executor_isolation_audit(p, policy, body(req).await?)
+                .await?,
+        )
+        .map_err(|_| Error::Unavailable("encoding_failed"))?,
+        (&Method::POST, ["executor-isolation", id, "attest"]) => {
+            json!({"device":domain.attest_executor_isolation(p,policy,id,body(req).await?).await?})
+        }
+        (&Method::POST, ["executor-isolation", id, "revoke"]) => {
+            json!({"device":domain.revoke_executor_isolation(p,policy,id,body(req).await?).await?})
+        }
         _ => return Ok(None),
     }))
 }

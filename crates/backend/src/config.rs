@@ -54,6 +54,9 @@ pub struct ManagementConfig {
     /// Off until owner Matrix creation and recovery are integrated.
     #[serde(default)]
     pub enable_project_setup: bool,
+    /// Refuse shared-execution admission to executor devices without a current microVM isolation attestation.
+    #[serde(default)]
+    pub require_isolated_executor: bool,
     /// Admission-only, unadvertised until complete native managed execution.
     #[serde(default)]
     pub enable_agent_admission: Option<bool>,

@@ -67,6 +67,14 @@ pub(crate) async fn call(
         if required && !current {
             return Err(Error::Conflict("owner_daemon_update_required"));
         }
+        if current {
+            let satisfied = domain
+                .observe_executor_isolation(&p, policy.require_isolated_executor())
+                .await?;
+            if required && !satisfied {
+                return Err(Error::Conflict("executor_isolation_required"));
+            }
+        }
     }
     // Separate protocol groups keep the debug poll stack bounded as routes grow.
     let mut result = if let Some(value) =
