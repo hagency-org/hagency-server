@@ -120,7 +120,9 @@ Before the start everything is redone:
 - **A process that ended before the turn began**, whether or not it had been
   given the message, is reported as stopped, and the same message goes to a
   new attempt, if the computer said, when it started that process, that it
-  takes messages back. Whether a turn had begun is not taken on the
+  takes messages back, and the operator has this switched on (it is off
+  unless configured; see "Bringing the re-offer into service" below for the
+  switch and the way back). Whether a turn had begun is not taken on the
   computer's word: the server reads its own record. A start is recorded only
   for a process that holds a live lease, a fence ends the lease, the server
   makes one change at a time, and it never records a start for a message it
@@ -133,7 +135,12 @@ Before the start everything is redone:
   again in its old place: a Stop cancels it with the others, and its time and
   its period end it as they end any waiting message. If a budget change is
   applied to the Agent first, it is no longer offered, and it ends through
-  the bound below or its time.
+  the bound below or its time. While a process holds a message that it has
+  not begun, from a start that said it takes messages back, the message
+  after it is not offered yet: if the first is taken back, it runs first, in
+  the next process, and the next one follows it there. Offered earlier, the
+  next message would name a process that is no longer the last one, and
+  would have to end.
 - One message has its first attempt and at most three more. While an attempt
   is being offered again, the room shows the message as waiting for the
   Agent, never as failed.
@@ -144,20 +151,30 @@ A new attempt is made only when the computer asks for one with its evidence
 that the earlier process stopped, and before it asks for its next message.
 The server never hands a message to a computer a second time unasked: a
 computer that did not ask has its own record of that message, and would
-refuse it. Nor does a message wait for a computer that does not come back:
-one taken back ends if no new attempt for it has started 3 minutes after the
-later of the end of the grace before a silent process is given up (see the
-table below) and the computer's request. A computer that does not take
-messages back never reads one that was taken back: for it the message ends,
-as before. Three kinds of start are therefore not tried again and end the
-message: any failed start of an Agent with an applied budget, whose protocol
-has no retry; any process that ended before its turn whose computer did not
-say that it takes messages back; and any that a computer does not ask about
-in time (see the state of the implementation for which daemons ask for
-what). For those the message's status says that the Agent did not process
-it, names the Agent, and its sender can send it again with one action. A
-message sent again is a new message. The server decides who is offered that,
-and offers it only while the Agent is in the room and has not been stopped.
+refuse it. Nor does a message wait for a computer that does not come back.
+Its wait has one bound, counted once: 3 minutes after the later of the end of
+the grace before its first process is given up (see the table below) and the
+computer's first request to run it again. A message that is waiting for its
+computer when the bound has passed ends then, and no new attempt is started
+for it after that; later attempts do not move the bound. An attempt that
+started in time and then ends without its turn ends the message at once. A
+computer that does not take messages back never reads one that was taken
+back: for it the message ends, as before. Three kinds of start are therefore
+not tried again and end the message: any failed start of an Agent with an
+applied budget, whose protocol has no retry; any process that ended before
+its turn whose computer did not say that it takes messages back; and any
+that a computer does not ask about in time (see the state of the
+implementation for which daemons ask for what). For those the message's
+status says that the Agent did not process it and names the Agent. A message
+that was taken back and then ends is reported as any other such end of a
+message to an Agent without a budget: state `blocked`, reason `head_changed`
+(the demand's block record says why, for example `retry_lapsed`,
+`retry_exhausted` or `reoffer_unsupported`), which Hagency Desktop reads as "did not process" for
+every reader. Its sender can send it again with one action, except, today,
+when it was offered under the budget protocol (see the state of the
+implementation). A message sent again is a new message. The server decides
+who is offered that, and offers it only while the Agent is in the room and
+has not been stopped.
 
 After the start:
 
@@ -233,6 +250,13 @@ operator's switch is the authorization window itself: lowering it shortens
 nothing that was already given (rule 2) and takes effect as each session is
 next renewed.
 
+The re-offer of rule 3 follows the same order. A computer says that it takes
+a message back with `reoffers` on its demand start, poll, recover and block
+requests. A release that reads the field and acts on nothing in it goes into
+service first; the release that acts on it goes back only to that release or
+a later one, and it has a switch of its own (see "Bringing the re-offer into
+service, and back").
+
 ## Every time limit on the path of a pooled message
 
 "Window" is the session's authorization window; "session end" is
@@ -253,7 +277,7 @@ next renewed.
 | Token refresh | as soon as a proof has lost 10 s of the window, at most once a minute for that reason; and always when a proof has 20 s or less left | — | computer |
 | Local session of the daemon | 60 s, reused while 30 s are left, at most 16 at a time | bounds a request | computer |
 | Grace before a silent process is given up | 180 s after the end of its last lease or start window, or after its last recorded step when that is later | recovery | server |
-| How long a message taken back from a process waits for its computer | 180 s after that grace ends, or after the computer asked for its retry when that is later | recovery | server |
+| How long a message taken back from a process waits for its computer | 180 s after that grace ends for its first process, or after the computer first asked for its retry when that is later; counted once per message, so later attempts do not extend it, and an attempt started before then that ends without its turn ends the message at once | recovery | server |
 | A tool request waiting for its sender's answer | as long as the computer asks, 120 s at most | bounds a request | computer, capped by the server |
 | A worker's declaration of what it can run | trusted for 300 s | — | server |
 | A reservation for one encryption exchange | 15 s, of which 12 s are for the exchange | offered | server |
@@ -285,8 +309,8 @@ renewal offers (7 days).
 | 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window, and renewing them early enough for it to matter, is in review |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A start that was never claimed is tried again | implemented (demand retries, `shared-demand-retry-v1`) |
-| 3. A process that ended before the turn began is tried again | implemented on the server (migration `2026-11-26-000157`, `shared-demand-retry-v2`) for a computer that says, in each demand start and read, that it takes messages back (`reoffers`): the message is a waiting message again at the fence, a retry is opened by the evidence that the process stopped, and a message whose computer does not come back for it ends after a bound (`retry_lapsed`). A computer says it from the Hagency Desktop change that is in review; an earlier daemon does not, and for it the message ends as before |
-| 3. A message that ended without a turn can be sent again | implemented: its status names the Agent and says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent is in the room and not stopped). This covers a message that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its time, and one whose start failed for good. Hagency Desktop uses it to name the Agent in the room and to offer the sender "Send again" |
+| 3. A process that ended before the turn began is tried again | implemented on the server (migration `2026-11-26-000157`, `shared-demand-retry-v2`), off unless the operator sets `enable_shared_demand_reoffers`, for a computer that says, in each demand start and read, that it takes messages back (`reoffers`): the message is a waiting message again at the fence, a retry is opened by the evidence that the process stopped, a message whose computer does not come back for it ends after one bound counted from its first process (`retry_lapsed`), and while a process holds a message before its turn the next one is not offered. A computer says it from the Hagency Desktop change that is in review; an earlier daemon does not, and for it the message ends as before |
+| 3. A message that ended without a turn can be sent again | implemented: its status names the Agent and says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent is in the room and not stopped). This covers a message that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its time, one whose start failed for good, and one taken back that then ended. Not yet one that ended under the budget protocol (an Agent with an applied budget): its end is not counted as an end without a turn, so its sender is not offered "Send again". Hagency Desktop uses it to name the Agent in the room and to offer the sender "Send again" |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop |
 | 5. The wall clock only ends a lease early | holds for a proof, a ticket and a start window. In review in Hagency Desktop: its store still refuses an activity lease that reads longer than allowed by the wall clock, which a slow clock makes of every fresh lease. Open: the Agent execution lease (rule 5) |
@@ -335,3 +359,57 @@ Going back:
   everything a newer one wrote, because an offer never exceeds 30 seconds.
 - Do not run the down migration of `2026-11-26-000155` while pool Agents
   exist: it puts back the rule that fences on a smaller end.
+- The down migration of `2026-11-26-000156` drops the fence records with
+  their tables; run it only when that history is not needed.
+
+## Bringing the re-offer into service, and back
+
+Rule 3's re-offer has its own switch, `enable_shared_demand_reoffers` in the
+host's management configuration. It is off by default, and it takes effect
+only together with demand retries (`shared-demand-retry-v1`), which keep
+their own switches and keep working when it is off. While it is on,
+discovery lists `shared-demand-retry-v2`, and a computer says `reoffers`
+only while discovery lists it. The service also sets the database session
+setting `hagency.shared_demand_reoffers` in every transaction; the database
+takes a message back only when that setting is `on`, so a binary that does
+not set it (an older release) takes nothing back.
+
+In order:
+
+1. **A server that reads `reoffers` first** (rule 6): a release from before
+   it refuses every demand request that carries the field.
+2. **Then this release, with the switch off.** It behaves as the reader,
+   except that it opens a retry only where the retry's start would be
+   accepted, and the fence records say more (the operations guide).
+3. **Then switch it on.** Computers that support it start saying `reoffers`
+   as they next read discovery.
+
+Going back:
+
+1. **Switch it off** (and restart the service). Nothing more is taken back:
+   a stop on the retry route is refused as for a start that did not say
+   `reoffers`, and the computer reports it on the plain route. A message
+   that was already taken back still ends visibly: at its bound
+   (`retry_lapsed`), or earlier when its computer reads it without
+   `reoffers` (`reoffer_unsupported`), or at the computer's next demand
+   poll when the stop that gave it back came on the plain route and no
+   retry was asked for (`head_changed`). A retry that was already opened may still be
+   started; if that process also ends before its turn, the message ends as
+   for any start, as before.
+2. **Let those answers settle**: until no message that was taken back is
+   still waiting. Each one ends by its bound (the table above), so this
+   takes minutes; the operations guide has the query.
+3. **Then move the binary back**, to the reader release (rule 6) or a later
+   one. Going further back needs every start that said `reoffers` finished
+   first: a computer sends a saved start again with its original bytes.
+4. **The down migration of `2026-11-26-000157` later, if at all.** It
+   removes the trigger that takes messages back, puts the four guards it
+   relaxed and the guard on work starts back as they were, and puts back
+   the fence record of `2026-11-26-000156` without the release counts and
+   the stop source. It keeps the record of what was taken back
+   (`management_shared_demand_released_bindings`), that table's guards, and
+   the functions `shared_work_never_began()`, `shared_start_reoffers()` and
+   `shared_agent_serves()`. Run it only after the binary went back: this
+   release applies the migration again when it next starts. Without the
+   down migration, an older binary takes nothing back, because it does not
+   set the session setting.

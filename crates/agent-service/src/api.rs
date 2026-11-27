@@ -65,6 +65,7 @@ impl App {
     pub fn with_management(mut self, policy: crate::management_types::ManagementPolicy) -> Self {
         if let Some((domain, _)) = &self.domain {
             domain.set_pool_grant_succession(policy.pool_grant_succession());
+            domain.set_shared_demand_reoffers(policy.shared_demand_reoffers());
         }
         self.management = Some(policy);
         self
@@ -393,8 +394,15 @@ impl App {
                 .is_some_and(|p| p.shared_demand_retries())
             {
                 capabilities.insert(13, "shared-demand-retry-v1");
-                // A retry may also be asked for with the evidence that a
-                // process stopped before a turn began for the event.
+            }
+            // A retry may also be asked for with the evidence that a process
+            // stopped before a turn began for the event. Its own switch: off,
+            // v1 retries stay.
+            if self
+                .management
+                .as_ref()
+                .is_some_and(|p| p.shared_demand_reoffers())
+            {
                 capabilities.insert(14, "shared-demand-retry-v2");
             }
             let transport = self.transport.is_some();

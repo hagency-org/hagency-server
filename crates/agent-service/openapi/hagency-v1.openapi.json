@@ -22583,7 +22583,7 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "5e67b0bc94d570ca14d198acdca46fc3ec55dd88d9df9f23f641e4ea5ff495c3",
+    "crates/agent-service/src/api.rs": "e23f10a531d9cff5641c62b30f88ccde7879639fe7907d95d670d7bb0872ade0",
     "crates/agent-service/src/api_transport.rs": "6ae8f015419f7d02db2e1dc252e27c24659beab94658264195cff8046c84ddf7",
     "crates/agent-service/src/transport_history.rs": "1d61b13ea345751e23d7d9078acb5c389d1fc8e71a827a25db9ebfb3c389266e",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",
@@ -22600,7 +22600,7 @@
     "crates/agent-service/src/encrypted_execution.rs": "680006eb1e664ca7a0212b5383ba09c2e37f53ab5e53025683d646547cd7597b",
     "crates/agent-service/migrations/transport/2026-11-19-000405_encrypted_execution/up.sql": "daeb11ddbb90835ac6fb7477fe4e7a5febea44b68a34ab05b3f11d340e57b6a6",
     "crates/agent-service/src/owner_direct.rs": "8b00c34274b1cc100c347cb46f96fd88dbee9f1611aa6eedfe3501dc31bf58fa",
-    "crates/agent-service/src/domain.rs": "7b68de3d8fe0462cfe0905a548e6a9b6873345dc3093dccb3eb2e80e3753de21",
+    "crates/agent-service/src/domain.rs": "78cf7b827f4bf7155c91a55dd125655959b83410f8560011f504449d1364940f",
     "crates/agent-service/src/matrix_client.rs": "42ef7077279779a678141db8a3333f91286eb586afeb59574fcc3e00bb194533",
     "crates/agent-service/src/worker_runtime.rs": "7e1de44fa9d7635bfb24a68659a687345573698799f85e418c77eb6c9e1abebe",
     "crates/agent-service/src/transport_e2ee.rs": "4a50ca66bf006dc9b2c6a08e671ebc22107aa17a185881f31d41a1cff4e8e13e",

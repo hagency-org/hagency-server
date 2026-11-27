@@ -18,11 +18,14 @@ pub(super) const UNCERTAIN_GRACE_MS: i64 = 180_000;
 /// How long a message whose process stopped, and whose start said that its
 /// executor takes messages back, waits for the executor beyond the time bound
 /// above: for its evidence that the process stopped and its retry's start.
-/// It is counted from the time bound's own end (the last process evidence and
-/// `UNCERTAIN_GRACE_MS`) and from the retry's opening, whichever is later.
-/// Then the event ends (`head_changed`, `retry_lapsed`) and the queue moves
-/// on. A retry whose start is committed has a process of its own again and is
-/// not lapsed.
+/// It is counted once per message, from its first process: from the end of
+/// that process's time bound (its last evidence and `UNCERTAIN_GRACE_MS`) or
+/// from the executor's first request for a retry, whichever is later. Later
+/// attempts do not move it. Then the event ends (`head_changed`,
+/// `retry_lapsed`), no new attempt starts for it, and the queue moves on. An
+/// attempt whose start is committed has a process of its own and is not
+/// lapsed while it runs; if it ends without its turn after the bound, the
+/// event ends at once.
 pub(super) const REOFFER_GRACE_MS: i64 = UNCERTAIN_GRACE_MS;
 
 // Execute tickets never outlive `expires_at_ms`, so the attempt deadline also
@@ -109,8 +112,10 @@ pub(super) async fn reoffer_lapsed(
     Ok(!lapsed(db, Some(demand), now).await?.is_empty())
 }
 
+// The first process is the one of the demand's original start (`r` below is
+// that process, not the latest one), and the first request is retry 1.
 async fn lapsed(db: &mut AsyncPgConnection, demand: Option<&str>, now: i64) -> Result<Vec<Id>> {
-    Ok(sql_query(format!("{LAPSED} AND GREATEST({LAST_EVIDENCE}+$3,coalesce((SELECT max(t.created_at_ms) FROM hagency_agent_v1.management_shared_demand_retries t WHERE t.demand_id=d.id AND t.previous_runtime_id=r.id),0))+$4<=$2 ORDER BY d.id LIMIT 64"))
+    Ok(sql_query(format!("{LAPSED} AND GREATEST((SELECT {LAST_EVIDENCE} FROM hagency_agent_v1.management_shared_runtimes r WHERE r.id=(SELECT o.runtime_id FROM hagency_agent_v1.management_shared_demand_starts o WHERE o.demand_id=d.id))+$3,coalesce((SELECT t.created_at_ms FROM hagency_agent_v1.management_shared_demand_retries t WHERE t.demand_id=d.id AND t.retry=1),0))+$4<=$2 ORDER BY d.id LIMIT 64"))
         .bind::<Nullable<Text>, _>(demand)
         .bind::<BigInt, _>(now)
         .bind::<BigInt, _>(UNCERTAIN_GRACE_MS)
@@ -120,6 +125,12 @@ async fn lapsed(db: &mut AsyncPgConnection, demand: Option<&str>, now: i64) -> R
 }
 
 async fn stop(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
+    // The fence's record says that the time bound gave this process up
+    // (`stopSource`, migration 2026-11-26-000157).
+    sql_query("SELECT set_config('hagency.time_bound_stop',$1,true)")
+        .bind::<Text, _>(id)
+        .execute(db)
+        .await?;
     sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET state='stopped',permanent_fence=true,activity_until_ms=0 WHERE id=$1")
         .bind::<Text,_>(id).execute(db).await?;
     demands::interrupt(db, id).await

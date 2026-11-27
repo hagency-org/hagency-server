@@ -39,7 +39,11 @@ async fn setup() -> (
         .policy
         .with_shared_durable_intake(true)
         .with_shared_successors(true)
-        .with_shared_demands(true);
+        .with_shared_demands(true)
+        .with_shared_demand_reoffers(true);
+    // As the service applies its policy to its store at startup.
+    f.domain
+        .set_shared_demand_reoffers(f.policy.shared_demand_reoffers());
     intake_tests::arm(&f, &a, &m).await;
     (f, r, admin, a, m)
 }

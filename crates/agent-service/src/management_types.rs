@@ -48,6 +48,7 @@ pub struct ManagementPolicy {
     agent_budget_deltas: bool,
     shared_budget_execution: bool,
     pool_grant_succession: bool,
+    shared_demand_reoffers: bool,
 }
 impl ManagementPolicy {
     pub fn new(administrator: String, server: &str) -> Result<Self> {
@@ -80,6 +81,7 @@ impl ManagementPolicy {
             agent_budget_deltas: false,
             shared_budget_execution: false,
             pool_grant_succession: false,
+            shared_demand_reoffers: false,
         }
     }
     /// Renewal and amendment of pool grants, and Agent lifetime following the
@@ -227,6 +229,20 @@ impl ManagementPolicy {
     pub fn with_project_reservations(mut self, enabled: bool) -> Self {
         self.project_reservations = enabled;
         self
+    }
+    /// Time-limit rule 3: a message whose process ended before its turn
+    /// began is taken back and offered again, for an executor that says it
+    /// takes messages back (`shared-demand-retry-v2`). Its own switch, and
+    /// only with demand retries, which keep working when it is off.
+    pub fn with_shared_demand_reoffers(mut self, enabled: bool) -> Self {
+        self.shared_demand_reoffers = enabled;
+        self
+    }
+    /// The switch and every gate of demand retries: discovery, the retry
+    /// route, the poll and the database's release all follow this one
+    /// predicate.
+    pub fn shared_demand_reoffers(&self) -> bool {
+        self.shared_demand_reoffers && self.shared_demand_retries()
     }
     /// Every gate of the shared demand retry route (ADR-193 amendment): the
     /// route and the advertised capability use this one predicate.

@@ -7,7 +7,9 @@
 -- sender was told the Agent had not processed it.
 --
 -- From here on such a message goes back to the queue at the moment its
--- process is fenced, as if it had not been handed out, when three things
+-- process is fenced, as if it had not been handed out, when the operator has
+-- switched this on (the service then sets `hagency.shared_demand_reoffers` to
+-- `on` in each of its transactions; nothing else sets it) and three things
 -- hold. The executor said, in the start that began the process, that it takes
 -- messages back (`reoffers`); an executor that did not say so keeps the
 -- terminal behaviour, byte for byte. The Agent still serves: its assignment
@@ -214,6 +216,15 @@ BEGIN
 END;
 $$;
 
+-- What the database did that the service reports once the transaction has
+-- committed: a list kept in a setting local to the transaction, which the
+-- service reads at the end of each of its writes while the re-offer is
+-- switched on. A note holds ids and reasons, never content.
+CREATE OR REPLACE FUNCTION hagency_agent_v1.note_shared_reoffer(note jsonb) RETURNS void LANGUAGE sql AS $$
+ SELECT set_config('hagency.shared_reoffer_notes',
+  (coalesce(nullif(current_setting('hagency.shared_reoffer_notes',true),''),'[]')::jsonb||jsonb_build_array(note))::text,true)
+$$;
+
 -- The release itself, at the fence. Its trigger is named to run before
 -- `fence_shared_work` (triggers on one event run in the order of their
 -- names), which then cancels the work: here the work is still as the fence
@@ -227,10 +238,23 @@ $$;
 CREATE OR REPLACE FUNCTION hagency_agent_v1.release_unstarted_shared_work() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE b record; at_ms bigint := (extract(epoch from clock_timestamp())*1000)::bigint;
 BEGIN
+ -- The operator's switch. The service sets it in every transaction it runs;
+ -- a binary that does not know it (an older release) never sets it, and
+ -- then nothing is released.
+ IF current_setting('hagency.shared_demand_reoffers',true) IS DISTINCT FROM 'on' THEN
+  RETURN NEW;
+ END IF;
  -- Nothing here may stand in the way of the fence. An error in one release
  -- skips that release, and an error in the search skips them all; each is
- -- reported, and a message that is not released ends as it did before.
+ -- noted for the service and for the fence's record, and a message that is
+ -- not released ends as it did before.
  BEGIN
+  -- The proof needs the service's writes made one at a time: a turn whose
+  -- start was recorded between the search below and the release would be
+  -- given back although it began. The service's writers hold this lock
+  -- already (it is re-entrant); a fence made in any other transaction waits
+  -- for them here.
+  PERFORM pg_advisory_xact_lock(5210750088328904);
   FOR b IN
    SELECT x.demand_id,x.work_id,x.runtime_id,x.payload,x.digest,d.intake_id
    FROM hagency_agent_v1.management_shared_demand_bindings x
@@ -249,12 +273,18 @@ BEGIN
     DELETE FROM hagency_agent_v1.management_shared_demand_bindings WHERE demand_id=b.demand_id;
     DELETE FROM hagency_agent_v1.management_shared_event_pins WHERE work_id=b.work_id;
     UPDATE hagency_agent_v1.management_shared_intake SET state='pending',reason=NULL WHERE id=b.intake_id;
+    PERFORM hagency_agent_v1.note_shared_reoffer(jsonb_build_object('kind','released',
+     'demand',b.demand_id,'work',b.work_id,'runtime',NEW.id));
    EXCEPTION WHEN OTHERS THEN
     RAISE WARNING 'shared_demand_release_skipped demand=% sqlstate=%',b.demand_id,SQLSTATE;
+    PERFORM hagency_agent_v1.note_shared_reoffer(jsonb_build_object('kind','release_failed',
+     'demand',b.demand_id,'runtime',NEW.id,'reason',SQLSTATE));
    END;
   END LOOP;
  EXCEPTION WHEN OTHERS THEN
   RAISE WARNING 'shared_demand_release_search_failed runtime=% sqlstate=%',NEW.id,SQLSTATE;
+  PERFORM hagency_agent_v1.note_shared_reoffer(jsonb_build_object('kind','release_search_failed',
+   'runtime',NEW.id,'reason',SQLSTATE));
  END;
  RETURN NEW;
 END;
@@ -274,3 +304,54 @@ BEGIN
  THEN RAISE EXCEPTION 'shared_work_definitively_not_started';END IF;
  RETURN NEW;
 END;$$;
+
+-- The record of a process's fence (migration 2026-11-26-000156) also says
+-- who ended the process and what became of the work it had not begun.
+-- `stopSource`: `computer` when its computer reported the stop (the stop or
+-- not-started receipt recorded with this fence), `time_bound` when the
+-- server's time bound gave the process up (the service names the process in
+-- `hagency.time_bound_stop` for that statement), and `server` for any other
+-- decision of the server or of a rule of the database. `released`: how many
+-- of its messages were given back to the queue (at most one: a process is
+-- given one). `releaseFailed`: how many met the conditions and could not be
+-- given back (a failed search for them counts as one). The release trigger
+-- runs before this one for the same row, so its record is complete here.
+CREATE OR REPLACE FUNCTION hagency_agent_v1.record_shared_runtime_fence() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE at_ms bigint := (extract(epoch from clock_timestamp())*1000)::bigint;
+BEGIN
+ BEGIN
+  INSERT INTO hagency_agent_v1.management_shared_runtime_fences(runtime_id,fenced_at_ms,cause,facts)
+  SELECT NEW.id,at_ms,
+   CASE WHEN pg_trigger_depth()>1 THEN 'dependency' ELSE 'service' END,
+   jsonb_strip_nulls(jsonb_build_object(
+    'stateBefore',OLD.state,
+    'stopped',NEW.state='stopped',
+    'leaseEndedMsAgo',CASE WHEN OLD.activity_until_ms>0 THEN at_ms-OLD.activity_until_ms END,
+    'startWindowEndedMsAgo',CASE WHEN OLD.state IN('pending','issued') THEN at_ms-OLD.expires_at_ms END,
+    'controlMode',c.mode,
+    'assignmentState',a.state,
+    'reservationFenced',i.state='fenced',
+    'workNeverStarted',(SELECT count(*) FROM hagency_agent_v1.management_shared_work w
+      WHERE w.runtime_id=NEW.id AND w.state='cancelled' AND w.started_at_ms IS NULL),
+    'workUnknown',(SELECT count(*) FROM hagency_agent_v1.management_shared_work w
+      WHERE w.runtime_id=NEW.id AND w.state='unknown'),
+    'stopSource',CASE
+      WHEN EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_process_receipts o
+        WHERE o.runtime_id=NEW.id AND o.payload::jsonb->>'state' IN('stopped','not_started')) THEN 'computer'
+      WHEN current_setting('hagency.time_bound_stop',true)=NEW.id THEN 'time_bound'
+      ELSE 'server' END,
+    'released',(SELECT count(*) FROM hagency_agent_v1.management_shared_demand_released_bindings x
+      WHERE x.runtime_id=NEW.id),
+    'releaseFailed',(SELECT count(*) FROM jsonb_array_elements(
+      coalesce(nullif(current_setting('hagency.shared_reoffer_notes',true),''),'[]')::jsonb) n
+      WHERE n->>'runtime'=NEW.id AND n->>'kind' IN('release_failed','release_search_failed'))))::text
+  FROM (SELECT 1) one
+  LEFT JOIN hagency_agent_v1.management_shared_assignments a ON a.id=NEW.assignment_id
+  LEFT JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=NEW.assignment_id
+  LEFT JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=a.request_id
+  ON CONFLICT(runtime_id) DO NOTHING;
+ EXCEPTION WHEN OTHERS THEN NULL;
+ END;
+ RETURN NEW;
+END;
+$$;

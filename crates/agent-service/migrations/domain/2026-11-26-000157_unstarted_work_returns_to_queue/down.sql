@@ -1,6 +1,8 @@
 -- Back to permanent bindings. Messages that are waiting again stay waiting;
 -- the record of released bindings is kept, with its guards and the functions
--- they use, because the bindings it replaced are gone.
+-- they use, because the bindings it replaced are gone. The record of a
+-- process's fence goes back to the form of migration 2026-11-26-000156, and
+-- the records already written keep the facts they have.
 DROP TRIGGER IF EXISTS fence_shared_release ON hagency_agent_v1.management_shared_runtimes;
 DROP FUNCTION IF EXISTS hagency_agent_v1.release_unstarted_shared_work();
 CREATE OR REPLACE FUNCTION hagency_agent_v1.fence_shared_unissued_work() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -64,6 +66,36 @@ BEGIN
    RAISE EXCEPTION 'shared_demand_retry_start_changed';
   END IF;
  END IF;
+ RETURN NEW;
+END;
+$$;
+DROP FUNCTION IF EXISTS hagency_agent_v1.note_shared_reoffer(jsonb);
+CREATE OR REPLACE FUNCTION hagency_agent_v1.record_shared_runtime_fence() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE at_ms bigint := (extract(epoch from clock_timestamp())*1000)::bigint;
+BEGIN
+ BEGIN
+  INSERT INTO hagency_agent_v1.management_shared_runtime_fences(runtime_id,fenced_at_ms,cause,facts)
+  SELECT NEW.id,at_ms,
+   CASE WHEN pg_trigger_depth()>1 THEN 'dependency' ELSE 'service' END,
+   jsonb_strip_nulls(jsonb_build_object(
+    'stateBefore',OLD.state,
+    'stopped',NEW.state='stopped',
+    'leaseEndedMsAgo',CASE WHEN OLD.activity_until_ms>0 THEN at_ms-OLD.activity_until_ms END,
+    'startWindowEndedMsAgo',CASE WHEN OLD.state IN('pending','issued') THEN at_ms-OLD.expires_at_ms END,
+    'controlMode',c.mode,
+    'assignmentState',a.state,
+    'reservationFenced',i.state='fenced',
+    'workNeverStarted',(SELECT count(*) FROM hagency_agent_v1.management_shared_work w
+      WHERE w.runtime_id=NEW.id AND w.state='cancelled' AND w.started_at_ms IS NULL),
+    'workUnknown',(SELECT count(*) FROM hagency_agent_v1.management_shared_work w
+      WHERE w.runtime_id=NEW.id AND w.state='unknown')))::text
+  FROM (SELECT 1) one
+  LEFT JOIN hagency_agent_v1.management_shared_assignments a ON a.id=NEW.assignment_id
+  LEFT JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=NEW.assignment_id
+  LEFT JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=a.request_id
+  ON CONFLICT(runtime_id) DO NOTHING;
+ EXCEPTION WHEN OTHERS THEN NULL;
+ END;
  RETURN NEW;
 END;
 $$;

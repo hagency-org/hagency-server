@@ -88,6 +88,12 @@ pub struct ManagementConfig {
     /// until the owners' desktops support succession.
     #[serde(default)]
     pub enable_pool_grant_succession: bool,
+    /// Give a message back to the queue when its process ends before its
+    /// turn began, for an executor that says it takes messages back
+    /// (`shared-demand-retry-v2`). Off by default; it takes effect only with
+    /// the demand retry gates, which keep working when it is off.
+    #[serde(default)]
+    pub enable_shared_demand_reoffers: bool,
 }
 impl ManagementConfig {
     fn apply_pool_defaults(&mut self, enabled: bool) {

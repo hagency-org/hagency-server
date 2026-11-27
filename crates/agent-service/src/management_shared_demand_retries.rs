@@ -88,6 +88,11 @@ async fn open(
     }
     let q = queued(db, &d.intake_id).await?;
     let now = clock(db).await?;
+    // A message given back whose wait is over ends now, as a read or the
+    // sweep would end it, and nothing is opened for it.
+    if timeouts::reoffer_lapsed(db, &d.id, now).await? {
+        return block(db, d, &q, "head_changed", "\"retry_lapsed\"").await;
+    }
     let Ok(w) = authorize(db, p, &q, server, now, true).await else {
         return Ok(());
     };
@@ -145,9 +150,13 @@ impl DomainStore {
                     return Err(Error::Conflict("shared_demand_retry_changed"));
                 }
                 // A process that ran is retried only for a start that said
-                // its executor takes messages back; for any other the route
-                // refuses the receipt and records nothing, as before.
-                if input.result.receipt.state == "stopped" && !latest.reoffers {
+                // its executor takes messages back, and only while the
+                // re-offer is on; otherwise the route refuses the receipt and
+                // records nothing, as before (the plain result route records
+                // it).
+                if input.result.receipt.state == "stopped"
+                    && !(latest.reoffers && policy.shared_demand_reoffers())
+                {
                     return Err(Error::Invalid("invalid_shared_demand_retry"));
                 }
                 let acknowledgement = attempts::record_in(

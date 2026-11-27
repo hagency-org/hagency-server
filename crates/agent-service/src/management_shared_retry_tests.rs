@@ -931,6 +931,11 @@ async fn shared_demand_v2_released_work_is_a_waiting_event_again_for_a_stop_and_
                 .await
                 .unwrap();
             assert_eq!(released(&f, &first.id).await, 1);
+            // The server ended it, and gave the message back.
+            assert_eq!(
+                fence_says(&fence_facts(&f, &issued.command.command_id).await),
+                ("server".into(), 1, 0)
+            );
             assert_eq!(recovered(&f, &lost).await.state, "cancelled");
             continue;
         }
@@ -940,6 +945,10 @@ async fn shared_demand_v2_released_work_is_a_waiting_event_again_for_a_stop_and_
             .await
             .unwrap();
         assert_eq!(released(&f, &first.id).await, 1);
+        assert_eq!(
+            fence_says(&fence_facts(&f, &issued.command.command_id).await),
+            ("computer".into(), 1, 0)
+        );
         assert!(
             f.domain
                 .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
@@ -1075,6 +1084,10 @@ async fn shared_demand_v2_start_that_does_not_take_messages_back_keeps_them_as_b
     // The process ends before the turn: the message stays with it and ends.
     record(&f, &issued, evidence).await.unwrap();
     assert_eq!(released(&f, &first.id).await, 0);
+    assert_eq!(
+        fence_says(&fence_facts(&f, &issued.command.command_id).await),
+        ("computer".into(), 0, 0)
+    );
     assert!(still_bound(&f, &first.id).await);
     assert_eq!(work_state(&f, &first.id).await, "cancelled");
     assert_eq!(recovered(&f, &lost).await.state, "bound");
@@ -1164,6 +1177,10 @@ async fn shared_demand_v2_message_given_back_waits_for_its_executor_a_bounded_ti
         // is given back: it waits for the executor's evidence.
         let at = time_bound(&f, &issued).await;
         assert_eq!(released(&f, &first.id).await, 1);
+        assert_eq!(
+            fence_says(&fence_facts(&f, &issued.command.command_id).await),
+            ("time_bound".into(), 1, 0)
+        );
         assert_eq!(recovered(&f, &lost).await.state, "start_committed");
         let row = chat_row(&f, &f.outsider.p, &first.room_id, &format!("${event}")).await;
         assert_eq!(
@@ -1222,12 +1239,20 @@ async fn shared_demand_v2_message_given_back_waits_for_its_executor_a_bounded_ti
             Some("\"retry_lapsed\"")
         );
         // No turn began for it anywhere, and its sender can send it again.
+        // The reason stays the one every Desktop reads as "not processed".
         let row = chat_row(&f, &f.outsider.p, &first.room_id, &format!("${event}")).await;
         assert_eq!(
             (&row["state"], &row["reason"], &row["canSendAgain"]),
-            (&json!("blocked"), &json!("never_started"), &json!(true))
+            (&json!("blocked"), &json!("head_changed"), &json!(true))
         );
         f.domain.reset_management_test_clock().await.unwrap();
+        assert_eq!(
+            logged(&lost.offer.demand_id),
+            vec![
+                ("released".into(), None),
+                ("ended".into(), Some("retry_lapsed".into()))
+            ]
+        );
         assert_eq!(
             next_offer(&f).await.offer.event_id,
             format!("$bounded_next_{comes_back}")
@@ -1287,11 +1312,727 @@ async fn shared_demand_v2_executor_that_does_not_take_messages_back_never_sees_o
         let row = chat_row(&f, &f.outsider.p, &first.room_id, &format!("${event}")).await;
         assert_eq!(
             (&row["state"], &row["reason"], &row["canSendAgain"]),
-            (&json!("blocked"), &json!("never_started"), &json!(true))
+            (&json!("blocked"), &json!("head_changed"), &json!(true))
         );
         assert_eq!(
             next_offer(&f).await.offer.event_id,
             format!("$downgraded_next_{asked}")
         );
     }
+}
+
+// Retry `n` of the message of `o` after `previous` ran and stopped (`stop`
+// is its stop receipt's digest): the retry's process starts and reports, is
+// given the message and acknowledges it. No turn has begun.
+async fn rerun(
+    f: &Fixture,
+    m: &MatrixFixture,
+    o: &SharedDemandStatus,
+    previous: &SharedAttemptDelivery,
+    stop: &str,
+    n: i64,
+    observed: i64,
+) -> (SharedAttemptDelivery, SharedWorkItem, SharedWorkInput) {
+    let started = f
+        .domain
+        .start_shared_demand(
+            &f.owner.p,
+            &f.policy,
+            &o.offer.demand_id,
+            after_stopped(o, previous, stop, observed, n),
+            &m.gateway,
+        )
+        .await
+        .unwrap();
+    assert!(started.execution_allowed);
+    let activity = record(
+        f,
+        &started,
+        attempts::result(&started, "qualified", observed + 9),
+    )
+    .await
+    .unwrap()
+    .activity
+    .unwrap();
+    let work = f
+        .domain
+        .poll_shared_work(
+            &f.owner.p,
+            &f.policy,
+            activity.authority.clone(),
+            &m.gateway,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let input = SharedWorkInput {
+        authority: activity.authority,
+        work_id: work.id.clone(),
+        work_digest: allocation_digest(&work).unwrap(),
+    };
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input.clone(), &m.gateway)
+        .await
+        .unwrap();
+    (started, work, input)
+}
+async fn count(f: &Fixture, query: &str, id: &str) -> i64 {
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query(query)
+        .bind::<Text, _>(id)
+        .get_result::<Count>(&mut db)
+        .await
+        .unwrap()
+        .count
+}
+// Demands made for `event`.
+async fn demands_for(f: &Fixture, event: &str) -> i64 {
+    count(f, "SELECT count(*)::bigint AS count FROM hagency_agent_v1.management_shared_demands d JOIN hagency_agent_v1.management_shared_intake q ON q.id=d.intake_id WHERE q.event_id=$1", event).await
+}
+async fn retries_opened(f: &Fixture, demand: &str) -> i64 {
+    count(f, "SELECT count(*)::bigint AS count FROM hagency_agent_v1.management_shared_demand_retries WHERE demand_id=$1", demand).await
+}
+async fn retry_opened_at(f: &Fixture, demand: &str) -> i64 {
+    count(f, "SELECT created_at_ms AS count FROM hagency_agent_v1.management_shared_demand_retries WHERE demand_id=$1 AND retry=1", demand).await
+}
+async fn stop_receipts(f: &Fixture, runtime: &str) -> i64 {
+    count(f, "SELECT count(*)::bigint AS count FROM hagency_agent_v1.management_shared_process_receipts WHERE runtime_id=$1 AND payload::jsonb->>'state'='stopped'", runtime).await
+}
+// The facts of the record of `runtime`'s fence.
+async fn fence_facts(f: &Fixture, runtime: &str) -> Value {
+    serde_json::from_str(
+        &text(
+            f,
+            "SELECT facts AS value FROM hagency_agent_v1.management_shared_runtime_fences WHERE runtime_id=$1",
+            runtime,
+        )
+        .await
+        .expect("the fence is recorded"),
+    )
+    .unwrap()
+}
+fn fence_says(facts: &Value) -> (String, i64, i64) {
+    (
+        facts["stopSource"].as_str().unwrap().into(),
+        facts["released"].as_i64().unwrap(),
+        facts["releaseFailed"].as_i64().unwrap(),
+    )
+}
+// What the service log says about `demand`: the kind and reason of each line.
+fn logged(demand: &str) -> Vec<(String, Option<String>)> {
+    crate::database::emitted(demand)
+        .into_iter()
+        .map(|n| (n.kind, n.reason))
+        .collect()
+}
+async fn capabilities(f: &Fixture, m: &MatrixFixture) -> Vec<String> {
+    let mut response = TestClient::get("https://example.test/hagency/api/v1/discovery")
+        .add_header("host", "example.test", true)
+        .send(&svc(f, m.gateway.clone()))
+        .await;
+    let value = response.take_json::<Value>().await.unwrap();
+    value["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect()
+}
+// The executor's declaration is trusted 300 s by the server's clock. Tests
+// that move that clock further keep it current.
+async fn keep_declared(f: &Fixture) {
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("UPDATE hagency_agent_v1.management_shared_executor_protocols SET expires_at_ms=expires_at_ms+3600000 WHERE device_id=$1")
+        .bind::<Text, _>(f.owner.p.device_id.as_deref().unwrap())
+        .execute(&mut db)
+        .await
+        .unwrap();
+}
+async fn poll_for(f: &Fixture, reoffers: bool) -> Option<SharedDemandStatus> {
+    f.domain
+        .poll_shared_demand(
+            &f.owner.p,
+            &f.policy,
+            SharedDemandPollInput {
+                after: None,
+                retries: true,
+                reoffers,
+            },
+        )
+        .await
+        .unwrap()
+        .demand
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_v2_next_message_waits_while_the_first_has_not_begun() {
+    for says in [true, false] {
+        let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+        let (d, _) = qualify(&f).await;
+        let stopped = attempts::stop(&f, &d, 201).await;
+        let first_event = format!("$waits_first_{says}");
+        let next_event = format!("$waits_next_{says}");
+        retain(&f, &r, &m, &first_event[1..]).await;
+        retain(&f, &r, &m, &next_event[1..]).await;
+        let (lost, issued, _first, _) = given(&f, &m, &d, &stopped, true).await;
+        let polled = poll_for(&f, says).await;
+        if !says {
+            // An executor that does not take messages back is offered the
+            // next message at once, as before: after the process that holds
+            // the first one.
+            let next = polled.expect("offered as before");
+            assert_eq!(
+                (
+                    next.offer.event_id.as_str(),
+                    next.offer.predecessor_command_id.as_str(),
+                    next.state.as_str()
+                ),
+                (
+                    next_event.as_str(),
+                    issued.command.command_id.as_str(),
+                    "offered"
+                )
+            );
+            continue;
+        }
+        // While the first message waits for its turn in that process, the
+        // next one is not offered, and no demand names that process.
+        assert!(polled.is_none());
+        assert_eq!(demands_for(&f, &next_event).await, 0);
+        // The process ends before the turn. The first message is taken back
+        // and runs first, in the next process.
+        let reply = retry(
+            &f,
+            &lost,
+            &issued,
+            1,
+            attempts::result(&issued, "stopped", 220),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply.demand.state, "retry_offered");
+        assert_eq!(next_offer(&f).await.offer.demand_id, lost.offer.demand_id);
+        assert_eq!(
+            fence_says(&fence_facts(&f, &issued.command.command_id).await),
+            ("computer".into(), 1, 0)
+        );
+        let (started, second, input) = rerun(
+            &f,
+            &m,
+            &reply.demand,
+            &issued,
+            &reply.acknowledgement.receipt_digest,
+            1,
+            221,
+        )
+        .await;
+        assert_eq!(second.event_id, first_event);
+        // Given again, not begun: the next message still waits.
+        assert!(poll_for(&f, true).await.is_none());
+        assert_eq!(demands_for(&f, &next_event).await, 0);
+        // The turn begins. Now the next message is offered, after the
+        // process that runs the first one.
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input, &m.gateway)
+            .await
+            .unwrap();
+        let next = next_offer(&f).await;
+        assert_eq!(
+            (
+                next.offer.event_id.as_str(),
+                next.offer.predecessor_command_id.as_str(),
+                next.state.as_str()
+            ),
+            (
+                next_event.as_str(),
+                started.command.command_id.as_str(),
+                "offered"
+            )
+        );
+        // That process ends, and the next message runs in the one after it.
+        let ended = record(&f, &started, attempts::result(&started, "stopped", 240))
+            .await
+            .unwrap();
+        let mut start = after(&next, &started, &ended.receipt_digest, &"d".repeat(64), 241);
+        start.reoffers = true;
+        let third = f
+            .domain
+            .start_shared_demand(
+                &f.owner.p,
+                &f.policy,
+                &next.offer.demand_id,
+                start,
+                &m.gateway,
+            )
+            .await
+            .unwrap();
+        assert!(third.execution_allowed);
+        let activity = record(&f, &third, attempts::result(&third, "qualified", 250))
+            .await
+            .unwrap()
+            .activity
+            .unwrap();
+        let work = f
+            .domain
+            .poll_shared_work(&f.owner.p, &f.policy, activity.authority, &m.gateway)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(work.event_id, next_event);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_v2_message_given_back_waits_once_counted_from_its_first_process() {
+    let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "counted_once").await;
+    let (lost, issued, first, _) = given(&f, &m, &d, &stopped, true).await;
+    // The first process ends before the turn; the message is taken back.
+    let reply = retry(
+        &f,
+        &lost,
+        &issued,
+        1,
+        attempts::result(&issued, "stopped", 220),
+    )
+    .await
+    .unwrap();
+    // Its retry runs in time, is given the message, and ends before its
+    // turn too: taken back again.
+    let (started, second, _) = rerun(
+        &f,
+        &m,
+        &reply.demand,
+        &issued,
+        &reply.acknowledgement.receipt_digest,
+        1,
+        221,
+    )
+    .await;
+    let again = retry(
+        &f,
+        &lost,
+        &started,
+        2,
+        attempts::result(&started, "stopped", 240),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (again.demand.state.as_str(), again.demand.retry),
+        ("retry_offered", Some(2))
+    );
+    assert_eq!(
+        (
+            released(&f, &first.id).await,
+            released(&f, &second.id).await
+        ),
+        (1, 1)
+    );
+    // One bound for the message: 180 s after the later of the end of its
+    // first process's grace (the start window, the first lease and 180 s)
+    // and the first request for a retry.
+    let opened = retry_opened_at(&f, &lost.offer.demand_id).await;
+    let bound = (issued.command.expires_at_ms + 30_000 + 180_000).max(opened) + 180_000;
+    // Counted from the latest attempt, it would end later.
+    assert!(bound < started.command.expires_at_ms + 30_000 + 180_000 + 180_000);
+    keep_declared(&f).await;
+    // Just before the bound the message still waits.
+    f.domain.set_management_test_clock(bound - 1).await.unwrap();
+    f.domain.sweep_shared_attempt_timeouts().await.unwrap();
+    assert_eq!(recovered(&f, &lost).await.state, "retry_offered");
+    assert_eq!(block_payload(&f, &lost.offer.demand_id).await, None);
+    // At the bound no attempt starts for it any more, and it ends.
+    f.domain.set_management_test_clock(bound).await.unwrap();
+    assert!(conflict(
+        f.domain
+            .start_shared_demand(
+                &f.owner.p,
+                &f.policy,
+                &lost.offer.demand_id,
+                after_stopped(
+                    &again.demand,
+                    &started,
+                    &again.acknowledgement.receipt_digest,
+                    241,
+                    2,
+                ),
+                &m.gateway,
+            )
+            .await,
+        "shared_demand_not_current"
+    ));
+    f.domain.sweep_shared_attempt_timeouts().await.unwrap();
+    assert_eq!(recovered(&f, &lost).await.state, "head_changed");
+    assert_eq!(
+        block_payload(&f, &lost.offer.demand_id).await.as_deref(),
+        Some("\"retry_lapsed\"")
+    );
+    f.domain.reset_management_test_clock().await.unwrap();
+    // The service log has a line for each release and one for the end.
+    assert_eq!(
+        logged(&lost.offer.demand_id),
+        vec![
+            ("released".into(), None),
+            ("released".into(), None),
+            ("ended".into(), Some("retry_lapsed".into()))
+        ]
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_v2_reoffer_switched_off_keeps_v1_retries_and_ends_messages_given_back() {
+    let (mut f, r, _admin, _a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "off_given_back").await;
+    retain(&f, &r, &m, "off_kept").await;
+    retain(&f, &r, &m, "off_retried").await;
+    let on = capabilities(&f, &m).await;
+    assert!(on.iter().any(|c| c == "shared-demand-retry-v1"));
+    assert!(on.iter().any(|c| c == "shared-demand-retry-v2"));
+    let (lost, issued, first, _) = given(&f, &m, &d, &stopped, true).await;
+    // While it is on, the process ends before its turn and the message is
+    // taken back.
+    let reply = retry(
+        &f,
+        &lost,
+        &issued,
+        1,
+        attempts::result(&issued, "stopped", 220),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply.demand.state, "retry_offered");
+    assert_eq!(released(&f, &first.id).await, 1);
+    // The operator switches it off; demand retries stay.
+    f.policy = f.policy.clone().with_shared_demand_reoffers(false);
+    let off = capabilities(&f, &m).await;
+    assert!(off.iter().any(|c| c == "shared-demand-retry-v1"));
+    assert!(!off.iter().any(|c| c == "shared-demand-retry-v2"));
+    // The message taken back ends at its bound, visibly.
+    let bound = (issued.command.expires_at_ms + 30_000 + 180_000)
+        .max(retry_opened_at(&f, &lost.offer.demand_id).await)
+        + 180_000;
+    f.domain.set_management_test_clock(bound).await.unwrap();
+    f.domain.sweep_shared_attempt_timeouts().await.unwrap();
+    f.domain.reset_management_test_clock().await.unwrap();
+    assert_eq!(recovered(&f, &lost).await.state, "head_changed");
+    assert_eq!(
+        block_payload(&f, &lost.offer.demand_id).await.as_deref(),
+        Some("\"retry_lapsed\"")
+    );
+    let row = chat_row(&f, &f.outsider.p, &first.room_id, "$off_given_back").await;
+    assert_eq!(
+        (&row["state"], &row["reason"], &row["canSendAgain"]),
+        (&json!("blocked"), &json!("head_changed"), &json!(true))
+    );
+    // A start that says it takes messages back is kept as before: its
+    // process ends before the turn, the retry route refuses its stop, and
+    // nothing is given back.
+    let kept = next_offer(&f).await;
+    assert_eq!(kept.offer.event_id, "$off_kept");
+    let mut start = after(
+        &kept,
+        &issued,
+        &reply.acknowledgement.receipt_digest,
+        &"d".repeat(64),
+        221,
+    );
+    start.reoffers = true;
+    let next = f
+        .domain
+        .start_shared_demand(
+            &f.owner.p,
+            &f.policy,
+            &kept.offer.demand_id,
+            start,
+            &m.gateway,
+        )
+        .await
+        .unwrap();
+    let activity = record(&f, &next, attempts::result(&next, "qualified", 230))
+        .await
+        .unwrap()
+        .activity
+        .unwrap();
+    let work = f
+        .domain
+        .poll_shared_work(
+            &f.owner.p,
+            &f.policy,
+            activity.authority.clone(),
+            &m.gateway,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    f.domain
+        .acknowledge_shared_work(
+            &f.owner.p,
+            &f.policy,
+            SharedWorkInput {
+                authority: activity.authority,
+                work_id: work.id.clone(),
+                work_digest: allocation_digest(&work).unwrap(),
+            },
+            &m.gateway,
+        )
+        .await
+        .unwrap();
+    let evidence = attempts::result(&next, "stopped", 240);
+    assert!(matches!(
+        retry(&f, &kept, &next, 1, evidence.clone()).await,
+        Err(crate::Error::Invalid("invalid_shared_demand_retry"))
+    ));
+    assert_eq!(stop_receipts(&f, &next.command.command_id).await, 0);
+    let ended = record(&f, &next, evidence).await.unwrap();
+    assert_eq!(released(&f, &work.id).await, 0);
+    assert_eq!(work_state(&f, &work.id).await, "cancelled");
+    assert_eq!(
+        fence_says(&fence_facts(&f, &next.command.command_id).await),
+        ("computer".into(), 0, 0)
+    );
+    let row = chat_row(&f, &f.outsider.p, &first.room_id, "$off_kept").await;
+    assert_eq!(
+        (&row["state"], &row["reason"], &row["canSendAgain"]),
+        (&json!("cancelled"), &json!("never_started"), &json!(true))
+    );
+    // A start that never happened is still run again.
+    let lost = next_offer(&f).await;
+    assert_eq!(lost.offer.event_id, "$off_retried");
+    let issued = start_lapsed(
+        &f,
+        &m,
+        &lost,
+        after(&lost, &next, &ended.receipt_digest, &"d".repeat(64), 241),
+    )
+    .await;
+    let reply = retry(&f, &lost, &issued, 1, unstarted(&f, &issued, 250).await)
+        .await
+        .unwrap();
+    assert_eq!(
+        (reply.demand.state.as_str(), reply.demand.retry),
+        ("retry_offered", Some(1))
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_v2_budget_applied_after_a_release_opens_no_retry_and_the_message_ends() {
+    let (mut f, r, admin, _a, m) = Box::pin(setup()).await;
+    f.policy = f.policy.clone().with_agent_budget_deltas(true);
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "budget_after_release").await;
+    let (lost, issued, first, _) = given(&f, &m, &d, &stopped, true).await;
+    // The process ends before its turn and its executor reports it; the
+    // message is taken back.
+    let evidence = attempts::result(&issued, "stopped", 220);
+    record(&f, &issued, evidence.clone()).await.unwrap();
+    assert_eq!(released(&f, &first.id).await, 1);
+    // A budget change is applied to the Agent before the executor asks for
+    // the retry: the stop is already recorded, and no retry is opened.
+    budget_tests::apply_delta(&f, &r, &admin, 25, 230).await;
+    let reply = retry(&f, &lost, &issued, 1, evidence).await.unwrap();
+    assert_eq!(
+        (reply.demand.state.as_str(), reply.demand.retry),
+        ("start_committed", None)
+    );
+    assert_eq!(retries_opened(&f, &lost.offer.demand_id).await, 0);
+    assert!(conflict(
+        f.domain
+            .start_shared_demand(
+                &f.owner.p,
+                &f.policy,
+                &lost.offer.demand_id,
+                after_stopped(
+                    &reply.demand,
+                    &issued,
+                    &reply.acknowledgement.receipt_digest,
+                    221,
+                    1
+                ),
+                &m.gateway,
+            )
+            .await,
+        "shared_budget_execution_required"
+    ));
+    // The message ends at its bound.
+    let bound = issued.command.expires_at_ms + 30_000 + 180_000 + 180_000;
+    f.domain.set_management_test_clock(bound - 1).await.unwrap();
+    f.domain.sweep_shared_attempt_timeouts().await.unwrap();
+    assert_eq!(block_payload(&f, &lost.offer.demand_id).await, None);
+    f.domain.set_management_test_clock(bound).await.unwrap();
+    f.domain.sweep_shared_attempt_timeouts().await.unwrap();
+    f.domain.reset_management_test_clock().await.unwrap();
+    assert_eq!(recovered(&f, &lost).await.state, "head_changed");
+    assert_eq!(
+        block_payload(&f, &lost.offer.demand_id).await.as_deref(),
+        Some("\"retry_lapsed\"")
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_v2_period_turn_ends_a_message_given_back() {
+    let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "period_given_back").await;
+    let (lost, issued, first, _) = given(&f, &m, &d, &stopped, true).await;
+    let reply = retry(
+        &f,
+        &lost,
+        &issued,
+        1,
+        attempts::result(&issued, "stopped", 220),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply.demand.state, "retry_offered");
+    assert_eq!(released(&f, &first.id).await, 1);
+    // The Agent's allowance runs by day, and the day turns while the
+    // message waits to run again.
+    let calendar = crate::recurring_quota::Calendar {
+        cadence: crate::recurring_quota::Cadence::Daily,
+        time_zone: "UTC".into(),
+    };
+    let period = calendar.period_at(db_now(&f).await as u64).unwrap();
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("INSERT INTO hagency_agent_v1.management_agent_recurring_terms(request_id,calendar,renewal_mode) VALUES($1,$2,'owner')")
+        .bind::<Text, _>(&r.id)
+        .bind::<Text, _>(serde_json::to_string(&calendar).unwrap())
+        .execute(&mut db)
+        .await
+        .unwrap();
+    f.domain
+        .set_management_test_clock(period.end_ms as i64 + 1_000)
+        .await
+        .unwrap();
+    // It ends with its period, as every message of that period does.
+    assert_eq!(recovered(&f, &lost).await.state, "expired");
+    // Not by its wait: the sweep finds nothing left to end.
+    f.domain.sweep_shared_attempt_timeouts().await.unwrap();
+    assert_eq!(block_payload(&f, &lost.offer.demand_id).await, None);
+    let row = chat_row(&f, &f.outsider.p, &first.room_id, "$period_given_back").await;
+    assert_eq!(
+        (&row["state"], &row["reason"]),
+        (&json!("expired"), &json!("event_expired"))
+    );
+    f.domain.reset_management_test_clock().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_v2_message_taken_back_after_each_stop_ends_at_the_retry_cap() {
+    let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "capped").await;
+    retain(&f, &r, &m, "capped_next").await;
+    let (lost, mut previous, first, _) = given(&f, &m, &d, &stopped, true).await;
+    let mut work = vec![first];
+    let mut stop = 220;
+    // The first attempt and three more, each ending before its turn.
+    for n in 1..=3 {
+        let reply = retry(
+            &f,
+            &lost,
+            &previous,
+            n,
+            attempts::result(&previous, "stopped", stop),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (reply.demand.state.as_str(), reply.demand.retry),
+            ("retry_offered", Some(n)),
+            "retry {n}"
+        );
+        let (started, given, _) = rerun(
+            &f,
+            &m,
+            &reply.demand,
+            &previous,
+            &reply.acknowledgement.receipt_digest,
+            n,
+            stop + 1,
+        )
+        .await;
+        assert_eq!(given.event_id, "$capped");
+        previous = started;
+        work.push(given);
+        stop += 20;
+    }
+    // The fourth stop ends the message: no fifth attempt.
+    let reply = retry(
+        &f,
+        &lost,
+        &previous,
+        4,
+        attempts::result(&previous, "stopped", stop),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply.demand.state, "head_changed");
+    assert_eq!(
+        block_payload(&f, &lost.offer.demand_id).await.as_deref(),
+        Some("\"retry_exhausted\"")
+    );
+    assert_eq!(retries_opened(&f, &lost.offer.demand_id).await, 3);
+    for w in &work {
+        assert_eq!(released(&f, &w.id).await, 1);
+    }
+    assert_eq!(work_items(&f, "$capped").await, 4);
+    assert_eq!(next_offer(&f).await.offer.event_id, "$capped_next");
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_v2_stop_after_the_turn_began_is_recorded_and_offers_nothing_again() {
+    let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "began_then_stopped").await;
+    let (lost, issued, first, input) = given(&f, &m, &d, &stopped, true).await;
+    f.domain
+        .start_current_work(&f.owner.p, &f.policy, input, &m.gateway)
+        .await
+        .unwrap();
+    // The process stops after its turn began, and its executor asks for a
+    // retry with the stop: the stop is recorded, nothing is offered again.
+    let evidence = attempts::result(&issued, "stopped", 220);
+    let reply = retry(&f, &lost, &issued, 1, evidence.clone())
+        .await
+        .unwrap();
+    assert_eq!(reply.acknowledgement.state, "stopped");
+    assert_eq!(
+        (reply.demand.state.as_str(), reply.demand.retry),
+        ("bound", None)
+    );
+    assert_eq!(
+        runtime_state(&f, &issued.command.command_id).await,
+        ("stopped".into(), true)
+    );
+    assert_eq!(stop_receipts(&f, &issued.command.command_id).await, 1);
+    assert_eq!(retries_opened(&f, &lost.offer.demand_id).await, 0);
+    assert_eq!(released(&f, &first.id).await, 0);
+    assert_eq!(work_items(&f, "$began_then_stopped").await, 1);
+    assert_eq!(
+        fence_says(&fence_facts(&f, &issued.command.command_id).await),
+        ("computer".into(), 0, 0)
+    );
+    // A lost reply is replayed exactly.
+    let again = retry(&f, &lost, &issued, 1, evidence).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&again).unwrap(),
+        serde_json::to_value(&reply).unwrap()
+    );
+    assert!(logged(&lost.offer.demand_id).is_empty());
 }
