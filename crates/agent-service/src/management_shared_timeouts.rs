@@ -140,6 +140,11 @@ impl DomainStore {
     /// Background enforcement: no executor poll or healthy client is needed
     /// to stop an uncertain attempt and release its Agent's queue, or to end a
     /// message whose executor did not come back for it in time.
+    ///
+    /// An attempt that cannot be stopped, or a message that cannot be ended,
+    /// does not hold back the others: it is logged by its id and the pass goes
+    /// on, to the messages too. The first such error is returned once every
+    /// one was tried.
     pub(crate) async fn sweep_shared_attempt_timeouts(&self) -> Result<()> {
         let ids = self
             .db
@@ -148,8 +153,10 @@ impl DomainStore {
                 candidates(db, None, now).await
             })
             .await?;
+        let mut failed = None;
         for id in ids {
-            self.db
+            let swept = self
+                .db
                 .write_transaction(async |db| {
                     let now = clock(db).await?;
                     if due(db, &id.id, now).await? {
@@ -157,17 +164,29 @@ impl DomainStore {
                     }
                     Ok(())
                 })
-                .await?;
+                .await;
+            if let Err(error) = swept {
+                tracing::warn!(runtime_id = %id.id, code = %error, "Shared attempt time bound failed");
+                failed.get_or_insert(error);
+            }
         }
-        let ids = self
+        // Messages given back end at their bound whatever became of the
+        // attempts above, each in its own write.
+        let ids = match self
             .db
             .transaction(async |db| {
                 let now = clock(db).await?;
                 lapsed(db, None, now).await
             })
-            .await?;
+            .await
+        {
+            Ok(ids) => ids,
+            // The first error stands for the pass.
+            Err(error) => return Err(failed.unwrap_or(error)),
+        };
         for id in ids {
-            self.db
+            let ended = self
+                .db
                 .write_transaction(async |db| {
                     let now = clock(db).await?;
                     if reoffer_lapsed(db, &id.id, now).await? {
@@ -175,8 +194,12 @@ impl DomainStore {
                     }
                     Ok(())
                 })
-                .await?;
+                .await;
+            if let Err(error) = ended {
+                tracing::warn!(demand_id = %id.id, code = %error, "Shared message wait bound failed");
+                failed.get_or_insert(error);
+            }
         }
-        Ok(())
+        failed.map_or(Ok(()), Err)
     }
 }

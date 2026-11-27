@@ -47,7 +47,7 @@ The two have different clocks:
 | | Clock | Ends at | When it is missed |
 |---|---|---|---|
 | Held | the **authorization window**: how long the server trusts a proof of sign-in without hearing from the computer again. 30 seconds by default, up to two minutes when the host is configured for it and the client asks | never later than the session's end, and the session's end is never more than one window after its last proof | the run is unknown; nothing is run again |
-| Offered | the **claim window**: a fixed 30 seconds | `now + 30 s`, or the session's end when that is sooner (two kinds of poll hand-out use the plain 30 s; see the table of limits) | it is offered again (rule 3) |
+| Offered | the **claim window** (`CLAIM_WINDOW_MS`): a fixed 30 seconds | `now + 30 s`, or the session's end when that is sooner. Some kinds are cut to something else (see the table of limits): a command that starts a process and the challenge that checks an Agent's Matrix membership end at `now + 30 s` or the end of the reservation they run under, and the poll hand-outs of allocation and parent commands and of replies use the plain 30 s | it is offered again (rule 3) |
 
 Consequences that are intended:
 
@@ -129,18 +129,22 @@ Before the start everything is redone:
   took back; so, with the premise above, a fenced process whose message has
   no recorded start never began it and never will. At the fence the server
   takes the message back from that process, keeping a record of what it had
-  handed out, while the Agent still serves: its request was not withdrawn,
-  its ledger not replaced, its Matrix identity is still verified, and no
-  budget change was applied to it. The message is then a waiting message
-  again in its old place: a Stop cancels it with the others, and its time and
-  its period end it as they end any waiting message. If a budget change is
-  applied to the Agent first, it is no longer offered, and it ends through
-  the bound below or its time. While a process holds a message that it has
-  not begun, from a start that said it takes messages back, the message
-  after it is not offered yet: if the first is taken back, it runs first, in
-  the next process, and the next one follows it there. Offered earlier, the
-  next message would name a process that is no longer the last one, and
-  would have to end.
+  handed out, while the Agent can serve it: by the same rule that decides
+  who is offered a message sent again (below), and only while no budget
+  change was applied to it. So a Stop gives nothing back: it ends the
+  Agent's processes, the message a process held ends as before, and the
+  waiting messages are cancelled. A message taken back is a waiting message
+  again in its old place: a Stop cancels it with the others, and its time
+  and its period end it as they end any waiting message. If a budget change
+  is applied to the Agent first, it is no longer offered and ends as every
+  message the earlier protocol had started when the budget was applied
+  (see the state of the implementation): its status says so at once, and
+  the budget's queue offers the next message. While a process holds a
+  message that it has not begun, from a start that said it takes messages
+  back, the message after it is not offered yet: if the first is taken
+  back, it runs first, in the next process, and the next one follows it
+  there. Offered earlier, the next message would name a process that is no
+  longer the last one, and would have to end.
 - One message has its first attempt and at most three more. While an attempt
   is being offered again, the room shows the message as waiting for the
   Agent, never as failed.
@@ -164,17 +168,40 @@ not tried again and end the message: any failed start of an Agent with an
 applied budget, whose protocol has no retry; any process that ended before
 its turn whose computer did not say that it takes messages back; and any
 that a computer does not ask about in time (see the state of the
-implementation for which daemons ask for what). For those the message's
-status says that the Agent did not process it and names the Agent. A message
-that was taken back and then ends is reported as any other such end of a
-message to an Agent without a budget: state `blocked`, reason `head_changed`
-(the demand's block record says why, for example `retry_lapsed`,
-`retry_exhausted` or `reoffer_unsupported`), which Hagency Desktop reads as "did not process" for
-every reader. Its sender can send it again with one action, except, today,
-when it was offered under the budget protocol (see the state of the
-implementation). A message sent again is a new message. The server decides
-who is offered that, and offers it only while the Agent is in the room and
-has not been stopped.
+implementation for which daemons ask for what). For those, and for a
+message that was taken back and then ends, the message's status says that
+the Agent did not process it, names the Agent, and names the record that
+ended it. One taken back reads as any other end of a waiting message of the
+earlier protocol: state `blocked`, reason `head_changed`, which Hagency
+Desktop reads as "did not process" for every reader, and as the record that
+ended it the reason of its block (`retry_lapsed`, `retry_exhausted`,
+`reoffer_unsupported` or `head_changed`). Its sender can send it again with
+one action. A message sent again is a new message. The server decides who is
+offered that, and offers it only while the Agent can serve a new message:
+its reservation stands (neither it nor the intent behind it is fenced), its
+executor's ledger was not replaced, it has not been stopped, and it is a
+verified member of the room. An Agent with an applied budget serves too,
+through its own queue. The offer is part of the status of the reader's 16
+newest messages in the room (their own, and every message to an Agent they
+own); an older message is not offered. The server takes a message back only
+from an Agent that serves by this same rule, which is written once, and only
+while no budget was applied to it.
+
+Every message that ended without a turn ends the same way for this rule,
+whichever record ended it: work that was given to a process that never
+began it, a message that was stopped while it waited or arrived while the
+Agent was stopped, one whose start failed for good (for an Agent with an
+applied budget too), one that was taken back and then ended, and one that
+waited out its 24 hours or its period. The status derives that end when it
+is read, from every record that can end a message, and writes nothing: a
+message whose time is over reads as ended before any poll has recorded it.
+One end reads one reason whichever record holds it: a message that waited
+out its time reads `event_expired`, also when the budget's queue recorded it
+(as `expired`), and so does one blocked on allowance or on usage once its
+time is over, never the reason of its block, which says it still waits. A
+message taken back reads `head_changed` once a budget is applied to its
+Agent, as the budget's queue then records it, and its bound later records
+the same reason for its computer.
 
 After the start:
 
@@ -253,9 +280,11 @@ next renewed.
 The re-offer of rule 3 follows the same order. A computer says that it takes
 a message back with `reoffers` on its demand start, poll, recover and block
 requests. A release that reads the field and acts on nothing in it goes into
-service first; the release that acts on it goes back only to that release or
-a later one, and it has a switch of its own (see "Bringing the re-offer into
-service, and back").
+service first. It stores and compares a start that carries the field exactly
+as it was sent, so the two releases answer a start again the same way, and a
+start without it keeps the bytes it always had. The release that acts on it
+goes back only to that release or a later one, and it has a switch of its
+own (see "Bringing the re-offer into service, and back").
 
 ## Every time limit on the path of a pooled message
 
@@ -269,9 +298,9 @@ service, and back").
 | Session end | see above; only grows | held | server |
 | Agent execution lease | `least(session end, now + asked length)`; a length outside 1 s to the host's `max_lease_ms` (120 s unless configured lower) is refused | held | server, from the client's request |
 | Activity lease of a working process | `least(session end, now + window)`, and never past the pool reservation it runs under. Today `least(session end, now + 30 s)`; see the state table | held | server |
-| Start window of a start command | 30 s from issue | offered | server |
+| Start window of a start command | 30 s from issue, or the end of the reservation it runs under when that is sooner (so also the challenge that checks an Agent's Matrix membership) | offered | server |
 | Ticket for one exchange about a process | 30 s; the ticket that lets a process report ready also ends with its command's start window | offered | server |
-| A command, challenge or grant handed out by a poll | not handed out again for 30 s or until the session's end, whichever is sooner (the hand-outs of allocation and parent commands use the plain 30 s), then handed out again until it is answered | offered | server |
+| A command, challenge or grant handed out by a poll | not handed out again for 30 s or until the session's end, whichever is sooner (the hand-outs of allocation and parent commands and of replies use the plain 30 s), then handed out again until it is answered | offered | server |
 | Renewal of an Agent execution lease | every 5 s, or after half of what is left when that is sooner | — | computer |
 | Renewal of an activity lease | when 20 s or less of it are left. Under a longer window this has to become "when it has lost 10 s", or the longer lease tolerates no longer silence than the short one; see the state table | — | computer |
 | Token refresh | as soon as a proof has lost 10 s of the window, at most once a minute for that reason; and always when a proof has 20 s or less left | — | computer |
@@ -281,9 +310,9 @@ service, and back").
 | A tool request waiting for its sender's answer | as long as the computer asks, 120 s at most | bounds a request | computer, capped by the server |
 | A worker's declaration of what it can run | trusted for 300 s | — | server |
 | A reservation for one encryption exchange | 15 s, of which 12 s are for the exchange | offered | server |
-| A waiting message at the turn of a pool's period | ended as expired: a message is answered in the period it arrived in | recovery | server |
+| A waiting message at the turn of a pool's period | ended as expired (`event_expired`): a message is answered in the period it arrived in. One blocked on allowance or on usage ends the same way. The status reads this end when it is read, whether or not a poll has recorded it (none records it for a blocked message: no poll offers it again) | recovery | server |
 | Attempts for one message | the first and at most 3 more | recovery | server |
-| How long a message waits for an Agent | 24 h | recovery | server |
+| How long a message waits for an Agent | 24 h, read like the period's end: the status shows the message as expired once its time is over, whether or not a poll has recorded it | recovery | server |
 
 What must stay ordered:
 
@@ -293,7 +322,7 @@ What must stay ordered:
 | `max_lease_ms` ≥ window | an Agent execution lease shorter than the window gives away the tolerance the window bought | not enforced; both default so that it holds |
 | access token life > window | otherwise a full proof never exists | the server only sees each token's expiry and cuts the session to it; the computer's refresh rule keeps the lead near the window |
 | A held lease is renewed while at least two more renewals fit before its end | two lost renewals in a row must not lose a lease | the Agent execution lease is renewed every 5 s, which meets it under every window. The activity lease does not meet it today: it is renewed once, with 20 s left |
-| claim window ≤ window | an offer must not outlive what it would become | the claim window equals the smallest window; it is a literal in several server files, not yet one constant |
+| claim window ≤ window | an offer must not outlive what it would become | the server's `CLAIM_WINDOW_MS` (30 s) names the claim window, and the server is not built when it is longer than the default window, the smallest a host grants. The database holds several records to the same 30 s (see below) |
 
 Clocks that are not part of this design, because no computer's authority
 depends on them: the server's own worker leases (among them the 30-second
@@ -310,7 +339,7 @@ renewal offers (7 days).
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A start that was never claimed is tried again | implemented (demand retries, `shared-demand-retry-v1`) |
 | 3. A process that ended before the turn began is tried again | implemented on the server (migration `2026-11-26-000157`, `shared-demand-retry-v2`), off unless the operator sets `enable_shared_demand_reoffers`, for a computer that says, in each demand start and read, that it takes messages back (`reoffers`): the message is a waiting message again at the fence, a retry is opened by the evidence that the process stopped, a message whose computer does not come back for it ends after one bound counted from its first process (`retry_lapsed`), and while a process holds a message before its turn the next one is not offered. A computer says it from the Hagency Desktop change that is in review; an earlier daemon does not, and for it the message ends as before |
-| 3. A message that ended without a turn can be sent again | implemented: its status names the Agent and says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent is in the room and not stopped). This covers a message that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its time, one whose start failed for good, and one taken back that then ended. Not yet one that ended under the budget protocol (an Agent with an applied budget): its end is not counted as an end without a turn, so its sender is not offered "Send again". Hagency Desktop uses it to name the Agent in the room and to offer the sender "Send again" |
+| 3. A message that ended without a turn can be sent again | implemented. Every message that ended without a turn (one given to a process that never began it, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, and one taken back that then ended) names the Agent, says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent can serve a new message; see rule 3) and which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance or on usage once its time was over), `head_changed`, `retry_exhausted` or, for one taken back, `retry_lapsed`). Hagency Desktop uses `canSendAgain` to name the Agent in the room and to offer the sender "Send again" |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop |
 | 5. The wall clock only ends a lease early | holds for a proof, a ticket and a start window. In review in Hagency Desktop: its store still refuses an activity lease that reads longer than allowed by the wall clock, which a slow clock makes of every fresh lease. Open: the Agent execution lease (rule 5) |
@@ -328,12 +357,28 @@ Each of these is a bound that was looked at and left, with its reason.
   computer (rule 4), asked again until the lease ends. So a stall of the
   server's Matrix observation, or of the path between computer and server,
   that outlasts the lead a lease had when the stall began ends the pooled
-  processes it covers: about 110 s under a 120 s window, about 20 s under
-  30 s. What such a process had been given and not begun is rule 3's subject.
+  processes it covers. Today that lead is about 20 s under every window: an
+  activity lease is `least(session end, now + 30 s)` whatever the window,
+  and the computer renews it when 20 s or less of it are left (the premise;
+  a runtime that renews later has less). Once activity leases follow the
+  window and are renewed when they have lost 10 s (in review), the lead
+  becomes the window less about 10 s: about 110 s under a 120 s window.
+  What such a process had been given and not begun is rule 3's subject.
 - **An Agent with an applied budget has no further attempts.** Its protocol
-  has no retry: a start that fails ends the message, and the sender is told.
-- **The claim window is not one constant.** It is the literal 30 000 in
-  several server files.
+  has no retry: a start that fails ends the message. Its status says so and
+  its sender can send it again, as for every other message that ended
+  without a turn. A message that the earlier protocol had started, or had
+  blocked other than on allowance, when the budget was applied ends the same
+  way (`head_changed`): the budget's queue cannot take it up, and offers the
+  next message instead of waiting behind it.
+- **The claim window is one constant with one exception.** The tickets about
+  a pooled process still spell out 30 s, because the helper that ends them
+  also ends that process's activity lease, which is held and is to follow
+  the window. The database holds the start window of a runtime command
+  and of a pooled process's command, and the tickets about a process, a
+  budget and a settlement, to 30 s as well (migrations
+  `2026-11-19-000114`, `000115`, `000118`, `000122` and `000124`): a
+  longer claim window needs a migration too.
 
 ## Bringing a change of the window into service
 
@@ -359,8 +404,20 @@ Going back:
   everything a newer one wrote, because an offer never exceeds 30 seconds.
 - Do not run the down migration of `2026-11-26-000155` while pool Agents
   exist: it puts back the rule that fences on a smaller end.
-- The down migration of `2026-11-26-000156` drops the fence records with
-  their tables; run it only when that history is not needed.
+- The down migration of `2026-11-26-000156` removes the rules that write
+  fence records and keeps the records (`management_agent_fences` and
+  `management_shared_runtime_fences`); a fence made while it is down leaves
+  none. Its up step can run again over the kept records and puts the rules
+  back.
+- Migration `2026-11-26-000154`, which comes with activity leases that follow
+  the window (in review), has a lower number than `000155` and `000156`. A
+  database that already has those applies it out of version order, because
+  the server applies every migration it has not recorded, whatever its
+  number. That is harmless: it only replaces the CHECK constraint on the
+  epochs of activity renewal rows, which neither later migration reads or
+  changes.
+- This release acts on `reoffers` (rule 3): "Bringing the re-offer into
+  service, and back" below has its order and its way back.
 
 ## Bringing the re-offer into service, and back
 
@@ -393,9 +450,9 @@ Going back:
    (`retry_lapsed`), or earlier when its computer reads it without
    `reoffers` (`reoffer_unsupported`), or at the computer's next demand
    poll when the stop that gave it back came on the plain route and no
-   retry was asked for (`head_changed`). A retry that was already opened may still be
-   started; if that process also ends before its turn, the message ends as
-   for any start, as before.
+   retry was asked for (`head_changed`). A retry that was already opened
+   may still be started; if that process also ends before its turn, the
+   message ends as for any start, as before.
 2. **Let those answers settle**: until no message that was taken back is
    still waiting. Each one ends by its bound (the table above), so this
    takes minutes; the operations guide has the query.
@@ -408,8 +465,9 @@ Going back:
    the fence record of `2026-11-26-000156` without the release counts and
    the stop source. It keeps the record of what was taken back
    (`management_shared_demand_released_bindings`), that table's guards, and
-   the functions `shared_work_never_began()`, `shared_start_reoffers()` and
-   `shared_agent_serves()`. Run it only after the binary went back: this
-   release applies the migration again when it next starts. Without the
-   down migration, an older binary takes nothing back, because it does not
-   set the session setting.
+   the functions `shared_work_never_began()`, `shared_start_reoffers()`,
+   `shared_agent_serves()` and `shared_agent_budget_applied()`, which that
+   table's guards use (and this release's chat status). Run it only after
+   the binary went back: this release applies the migration again when it
+   next starts. Without the down migration, an older binary takes nothing
+   back, because it does not set the session setting.

@@ -793,7 +793,7 @@ impl DomainStore {
                     sql_query("UPDATE hagency_agent_v1.management_shared_replies SET state='blocked' WHERE work_id=$1").bind::<Text,_>(&reply.work_id).execute(db).await?;return Ok(None);
                 }
                 if hash(&reply.content)!=reply.content_digest {return Err(Error::Conflict("shared_reply_changed"));}
-                let token=secret_token();sql_query("UPDATE hagency_agent_v1.management_shared_replies SET state='issued',lease_hash=$2,lease_until_ms=$3 WHERE work_id=$1").bind::<Text,_>(&reply.work_id).bind::<Text,_>(hash(&token)).bind::<BigInt,_>(now+30_000).execute(db).await?;
+                let token=secret_token();sql_query("UPDATE hagency_agent_v1.management_shared_replies SET state='issued',lease_hash=$2,lease_until_ms=$3 WHERE work_id=$1").bind::<Text,_>(&reply.work_id).bind::<Text,_>(hash(&token)).bind::<BigInt,_>(now+crate::identity::CLAIM_WINDOW_MS).execute(db).await?;
                 Ok(Some(SendClaim {work_id:reply.work_id,content:decode(&reply.content)?,content_digest:reply.content_digest,transaction:reply.matrix_txn_id,scope:m}))
             }).await?
             };

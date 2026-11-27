@@ -103,6 +103,61 @@ fn shared_demand_canonical_offer_start_binding_preserves_existing_bytes() {
     let b: SharedDemandBinding = serde_json::from_value(v["binding"].clone()).unwrap();
     assert_eq!(allocation_digest(&b).unwrap(), v["bindingDigest"]);
 }
+// `reoffers` (time-limit rule 3, an open decision) is read before any server
+// acts on it: a start that carries it is kept as one more field at its end,
+// and one that does not keeps the bytes and the digest it always had.
+#[test]
+fn shared_demand_reoffers_is_read_and_kept_as_sent() {
+    let v: serde_json::Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/management-shared-demand-v1.json"
+    ))
+    .unwrap();
+    let o: SharedDemandOffer = serde_json::from_value(v["offer"].clone()).unwrap();
+    let mut s: SharedDemandStartInput = serde_json::from_value(v["start"].clone()).unwrap();
+    assert!(!s.reoffers);
+    let plain = serde_json::to_string(&s).unwrap();
+    assert!(!plain.contains("reoffers"));
+    assert_eq!(allocation_digest(&s).unwrap(), v["startDigest"]);
+    let mut said = v["start"].clone();
+    said["reoffers"] = json!(true);
+    s = serde_json::from_value(said).unwrap();
+    assert!(s.reoffers);
+    s.validate_for(&o).unwrap();
+    assert_eq!(
+        serde_json::to_string(&s).unwrap(),
+        format!("{},\"reoffers\":true}}", &plain[..plain.len() - 1])
+    );
+    assert_eq!(
+        allocation_digest(&s).unwrap(),
+        "aa2218045f25baf4ecef07e3e6038406029c5c9984f519622c503ff49264e4f4"
+    );
+    // The reads take it too, and still refuse any other unknown field.
+    let poll: SharedDemandPollInput =
+        serde_json::from_value(json!({"after": null, "retries": true, "reoffers": true})).unwrap();
+    assert!(poll.retries && poll.reoffers);
+    let recover: SharedDemandRecoverInput = serde_json::from_value(
+        json!({"demandDigest": v["demandDigest"], "retries": true, "reoffers": true}),
+    )
+    .unwrap();
+    assert!(recover.reoffers);
+    assert!(
+        serde_json::from_value::<SharedDemandPollInput>(json!({"after": null, "reoffer": true}))
+            .is_err()
+    );
+    // A block is kept as sent: without the field its bytes are unchanged.
+    let mut block: SharedDemandBlockInput = serde_json::from_value(json!({
+        "demandDigest": v["demandDigest"], "expectedControlRevision": 2,
+        "reason": "usage_unrepresentable", "budget": null, "retries": true
+    }))
+    .unwrap();
+    let unchanged = serde_json::to_string(&block).unwrap();
+    assert!(!unchanged.contains("reoffers"));
+    block.reoffers = true;
+    assert_eq!(
+        serde_json::to_string(&block).unwrap(),
+        format!("{},\"reoffers\":true}}", &unchanged[..unchanged.len() - 1])
+    );
+}
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn shared_demand_idle_promotion_preserves_original_event_and_one_work() {
@@ -221,6 +276,96 @@ async fn shared_demand_stopped_head_atomic_start_replay_and_promotion() {
         .unwrap();
     assert_eq!(w.created_at_ms, time);
     assert_eq!(w.runtime_command_digest, next.command_digest);
+}
+#[derive(QueryableByName)]
+struct StoredStart {
+    #[diesel(sql_type = Text)]
+    payload: String,
+    #[diesel(sql_type = Text)]
+    digest: String,
+}
+// A start that says `reoffers` (time-limit rule 3, an open decision) is taken
+// and kept exactly as sent, and nothing acts on it: its replay is the same
+// start, and a replay that differs only in `reoffers` is a changed start. So
+// a start recorded by a server that acts on `reoffers` is answered again by
+// this one, and the reverse.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_start_that_says_reoffers_replays_as_sent() {
+    for says in [true, false] {
+        let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+        let (d, _) = qualify(&f).await;
+        let stopped = attempts::stop(&f, &d, 201).await;
+        retain(&f, &r, &m, &format!("demand_reoffers_{says}")).await;
+        let service = svc(&f, m.gateway.clone());
+        // The reads take the field as well.
+        let polled = post(
+            &service,
+            "shared-execution/demands/poll",
+            &f.owner.token,
+            json!({"after": null, "retries": true, "reoffers": true}),
+            StatusCode::OK,
+        )
+        .await;
+        let o: SharedDemandStatus = serde_json::from_value(polled["demand"].clone()).unwrap();
+        post(
+            &service,
+            &format!("shared-execution/demands/{}/recover", o.offer.demand_id),
+            &f.owner.token,
+            json!({"demandDigest": o.demand_digest, "retries": true, "reoffers": true}),
+            StatusCode::OK,
+        )
+        .await;
+        let mut input = start_input(&o, &d, &stopped);
+        input.reoffers = says;
+        let accepted = post(
+            &service,
+            &format!("shared-execution/demands/{}/start", o.offer.demand_id),
+            &f.owner.token,
+            serde_json::to_value(&input).unwrap(),
+            StatusCode::OK,
+        )
+        .await;
+        let next: crate::management_shared_attempt_types::SharedAttemptDelivery =
+            serde_json::from_value(accepted["delivery"].clone()).unwrap();
+        assert!(next.execution_allowed);
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        let kept = sql_query("SELECT payload,digest FROM hagency_agent_v1.management_shared_demand_starts WHERE demand_id=$1")
+            .bind::<Text, _>(&o.offer.demand_id)
+            .get_result::<StoredStart>(&mut db)
+            .await
+            .unwrap();
+        assert_eq!(kept.payload, serde_json::to_string(&input).unwrap());
+        assert_eq!(kept.payload.contains("\"reoffers\":true"), says);
+        assert_eq!(kept.digest, allocation_digest(&input).unwrap());
+        let replay = f
+            .domain
+            .start_shared_demand(
+                &f.owner.p,
+                &f.policy,
+                &o.offer.demand_id,
+                input.clone(),
+                &m.gateway,
+            )
+            .await
+            .unwrap();
+        assert!(!replay.execution_allowed);
+        assert_eq!(replay.command.command_id, next.command.command_id);
+        let mut flipped = input;
+        flipped.reoffers = !says;
+        assert!(matches!(
+            f.domain
+                .start_shared_demand(
+                    &f.owner.p,
+                    &f.policy,
+                    &o.offer.demand_id,
+                    flipped,
+                    &m.gateway
+                )
+                .await,
+            Err(crate::Error::Conflict("shared_demand_start_changed"))
+        ));
+    }
 }
 
 async fn recovered(f: &Fixture, o: &SharedDemandStatus) -> SharedDemandStatus {

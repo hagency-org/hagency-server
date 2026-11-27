@@ -52,6 +52,12 @@ async fn original_block(
         .bind::<Text,_>(id).get_result::<Block>(db).await.optional()?
         .map(original_block_evidence).transpose()
 }
+/// A v2 block other than on allowance: v3 never takes such a message up (its
+/// records refuse it, `validate_shared_budget_demand`).
+async fn ended_in_v2(db: &mut AsyncPgConnection, id: &str) -> Result<bool> {
+    Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks WHERE demand_id=$1 AND reason<>'budget_blocked') AS matched")
+        .bind::<Text,_>(id).get_result::<Flag>(db).await?.matched)
+}
 async fn started(db: &mut AsyncPgConnection, id: &str) -> Result<Option<Started>> {
     Ok(sql_query("SELECT runtime_id,payload,digest FROM hagency_agent_v1.management_shared_budget_demand_starts WHERE demand_id=$1")
         .bind::<Text,_>(id).get_result(db).await.optional()?)
@@ -237,13 +243,16 @@ impl DomainStore {
                     }
                     if existing.is_none()&&awaits_first_start(db,&q,&h).await?{break;}
                     let d=if let Some(d)=existing{d}else{ensure(db,&q,&h).await?};let o=offer(&d,&q)?;
-                    if super::started(db,&d.id).await?.is_some()||super::binding(db,&d.id).await?.is_some(){break;}
+                    if super::binding(db,&d.id).await?.is_some(){break;}
+                    // The applied budget retired v2 for this Agent. A message v2
+                    // started, or ended other than on allowance, can be neither
+                    // bound there nor started here: end it, and offer the next.
+                    if super::started(db,&d.id).await?.is_some()||ended_in_v2(db,&d.id).await?{terminal(db,&d,"head_changed").await?;continue;}
                     let (pin,_,known)=super::super::super::super::budget::execution_head(db,&w.request_id,&self.server).await?;
                     if started(db,&d.id).await?.is_none(){save_pin(db,&d,&pin).await?;}
                     let s=started(db,&d.id).await?;
                     let expected=s.as_ref().map_or(o.predecessor_command_id.as_str(),|v|v.runtime_id.as_str());
                     if h.id!=expected || s.is_some()&&h.state=="stopped" {terminal(db,&d,"head_changed").await?;continue;}
-                    if original_block(db,&d.id).await?.is_some_and(|b|b.reason!="budget_blocked"){break;}
                     if s.is_none()&&known>=pin.effective_ceiling_tokens {
                         let payload=wire(&json!({"reason":"budget_blocked","source":"known_consumption_exhausted","executionBudget":pin}))?;block(db,&d,&pin,"budget_blocked",&payload).await?;break;
                     }
