@@ -95,7 +95,8 @@ pub(super) async fn query(
                 -- waiting message: `head_changed`, which every reader's
                 -- Desktop reads as "not processed", with its block's cause as
                 -- `endReason` (`retry_lapsed`, `retry_exhausted`,
-                -- `reoffer_unsupported` or `head_changed`).
+                -- `retry_unsupported`, `reoffer_unsupported` or
+                -- `head_changed`).
                 ELSE i.reason END,
             'resourceRecovery', CASE WHEN queue.reason='budget_blocked' AND req.id IS NOT NULL
                 THEN jsonb_build_object('requestId',req.id,'role',
@@ -192,7 +193,8 @@ pub(super) async fn query(
                 WHEN w.id IS NOT NULL THEN 'never_started'
                 WHEN i.state IN ('cancelled','expired','paused') THEN i.reason
                 -- A v2 end names its cause: head_changed, retry_exhausted
-                -- or retry_unsupported.
+                -- or retry_unsupported, and for a message given back also
+                -- retry_lapsed or reoffer_unsupported.
                 WHEN i.state='blocked' AND i.reason NOT IN ('budget_blocked','usage_unrepresentable')
                     THEN coalesce((SELECT b.payload::jsonb#>>'{}' FROM hagency_agent_v1.management_shared_demand_blocks b
                         WHERE b.demand_id=d.id AND jsonb_typeof(b.payload::jsonb)='string'), i.reason)

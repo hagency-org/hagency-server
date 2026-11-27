@@ -175,17 +175,17 @@ ended it. One taken back reads as any other end of a waiting message of the
 earlier protocol: state `blocked`, reason `head_changed`, which Hagency
 Desktop reads as "did not process" for every reader, and as the record that
 ended it the reason of its block (`retry_lapsed`, `retry_exhausted`,
-`reoffer_unsupported` or `head_changed`). Its sender can send it again with
-one action. A message sent again is a new message. The server decides who is
-offered that, and offers it only while the Agent can serve a new message:
-its reservation stands (neither it nor the intent behind it is fenced), its
-executor's ledger was not replaced, it has not been stopped, and it is a
-verified member of the room. An Agent with an applied budget serves too,
-through its own queue. The offer is part of the status of the reader's 16
-newest messages in the room (their own, and every message to an Agent they
-own); an older message is not offered. The server takes a message back only
-from an Agent that serves by this same rule, which is written once, and only
-while no budget was applied to it.
+`retry_unsupported`, `reoffer_unsupported` or `head_changed`). Its sender
+can send it again with one action. A message sent again is a new message.
+The server decides who is offered that, and offers it only while the Agent
+can serve a new message: its reservation stands (neither it nor the intent
+behind it is fenced), its executor's ledger was not replaced, it has not
+been stopped, and it is a verified member of the room. An Agent with an
+applied budget serves too, through its own queue. The offer is part of the
+status of the reader's 16 newest messages in the room (their own, and every
+message to an Agent they own); an older message is not offered. The server
+takes a message back only from an Agent that serves by this same rule, which
+is written once, and only while no budget was applied to it.
 
 Every message that ended without a turn ends the same way for this rule,
 whichever record ended it: work that was given to a process that never
