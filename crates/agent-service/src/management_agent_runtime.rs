@@ -92,13 +92,13 @@ async fn current(db: &mut AsyncPgConnection, r: &RuntimeRow, w: &Work, now: i64)
         if c.reserve_command.renewal_mode.is_none()
             || !identity_retained(db, w, &c.reserve_command, now).await?
         {
-            fence(db, &w.intent_id).await?;
+            fence(db, &w.intent_id, "runtime_readiness").await?;
         }
         return Ok(false);
     }
     let codex=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_requests r ON r.id=a.request_id LEFT JOIN hagency_agent_v1.management_projects p ON p.id=r.plan_id JOIN hagency_agent_v1.management_contributions c ON c.id=COALESCE(r.pool_contribution_id,p.contribution_id) WHERE a.id=$1 AND c.runtime='codex') AS matched").bind::<Text,_>(&r.assignment_id).get_result::<Flag>(db).await?.matched;
     if !codex {
-        fence(db, &w.intent_id).await?;
+        fence(db, &w.intent_id, "runtime_codex").await?;
         return Ok(false);
     }
     matrix_current(db, &r.assignment_id, now).await
@@ -324,7 +324,7 @@ impl DomainStore {
 const EXPIRED_INTENTS: &str = "SELECT i.id FROM hagency_agent_v1.management_agent_runtime_commands c JOIN hagency_agent_v1.management_shared_assignments a ON a.id=c.assignment_id JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=a.request_id WHERE c.operation='agent.runtime.provision' AND c.expires_at_ms<=$1 AND i.state<>'fenced' AND NOT (i.payload::jsonb ? 'renewalMode') ORDER BY c.id LIMIT 64";
 
 async fn runtime_sweep(db: &mut AsyncPgConnection, now: i64) -> Result<()> {
-    sql_query(format!("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE id IN({EXPIRED_INTENTS})")).bind::<BigInt,_>(now).execute(db).await?;
+    sql_query(format!("{}UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' FROM fence_source WHERE id IN({EXPIRED_INTENTS})", fence_source("runtime_sweep"))).bind::<BigInt,_>(now).execute(db).await?;
     Ok(())
 }
 /// Returns the ledger epoch the accepted receipt is numbered in.
