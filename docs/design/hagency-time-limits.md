@@ -87,8 +87,12 @@ a number became smaller.
 A fence is not undone, so it is never silent. The fence of a reservation and
 the fence of a process each leave a record of when it happened, whether a rule
 of the database or the service did it, and what things looked like at that
-moment: for a reservation everything it stands on, for a process among other
-things how long its lease had been over (`OPERATIONS.md`).
+moment (`OPERATIONS.md`). For a reservation that is everything it stands on,
+how long ago its reserve command, allocation and grants had ended, and, when
+the service fenced it, which part of the service did. An allocation or a
+grant keeps its state when its time runs out, so only those times tell a
+reservation fenced for its time from one fenced for another reason. For a
+process it is, among other things, how long its lease had been over.
 
 A session never ends later than a proof that was accepted for it allowed:
 its end is the latest `min(access token expiry, time of proof + window)` among
@@ -402,6 +406,11 @@ Going back:
   `management_shared_runtime_fences`); a fence made while it is down leaves
   none. Its up step can run again over the kept records and puts the rules
   back.
+- The down migration of `2026-11-27-000158` puts back the reservation's
+  record rule of `000156` and keeps every record; a fence made while it is
+  down leaves a record without `source` and without the times that had
+  ended. A server that names its fences runs on such a database unchanged:
+  the earlier rule does not read the name. Its up step can run again.
 - Migration `2026-11-26-000154`, which comes with activity leases that follow
   the window (in review), has a lower number than `000155` and `000156`. A
   database that already has those applies it out of version order, because

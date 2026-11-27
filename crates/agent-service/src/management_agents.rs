@@ -618,7 +618,7 @@ impl DomainStore {
             let r=row(db,id).await?;if r.manager_user_id!=p.user_id{return Err(Error::Unauthorized("project_manager_required"));}
             if r.revision!=input.expected_revision{return Err(Error::Conflict("management_revision_changed"));}
             if !matches!(r.state.as_str(),"pending_approval"|"approved_waiting_executor"){return Err(Error::Conflict("agent_request_closed"));}
-            sql_query("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE request_id=$1").bind::<Text,_>(id).execute(db).await?;
+            sql_query(fence_source("request_cancelled")+"UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' FROM fence_source WHERE request_id=$1").bind::<Text,_>(id).execute(db).await?;
             sql_query("UPDATE hagency_agent_v1.management_agent_requests SET state='cancelled',revision=revision+1 WHERE id=$1").bind::<Text,_>(id).execute(db).await?;
             let result=view(db,id,p,now).await?;notice(db,&result,now).await?;Self::audit(db,p,"agent.cancel",id,now).await?;receipt(db,p,&input.command_id,"agent.cancel",&digest,&result).await?;Ok(result)
         }).await

@@ -198,7 +198,7 @@ async fn sweep(
 
     // An Agent intent can only be bound to this device through one of its
     // grants, so the fences above reached all of them. This makes it certain.
-    sql_query("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE executor_owner_user_id=$1 AND executor_device_id=$2 AND state<>'fenced'")
+    sql_query(fence_source("ledger_replaced") + "UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' FROM fence_source WHERE executor_owner_user_id=$1 AND executor_device_id=$2 AND state<>'fenced'")
         .bind::<Text, _>(owner)
         .bind::<Text, _>(device)
         .execute(db)

@@ -2054,7 +2054,15 @@ async fn a_fence_the_service_makes_is_recorded_as_its_own() {
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     // No record before a fence.
     assert!(fence_record(&mut db, &request.id).await.is_null());
-    // A statement of the service's own, as its sweeps and its cancel make it.
+    // A name that an earlier statement left in the setting belongs to that
+    // statement, not to a later fence.
+    db.batch_execute(
+        "SELECT set_config('hagency.fence_source','request_cancelled@'||statement_timestamp(),false)",
+    )
+    .await
+    .unwrap();
+    // A statement of the service's own that names nothing, as a server from
+    // before migration 000158 makes its sweeps and its cancel.
     sql_query("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE request_id=$1 AND state<>'fenced'")
         .bind::<Text, _>(&request.id)
         .execute(&mut db)
@@ -2063,7 +2071,9 @@ async fn a_fence_the_service_makes_is_recorded_as_its_own() {
     let record = fence_record(&mut db, &request.id).await;
     assert_eq!(record["cause"], "service");
     assert_eq!(record["recent"], true);
-    // Nothing the reservation depends on had changed.
+    assert!(record["facts"]["source"].is_null());
+    // Nothing the reservation depends on had changed, and none of its times
+    // had ended.
     assert_eq!(record["facts"]["sessionRevoked"], false);
     assert_eq!(record["facts"]["sessionEnded"], false);
     assert_eq!(record["facts"]["deviceRevoked"], false);
@@ -2071,8 +2081,11 @@ async fn a_fence_the_service_makes_is_recorded_as_its_own() {
     assert_eq!(record["facts"]["startEnded"], false);
     assert!(record["facts"]["requestState"].is_string());
     assert!(record["facts"]["poolState"].is_string());
+    assert!(record["facts"]["reserveEndedMsAgo"].as_i64().unwrap() < 0);
+    assert!(record["facts"]["poolGrantEndedMsAgo"].as_i64().unwrap() < 0);
     // Going back past the migration stops new records and keeps this one;
-    // going forward again puts the rules back over the kept records.
+    // going forward again puts the rules back over the kept records, and the
+    // rule of migration 000158 over the rule of this one.
     let rules = async |db: &mut AsyncPgConnection| {
         sql_query("SELECT count(*) AS count FROM pg_trigger WHERE NOT tgisinternal AND tgname IN('record_agent_fence','record_shared_runtime_fence')")
             .get_result::<Count>(db)
@@ -2094,9 +2107,97 @@ async fn a_fence_the_service_makes_is_recorded_as_its_own() {
     ))
     .await
     .unwrap();
+    db.batch_execute(include_str!(
+        "../migrations/domain/2026-11-27-000158_agent_fence_source/up.sql"
+    ))
+    .await
+    .unwrap();
     assert_eq!(back, (0, record.clone()));
     assert_eq!(rules(&mut db).await, 2);
     assert_eq!(fence_record(&mut db, &request.id).await, record);
+}
+
+/// Moves the end of `request`'s allocation five seconds into the past by the
+/// database's clock, as the end of its time does: its state stays `reserved`.
+async fn allocation_ended(db: &mut AsyncPgConnection, request: &str) {
+    sql_query("UPDATE hagency_agent_v1.management_allocations SET expires_at_ms=(extract(epoch from clock_timestamp())*1000)::bigint-5000 WHERE id=(SELECT allocation_id FROM hagency_agent_v1.management_agent_requests WHERE id=$1)")
+        .bind::<Text, _>(request)
+        .execute(db)
+        .await
+        .unwrap();
+}
+
+/// A reservation whose time is over reads as healthy by the states of what it
+/// stands on, because an allocation keeps its state when its time runs out.
+/// Its record names the part of the service that fenced it, and says which
+/// of its times had ended.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_fence_for_a_time_that_is_over_names_its_source_and_that_time() {
+    let (f, r, _, a) = prepared_matrix().await;
+    let m = matrix_fixture(&f, &r).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    allocation_ended(&mut db, &r.id).await;
+    // The Matrix readiness check, with no sweep before it.
+    f.domain
+        .reconcile_managed_agent_matrix(&a.id, &m.gateway, &m.matrix, Some(&f.policy))
+        .await
+        .unwrap();
+    let record = fence_record(&mut db, &r.id).await;
+    assert_eq!(record["cause"], "service");
+    assert_eq!(record["facts"]["source"], "matrix_readiness");
+    assert_eq!(record["facts"]["requestState"], "approved_waiting_executor");
+    assert_eq!(record["facts"]["allocationState"], "reserved");
+    assert_eq!(record["facts"]["grantState"], "active");
+    let ago = |name: &str| record["facts"][name].as_i64().unwrap();
+    assert!((5_000..65_000).contains(&ago("allocationEndedMsAgo")));
+    assert!(ago("reserveEndedMsAgo") < 0);
+    assert!(ago("grantEndedMsAgo") < 0);
+    // A project Agent has no pool grant.
+    assert!(record["facts"]["poolGrantEndedMsAgo"].is_null());
+    // Going back past migration 000158 keeps the record and puts back the
+    // earlier rule, which reads no name; its up step runs again over it.
+    let names = async |db: &mut AsyncPgConnection| {
+        sql_query("SELECT pg_get_functiondef('hagency_agent_v1.record_agent_fence()'::regprocedure) LIKE '%hagency.fence_source%' AS matched")
+            .get_result::<Check>(db)
+            .await
+            .unwrap()
+            .matched
+    };
+    db.batch_execute(include_str!(
+        "../migrations/domain/2026-11-27-000158_agent_fence_source/down.sql"
+    ))
+    .await
+    .unwrap();
+    assert!(!names(&mut db).await);
+    assert_eq!(fence_record(&mut db, &r.id).await, record);
+    for _ in 0..2 {
+        db.batch_execute(include_str!(
+            "../migrations/domain/2026-11-27-000158_agent_fence_source/up.sql"
+        ))
+        .await
+        .unwrap();
+    }
+    assert!(names(&mut db).await);
+    assert_eq!(fence_record(&mut db, &r.id).await, record);
+}
+
+/// The same end, found by the sweep that runs on each call of the computer
+/// that holds the reservation: the record names the sweep.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_fence_by_the_sweep_names_the_sweep() {
+    let (f, r, _, _) = prepared_matrix().await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    allocation_ended(&mut db, &r.id).await;
+    f.domain
+        .poll_managed_agent_executor(&f.owner.p, &f.policy, ExecutorPollInput::default())
+        .await
+        .unwrap();
+    let record = fence_record(&mut db, &r.id).await;
+    assert_eq!(record["cause"], "service");
+    assert_eq!(record["facts"]["source"], "project_sweep");
+    assert!(record["facts"]["allocationEndedMsAgo"].as_i64().unwrap() >= 5_000);
 }
 
 #[tokio::test]

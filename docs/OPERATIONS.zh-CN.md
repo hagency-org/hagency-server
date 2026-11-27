@@ -157,6 +157,18 @@ PostgreSQL runner 创建并删除专用随机测试库，不对现有业务库�
 
 被收回（fenced）的 Agent 预留不会恢复，因此每次收回都在 `hagency_agent_v1.management_agent_fences` 留下一条记录，说明何时、为何：`fenced_at_ms`；`cause` 为 `dependency`（预留依赖的某一行发生了变化：会话或设备被撤销、授权关闭、资源池被撤回）或 `service`（服务自身的决定：启动超时、请求被取消、执行端不再持有该预留）；`facts` 是一个 JSON 对象，记下当时这些行的状态（`sessionRevoked`、`sessionEnded`、`deviceRevoked`、`deviceGenerationChanged`、`ownerActive`、`requestState`、`allocationState`、`grantState`、`poolGrantState`、`poolState`、`setupState`、`planState`、`projectActive`、`roomActive`、`startEnded`），其中不正常的那一项就是原因。此记录出现之前被收回的预留没有记录。
 
+分配和授权的时间到期时，它们的状态不会改变，所以记录还写明收回时预留命令、分配、分配所属的授权和资源池授权各自已经结束多久（`reserveEndedMsAgo`、`allocationEndedMsAgo`、`grantEndedMsAgo`、`poolGrantEndedMsAgo`）。为负表示那个时间当时还没到，即原因不是它；资源池 Agent 后来的授权可以让它的预留延续到预留命令结束之后。服务自身做出的收回在 `source` 中写明是服务的哪一部分：
+
+- `project_sweep`、`pool_sweep`：持有预留的电脑每次调用时都会运行的清理检查，发现它的请求、预留命令、分配、授权、项目配置或授权版本已改变或结束，或者它的设备或会话已改变（资源池 Agent 还包括它的资源池授权，或被拒绝的后继预留）。
+- `runtime_sweep`：Agent 进程的启动超时（不按周期续期的预留）。
+- `runtime_readiness`：进程的启动或预留已不再有效，且没有任何东西保留这个 Agent。`runtime_codex`：Agent 背后的贡献不再提供它所运行的运行时。
+- `matrix_readiness`：Matrix 工作之前的检查发现预留已不再有效（例如时间已到），且没有任何东西保留这个 Agent。`matrix_membership`：它的 Matrix 成员资格已被作废。`matrix_identity`：Agent 本身或它的房间和空间已与预留不符。`matrix_observation`：它的房间已不能再作为项目或资源池的房间读取。`matrix_pool_invitation`：资源池房间对服务的邀请被拒绝。
+- `executor_delivery`、`executor_result`、`executor_acknowledgement`、`assignment_read`：电脑收到命令、报告结果、得到确认或读取分配时，这个预留已经不再被保留。
+- `request_cancelled`：管理者取消了请求。
+- `ledger_replaced`：电脑的账本被替换。
+
+数据库规则所做的收回没有 `source`，迁移 `2026-11-27-000158` 之前的服务器所做的收回也没有。该迁移的回退保留所有记录；回退期间新写的记录既没有 `source`，也没有这四个时间。
+
 资源池 Agent 的进程被作废（fenced）时，同样在 `hagency_agent_v1.management_shared_runtime_fences` 留下一条记录：`fenced_at_ms`；`cause` 为 `dependency`（数据库规则所为：Agent 被停止，或它的预留被收回）或 `service`（服务所为：发现租约已过期，或超时兜底放弃了该进程）；`facts` 记下 `stateBefore`、`stopped`、`leaseEndedMsAgo`（作废时活动租约已过期多久；为负表示租约当时还有时间，即原因不是租约）、`startWindowEndedMsAgo`、`controlMode`、`assignmentState`、`reservationFenced`，以及该进程已拿到但从未开始的消息数（`workNeverStarted`）和结果未知的消息数（`workUnknown`）。据此可以判断是哪个时限结束了一次运行。迁移 `2026-11-26-000156` 的回退只停止写入这两类新记录，已有记录保留。
 
 离线未开始请求的期限由 `queue.event_ttl_ms` 配置，默认 24 小时，范围 1 秒至 30 天，按可信 AS 入站时间计时，路由重试不延长。过期请求不能领取、ACK 或开始新的模型/工具动作；已开始任务的已知原结果仍须核验当前权限后结算及发送，unknown 与成本保留不自动释放。设备 poll 必须指定 `bindingId`，只领取明确启动的 Room。发现所有者成员资格或关联失效、傀儡被移除后，撤销受影响 binding 并递增 generation，进入 leaving 并在确认实际退群后 left；重新加入不自动恢复，需显式重新绑定/采纳，旧 dispatch 不复活。发送还核验傀儡当前 `m.room.message` power level；已观测撤权的旧回复不会在恢复权限后自动发送。
