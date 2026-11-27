@@ -87,8 +87,12 @@ a number became smaller.
 A fence is not undone, so it is never silent. The fence of a reservation and
 the fence of a process each leave a record of when it happened, whether a rule
 of the database or the service did it, and what things looked like at that
-moment: for a reservation everything it stands on, for a process among other
-things how long its lease had been over (`OPERATIONS.md`).
+moment (`OPERATIONS.md`). For a reservation that is everything it stands on,
+how long ago its reserve command, allocation and grants had ended, and, when
+the service fenced it, which part of the service did. An allocation or a
+grant keeps its state when its time runs out, so only those times tell a
+reservation fenced for its time from one fenced for another reason. For a
+process it is, among other things, how long its lease had been over.
 
 A session never ends later than a proof that was accepted for it allowed:
 its end is the latest `min(access token expiry, time of proof + window)` among
@@ -203,35 +207,46 @@ whichever record ended it: work that was given to a process that never
 began it, a message that was stopped while it waited or arrived while the
 Agent was stopped, one whose start failed for good (for an Agent with an
 applied budget too), one that was taken back and then ended, one blocked on
-usage without a budget (below), and one that waited out its 24 hours or its
-period. The status derives that end when it is read, from every record that
+usage (below), and one that waited out its 24 hours or its period. The status derives that end when it is read, from every record that
 can end a message, and writes nothing: a message whose time is over reads as
 ended before any poll has recorded it. One end reads one reason whichever
 record holds it: a message that waited out its time reads `event_expired`,
 also when the budget's queue recorded it (as `expired`), and so does one
-blocked on allowance once its time is over (or one that an applied budget
-blocked on usage), never the reason of its block, which says it still
-waits. A message that the earlier protocol ended keeps that end when a
+blocked on allowance once its time is over, never the reason of its block,
+which says it still waits. A message that the earlier protocol ended keeps that end when a
 budget is applied later, also once the budget's queue has recorded an end of
 its own for it. A message taken back reads `head_changed` once a budget is
 applied to its Agent, as the budget's queue then records it, and its bound
 later records the same reason for its computer.
 
-A block on usage (`usage_unrepresentable`) without a budget ends the message
-at once, with that reason. The computer blocks a message so when it cannot
-account for the Agent's earlier calls in the current period (for an Agent
-without periods, in its whole life): a call whose usage overflowed or could
-not be observed, or one it cannot match to the Agent's assignment. Nothing
-clears that: neither the owner nor the sender can change it, and an applied
-budget counts the same calls. Waiting out the message's time would
-therefore change nothing, and a copy sent in the same period is blocked the
-same way, so its sender is offered to send it again only once the Agent's
-period has turned since it arrived, and never for an Agent without periods.
+A block on usage (`usage_unrepresentable`) ends the message at once, with
+that reason, with or without an applied budget. The computer blocks a
+message so when it cannot account for the Agent's earlier calls in the
+current period (for an Agent without periods, in its whole life): a call
+whose usage overflowed or could not be observed, or one it cannot match to
+the Agent's assignment. Nothing clears that: neither the owner nor the
+sender can change it, and an applied budget counts the same calls, so a new
+budget does not either. Waiting out the message's time would therefore
+change nothing, and a copy sent in the same period is blocked the same way,
+so its sender is offered to send it again only once the Agent's period has
+turned since it arrived, and never for an Agent without periods.
+
+Under an applied budget, the budget's queue records the end of such a
+message as `head_changed` and offers the next message. A computer keeps only
+the ends `expired`, `cancelled` and `head_changed` of that queue, and every
+version of Hagency Desktop keeps this one. The block beside that end names
+the cause, and the status reads that cause as `endReason`: a computer's own
+record of the message reads `head_changed`, while the room reads
+`usage_unrepresentable`. The status reads this end as soon as the block is
+recorded, before the queue has recorded its end, and keeps it when the
+message's time is over or its Agent is stopped later; the database records
+no block of a message that has ended.
 
 No message holds a queue that cannot move it: a poll passes over an Agent it
 cannot offer a message to and goes on with the next Agent, and the budget's
 queue passes over a message whose room binding is gone or that was blocked
-when it arrived. Neither can be offered again, and the status reads its end.
+when it arrived, and ends one blocked on usage. None of these can be offered
+again, and the status reads its end.
 
 After the start:
 
@@ -327,12 +342,12 @@ own (see "Bringing the re-offer into service, and back").
 | Authorization window | 30 s by default; up to 120 s when `authorization_window_ms` is configured and the client asks with `x-hagency-authorization-window-ms` | held | host configuration and the client's request |
 | Session end | see above; only grows | held | server |
 | Agent execution lease | `least(session end, now + asked length)`; a length outside 1 s to the host's `max_lease_ms` (120 s unless configured lower) is refused | held | server, from the client's request |
-| Activity lease of a working process | `least(session end, now + window)`, and never past the pool reservation it runs under. Today `least(session end, now + 30 s)`; see the state table | held | server |
+| Activity lease of a working process | `least(session end, now + 30 s)` whatever the window, and never past the pool reservation it runs under. A lease that follows the window, `least(session end, now + window)` for a session whose client asks for it, is in review (#97); see the state table | held | server |
 | Start window of a start command | 30 s from issue, or the end of the reservation it runs under when that is sooner (so also the challenge that checks an Agent's Matrix membership) | offered | server |
 | Ticket for one exchange about a process | 30 s; the ticket that lets a process report ready also ends with its command's start window | offered | server |
 | A command, challenge or grant handed out by a poll | not handed out again for 30 s or until the session's end, whichever is sooner (the hand-outs of allocation and parent commands and of replies use the plain 30 s), then handed out again until it is answered | offered | server |
 | Renewal of an Agent execution lease | every 5 s, or after half of what is left when that is sooner | — | computer |
-| Renewal of an activity lease | when 20 s or less of it are left. Under a longer window this has to become "when it has lost 10 s", or the longer lease tolerates no longer silence than the short one; see the state table | — | computer |
+| Renewal of an activity lease | when 20 s or less of it are left; for today's 30 s lease that is 10 s after its grant. A lease as long as a longer window, renewed so, tolerates no longer silence than the 30 s one, so with such leases the rule has to become "when it has lost 10 s" (in review in Hagency Desktop); see the state table | — | computer |
 | Token refresh | as soon as a proof has lost 10 s of the window, at most once a minute for that reason; and always when a proof has 20 s or less left | — | computer |
 | Local session of the daemon | 60 s, reused while 30 s are left, at most 16 at a time | bounds a request | computer |
 | Grace before a silent process is given up | 180 s after the end of its last lease or start window, or after its last recorded step when that is later. The server gives such processes up in the background and in its computer's attempt polls; in both, one it cannot give up is logged and does not hold back the others | recovery | server |
@@ -340,9 +355,9 @@ own (see "Bringing the re-offer into service, and back").
 | A tool request waiting for its sender's answer | as long as the computer asks, 120 s at most | bounds a request | computer, capped by the server |
 | A worker's declaration of what it can run | trusted for 300 s | — | server |
 | A reservation for one encryption exchange | 15 s, of which 12 s are for the exchange | offered | server |
-| A waiting message at the turn of a pool's period | ended as expired (`event_expired`): a message is answered in the period it arrived in. One blocked on allowance ends the same way, and so does one that an applied budget blocked on usage. One blocked on usage without a budget has ended already (rule 3); from the turn on, its sender can send it again. The status reads this end when it is read, whether or not a poll has recorded it (none records it for a blocked message: no poll offers it again) | recovery | server |
+| A waiting message at the turn of a pool's period | ended as expired (`event_expired`): a message is answered in the period it arrived in. One blocked on allowance ends the same way. One blocked on usage has ended already, with or without an applied budget (rule 3); from the turn on, its sender can send it again. The status reads this end when it is read, whether or not a poll has recorded it (none records it for a blocked message: no poll offers it again) | recovery | server |
 | Attempts for one message | the first and at most 3 more | recovery | server |
-| How long a message waits for an Agent | 24 h, read like the period's end: the status shows the message as expired once its time is over, whether or not a poll has recorded it. A message blocked on usage without a budget does not wait (rule 3) | recovery | server |
+| How long a message waits for an Agent | 24 h, read like the period's end: the status shows the message as expired once its time is over, whether or not a poll has recorded it. A message blocked on usage does not wait (rule 3) | recovery | server |
 
 What must stay ordered:
 
@@ -351,7 +366,7 @@ What must stay ordered:
 | 30 s ≤ window ≤ 120 s | shorter loses Agents on a busy computer; longer delays noticing a revocation | a host configuration outside the range is refused |
 | `max_lease_ms` ≥ window | an Agent execution lease shorter than the window gives away the tolerance the window bought | not enforced; both default so that it holds |
 | access token life > window | otherwise a full proof never exists | the server only sees each token's expiry and cuts the session to it; the computer's refresh rule keeps the lead near the window |
-| A held lease is renewed while at least two more renewals fit before its end | two lost renewals in a row must not lose a lease | the Agent execution lease is renewed every 5 s, which meets it under every window. The activity lease does not meet it today: it is renewed once, with 20 s left |
+| A held lease is renewed while at least two more renewals fit before its end | two lost renewals in a row must not lose a lease | the Agent execution lease is renewed every 5 s, which meets it under every window. The activity lease meets it today: it is 30 s long and renewed when 20 s are left, 10 s after its grant. A lease as long as a longer window (in review, #97) meets it only once the computer renews it when it has lost 10 s (in review in Hagency Desktop) |
 | claim window ≤ window | an offer must not outlive what it would become | the server's `CLAIM_WINDOW_MS` (30 s) names the claim window, and the server is not built when it is longer than the default window, the smallest a host grants. The database holds several records to the same 30 s (see below) |
 
 Clocks that are not part of this design, because no computer's authority
@@ -365,11 +380,11 @@ renewal offers (7 days).
 | Rule | State |
 |---|---|
 | 2. A session's end only grows; fencing only on withdrawal | implemented (migration `2026-11-26-000155`) |
-| 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window, and renewing them early enough for it to matter, is in review |
+| 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window is in review (#97), and renewing them early enough for it to matter is in review in Hagency Desktop |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A start that was never claimed is tried again | implemented (demand retries, `shared-demand-retry-v1`) |
 | 3. A process that ended before the turn began is tried again | implemented on the server (migration `2026-11-26-000157`, `shared-demand-retry-v2`), off unless the operator sets `enable_shared_demand_reoffers`, for a computer that says, in each demand start and read, that it takes messages back (`reoffers`): the message is a waiting message again at the fence, a retry is opened by the evidence that the process stopped, a message whose computer does not come back for it ends after one bound counted from its first process (`retry_lapsed`), and while a process holds a message before its turn the next one is not offered. A computer says it from the Hagency Desktop change that is in review; an earlier daemon does not, and for it the message ends as before |
-| 3. A message that ended without a turn can be sent again | implemented. Every message that ended without a turn (one given to a process that never began it, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one taken back that then ended, and one blocked on usage without a budget) names the Agent, says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent can serve a new message, see rule 3; after a block on usage, only once the Agent's period has turned since the message arrived) and which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance, or by an applied budget on usage, once its time was over), `head_changed`, `retry_exhausted`, `usage_unrepresentable` or, for one taken back, `retry_lapsed`). Hagency Desktop uses `canSendAgain` to name the Agent in the room and to offer the sender "Send again" |
+| 3. A message that ended without a turn can be sent again | implemented. Every message that ended without a turn (one given to a process that never began it, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one taken back that then ended, and one blocked on usage) names the Agent, says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent can serve a new message, see rule 3; after a block on usage, only once the Agent's period has turned since the message arrived) and which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance once its time was over), `head_changed`, `retry_exhausted`, `usage_unrepresentable` or, for one taken back, `retry_lapsed`). Hagency Desktop uses `canSendAgain` to name the Agent in the room and to offer the sender "Send again" |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop |
 | 5. The wall clock only ends a lease early | holds for a proof, a ticket and a start window. In review in Hagency Desktop: its store still refuses an activity lease that reads longer than allowed by the wall clock, which a slow clock makes of every fresh lease. Open: the Agent execution lease (rule 5) |
@@ -391,8 +406,9 @@ Each of these is a bound that was looked at and left, with its reason.
   activity lease is `least(session end, now + 30 s)` whatever the window,
   and the computer renews it when 20 s or less of it are left (the premise;
   a runtime that renews later has less). Once activity leases follow the
-  window and are renewed when they have lost 10 s (in review), the lead
-  becomes the window less about 10 s: about 110 s under a 120 s window.
+  window (in review, #97) and are renewed when they have lost 10 s (in review
+  in Hagency Desktop), the lead becomes the window less about 10 s: about
+  110 s under a 120 s window.
   What such a process had been given and not begun is rule 3's subject.
 - **An Agent with an applied budget has no further attempts.** Its protocol
   has no retry: a start that fails ends the message. Its status says so and
@@ -401,15 +417,12 @@ Each of these is a bound that was looked at and left, with its reason.
   budget was applied ends the same way (`head_changed`), and one that it had
   already ended keeps that end: the budget's queue can take neither up, and
   offers the next message instead of waiting behind it.
-- **A block on usage is not settled.** Without a budget, a message that the
-  computer blocked on usage ends at once (rule 3): the computer cannot
-  account for the Agent's earlier calls and keeps that until the period
-  turns, for an Agent without periods for good. Only a way for the computer
-  to settle such calls would let a later message run, and that is a change of
-  its accounting, not of a time limit. Under an applied budget, a block on
-  usage waits for a new budget, as a block on allowance does, and that Agent's
-  budget queue waits behind it; since a new budget counts the same calls, the
-  message ends only with its 24 hours or its period.
+- **A block on usage is not settled.** A message that the computer blocked
+  on usage ends at once, with or without an applied budget (rule 3): the
+  computer cannot account for the Agent's earlier calls and keeps that until
+  the period turns, for an Agent without periods for good. Only a way for
+  the computer to settle such calls would let a later message run, and that
+  is a change of its accounting, not of a time limit.
 - **The claim window is one constant with one exception.** The tickets about
   a pooled process still spell out 30 s, because the helper that ends them
   also ends that process's activity lease, which is held and is to follow
@@ -448,8 +461,13 @@ Going back:
   `management_shared_runtime_fences`); a fence made while it is down leaves
   none. Its up step can run again over the kept records and puts the rules
   back.
+- The down migration of `2026-11-27-000158` puts back the reservation's
+  record rule of `000156` and keeps every record; a fence made while it is
+  down leaves a record without `source` and without the times that had
+  ended. A server that names its fences runs on such a database unchanged:
+  the earlier rule does not read the name. Its up step can run again.
 - Migration `2026-11-26-000154`, which comes with activity leases that follow
-  the window (in review), has a lower number than `000155` and `000156`. A
+  the window (in review, #97), has a lower number than `000155` and `000156`. A
   database that already has those applies it out of version order, because
   the server applies every migration it has not recorded, whatever its
   number. That is harmless: it only replaces the CHECK constraint on the

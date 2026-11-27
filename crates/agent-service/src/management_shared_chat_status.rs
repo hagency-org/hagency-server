@@ -186,9 +186,19 @@ pub(super) async fn query(
         LEFT JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=i.id
         -- The budget queue's end. Its `expired` is the end the intake records
         -- as `event_expired` (the message waited out its time), and reads so.
+        -- A block on usage ends the message at once, as it does without a
+        -- budget: the budget poll records that end as `head_changed`, the
+        -- end every computer keeps, and the block names its cause, read here
+        -- before the poll has recorded it too. No block follows an end (the
+        -- database refuses it), so this is the message's first end.
         LEFT JOIN LATERAL (
-            SELECT CASE x.reason WHEN 'expired' THEN 'event_expired' ELSE x.reason END AS reason
-            FROM hagency_agent_v1.management_shared_budget_demand_terminals x WHERE x.demand_id=d.id
+            SELECT CASE
+                WHEN EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_blocks u
+                    WHERE u.demand_id=d.id AND u.reason='usage_unrepresentable')
+                    THEN 'usage_unrepresentable'
+                ELSE (SELECT CASE x.reason WHEN 'expired' THEN 'event_expired' ELSE x.reason END
+                    FROM hagency_agent_v1.management_shared_budget_demand_terminals x WHERE x.demand_id=d.id)
+                END AS reason
         ) t ON true
         LEFT JOIN LATERAL (
             SELECT max(br.budget_revision) AS revision
@@ -240,11 +250,14 @@ pub(super) async fn query(
                 CASE WHEN i.reason='budget_blocked' AND applied.revision IS NOT NULL THEN NULL ELSE i.reason END) AS reason) reasons
             -- A message v2 blocked other than on allowance has ended there,
             -- and keeps the reason v2 gave it, also once the budget poll has
-            -- recorded an end of its own for it.
+            -- recorded an end of its own for it. One the budget's queue
+            -- blocked on usage keeps that end when a stop or its time ends
+            -- its intake later.
             WHERE w.started_at_ms IS NULL AND (w.state IS NULL OR w.state IN ('queued','acknowledged'))
               AND (i.state='pending'
                    OR (i.state='blocked' AND i.reason='budget_blocked')
-                   OR w.state IN ('queued','acknowledged'))
+                   OR w.state IN ('queued','acknowledged')
+                   OR t.reason='usage_unrepresentable')
               AND (reason IS NOT NULL OR (i.state='blocked' AND i.reason='budget_blocked' AND applied.revision IS NOT NULL))
         ) queue ON true
         -- Final for this Agent, and no turn began for it: nothing but sending
@@ -256,6 +269,9 @@ pub(super) async fn query(
                 WHEN w.started_at_ms IS NOT NULL OR w.state IN ('queued','acknowledged') THEN NULL
                 -- Given to a process that ended, or refused it, first.
                 WHEN w.id IS NOT NULL THEN 'never_started'
+                -- Blocked on usage by the budget's queue before a stop or its
+                -- time ended its intake.
+                WHEN t.reason='usage_unrepresentable' THEN t.reason
                 WHEN i.state IN ('cancelled','expired','paused') THEN i.reason
                 -- A v2 end names its cause: head_changed, retry_exhausted,
                 -- retry_unsupported, or usage_unrepresentable (a block on
