@@ -427,6 +427,165 @@ async fn budget_queue_passes_over_messages_it_can_never_offer() {
     );
 }
 
+/// A block on usage under an applied budget ends the message at once, as it
+/// does without one. The budget poll records that end as `head_changed`, the
+/// end every computer keeps of this queue, also once the message's time is
+/// over, and offers the next message; the block keeps its reason, which the
+/// status reads as the end from the moment the block is recorded, and keeps
+/// when a stop ends the intake later. Its sender is not offered to send it
+/// again: a copy would be blocked the same way, since this Agent has no
+/// periods to turn.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_block_on_usage_ends_the_message_in_the_budget_queue_at_once() {
+    use crate::management_shared_budget_types::{
+        SharedBudgetDemandBlockInput, SharedBudgetDemandStatus,
+    };
+    let (mut f, r, admin, a, m) = Box::pin(setup()).await;
+    f.policy = f
+        .policy
+        .clone()
+        .with_agent_budget_deltas(true)
+        .with_shared_budget_execution(true);
+    let (d, _) = qualify(&f).await;
+    attempts::stop(&f, &d, 201).await;
+    for id in ["usage_first", "usage_second", "usage_next"] {
+        retain(&f, &r, &m, id).await;
+    }
+    budget_tests::apply_delta(&f, &r, &admin, 25, 230).await;
+    let room = work::message(&f, &r, "scope").await.room_id;
+    let poll = async || {
+        f.domain
+            .poll_shared_budget_demand(&f.owner.p, &f.policy, ExecutorPollInput::default())
+            .await
+            .unwrap()
+            .demand
+    };
+    let block = async |d: &SharedBudgetDemandStatus| {
+        let blocked = f
+            .domain
+            .block_shared_budget_demand(
+                &f.owner.p,
+                &d.offer.demand_id,
+                SharedBudgetDemandBlockInput {
+                    demand_digest: d.demand_digest.clone(),
+                    expected_control_revision: d.offer.control_revision,
+                    original_block: d.original_block.clone(),
+                    execution_budget: d.execution_budget.clone(),
+                    reason: "usage_unrepresentable".into(),
+                    budget: None,
+                },
+            )
+            .await
+            .unwrap();
+        // The answer that the computer checks names the block.
+        assert_eq!(blocked.state, "usage_unrepresentable");
+    };
+    let ended = json!([
+        "blocked",
+        "usage_unrepresentable",
+        "usage_unrepresentable",
+        false
+    ]);
+    let first = poll().await.expect("the oldest message is offered");
+    assert_eq!(first.offer.event_id, "$usage_first");
+    block(&first).await;
+    // Ended once the block is recorded, before any poll, whatever its time.
+    assert_eq!(
+        status_of(&f, &room, &f.outsider.p, "$usage_first").await,
+        ended
+    );
+    f.domain
+        .set_management_test_clock(db_now(&f).await + 86_400_000 + 1_000)
+        .await
+        .unwrap();
+    let late = status_of(&f, &room, &f.outsider.p, "$usage_first").await;
+    f.domain.reset_management_test_clock().await.unwrap();
+    assert_eq!(late, ended);
+    let second = poll().await.expect("the next message is offered");
+    assert_eq!(second.offer.event_id, "$usage_second");
+    // Blocked on usage, and its time over before a poll reads it: the poll
+    // records the same end, and offers the next message.
+    block(&second).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute(&format!(
+        "ALTER TABLE hagency_agent_v1.management_shared_intake DISABLE TRIGGER USER;\
+         UPDATE hagency_agent_v1.management_shared_intake SET expires_at_ms=(extract(epoch from clock_timestamp())*1000)::bigint-1 WHERE assignment_id='{id}' AND event_id='$usage_second';\
+         ALTER TABLE hagency_agent_v1.management_shared_intake ENABLE TRIGGER USER",
+        id = a.id
+    ))
+    .await
+    .unwrap();
+    let next = poll().await.expect("the message after them is offered");
+    assert_eq!(next.offer.event_id, "$usage_next");
+    for blocked in [&first, &second] {
+        let recorded = sql_query("SELECT t.reason||' '||b.reason AS payload FROM hagency_agent_v1.management_shared_budget_demand_terminals t JOIN hagency_agent_v1.management_shared_budget_demand_blocks b ON b.demand_id=t.demand_id WHERE t.demand_id=$1")
+            .bind::<Text, _>(&blocked.offer.demand_id)
+            .get_result::<Payload>(&mut db)
+            .await
+            .unwrap()
+            .payload;
+        assert_eq!(recorded, "head_changed usage_unrepresentable");
+        let kept = f
+            .domain
+            .recover_shared_budget_demand(
+                &f.owner.p,
+                &blocked.offer.demand_id,
+                SharedDemandRecoverInput {
+                    demand_digest: blocked.demand_digest.clone(),
+                    retries: false,
+                    reoffers: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(kept.state, "head_changed");
+    }
+    for reader in [&f.outsider.p, &f.owner.p] {
+        for event in ["$usage_first", "$usage_second"] {
+            assert_eq!(status_of(&f, &room, reader, event).await, ended, "{event}");
+        }
+    }
+    assert_eq!(
+        status_of(&f, &room, &f.outsider.p, "$usage_next").await,
+        json!(["pending", null, null, false])
+    );
+    // A stop ends the message that waits, and its sender may send it again
+    // once the Agent runs; the ended ones keep their end.
+    let revision = f
+        .domain
+        .shared_run_control(&f.outsider.p, &a.id)
+        .await
+        .unwrap()
+        .revision;
+    for (command, revision, mode) in [
+        ("usage_pause", revision, "paused"),
+        ("usage_resume", revision + 1, "running"),
+    ] {
+        f.domain
+            .change_shared_run_control(
+                &f.outsider.p,
+                &f.policy,
+                &a.id,
+                intake_tests::change(command, revision, mode),
+                &m.gateway,
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        status_of(&f, &room, &f.outsider.p, "$usage_next").await,
+        json!(["cancelled", "explicit_stop", "explicit_stop", true])
+    );
+    for event in ["$usage_first", "$usage_second"] {
+        assert_eq!(
+            status_of(&f, &room, &f.outsider.p, event).await,
+            ended,
+            "{event}"
+        );
+    }
+}
+
 /// Two Agents' attempts, issued with their start windows already over, and a
 /// test rule that refuses to stop the one a sweep takes first (it goes by
 /// id). Returns that attempt and the other one.

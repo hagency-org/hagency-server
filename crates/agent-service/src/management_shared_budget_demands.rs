@@ -58,6 +58,13 @@ async fn ended_in_v2(db: &mut AsyncPgConnection, id: &str) -> Result<bool> {
     Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks WHERE demand_id=$1 AND reason<>'budget_blocked') AS matched")
         .bind::<Text,_>(id).get_result::<Flag>(db).await?.matched)
 }
+/// A block on usage in this queue, under any budget revision. It ends the
+/// message at once, as a block on usage does without a budget: a new budget
+/// counts the same calls.
+async fn blocked_on_usage(db: &mut AsyncPgConnection, id: &str) -> Result<bool> {
+    Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_blocks WHERE demand_id=$1 AND reason='usage_unrepresentable') AS matched")
+        .bind::<Text,_>(id).get_result::<Flag>(db).await?.matched)
+}
 async fn started(db: &mut AsyncPgConnection, id: &str) -> Result<Option<Started>> {
     Ok(sql_query("SELECT runtime_id,payload,digest FROM hagency_agent_v1.management_shared_budget_demand_starts WHERE demand_id=$1")
         .bind::<Text,_>(id).get_result(db).await.optional()?)
@@ -253,6 +260,11 @@ impl DomainStore {
                     };
                     let Some(h)=head(db,&id.id).await? else{break};
                     let existing=sql_query("SELECT * FROM hagency_agent_v1.management_shared_demands WHERE intake_id=$1").bind::<Text,_>(&q.id).get_result::<Demand>(db).await.optional()?;
+                    // A block on usage has ended the message, whatever its
+                    // time. Its end is recorded as `head_changed`, the end
+                    // every computer keeps of this queue; the block names
+                    // the cause, which the status reads. Offer the next.
+                    if let Some(d)=&existing&&blocked_on_usage(db,&d.id).await?{terminal(db,d,"head_changed").await?;continue;}
                     if q.expires_at_ms<=now {
                         if let Some(d)=existing{terminal(db,&d,"expired").await?;}else{intake::expire(db,&id.id,now).await?;}continue;
                     }

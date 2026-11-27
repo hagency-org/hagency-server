@@ -164,36 +164,47 @@ After acceptance:
   whichever record ended it: work that was given to a process that never
   began it, a message that was stopped while it waited or arrived while the
   Agent was stopped, one whose start failed for good (for an Agent with an
-  applied budget too), one blocked on usage without a budget (below), and
-  one that waited out its 24 hours or its period. The status derives that
-  end when it is read, from every record that can end a message, and writes
-  nothing: a message whose time is over reads as ended before any poll has
-  recorded it. One end reads one reason whichever record holds it: a
-  message that waited out its time reads `event_expired`, also when the
-  budget's queue recorded it (as `expired`), and so does one blocked on
-  allowance once its time is over (or one that an applied budget blocked on
-  usage), never the reason of its block, which says it still waits. A
+  applied budget too), one blocked on usage (below), and one that waited
+  out its 24 hours or its period. The status derives that end when it is
+  read, from every record that can end a message, and writes nothing: a
+  message whose time is over reads as ended before any poll has recorded
+  it. One end reads one reason whichever record holds it: a message that
+  waited out its time reads `event_expired`, also when the budget's queue
+  recorded it (as `expired`), and so does one blocked on allowance once its
+  time is over, never the reason of its block, which says it still waits. A
   message that the earlier protocol ended keeps that end when a budget is
   applied later, also once the budget's queue has recorded an end of its
   own for it.
 
-  A block on usage (`usage_unrepresentable`) without a budget ends the
-  message at once, with that reason. The computer blocks a message so when
-  it cannot account for the Agent's earlier calls in the current period (for
-  an Agent without periods, in its whole life): a call whose usage
-  overflowed or could not be observed, or one it cannot match to the Agent's
-  assignment. Nothing clears that: neither the owner nor the sender can
-  change it, and an applied budget counts the same calls. Waiting out the
-  message's time would therefore change nothing, and a copy sent in the same
-  period is blocked the same way, so its sender is offered to send it again
-  only once the Agent's period has turned since it arrived, and never for an
-  Agent without periods.
+  A block on usage (`usage_unrepresentable`) ends the message at once, with
+  that reason, with or without an applied budget. The computer blocks a
+  message so when it cannot account for the Agent's earlier calls in the
+  current period (for an Agent without periods, in its whole life): a call
+  whose usage overflowed or could not be observed, or one it cannot match to
+  the Agent's assignment. Nothing clears that: neither the owner nor the
+  sender can change it, and an applied budget counts the same calls, so a
+  new budget does not either. Waiting out the message's time would
+  therefore change nothing, and a copy sent in the same period is blocked
+  the same way, so its sender is offered to send it again only once the
+  Agent's period has turned since it arrived, and never for an Agent
+  without periods.
+
+  Under an applied budget, the budget's queue records the end of such a
+  message as `head_changed` and offers the next message. A computer keeps
+  only the ends `expired`, `cancelled` and `head_changed` of that queue, and
+  every version of Hagency Desktop keeps this one. The block beside that end
+  names the cause, and the status reads that cause as `endReason`: a
+  computer's own record of the message reads `head_changed`, while the room
+  reads `usage_unrepresentable`. The status reads this end as soon as the
+  block is recorded, before the queue has recorded its end, and keeps it
+  when the message's time is over or its Agent is stopped later; the
+  database records no block of a message that has ended.
 
   No message holds a queue that cannot move it: a poll passes over an Agent
   it cannot offer a message to and goes on with the next Agent, and the
   budget's queue passes over a message whose room binding is gone or that
-  was blocked when it arrived. Neither can be offered again, and the status
-  reads its end.
+  was blocked when it arrived, and ends one blocked on usage. None of these
+  can be offered again, and the status reads its end.
 
 ### 4. A check that cannot be made is not a refusal
 
@@ -295,9 +306,9 @@ back").
 | A tool request waiting for its sender's answer | as long as the computer asks, 120 s at most | bounds a request | computer, capped by the server |
 | A worker's declaration of what it can run | trusted for 300 s | — | server |
 | A reservation for one encryption exchange | 15 s, of which 12 s are for the exchange | offered | server |
-| A waiting message at the turn of a pool's period | ended as expired (`event_expired`): a message is answered in the period it arrived in. One blocked on allowance ends the same way, and so does one that an applied budget blocked on usage. One blocked on usage without a budget has ended already (rule 3); from the turn on, its sender can send it again. The status reads this end when it is read, whether or not a poll has recorded it (none records it for a blocked message: no poll offers it again) | recovery | server |
+| A waiting message at the turn of a pool's period | ended as expired (`event_expired`): a message is answered in the period it arrived in. One blocked on allowance ends the same way. One blocked on usage has ended already, with or without an applied budget (rule 3); from the turn on, its sender can send it again. The status reads this end when it is read, whether or not a poll has recorded it (none records it for a blocked message: no poll offers it again) | recovery | server |
 | Attempts for one message | the first and at most 3 more | recovery | server |
-| How long a message waits for an Agent | 24 h, read like the period's end: the status shows the message as expired once its time is over, whether or not a poll has recorded it. A message blocked on usage without a budget does not wait (rule 3) | recovery | server |
+| How long a message waits for an Agent | 24 h, read like the period's end: the status shows the message as expired once its time is over, whether or not a poll has recorded it. A message blocked on usage does not wait (rule 3) | recovery | server |
 
 What must stay ordered:
 
@@ -323,7 +334,7 @@ renewal offers (7 days).
 | 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window, and renewing them early enough for it to matter, is in review |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A failed start is tried again | implemented for a start that never reported a process (demand retries); see rule 3 for the three that are not |
-| 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. The server reads the field by which a computer would say that it takes such a message back (`reoffers`) and acts on nothing in it (rule 6). Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one blocked on usage without a budget) says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent can serve a new message, see rule 3; after a block on usage, only once the Agent's period has turned since the message arrived) and which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance, or by an applied budget on usage, once its time was over), `head_changed`, `retry_exhausted` or `usage_unrepresentable`); Hagency Desktop uses `canSendAgain` to name the Agent in the room and to offer the sender "Send again" |
+| 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. The server reads the field by which a computer would say that it takes such a message back (`reoffers`) and acts on nothing in it (rule 6). Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one blocked on usage) says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent can serve a new message, see rule 3; after a block on usage, only once the Agent's period has turned since the message arrived) and which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance once its time was over), `head_changed`, `retry_exhausted` or `usage_unrepresentable`); Hagency Desktop uses `canSendAgain` to name the Agent in the room and to offer the sender "Send again" |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop |
 | 5. The wall clock only ends a lease early | holds for a proof, a ticket and a start window. In review in Hagency Desktop: its store still refuses an activity lease that reads longer than allowed by the wall clock, which a slow clock makes of every fresh lease. Open: the Agent execution lease (rule 5) |
@@ -355,15 +366,12 @@ Each of these is a bound that was looked at and left, with its reason.
   budget was applied ends the same way (`head_changed`), and one that it had
   already ended keeps that end: the budget's queue can take neither up, and
   offers the next message instead of waiting behind it.
-- **A block on usage is not settled.** Without a budget, a message that the
-  computer blocked on usage ends at once (rule 3): the computer cannot
-  account for the Agent's earlier calls and keeps that until the period
-  turns, for an Agent without periods for good. Only a way for the computer
-  to settle such calls would let a later message run, and that is a change of
-  its accounting, not of a time limit. Under an applied budget, a block on
-  usage waits for a new budget, as a block on allowance does, and that Agent's
-  budget queue waits behind it; since a new budget counts the same calls, the
-  message ends only with its 24 hours or its period.
+- **A block on usage is not settled.** A message that the computer blocked
+  on usage ends at once, with or without an applied budget (rule 3): the
+  computer cannot account for the Agent's earlier calls and keeps that until
+  the period turns, for an Agent without periods for good. Only a way for
+  the computer to settle such calls would let a later message run, and that
+  is a change of its accounting, not of a time limit.
 - **The claim window is one constant with one exception.** The tickets about
   a pooled process still spell out 30 s, because the helper that ends them
   also ends that process's activity lease, which is held and is to follow
