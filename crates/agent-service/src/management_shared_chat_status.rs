@@ -6,6 +6,13 @@ struct ChatStatus {
     #[diesel(sql_type = Text)]
     payload: String,
 }
+#[derive(QueryableByName)]
+struct Shown {
+    #[diesel(sql_type = Text)]
+    id: String,
+    #[diesel(sql_type = Text)]
+    assignment_id: String,
+}
 
 use crate::management_pool_types::budget_state;
 
@@ -19,6 +26,41 @@ pub(super) async fn query(
     let Some(room) = room else {
         return Ok(Vec::new());
     };
+    // The reader's 16 newest messages of the room: their own, and every
+    // message to an Agent they own.
+    let shown = sql_query(
+        r#"
+        SELECT i.id, i.assignment_id FROM hagency_agent_v1.management_shared_intake i
+        JOIN hagency_agent_v1.management_shared_assignments a ON a.id=i.assignment_id
+        WHERE i.event_payload::jsonb->>'room_id'=$3
+          AND ($4::text IS NULL OR coalesce(i.event_payload::jsonb->>'thread_root', i.event_id)=$4)
+          AND (a.executor_owner_user_id=$1 OR i.event_payload::jsonb->>'sender_mxid'=$2)
+        ORDER BY i.received_at_ms DESC, i.id DESC LIMIT 16
+    "#,
+    )
+    .bind::<Text, _>(&p.user_id)
+    .bind::<Text, _>(&p.mxid)
+    .bind::<Text, _>(room)
+    .bind::<Nullable<Text>, _>(thread)
+    .load::<Shown>(db)
+    .await?;
+    // A message is answered in the period it arrived in. Each Agent's period
+    // is read now, as its poll would read it, so that an end no poll has
+    // recorded yet is read all the same.
+    let mut periods = std::collections::HashMap::new();
+    let mut shown_rows = serde_json::Map::new();
+    for s in shown {
+        let start = match periods.get(&s.assignment_id) {
+            Some(start) => *start,
+            None => {
+                let start =
+                    super::super::super::intake::period_start(db, &s.assignment_id, now).await?;
+                periods.insert(s.assignment_id, start);
+                start
+            }
+        };
+        shown_rows.insert(s.id, json!(start));
+    }
     // RoutedEvent uses snake_case. Do not return message bodies, provider output
     // or other participants' intake. Resource owners need not join the room.
     // Each row names its Agent by Matrix ID, which every member of the room
@@ -29,20 +71,8 @@ pub(super) async fn query(
             'roomId', i.event_payload::jsonb->>'room_id',
             'eventId', i.event_id,
             'fromViewer', i.event_payload::jsonb->>'sender_mxid'=$2,
-            'agentAvailable', control.mode='running' AND EXISTS(
-                SELECT 1 FROM hagency_agent_v1.shared_room_memberships m
-                WHERE m.assignment_id=a.id AND m.room_id=i.event_payload::jsonb->>'room_id'
-                  AND m.state='matrix_verified'),
-            -- Final for this Agent, and no turn began for it: it was
-            -- withdrawn or stopped while it waited, arrived while the Agent
-            -- was stopped, waited out its time, its start failed for good, or
-            -- the process it was given to ended first. Nothing but sending it
-            -- again will move it. A block on allowance is not such an end:
-            -- the message goes on when allowance is granted.
-            'endedWithoutTurn', w.started_at_ms IS NULL AND (
-                i.state IN ('cancelled','expired','paused')
-                OR (i.state='blocked' AND i.reason NOT IN ('budget_blocked','usage_unrepresentable'))
-                OR (i.state='bound' AND w.state='cancelled')),
+            'agentAvailable', serves.available,
+            'endReason', ended.reason,
             'threadRoot', coalesce(i.event_payload::jsonb->>'thread_root', i.event_id),
             'receivedAtMs', i.received_at_ms,
             'state', CASE
@@ -67,6 +97,7 @@ pub(super) async fn query(
             'budgetBlock', CASE WHEN queue.reason='budget_blocked' THEN budget_block.payload::jsonb END
         )::text AS payload
         FROM hagency_agent_v1.management_shared_intake i
+        JOIN jsonb_each_text($3::jsonb) shown(intake_id, period_start) ON shown.intake_id=i.id
         JOIN hagency_agent_v1.management_shared_assignments a ON a.id=i.assignment_id
         LEFT JOIN hagency_agent_v1.management_agent_matrix mx ON mx.assignment_id=a.id
         LEFT JOIN hagency_agent_v1.management_shared_controls control ON control.assignment_id=a.id
@@ -82,7 +113,12 @@ pub(super) async fn query(
         LEFT JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=w.runtime_id
         LEFT JOIN hagency_agent_v1.management_shared_replies reply ON reply.work_id=w.id
         LEFT JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=i.id
-        LEFT JOIN hagency_agent_v1.management_shared_budget_demand_terminals t ON t.demand_id=d.id
+        -- The budget queue's end. Its `expired` is the end the intake records
+        -- as `event_expired` (the message waited out its time), and reads so.
+        LEFT JOIN LATERAL (
+            SELECT CASE x.reason WHEN 'expired' THEN 'event_expired' ELSE x.reason END AS reason
+            FROM hagency_agent_v1.management_shared_budget_demand_terminals x WHERE x.demand_id=d.id
+        ) t ON true
         LEFT JOIN LATERAL (
             SELECT max(br.budget_revision) AS revision
             FROM hagency_agent_v1.management_agent_budget_commands bc
@@ -96,26 +132,88 @@ pub(super) async fn query(
             SELECT b.payload,b.reason FROM hagency_agent_v1.management_shared_budget_demand_blocks b
             WHERE b.demand_id=d.id AND b.budget_revision=applied.revision
         ) budget_block ON true
+        -- An end of a message that could still be offered (one that waits,
+        -- or waits for allowance) which no write has recorded yet: what the
+        -- next poll would record (intake::expire, the budget poll). Read
+        -- here, nothing is written.
         LEFT JOIN LATERAL (
-            SELECT CASE WHEN t.reason='expired' THEN 'expired'
+            SELECT CASE e.reason WHEN 'event_expired' THEN 'expired'
+                                 WHEN 'head_changed' THEN 'blocked' ELSE 'cancelled' END AS state,
+                   e.reason
+            FROM (SELECT CASE
+                WHEN i.room_binding_id IS NOT NULL AND NOT EXISTS(
+                    SELECT 1 FROM hagency_agent_v1.shared_room_memberships m
+                    WHERE m.binding_id=i.room_binding_id AND m.binding_generation=i.room_binding_generation)
+                    THEN 'room_authority_changed'
+                WHEN i.expires_at_ms<=$4 OR i.received_at_ms<shown.period_start::bigint
+                    THEN 'event_expired'
+                -- Only a stop changes the revision, and nothing is offered
+                -- for an older one.
+                WHEN control.mode IS DISTINCT FROM 'running' OR control.revision<>i.control_revision
+                    THEN 'explicit_stop'
+                -- Started, or blocked on usage, under a protocol an applied
+                -- budget retired: it can neither be bound there nor started
+                -- in the budget's (the budget poll ends it so).
+                WHEN applied.revision IS NOT NULL AND (i.reason='usage_unrepresentable' OR EXISTS(
+                    SELECT 1 FROM hagency_agent_v1.management_shared_demand_starts s WHERE s.demand_id=d.id))
+                    THEN 'head_changed'
+                END AS reason) e
+            WHERE e.reason IS NOT NULL AND w.id IS NULL
+              AND (i.state='pending' OR (i.state='blocked' AND i.reason IN ('budget_blocked','usage_unrepresentable')))
+        ) lapse ON true
+        LEFT JOIN LATERAL (
+            SELECT CASE WHEN t.reason='event_expired' THEN 'expired'
+                        WHEN t.reason IS NULL AND lapse.state IS NOT NULL THEN lapse.state
                         WHEN reason IS NULL THEN 'pending' ELSE 'blocked' END AS status, reason
-            FROM (SELECT coalesce(t.reason, protocol.reason, budget_block.reason,
+            FROM (SELECT coalesce(t.reason, lapse.reason, protocol.reason, budget_block.reason,
                 CASE WHEN i.reason='budget_blocked' AND applied.revision IS NOT NULL THEN NULL ELSE i.reason END) AS reason) reasons
+            -- A v3 end also ends a message v2 had blocked (the budget poll
+            -- ends one that v3 cannot take up), and names that end.
             WHERE w.started_at_ms IS NULL AND (w.state IS NULL OR w.state IN ('queued','acknowledged'))
-              AND (i.state='pending' OR (i.state='blocked' AND i.reason='budget_blocked') OR w.state IN ('queued','acknowledged'))
+              AND (i.state='pending'
+                   OR (i.state='blocked' AND (i.reason='budget_blocked' OR t.reason IS NOT NULL OR lapse.reason IS NOT NULL))
+                   OR w.state IN ('queued','acknowledged'))
               AND (reason IS NOT NULL OR (i.state='blocked' AND i.reason='budget_blocked' AND applied.revision IS NOT NULL))
         ) queue ON true
-        WHERE i.event_payload::jsonb->>'room_id'=$3
-          AND ($5::text IS NULL OR coalesce(i.event_payload::jsonb->>'thread_root', i.event_id)=$5)
-          AND (a.executor_owner_user_id=$1 OR
-               i.event_payload::jsonb->>'sender_mxid'=$2)
-        ORDER BY i.received_at_ms DESC, i.id DESC LIMIT 16
+        -- Final for this Agent, and no turn began for it: nothing but sending
+        -- it again will move it. The value is the reason of the record that
+        -- ended it; a message that still waits, or waits for allowance in its
+        -- period, has none. Every record that can end a message is read here.
+        LEFT JOIN LATERAL (
+            SELECT CASE
+                WHEN w.started_at_ms IS NOT NULL OR w.state IN ('queued','acknowledged') THEN NULL
+                -- Given to a process that ended, or refused it, first.
+                WHEN w.id IS NOT NULL THEN 'never_started'
+                WHEN i.state IN ('cancelled','expired','paused') THEN i.reason
+                -- A v2 end names its cause: head_changed, retry_exhausted
+                -- or retry_unsupported.
+                WHEN i.state='blocked' AND i.reason NOT IN ('budget_blocked','usage_unrepresentable')
+                    THEN coalesce((SELECT b.payload::jsonb#>>'{}' FROM hagency_agent_v1.management_shared_demand_blocks b
+                        WHERE b.demand_id=d.id AND jsonb_typeof(b.payload::jsonb)='string'), i.reason)
+                WHEN t.reason IS NOT NULL THEN t.reason
+                ELSE lapse.reason END AS reason
+        ) ended ON true
+        -- The Agent can serve a new message in this room now: its reservation
+        -- stands (neither it nor its intent is fenced), its executor's ledger
+        -- was not replaced, it runs, and it is a verified member of the room.
+        -- An Agent with an applied budget serves too, through its own queue.
+        -- The one definition of an available Agent.
+        LEFT JOIN LATERAL (
+            SELECT a.state='pending_native' AND control.mode='running'
+                AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id)
+                AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents ai
+                    WHERE ai.request_id=a.request_id AND ai.state<>'fenced')
+                AND EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m
+                    WHERE m.assignment_id=a.id AND m.room_id=i.event_payload::jsonb->>'room_id'
+                      AND m.state='matrix_verified') AS available
+        ) serves ON true
+        WHERE a.executor_owner_user_id=$1 OR i.event_payload::jsonb->>'sender_mxid'=$2
+        ORDER BY i.received_at_ms DESC, i.id DESC
     "#)
     .bind::<Text, _>(&p.user_id)
     .bind::<Text, _>(&p.mxid)
-    .bind::<Text, _>(room)
+    .bind::<Text, _>(Value::Object(shown_rows).to_string())
     .bind::<BigInt, _>(now)
-    .bind::<Nullable<Text>, _>(thread)
     .load::<ChatStatus>(db).await?;
     let mut values = rows
         .into_iter()
@@ -130,14 +228,16 @@ pub(super) async fn query(
             if let Some(state) = budget_state(&block) {
                 value["budgetState"] = json!(state);
             }
-            let mut take =
-                |key: &str| value.as_object_mut().and_then(|v| v.remove(key)) == Some(json!(true));
-            let (sender, available, ended) = (
-                take("fromViewer"),
-                take("agentAvailable"),
-                take("endedWithoutTurn"),
+            let mut take = |key: &str| value.as_object_mut().and_then(|v| v.remove(key));
+            let (sender, available) = (
+                take("fromViewer") == Some(json!(true)),
+                take("agentAvailable") == Some(json!(true)),
             );
-            value["canSendAgain"] = json!(sender && available && ended);
+            let end = take("endReason").filter(Value::is_string);
+            value["canSendAgain"] = json!(sender && available && end.is_some());
+            if let Some(end) = end {
+                value["endReason"] = end;
+            }
             Ok(value)
         })
         .collect::<Result<Vec<_>>>()?;
@@ -182,4 +282,32 @@ pub(super) async fn query(
     });
     values.truncate(16);
     Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn budget_state_preserves_known_lower_bound_and_old_evidence() {
+        let exhausted = "known_consumption_exhausted";
+        for block in [
+            json!(exhausted),
+            json!({"reason":exhausted}),
+            json!({"reason":"budget_blocked","source":exhausted}),
+        ] {
+            assert_eq!(budget_state(&block), Some("exhausted"));
+        }
+        for (known, complete, expected) in [
+            (99, false, Some("usage_unresolved")),
+            (100, false, Some("exhausted")),
+            (104, false, Some("exhausted")),
+            (100, true, Some("exhausted")),
+            (90, true, None),
+        ] {
+            let block = json!({"budget":{"knownConsumedTokens":known,"allocatedTokens":100,"usageComplete":complete}});
+            assert_eq!(budget_state(&block), expected);
+        }
+        assert_eq!(budget_state(&json!({"budget":{"remainingTokens":0}})), None);
+    }
 }

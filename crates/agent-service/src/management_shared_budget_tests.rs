@@ -7,7 +7,7 @@ struct Clock {
 use crate::management_shared_work_types::{SharedWorkRecoverInput, SharedWorkResultUpload};
 use crate::{management_agent_budget_types::*, management_shared_budget_types::*};
 
-async fn apply_delta(
+pub(super) async fn apply_delta(
     f: &Fixture,
     r: &ManagedAgentRequest,
     admin: &Actor,
@@ -1365,6 +1365,14 @@ async fn budget_execution_v3_unrelated_head_advance_retains_terminal_original_of
             .await
             .is_err()
     );
+    // Its sender reads that it ended without a turn, and may send it again.
+    let room = work::message(&f, &r, "scope").await.room_id;
+    for (reader, again) in [(&f.outsider.p, true), (&f.owner.p, false)] {
+        assert_eq!(
+            status_of(&f, &room, reader, "$budget_original_head").await,
+            json!(["blocked", "head_changed", "head_changed", again])
+        );
+    }
 }
 #[tokio::test]
 #[ignore = "dedicated PostgreSQL"]
@@ -1977,4 +1985,93 @@ async fn budget_execution_v3_process_revision_is_free_again_in_a_newly_declared_
     submit(&f, &fence, fence_at(&fence, 230)).await.unwrap();
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     assert!(sql_query("SELECT array_agg(o.ledger_epoch ORDER BY o.ledger_revision)=ARRAY[0,0,1]::bigint[] AS matched FROM hagency_agent_v1.management_shared_process_receipts o JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=o.runtime_id WHERE r.assignment_id=$1").bind::<Text, _>(&assignment).get_result::<Check>(&mut db).await.unwrap().matched);
+}
+/// A message that waited out its 24 hours reads as ended as soon as it is
+/// read, before any poll records it, and reading it writes nothing. The end
+/// the budget poll records, and a message that arrived already past its 24
+/// hours, read the same.
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn budget_execution_v3_message_past_its_time_reads_ended_before_any_poll() {
+    #[derive(QueryableByName)]
+    struct Saved {
+        #[diesel(sql_type=Text)]
+        payload: String,
+    }
+    let (mut f, r, _, m, i) = Box::pin(fixture()).await;
+    running(&mut f, &m, &i.assignment_id).await;
+    let received = retain_event(&f, &r, &m, "budget_waits_out").await;
+    let offer = offered(&f).await;
+    assert_eq!(offer.offer.event_id, "$budget_waits_out");
+    let room = work::message(&f, &r, "scope").await.room_id;
+    let readers = [(&f.outsider.p, true), (&f.owner.p, false)];
+    for (reader, _) in readers {
+        assert_eq!(
+            status_of(&f, &room, reader, "$budget_waits_out").await,
+            json!(["pending", null, null, false])
+        );
+    }
+    // A day later, with no poll in between.
+    f.domain
+        .set_management_test_clock(received + 86_400_000)
+        .await
+        .unwrap();
+    for (reader, again) in readers {
+        assert_eq!(
+            status_of(&f, &room, reader, "$budget_waits_out").await,
+            json!(["expired", "event_expired", "event_expired", again])
+        );
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let state = sql_query(
+        "SELECT state AS payload FROM hagency_agent_v1.management_shared_intake WHERE event_id=$1",
+    )
+    .bind::<Text, _>("$budget_waits_out")
+    .get_result::<Saved>(&mut db)
+    .await
+    .unwrap()
+    .payload;
+    assert_eq!(state, "pending", "a read records nothing");
+    // The budget poll records this end as the demand's terminal `expired`,
+    // which reads as the same end. A test cannot run that poll a day ahead,
+    // because its executor's declaration is trusted for 300 s, so the row is
+    // written as it does.
+    let payload =
+        serde_json::to_string(&json!({"demandDigest":offer.demand_digest,"reason":"expired"}))
+            .unwrap();
+    sql_query("INSERT INTO hagency_agent_v1.management_shared_budget_demand_terminals VALUES($1,'expired',$2,$3)")
+        .bind::<Text, _>(&offer.offer.demand_id)
+        .bind::<Text, _>(&payload)
+        .bind::<Text, _>(crate::hash(&payload))
+        .execute(&mut db)
+        .await
+        .unwrap();
+    for (reader, again) in readers {
+        assert_eq!(
+            status_of(&f, &room, reader, "$budget_waits_out").await,
+            json!(["expired", "event_expired", "event_expired", again])
+        );
+    }
+    f.domain.reset_management_test_clock().await.unwrap();
+    // Received already past its 24 hours: recorded expired when it arrives.
+    let now = sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now")
+        .get_result::<Clock>(&mut db)
+        .await
+        .unwrap()
+        .now;
+    f.domain
+        .route_shared_event(
+            &f.policy,
+            &work::message(&f, &r, "budget_arrived_late").await,
+            now - 86_400_000 - 1_000,
+            &m.gateway,
+        )
+        .await
+        .unwrap();
+    for (reader, again) in readers {
+        assert_eq!(
+            status_of(&f, &room, reader, "$budget_arrived_late").await,
+            json!(["expired", "event_expired", "event_expired", again])
+        );
+    }
 }

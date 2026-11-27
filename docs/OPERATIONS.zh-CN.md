@@ -153,11 +153,11 @@ PostgreSQL runner 创建并删除专用随机测试库，不对现有业务库�
 脚本说明为准。历史 Fleet 的验证记录仅是历史证据，不代表当前兼容或支持。
 
 
-已验证登录的信任时长由 `authorization_window_ms` 配置，默认 30 秒，范围 30 秒至 2 分钟。执行租约和其他设备授权都随这个窗口结束，所有者电脑超过这个时长没有请求，就会失去它的 Agent，直到重新证明登录。只有在出示证明时带 `x-hagency-authorization-window-ms` 请求头的客户端才会得到更长的窗口，其他客户端仍是 30 秒。代价是：在身份服务处被停用或撤销的登录，最长还能使用这么久；在本主机上的显式登出和设备撤销仍然立即生效。续期从不缩短会话：调小窗口后，每个会话保留已有的结束时间，之后再按新窗口计算，Agent 不会因此被收回。只有会话、设备或用户被撤销，或 Agent 所依据的预留结束时，才收回 Agent。以上自迁移 `2026-11-26-000155` 起成立：尚未执行该迁移的主机，在某台电脑的会话结束时间变小时会收回它的全部资源池 Agent，所以要先升级再调小窗口，并且在还有资源池 Agent 时不要执行该迁移的回退。只有当所有者电脑上的客户端在各次调用间共用一个本地会话（Hagency Desktop 0.5.0-rc.19 之后的版本）时，才把窗口调到 30 秒以上；顺序和回退方法见下面链接的文档。所有时限及其来源见 [Agent 执行的时限](design/hagency-time-limits.md)（英文）。
+已验证登录的信任时长由 `authorization_window_ms` 配置，默认 30 秒，范围 30 秒至 2 分钟。会话最晚在最后一次证明后这么久结束，每个 Agent 执行租约都随会话结束，所以所有者电脑超过这个时长没有请求，就会失去它的 Agent，直到重新证明登录。有两类时限不随窗口变化：正在处理消息的进程的活动租约无论窗口多长都是 30 秒，所以这样的进程在 20 到 30 秒没有请求后失去租约；而提供出去的东西（启动命令、票据、poll 分发、挑战）固定为 30 秒，错过后会再次提供。只有在出示证明时带 `x-hagency-authorization-window-ms` 请求头的客户端才会得到更长的窗口，其他客户端仍是 30 秒。代价是：在身份服务处被停用或撤销的登录，最长还能使用这么久；在本主机上的显式登出和设备撤销仍然立即生效。续期从不缩短会话：调小窗口后，每个会话保留已有的结束时间，之后再按新窗口计算，Agent 不会因此被收回。只有会话、设备或用户被撤销，或 Agent 所依据的预留结束时，才收回 Agent。以上自迁移 `2026-11-26-000155` 起成立：尚未执行该迁移的主机，在某台电脑的会话结束时间变小时会收回它的全部资源池 Agent，所以要先升级再调小窗口，并且在还有资源池 Agent 时不要执行该迁移的回退。只有当所有者电脑上的客户端在各次调用间共用一个本地会话（Hagency Desktop 0.5.0-rc.19 之后的版本）时，才把窗口调到 30 秒以上；顺序和回退方法见下面链接的文档。所有时限及其来源见 [Agent 执行的时限](design/hagency-time-limits.md)（英文）。
 
 被收回（fenced）的 Agent 预留不会恢复，因此每次收回都在 `hagency_agent_v1.management_agent_fences` 留下一条记录，说明何时、为何：`fenced_at_ms`；`cause` 为 `dependency`（预留依赖的某一行发生了变化：会话或设备被撤销、授权关闭、资源池被撤回）或 `service`（服务自身的决定：启动超时、请求被取消、执行端不再持有该预留）；`facts` 是一个 JSON 对象，记下当时这些行的状态（`sessionRevoked`、`sessionEnded`、`deviceRevoked`、`deviceGenerationChanged`、`ownerActive`、`requestState`、`allocationState`、`grantState`、`poolGrantState`、`poolState`、`setupState`、`planState`、`projectActive`、`roomActive`、`startEnded`），其中不正常的那一项就是原因。此记录出现之前被收回的预留没有记录。
 
-资源池 Agent 的进程被作废（fenced）时，同样在 `hagency_agent_v1.management_shared_runtime_fences` 留下一条记录：`fenced_at_ms`；`cause` 为 `dependency`（数据库规则所为：Agent 被停止，或它的预留被收回）或 `service`（服务所为：发现租约已过期，或超时兜底放弃了该进程）；`facts` 记下 `stateBefore`、`stopped`、`leaseEndedMsAgo`（作废时活动租约已过期多久；为负表示租约当时还有时间，即原因不是租约）、`startWindowEndedMsAgo`、`controlMode`、`assignmentState`、`reservationFenced`，以及该进程已拿到但从未开始的消息数（`workNeverStarted`）和结果未知的消息数（`workUnknown`）。据此可以判断是哪个时限结束了一次运行。
+资源池 Agent 的进程被作废（fenced）时，同样在 `hagency_agent_v1.management_shared_runtime_fences` 留下一条记录：`fenced_at_ms`；`cause` 为 `dependency`（数据库规则所为：Agent 被停止，或它的预留被收回）或 `service`（服务所为：发现租约已过期，或超时兜底放弃了该进程）；`facts` 记下 `stateBefore`、`stopped`、`leaseEndedMsAgo`（作废时活动租约已过期多久；为负表示租约当时还有时间，即原因不是租约）、`startWindowEndedMsAgo`、`controlMode`、`assignmentState`、`reservationFenced`，以及该进程已拿到但从未开始的消息数（`workNeverStarted`）和结果未知的消息数（`workUnknown`）。据此可以判断是哪个时限结束了一次运行。迁移 `2026-11-26-000156` 的回退只停止写入这两类新记录，已有记录保留。
 
 离线未开始请求的期限由 `queue.event_ttl_ms` 配置，默认 24 小时，范围 1 秒至 30 天，按可信 AS 入站时间计时，路由重试不延长。过期请求不能领取、ACK 或开始新的模型/工具动作；已开始任务的已知原结果仍须核验当前权限后结算及发送，unknown 与成本保留不自动释放。设备 poll 必须指定 `bindingId`，只领取明确启动的 Room。发现所有者成员资格或关联失效、傀儡被移除后，撤销受影响 binding 并递增 generation，进入 leaving 并在确认实际退群后 left；重新加入不自动恢复，需显式重新绑定/采纳，旧 dispatch 不复活。发送还核验傀儡当前 `m.room.message` power level；已观测撤权的旧回复不会在恢复权限后自动发送。
 
@@ -178,6 +178,9 @@ leaving，实际 Matrix 退群确认后成为 left。后台也检查 suspended�
 503，恢复后重新健康。空闲队列的成功检查也计作进展。这是队列运行健康，
 不是对所有外部依赖持续发送主动探针。响应仅有队列名、固定错误码和时间，
 不含用户、凭据或消息正文；错误日志按队列节流。
+`membership` 队列的每一轮还会放弃超过宽限期仍无消息的资源池进程。某个进程放弃失败
+不会挡住其他进程：它被记入日志（`Shared attempt time bound failed`，带运行 ID
+和错误码），这一轮记为失败（`shared_attempt_timeouts_failed`），下一轮再试。
 
 SIGTERM 先停止领取新工作，内部 Matrix listener 继续处理已领取的上传/发送，
 最多排空 35 秒并保存原回执，再优雅停止 HTTP 与 Pasion。Compose 停机宽限为
