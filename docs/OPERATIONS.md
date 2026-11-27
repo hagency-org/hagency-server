@@ -206,7 +206,10 @@ The `membership` queue's pass also gives up pooled processes that stayed
 silent past their grace. One it cannot give up does not hold back the others: it
 is logged (`Shared attempt time bound failed`, with its runtime id and error
 code), the pass counts as failed (`shared_attempt_timeouts_failed`), and the
-next pass tries it again.
+next pass tries it again. A computer's attempt polls first give up that
+computer's silent processes the same way, inside their own transaction: one
+they cannot give up is logged with the same line and rolled back alone, and
+the poll goes on.
 
 SIGTERM stops new work admission, keeps the internal Matrix listener alive for
 up to 35 seconds while claimed uploads/sends save their receipts, then stops

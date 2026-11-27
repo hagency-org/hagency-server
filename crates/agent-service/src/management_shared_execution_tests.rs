@@ -1198,6 +1198,67 @@ async fn period_end(db: &mut AsyncPgConnection, assignment: &str, now: i64) -> i
     let calendar: crate::recurring_quota::Calendar = serde_json::from_str(&saved.payload).unwrap();
     calendar.period_at(now as u64).unwrap().end_ms as i64
 }
+/// Publishes the renewal of `request`'s pool grant for the period that
+/// begins at `turn`, as its owner's computer does before the turn.
+async fn renew_pool_grant(
+    f: &Fixture,
+    request: &crate::management_pool_types::PoolAgentRequest,
+    turn: i64,
+) {
+    #[derive(QueryableByName)]
+    struct Pool {
+        #[diesel(sql_type=Text)]
+        grant_id: String,
+        #[diesel(sql_type=BigInt)]
+        revision: i64,
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let pool = sql_query("SELECT r.pool_grant_id AS grant_id,c.revision FROM hagency_agent_v1.management_agent_requests r JOIN hagency_agent_v1.management_contributions c ON c.id=r.pool_contribution_id WHERE r.id=$1")
+        .bind::<Text, _>(&request.id)
+        .get_result::<Pool>(&mut db)
+        .await
+        .unwrap();
+    let grant = f
+        .domain
+        .management_resource_grant(&f.owner.p, &f.policy, &pool.grant_id)
+        .await
+        .unwrap();
+    let mut receipt = grant.receipt.clone();
+    let next = receipt
+        .calendar
+        .as_ref()
+        .unwrap()
+        .period_at(turn as u64)
+        .unwrap();
+    receipt.grant_id = format!("mgs_{}", &crate::secret_token()[..32]);
+    receipt.grant_revision += 1;
+    receipt.ledger_revision += 1;
+    receipt.period_key = next.key;
+    receipt.period_start_ms = next.start_ms as i64;
+    receipt.period_end_ms = next.end_ms as i64;
+    receipt.delegation_expires_at_ms = next.end_ms as i64;
+    receipt.succession = Some(crate::management_allocation_types::GrantSuccession {
+        kind: "renewal".into(),
+        predecessor_grant_id: grant.id.clone(),
+        predecessor_receipt_digest: grant.receipt_digest.clone(),
+        carried_children: 0,
+        carried_retained_tokens: 0,
+    });
+    f.domain
+        .publish_management_grant_successor(
+            &f.owner.p,
+            &f.policy,
+            &grant.id,
+            crate::management_allocation_types::SucceedGrantInput {
+                command_id: "renew_for_the_next_period".into(),
+                expected_contribution_revision: pool.revision,
+                expected_predecessor_revision: grant.revision,
+                receipt,
+            },
+        )
+        .await
+        .unwrap();
+}
 
 async fn chat_status_case(begun: bool) {
     #[derive(QueryableByName)]
@@ -1708,18 +1769,82 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
     }
     assert!(sql_query("SELECT count(*)=1 AS matched FROM hagency_agent_v1.management_shared_work WHERE id=$1 AND state='unknown'")
         .bind::<Text,_>(&work.id).get_result::<Check>(&mut db).await.unwrap().matched);
+    // A message blocked on usage has ended at once: the calls of this period
+    // cannot be accounted for, and a copy would be blocked the same way
+    // until the period turns.
+    let budget_blocked = event.event_id.clone();
+    event.event_id = "$usage_block_status".into();
+    f.domain
+        .route_shared_event(&f.policy, &event, now_ms(), &matrix.gateway)
+        .await
+        .unwrap();
+    let usage_offer = f
+        .domain
+        .poll_shared_demand(
+            &f.owner.p,
+            &f.policy,
+            serde_json::from_value(json!({})).unwrap(),
+        )
+        .await
+        .unwrap()
+        .demand
+        .unwrap();
+    assert_eq!(usage_offer.offer.event_id, event.event_id);
+    f.domain
+        .block_shared_demand(
+            &f.owner.p,
+            &usage_offer.offer.demand_id,
+            crate::management_shared_demand_types::SharedDemandBlockInput {
+                demand_digest: usage_offer.demand_digest,
+                expected_control_revision: usage_offer.offer.control_revision,
+                reason: "usage_unrepresentable".into(),
+                budget: None,
+                retries: false,
+                reoffers: false,
+            },
+        )
+        .await
+        .unwrap();
+    let usage = |again: bool| {
+        json!([
+            "blocked",
+            "usage_unrepresentable",
+            "usage_unrepresentable",
+            again
+        ])
+    };
+    assert_eq!(
+        status_of(&f, &request.room_id, &f.outsider.p, &event.event_id).await,
+        usage(false)
+    );
     // Allowance is granted for the period a message arrived in. At the turn
-    // of the period the blocked message ends, not `budget_blocked` any more,
-    // and its sender may send it again. No poll records this end: it is read.
+    // of the period the message blocked on allowance ends, not
+    // `budget_blocked` any more; no poll records this end, it is read. Its
+    // sender may send it, and the one blocked on usage, again once the Agent
+    // serves in the new period: once its pool's grant for that period is in
+    // place. Before that, its reservation's time is over.
     let turn = period_end(&mut db, &assignment.id, now_ms()).await;
-    f.domain.set_management_test_clock(turn).await.unwrap();
-    for (reader, again) in [(&f.outsider.p, true), (&f.owner.p, false)] {
-        assert_eq!(
-            status_of(&f, &request.room_id, reader, &event.event_id).await,
-            json!(["expired", "event_expired", "event_expired", again])
-        );
-    }
-    f.domain.reset_management_test_clock().await.unwrap();
+    let at_turn = async || {
+        f.domain.set_management_test_clock(turn).await.unwrap();
+        let mut read = Vec::new();
+        for reader in [&f.outsider.p, &f.owner.p] {
+            for message in [&budget_blocked, &event.event_id] {
+                read.push(status_of(&f, &request.room_id, reader, message).await);
+            }
+        }
+        f.domain.reset_management_test_clock().await.unwrap();
+        read
+    };
+    let expired = |again: bool| json!(["expired", "event_expired", "event_expired", again]);
+    assert_eq!(
+        at_turn().await,
+        [expired(false), usage(false), expired(false), usage(false)]
+    );
+    renew_pool_grant(&f, &request, turn).await;
+    assert_eq!(
+        at_turn().await,
+        [expired(true), usage(true), expired(false), usage(false)]
+    );
     f.domain
         .change_shared_run_control(
             &f.outsider.p,

@@ -181,6 +181,8 @@ leaving，实际 Matrix 退群确认后成为 left。后台也检查 suspended�
 `membership` 队列的每一轮还会放弃超过宽限期仍无消息的资源池进程。某个进程放弃失败
 不会挡住其他进程：它被记入日志（`Shared attempt time bound failed`，带运行 ID
 和错误码），这一轮记为失败（`shared_attempt_timeouts_failed`），下一轮再试。
+执行端的尝试轮询也会在自己的事务里先以同样方式放弃该电脑上无消息的进程：放弃失败的
+那个进程以同一行日志记录、单独回滚，轮询继续进行。
 
 SIGTERM 先停止领取新工作，内部 Matrix listener 继续处理已领取的上传/发送，
 最多排空 35 秒并保存原回执，再优雅停止 HTTP 与 Pasion。Compose 停机宽限为
