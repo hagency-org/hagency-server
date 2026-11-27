@@ -87,10 +87,22 @@ async fn budget_queue_moves_past_a_message_v2_ended_before_the_budget() {
         }
         let room = work::message(&f, &r, "scope").await.room_id;
         if let V2End::Unrepresentable = end {
-            // Without a budget, a block on usage is not an end.
+            // Without a budget, a block on usage is not an end while the
+            // message has time; it is once its time is over, as for a block
+            // on allowance. Reading writes nothing.
             assert_eq!(
                 status_of(&f, &room, &f.outsider.p, &ended).await,
                 json!(["blocked", "usage_unrepresentable", null, false])
+            );
+            f.domain
+                .set_management_test_clock(db_now(&f).await + 86_400_000 + 1_000)
+                .await
+                .unwrap();
+            let late = status_of(&f, &room, &f.outsider.p, &ended).await;
+            f.domain.reset_management_test_clock().await.unwrap();
+            assert_eq!(
+                late,
+                json!(["expired", "event_expired", "event_expired", true])
             );
         }
         budget_tests::apply_delta(&f, &r, &admin, 25, 230).await;

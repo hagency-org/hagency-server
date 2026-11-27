@@ -148,10 +148,10 @@ After acceptance:
     while the Agent can serve a new message: its reservation stands (neither
     it nor the intent behind it is fenced), its executor's ledger was not
     replaced, it has not been stopped, and it is a verified member of the
-    room. An Agent with an applied budget serves too, through its own
-    queue. The offer is part of the
-    status of the reader's 16 newest messages in the room (their own, and every
-    message to an Agent they own); an older message is not offered.
+    room. An Agent with an applied budget serves too, through its own queue.
+    The offer is part of the status of the reader's 16 newest messages in
+    the room (their own, and every message to an Agent they own); an older
+    message is not offered.
 
   Every message that ended without a turn ends the same way for this rule,
   whichever record ended it: work that was given to a process that never
@@ -163,8 +163,8 @@ After acceptance:
   ended before any poll has recorded it. One end reads one reason whichever
   record holds it: a message that waited out its time reads `event_expired`,
   also when the budget's queue recorded it (as `expired`), and so does one
-  that waited for allowance when its period turns, never `budget_blocked`,
-  which says it still waits.
+  blocked on allowance or on usage once its time is over, never the reason
+  of its block, which says it still waits.
 
 ### 4. A check that cannot be made is not a refusal
 
@@ -255,7 +255,7 @@ next renewed.
 | A tool request waiting for its sender's answer | as long as the computer asks, 120 s at most | bounds a request | computer, capped by the server |
 | A worker's declaration of what it can run | trusted for 300 s | — | server |
 | A reservation for one encryption exchange | 15 s, of which 12 s are for the exchange | offered | server |
-| A waiting message at the turn of a pool's period | ended as expired (`event_expired`): a message is answered in the period it arrived in. One blocked on allowance ends the same way. The status reads this end when it is read, whether or not a poll has recorded it (none records it for a message blocked on allowance: no poll offers it again) | recovery | server |
+| A waiting message at the turn of a pool's period | ended as expired (`event_expired`): a message is answered in the period it arrived in. One blocked on allowance or on usage ends the same way. The status reads this end when it is read, whether or not a poll has recorded it (none records it for a blocked message: no poll offers it again) | recovery | server |
 | Attempts for one message | the first and at most 3 more | recovery | server |
 | How long a message waits for an Agent | 24 h, read like the period's end: the status shows the message as expired once its time is over, whether or not a poll has recorded it | recovery | server |
 
@@ -283,7 +283,7 @@ renewal offers (7 days).
 | 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window, and renewing them early enough for it to matter, is in review |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A failed start is tried again | implemented for a start that never reported a process (demand retries); see rule 3 for the three that are not |
-| 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget) says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent can serve a new message; see rule 3) and which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one that waited for allowance when its period turned), `head_changed` or `retry_exhausted`); Hagency Desktop uses `canSendAgain` to name the Agent in the room and to offer the sender "Send again" |
+| 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget) says whether its reader can send it again (`canSendAgain`: the reader sent it, and the Agent can serve a new message; see rule 3) and which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance or on usage once its time was over), `head_changed` or `retry_exhausted`); Hagency Desktop uses `canSendAgain` to name the Agent in the room and to offer the sender "Send again" |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop |
 | 5. The wall clock only ends a lease early | holds for a proof, a ticket and a start window. In review in Hagency Desktop: its store still refuses an activity lease that reads longer than allowed by the wall clock, which a slow clock makes of every fresh lease. Open: the Agent execution lease (rule 5) |
