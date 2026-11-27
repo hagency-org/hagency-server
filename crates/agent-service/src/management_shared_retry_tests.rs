@@ -524,6 +524,7 @@ async fn shared_demand_executor_without_retries_never_sees_them_and_ends_an_open
             SharedDemandPollInput {
                 after: None,
                 retries: true,
+                reoffers: true,
             },
         )
         .await
@@ -544,6 +545,7 @@ async fn shared_demand_executor_without_retries_never_sees_them_and_ends_an_open
             SharedDemandRecoverInput {
                 demand_digest: lost.demand_digest.clone(),
                 retries: false,
+                reoffers: false,
             },
         )
         .await
