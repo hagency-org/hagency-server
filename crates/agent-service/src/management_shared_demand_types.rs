@@ -56,6 +56,14 @@ pub struct SharedDemandStartInput {
     /// predecessor. Omitted for the original start (bytes unchanged).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<i64>,
+    /// The executor says that it takes a message back when the process this
+    /// start begins ends before a turn began for it (time-limit rule 3, an
+    /// open decision). Read and not acted on: a start that carries it is
+    /// kept and compared exactly as it was sent, so a start recorded by a
+    /// server that acts on it is answered again here, and the reverse.
+    /// Omitted when false, so a start that does not say it keeps its bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reoffers: bool,
 }
 impl SharedDemandStartInput {
     pub fn validate_for(&self, o: &SharedDemandOffer) -> Result<()> {
@@ -151,6 +159,10 @@ pub struct SharedDemandPollInput {
     pub after: Option<String>,
     #[serde(default)]
     pub retries: bool,
+    /// The executor takes messages back (see `SharedDemandStartInput`).
+    /// Read and not acted on.
+    #[serde(default)]
+    pub reoffers: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -159,6 +171,9 @@ pub struct SharedDemandRecoverInput {
     /// The executor runs retries; only then may a status say so.
     #[serde(default)]
     pub retries: bool,
+    /// As on the poll. Read and not acted on.
+    #[serde(default)]
+    pub reoffers: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -182,6 +197,11 @@ pub struct SharedDemandBlockInput {
     pub budget: Option<SharedBudgetObservation>,
     #[serde(default)]
     pub retries: bool,
+    /// As on the poll. The block is stored as sent, so false is omitted and
+    /// the bytes of an executor that does not say it are unchanged. Read and
+    /// not acted on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reoffers: bool,
 }
 /// Role/configuration observations only, never native liveness or free capacity.
 #[derive(Clone, Debug, Serialize, Deserialize)]

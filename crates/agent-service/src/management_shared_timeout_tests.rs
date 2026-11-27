@@ -53,6 +53,7 @@ async fn next_offer(f: &Fixture) -> SharedDemandStatus {
                 SharedDemandPollInput {
                     after: None,
                     retries: true,
+                    reoffers: true,
                 },
             )
             .await
@@ -92,6 +93,7 @@ fn after(
             },
         },
         retry: None,
+        reoffers: false,
     }
 }
 async fn runtime_state(f: &Fixture, id: &str) -> (String, bool) {

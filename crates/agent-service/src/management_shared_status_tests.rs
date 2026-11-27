@@ -53,6 +53,7 @@ async fn budget_queue_moves_past_a_message_v2_ended_before_the_budget() {
                         reason: "usage_unrepresentable".into(),
                         budget: None,
                         retries: false,
+                        reoffers: false,
                     },
                 )
                 .await
