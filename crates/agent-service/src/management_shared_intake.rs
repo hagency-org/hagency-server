@@ -169,10 +169,17 @@ async fn rights(
     }
     Err(Error::NotFound("shared_assignment_not_found"))
 }
-pub(super) async fn expire(db: &mut AsyncPgConnection, id: &str, now: i64) -> Result<()> {
-    let start = super::super::super::periods::assignment_period(db, id, now)
+/// Where the Agent's current period began (0 when it has none). A message is
+/// answered in the period it arrived in.
+pub(super) async fn period_start(db: &mut AsyncPgConnection, id: &str, now: i64) -> Result<i64> {
+    Ok(super::super::super::periods::assignment_period(db, id, now)
         .await?
-        .map_or(0, |p| p.start_ms as i64);
+        .map_or(0, |p| p.start_ms as i64))
+}
+/// Records the ends of waiting messages that a poll comes upon. The chat
+/// status reads the same ends without this write (its `lapse`).
+pub(super) async fn expire(db: &mut AsyncPgConnection, id: &str, now: i64) -> Result<()> {
+    let start = period_start(db, id, now).await?;
     sql_query("UPDATE hagency_agent_v1.management_shared_intake q SET state='cancelled',reason='room_authority_changed' WHERE assignment_id=$1 AND state='pending' AND room_binding_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m WHERE m.binding_id=q.room_binding_id AND m.binding_generation=q.room_binding_generation)").bind::<Text,_>(id).execute(db).await?;
     sql_query("UPDATE hagency_agent_v1.management_shared_intake SET state='expired',reason='event_expired' WHERE assignment_id=$1 AND state='pending' AND (expires_at_ms<=$2 OR received_at_ms<$3)").bind::<Text,_>(id).bind::<BigInt,_>(now).bind::<BigInt,_>(start).execute(db).await?;
     Ok(())

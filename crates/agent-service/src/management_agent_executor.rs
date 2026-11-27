@@ -351,10 +351,10 @@ async fn deliver(
                 && policy.project_reservations()
                 && p.device_generation == Some(w.executor_generation));
     let mut until = sql_query(
-        "SELECT least(valid_until_ms,$2+30000) AS now FROM hagency_agent_v1.sessions WHERE id=$1",
+        "SELECT least(valid_until_ms,$2) AS now FROM hagency_agent_v1.sessions WHERE id=$1",
     )
     .bind::<Text, _>(&p.session_id)
-    .bind::<BigInt, _>(now)
+    .bind::<BigInt, _>(now + crate::identity::CLAIM_WINDOW_MS)
     .get_result::<Clock>(db)
     .await?
     .now;

@@ -259,7 +259,7 @@ pub(super) async fn commit_start(
         budget_observation: input.budget_observation.clone(),
         start_intent_id: input.start_intent_id.clone(),
         issued_at_ms: now,
-        expires_at_ms: (now + 30000).min(lifetime),
+        expires_at_ms: (now + crate::identity::CLAIM_WINDOW_MS).min(lifetime),
         original_runtime_command: original,
     };
     c.validate(server)?;

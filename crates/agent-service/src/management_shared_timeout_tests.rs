@@ -340,6 +340,12 @@ async fn shared_attempt_v2_uncertain_process_blocks_only_until_grace_then_server
         ("stopped".into(), true)
     );
     assert_eq!(recovered(&f, &lost).await.state, "head_changed");
+    // Its sender reads that it ended without a turn, and may send it again.
+    let room = work::message(&f, &r, "scope").await.room_id;
+    assert_eq!(
+        status_of(&f, &room, &f.outsider.p, "$uncertain_lost").await,
+        json!(["blocked", "head_changed", "head_changed", true])
+    );
     assert!(
         conflict(
             f.domain

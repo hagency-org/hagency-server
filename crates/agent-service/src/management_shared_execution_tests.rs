@@ -1164,6 +1164,41 @@ async fn pool_owner_can_fund_beyond_published_grant_but_manager_cannot() {
     );
 }
 
+/// What `reader` reads of `event` in `room`: its state, its reason, the
+/// record that ended it, and whether they may send it again.
+async fn status_of(f: &Fixture, room: &str, reader: &Principal, event: &str) -> Value {
+    let query = serde_json::from_value(json!({"roomId": room})).unwrap();
+    let read = f.domain.shared_approvals(reader, query).await.unwrap();
+    let row = read["executions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["eventId"] == event)
+        .cloned()
+        .unwrap_or_else(|| panic!("{event} is among the reader's newest messages"));
+    json!([
+        row["state"],
+        row["reason"],
+        row["endReason"],
+        row["canSendAgain"]
+    ])
+}
+/// Where the period of `assignment`'s Agent that holds `now` ends.
+async fn period_end(db: &mut AsyncPgConnection, assignment: &str, now: i64) -> i64 {
+    #[derive(QueryableByName)]
+    struct Saved {
+        #[diesel(sql_type=Text)]
+        payload: String,
+    }
+    let saved = sql_query("SELECT t.calendar AS payload FROM hagency_agent_v1.management_agent_recurring_terms t JOIN hagency_agent_v1.management_shared_assignments a ON a.request_id=t.request_id WHERE a.id=$1")
+        .bind::<Text, _>(assignment)
+        .get_result::<Saved>(db)
+        .await
+        .unwrap();
+    let calendar: crate::recurring_quota::Calendar = serde_json::from_str(&saved.payload).unwrap();
+    calendar.period_at(now as u64).unwrap().end_ms as i64
+}
+
 async fn chat_status_case(begun: bool) {
     #[derive(QueryableByName)]
     struct Puppet {
@@ -1355,6 +1390,45 @@ async fn chat_status_case(begun: bool) {
                     .all(|row| row["canSendAgain"] == false)
             );
         }
+        // Offered only while the Agent can take a new message: not while
+        // its membership of the room is unconfirmed (as the Matrix check
+        // records it), nor once its reservation is withdrawn. Each message
+        // keeps the record that ended it.
+        let ends = async || {
+            rows(&f.outsider.p)
+                .await
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| (row["endReason"].clone(), row["canSendAgain"].clone()))
+                .collect::<Vec<_>>()
+        };
+        let all = |offered: bool| {
+            ["paused_at_receipt", "explicit_stop", "never_started"]
+                .map(|end| (json!(end), json!(offered)))
+                .to_vec()
+        };
+        for (state, offered) in [("waiting_native", false), ("matrix_verified", true)] {
+            sql_query("UPDATE hagency_agent_v1.management_agent_matrix SET state=$2 WHERE assignment_id=$1")
+                .bind::<Text, _>(&assignment.id)
+                .bind::<Text, _>(state)
+                .execute(&mut db)
+                .await
+                .unwrap();
+            assert_eq!(ends().await, all(offered), "{state}");
+        }
+        sql_query("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE request_id=$1 AND state<>'fenced'")
+            .bind::<Text, _>(&request.id)
+            .execute(&mut db)
+            .await
+            .unwrap();
+        assert!(
+            ends()
+                .await
+                .iter()
+                .all(|(_, offered)| offered == &json!(false)),
+            "a withdrawn Agent is not offered"
+        );
     }
 }
 
@@ -1634,6 +1708,18 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
     }
     assert!(sql_query("SELECT count(*)=1 AS matched FROM hagency_agent_v1.management_shared_work WHERE id=$1 AND state='unknown'")
         .bind::<Text,_>(&work.id).get_result::<Check>(&mut db).await.unwrap().matched);
+    // Allowance is granted for the period a message arrived in. At the turn
+    // of the period the blocked message ends, not `budget_blocked` any more,
+    // and its sender may send it again. No poll records this end: it is read.
+    let turn = period_end(&mut db, &assignment.id, now_ms()).await;
+    f.domain.set_management_test_clock(turn).await.unwrap();
+    for (reader, again) in [(&f.outsider.p, true), (&f.owner.p, false)] {
+        assert_eq!(
+            status_of(&f, &request.room_id, reader, &event.event_id).await,
+            json!(["expired", "event_expired", "event_expired", again])
+        );
+    }
+    f.domain.reset_management_test_clock().await.unwrap();
     f.domain
         .change_shared_run_control(
             &f.outsider.p,
@@ -1860,6 +1946,32 @@ async fn a_fence_the_service_makes_is_recorded_as_its_own() {
     assert_eq!(record["facts"]["startEnded"], false);
     assert!(record["facts"]["requestState"].is_string());
     assert!(record["facts"]["poolState"].is_string());
+    // Going back past the migration stops new records and keeps this one;
+    // going forward again puts the rules back over the kept records.
+    let rules = async |db: &mut AsyncPgConnection| {
+        sql_query("SELECT count(*) AS count FROM pg_trigger WHERE NOT tgisinternal AND tgname IN('record_agent_fence','record_shared_runtime_fence')")
+            .get_result::<Count>(db)
+            .await
+            .unwrap()
+            .count
+    };
+    db.batch_execute(include_str!(
+        "../migrations/domain/2026-11-26-000156_agent_fence_record/down.sql"
+    ))
+    .await
+    .unwrap();
+    let back = (
+        rules(&mut db).await,
+        fence_record(&mut db, &request.id).await,
+    );
+    db.batch_execute(include_str!(
+        "../migrations/domain/2026-11-26-000156_agent_fence_record/up.sql"
+    ))
+    .await
+    .unwrap();
+    assert_eq!(back, (0, record.clone()));
+    assert_eq!(rules(&mut db).await, 2);
+    assert_eq!(fence_record(&mut db, &request.id).await, record);
 }
 
 #[tokio::test]
