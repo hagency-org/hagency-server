@@ -145,13 +145,17 @@ pub(super) async fn status(
         binding: b,
     })
 }
+/// The next message of the budget queue. A message blocked when it arrived
+/// has no demand and never gets one, and one whose room binding is gone
+/// cannot be offered again: neither holds back the messages after it (the
+/// status reads their ends).
 pub(super) async fn oldest(
     db: &mut AsyncPgConnection,
     id: &str,
     revision: i64,
 ) -> Result<Option<Queued>> {
     let start = super::period_start(db, id).await?;
-    Ok(sql_query("SELECT q.* FROM hagency_agent_v1.management_shared_intake q LEFT JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=q.id WHERE q.assignment_id=$1 AND q.control_revision=$2 AND q.received_at_ms>=$3 AND (q.state='pending' OR q.state='blocked') AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=d.id) ORDER BY q.received_at_ms,q.id LIMIT 1")
+    Ok(sql_query("SELECT q.* FROM hagency_agent_v1.management_shared_intake q LEFT JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=q.id WHERE q.assignment_id=$1 AND q.control_revision=$2 AND q.received_at_ms>=$3 AND (q.state='pending' OR (q.state='blocked' AND d.id IS NOT NULL)) AND (q.room_binding_id IS NULL OR EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m WHERE m.binding_id=q.room_binding_id AND m.binding_generation=q.room_binding_generation)) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=d.id) ORDER BY q.received_at_ms,q.id LIMIT 1")
         .bind::<Text,_>(id).bind::<BigInt,_>(revision).bind::<BigInt,_>(start).get_result(db).await.optional()?)
 }
 async fn block(
@@ -236,7 +240,18 @@ impl DomainStore {
                 // replacing event IDs or spinning forever on one expired block.
                 for _ in 0..16 {
                     let Some(q)=oldest(db,&id.id,revision).await? else{break};
-                    let w=authorize(db,p,&q,&self.server,now,true).await?;let Some(h)=head(db,&id.id).await? else{break};
+                    // An Agent this computer cannot be offered a message for
+                    // now (its reservation, protocol or run changed) is passed
+                    // over, as the v2 poll does; the others are still offered.
+                    let w=match authorize(db,p,&q,&self.server,now,true).await {
+                        Ok(w)=>w,
+                        Err(e@(Error::Conflict(_)|Error::NotFound(_)))=>{
+                            tracing::debug!(assignment_id=%id.id,intake_id=%q.id,code=%e,"Shared budget demand passed over");
+                            continue 'scan;
+                        }
+                        Err(e)=>return Err(e),
+                    };
+                    let Some(h)=head(db,&id.id).await? else{break};
                     let existing=sql_query("SELECT * FROM hagency_agent_v1.management_shared_demands WHERE intake_id=$1").bind::<Text,_>(&q.id).get_result::<Demand>(db).await.optional()?;
                     if q.expires_at_ms<=now {
                         if let Some(d)=existing{terminal(db,&d,"expired").await?;}else{intake::expire(db,&id.id,now).await?;}continue;
