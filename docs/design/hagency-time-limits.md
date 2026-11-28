@@ -273,18 +273,27 @@ After acceptance:
     (`agentMxid`). The client sends the copy to the Agent the row names, so
     a row without that ID offers nothing.
   - `notOfferedBecause`: present only on a row of the reader's own message
-    that ended without a turn and whose copy could run, when nothing but
-    its Agent keeps it from being offered; `canSendAgain` is then false. Its
-    value is `agent_unnamed` when the row has no Matrix ID for the Agent;
-    otherwise `agent_stopped` when the Agent does not run (it was stopped,
-    or waits to be started); otherwise `agent_unavailable` (its assignment
-    ended, its reservation does not stand, its executor's ledger was
-    replaced, or it is not a verified member of the room). A row without
-    the field is offered, or is not offered for the message itself (it has
-    not ended, or a copy could not run), or is read by someone who did not
-    send the message. The field says no more than that: whether an Agent is
-    available is the server's decision, not worked out by a client from the
-    facts behind it, and which check failed stays with the Agent's owner.
+    that ended without a turn and is not offered, in two cases;
+    `canSendAgain` is then false. When a copy could not run because of the
+    message's allowance, whatever its Agent, the value is
+    `allowance_spent`: it was blocked on allowance, and either no budget is
+    applied and the Agent's known use in its period still covers its
+    reservation's tokens, or the budget it was blocked under is still the
+    applied one and its period has not turned. A copy would wait for the
+    same allowance; it can be sent again once the period turns or a budget
+    is applied. Otherwise, when a copy could run and nothing but its Agent
+    keeps it from being offered, the value is `agent_unnamed` when the row
+    has no Matrix ID for the Agent; otherwise `agent_stopped` when the
+    Agent does not run (it was stopped, or waits to be started); otherwise
+    `agent_unavailable` (its assignment ended, its reservation does not
+    stand, its executor's ledger was replaced, or it is not a verified
+    member of the room). A row without the field is offered, or is not
+    offered for the message itself (it has not ended, or a copy could not
+    run after a block on usage, which `endReason` names), or is read by
+    someone who did not send the message. The field says no more than that:
+    whether an Agent is available is the server's decision, not worked out
+    by a client from the facts behind it, and which check failed stays with
+    the Agent's owner.
   - `viewerCanReview`: present only on a row whose outcome is unknown
     (`unknown` or `reply_unknown`). True when the reader manages the Agent,
     or administers its project or its pool: the rule by which the review of
@@ -457,7 +466,7 @@ renewal offers (7 days).
 | 6. A window over 30 s only for a client that says it can hold one | implemented: granted only through `x-hagency-authorization-window-v2-ms`; the first header gives 30 s |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A failed start is tried again | implemented for a start that never reported a process (demand retries); see rule 3 for the three that are not. A message whose computer does not report on such a start in time ends as never started (see the table of time limits) |
-| 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. The server reads the field by which a computer would say that it takes such a message back (`reoffers`) and acts on nothing in it (rule 6). Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one blocked on usage) says whether its reader can send it again (`canSendAgain`: the reader sent it, a copy could run, the Agent can serve a new message, and the row names it; see rule 3), which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance once its time was over), `head_changed`, `retry_exhausted`, `assignment_authority_changed` (its Agent's executor ledger was replaced while it waited) or `usage_unrepresentable`), and, to its sender only, why it is not offered when nothing but its Agent stands in the way (`notOfferedBecause`: `agent_stopped`, `agent_unavailable` or `agent_unnamed`). A row whose outcome is unknown says whether its reader may review the Agent's original task records (`viewerCanReview`). The status lists the reader's 16 newest messages, each with every Agent's row. Hagency Desktop names the Agent in the room from the row's `agentMxid` and offers the sender "Send again" where `canSendAgain` is true |
+| 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. The server reads the field by which a computer would say that it takes such a message back (`reoffers`) and acts on nothing in it (rule 6). Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one blocked on usage) says whether its reader can send it again (`canSendAgain`: the reader sent it, a copy could run, the Agent can serve a new message, and the row names it; see rule 3), which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance once its time was over), `head_changed`, `retry_exhausted`, `assignment_authority_changed` (its Agent's executor ledger was replaced while it waited) or `usage_unrepresentable`), and, to its sender only, why it is not offered when its allowance or nothing but its Agent stands in the way (`notOfferedBecause`: `allowance_spent`, `agent_stopped`, `agent_unavailable` or `agent_unnamed`). A row whose outcome is unknown says whether its reader may review the Agent's original task records (`viewerCanReview`). The status lists the reader's 16 newest messages, each with every Agent's row. Hagency Desktop names the Agent in the room from the row's `agentMxid` and offers the sender "Send again" where `canSendAgain` is true |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop |
 | 5. The wall clock only ends a lease early | holds for a ticket and a start window. Not yet for the session's proof: Hagency Desktop refuses a proof that comes without a date it can read when the proof's end lies more than 31 s away on its wall clock, which a clock behind by more than a second makes of every such proof under the default window (rule 5); in review in Hagency Desktop (#246). Not yet for the activity lease: its store still refuses an activity lease that reads longer than allowed by the wall clock, which a slow clock makes of every fresh lease; in review in Hagency Desktop (#243, #251). Not yet for the Agent execution lease, which Hagency Desktop reads without the answer's date (rule 5); in review in Hagency Desktop (#246) |

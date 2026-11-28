@@ -125,23 +125,10 @@ pub(super) async fn query(
             'agentAvailable', serves.available,
             'agentRuns', control.mode IS NOT DISTINCT FROM 'running',
             'endReason', ended.reason,
-            -- A copy sent now could run. After a block on usage it could
-            -- only once the Agent's period has turned since: the calls the
-            -- computer could not account for stay in the period they were
-            -- made in, and an Agent without periods has a single one. The
-            -- same holds after a block on allowance under the budget that
-            -- is applied now: a copy would wait for the same allowance, and
-            -- end the same way a day later. A budget applied since lifts it.
-            -- After a block on allowance without an applied budget, it could
-            -- not while the Agent's allowance is still spent (`spent`), also
-            -- in a period that has turned since.
-            'copyCanRun', ((ended.reason IS DISTINCT FROM 'usage_unrepresentable'
-                    AND NOT (applied.revision IS NOT NULL AND EXISTS(
-                        SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_blocks ab
-                        WHERE ab.demand_id=d.id AND ab.budget_revision=applied.revision
-                          AND ab.reason='budget_blocked')))
-                OR i.received_at_ms<shown.period_start::bigint)
-                AND allowance.spent IS NOT TRUE,
+            -- A copy sent now could run (`copy_blocked`, below).
+            'copyCanRun', NOT copy_blocked.usage AND NOT copy_blocked.allowance,
+            -- It could not because of its allowance alone.
+            'allowanceSpent', copy_blocked.allowance AND NOT copy_blocked.usage,
             'threadRoot', coalesce(i.event_payload::jsonb->>'thread_root', i.event_id),
             'receivedAtMs', i.received_at_ms,
             -- A block on usage has ended the message, in either lane. It
@@ -317,6 +304,26 @@ pub(super) async fn query(
                 WHEN t.reason IS NOT NULL THEN t.reason
                 ELSE lapse.reason END AS reason
         ) ended ON true
+        -- What keeps a copy sent now from running. After a block on usage
+        -- (`usage`), the Agent's period has not turned since: the calls the
+        -- computer could not account for stay in the period they were made
+        -- in, and an Agent without periods has a single one. After a block
+        -- on allowance (`allowance`), the budget it was blocked under is
+        -- still the applied one and the period has not turned: a copy would
+        -- wait for the same allowance, and end the same way a day later (a
+        -- budget applied since lifts it); or, without an applied budget, the
+        -- Agent's allowance is still spent (`spent`), also in a period that
+        -- has turned since. Neither is ever NULL.
+        CROSS JOIN LATERAL (
+            SELECT ended.reason IS NOT DISTINCT FROM 'usage_unrepresentable'
+                    AND i.received_at_ms>=shown.period_start::bigint AS usage,
+                (applied.revision IS NOT NULL AND EXISTS(
+                    SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_blocks ab
+                    WHERE ab.demand_id=d.id AND ab.budget_revision=applied.revision
+                      AND ab.reason='budget_blocked')
+                    AND i.received_at_ms>=shown.period_start::bigint)
+                OR allowance.spent IS TRUE AS allowance
+        ) copy_blocked
         -- The Agent can serve a new message in this room now: its reservation
         -- stands (neither it nor its intent is fenced, and its time is not
         -- over: $5, read by the check a new message meets when it arrives
@@ -358,11 +365,12 @@ pub(super) async fn query(
                 value["budgetState"] = json!(state);
             }
             let mut take = |key: &str| value.as_object_mut().and_then(|v| v.remove(key));
-            let (sender, available, agent_runs, copy_runs) = (
+            let (sender, available, agent_runs, copy_runs, allowance_spent) = (
                 take("fromViewer") == Some(json!(true)),
                 take("agentAvailable") == Some(json!(true)),
                 take("agentRuns") == Some(json!(true)),
                 take("copyCanRun") == Some(json!(true)),
+                take("allowanceSpent") == Some(json!(true)),
             );
             let end = take("endReason").filter(Value::is_string);
             let review = take("viewerCanReview");
@@ -382,6 +390,13 @@ pub(super) async fn query(
                     (true, false) => "agent_stopped",
                     (true, true) => "agent_unavailable",
                 });
+            }
+            // And to its sender only, when a copy could not run because of
+            // its allowance alone, whatever its Agent: a copy would wait for
+            // the same allowance. It can be sent again once the Agent's
+            // period turns or a budget is applied.
+            if sender && end.is_some() && allowance_spent {
+                value["notOfferedBecause"] = json!("allowance_spent");
             }
             if let Some(end) = end {
                 value["endReason"] = end;
