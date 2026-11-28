@@ -153,13 +153,27 @@ PostgreSQL runner 创建并删除专用随机测试库，不对现有业务库�
 脚本说明为准。历史 Fleet 的验证记录仅是历史证据，不代表当前兼容或支持。
 
 
-已验证登录的信任时长由 `authorization_window_ms` 配置，默认 30 秒，范围 30 秒至 2 分钟。执行租约和其他设备授权都随这个窗口结束，所有者电脑超过这个时长没有请求，就会失去它的 Agent，直到重新证明登录。只有在出示证明时带 `x-hagency-authorization-window-ms` 请求头的客户端才会得到更长的窗口，其他客户端仍是 30 秒。池化执行里主机“持有”的活动租约同样是 30 秒，除非同一请求还带 `x-hagency-activity-window: session`：带它的客户端接受与自己窗口一样长的活动租约，租约就与获批的窗口一样长。命令的启动窗口、通行证和投递租约是“派发”，到期会重新派发，始终是 30 秒。代价是：在身份服务处被停用或撤销的登录，最长还能使用这么久；在本主机上的显式登出和设备撤销仍然立即生效。续期从不缩短会话：调小窗口后，每个会话保留已有的结束时间，之后再按新窗口计算，Agent 不会因此被收回。每次这样的续期都会记录日志 `session_renew_kept_end`，并给出保留的结束时间比证明晚多少（`kept_beyond_proof_ms`）。已经签发的活动租约也不会被截短：下一次续期的结束时间不早于它所续的那份租约。只有会话、设备或用户被撤销，或 Agent 所依据的预留结束时，才收回 Agent。以上自迁移 `2026-11-26-000155` 起成立：尚未执行该迁移的主机，在某台电脑的会话结束时间变小时会收回它的全部资源池 Agent，所以要先升级再调小窗口，并且在还有资源池 Agent 时不要执行该迁移的回退。只有当所有者电脑上的客户端在各次调用间共用一个本地会话（Hagency Desktop 0.5.0-rc.19 之后的版本）时，才把窗口调到 30 秒以上；顺序和回退方法见下面链接的文档。所有时限及其来源见 [Agent 执行的时限](design/hagency-time-limits.md)（英文）。
+已验证登录的信任时长由 `authorization_window_ms` 配置，默认 30 秒，范围 30 秒至 2 分钟。会话最晚在最后一次证明后这么久结束，每个 Agent 执行租约都随会话结束，所以所有者电脑超过这个时长没有请求，就会失去它的 Agent，直到重新证明登录。只有在出示证明时带 `x-hagency-authorization-window-v2-ms` 请求头的客户端才会得到更长的窗口；客户端发送这个请求头，即表示它在各次调用间共用一个本地会话，更长的窗口对它没有代价。旧的请求头 `x-hagency-authorization-window-ms` 仍被接受，但无论请求多长都只给 30 秒；两个请求头同时出现时，以第二个为准；其他客户端也仍是 30 秒。因此，只发送旧请求头的电脑即使在配置了更长窗口的主机上也按 30 秒运行：Hagency Desktop 0.5.0-rc.19 是这样，本可以使用更长窗口、但还没有发送第二个请求头的构建也是这样。这样的电脑开始发送第二个请求头后，从它下一次出示证明起回到更长的窗口。正在处理消息的进程的活动租约只在客户端要求时才随窗口变化：它是 30 秒，所以这样的进程在 20 到 30 秒没有请求后失去租约，除非出示证明的同一请求还带 `x-hagency-activity-window: session`。带它的客户端接受与自己窗口一样长的活动租约，租约就与该请求获批的窗口一样长；没有第二个请求头时，这个窗口就是 30 秒。提供出去的东西（启动命令、票据、poll 分发、挑战）从不随窗口变化：固定为 30 秒，错过后会再次提供。代价是：在身份服务处被停用或撤销的登录，最长还能使用这么久；在本主机上的显式登出和设备撤销仍然立即生效。续期从不缩短会话：调小窗口后，每个会话保留已有的结束时间，之后再按新窗口计算，Agent 不会因此被收回。每次这样的续期都会记录日志 `session_renew_kept_end`，并给出保留的结束时间比证明晚多少（`kept_beyond_proof_ms`）。已经签发的活动租约也不会被截短：下一次续期的结束时间不早于它所续的那份租约。只有会话、设备或用户被撤销，或 Agent 所依据的预留结束时，才收回 Agent。以上自迁移 `2026-11-26-000155` 起成立：尚未执行该迁移的主机，在某台电脑的会话结束时间变小时会收回它的全部资源池 Agent，所以要先升级再调小窗口，并且在还有资源池 Agent 时不要执行该迁移的回退。只有在只凭第二个请求头授予更长窗口的服务端上，才把窗口调到 30 秒以上：更早的服务端凭旧请求头也会授予，于是也授予 Hagency Desktop 0.5.0-rc.19，而该版本每次调用都新建一个本地会话，随后会拒绝它自己的调用。出于同样的原因，只要还有电脑可能运行该版本，在把服务端退回到第二个请求头之前的版本前，先把窗口调回 30 秒。顺序和回退方法见下面链接的文档。所有时限及其来源见 [Agent 执行的时限](design/hagency-time-limits.md)（英文）。
+
+所有者电脑从服务器应答的 `Date` 响应头读取服务器时间。Hagency Desktop 只在应答恰好带一个 `Date`、带 `Cache-Control: no-store`（本服务器的每个 API 应答都带）、且没有非 0 的 `Age` 时才采用它。因此服务器前面的代理或负载均衡必须原样转发 `Date` 和 `Cache-Control`，不得加上非 0 的 `Age`，也不得从缓存返回 API 应答。没有可用的日期时，电脑按自己的时钟最多只承认 31 秒的登录证明：窗口更长的会话的证明会被拒绝（`authorization_time_window_unavailable`），时钟慢了一秒以上的电脑连默认窗口的证明也会拒绝。
 
 被收回（fenced）的 Agent 预留不会恢复，因此每次收回都在 `hagency_agent_v1.management_agent_fences` 留下一条记录，说明何时、为何：`fenced_at_ms`；`cause` 为 `dependency`（预留依赖的某一行发生了变化：会话或设备被撤销、授权关闭、资源池被撤回）或 `service`（服务自身的决定：启动超时、请求被取消、执行端不再持有该预留）；`facts` 是一个 JSON 对象，记下当时这些行的状态（`sessionRevoked`、`sessionEnded`、`deviceRevoked`、`deviceGenerationChanged`、`ownerActive`、`requestState`、`allocationState`、`grantState`、`poolGrantState`、`poolState`、`setupState`、`planState`、`projectActive`、`roomActive`、`startEnded`），其中不正常的那一项就是原因。此记录出现之前被收回的预留没有记录。
 
-资源池 Agent 的进程被作废（fenced）时，同样在 `hagency_agent_v1.management_shared_runtime_fences` 留下一条记录：`fenced_at_ms`；`cause` 为 `dependency`（数据库规则所为：Agent 被停止，或它的预留被收回）或 `service`（服务所为：发现租约已过期，或超时兜底放弃了该进程）；`facts` 记下 `stateBefore`、`stopped`、`leaseEndedMsAgo`（作废时活动租约已过期多久；为负表示租约当时还有时间，即原因不是租约）、`startWindowEndedMsAgo`、`controlMode`、`assignmentState`、`reservationFenced`，以及该进程已拿到但从未开始的消息数（`workNeverStarted`）和结果未知的消息数（`workUnknown`）。据此可以判断是哪个时限结束了一次运行。
+分配和授权的时间到期时，它们的状态不会改变，所以记录还写明收回时预留命令、分配、分配所属的授权和资源池授权各自已经结束多久（`reserveEndedMsAgo`、`allocationEndedMsAgo`、`grantEndedMsAgo`、`poolGrantEndedMsAgo`）。为负表示那个时间当时还没到，即原因不是它；资源池 Agent 后来的授权可以让它的预留延续到预留命令结束之后。服务自身做出的收回在 `source` 中写明是服务的哪一部分：
 
-离线未开始请求的期限由 `queue.event_ttl_ms` 配置，默认 24 小时，范围 1 秒至 30 天，按可信 AS 入站时间计时，路由重试不延长。过期请求不能领取、ACK 或开始新的模型/工具动作；已开始任务的已知原结果仍须核验当前权限后结算及发送，unknown 与成本保留不自动释放。设备 poll 必须指定 `bindingId`，只领取明确启动的 Room。发现所有者成员资格或关联失效、傀儡被移除后，撤销受影响 binding 并递增 generation，进入 leaving 并在确认实际退群后 left；重新加入不自动恢复，需显式重新绑定/采纳，旧 dispatch 不复活。发送还核验傀儡当前 `m.room.message` power level；已观测撤权的旧回复不会在恢复权限后自动发送。
+- `project_sweep`、`pool_sweep`：持有预留的电脑每次调用时都会运行的清理检查，发现它的请求、预留命令、分配、授权、项目配置或授权版本已改变或结束，或者它的设备或会话已改变（资源池 Agent 还包括它的资源池授权，或被拒绝的后继预留）。
+- `runtime_sweep`：Agent 进程的启动超时（不按周期续期的预留）。
+- `runtime_readiness`：进程的启动或预留已不再有效，且没有任何东西保留这个 Agent。`runtime_codex`：Agent 背后的贡献不再提供它所运行的运行时。
+- `matrix_readiness`：Matrix 工作之前的检查发现预留已不再有效（例如时间已到），且没有任何东西保留这个 Agent。`matrix_membership`：它的 Matrix 成员资格已被作废。`matrix_identity`：Agent 本身或它的房间和空间已与预留不符。`matrix_observation`：它的房间已不能再作为项目或资源池的房间读取。`matrix_pool_invitation`：资源池房间对服务的邀请被拒绝。
+- `executor_delivery`、`executor_result`、`executor_acknowledgement`、`assignment_read`：电脑收到命令、报告结果、得到确认或读取分配时，这个预留已经不再被保留。
+- `request_cancelled`：管理者取消了请求。
+- `ledger_replaced`：电脑的账本被替换。
+
+数据库规则所做的收回没有 `source`，迁移 `2026-11-27-000158` 之前的服务器所做的收回也没有。该迁移的回退保留所有记录；回退期间新写的记录既没有 `source`，也没有这四个时间。
+
+资源池 Agent 的进程被作废（fenced）时，同样在 `hagency_agent_v1.management_shared_runtime_fences` 留下一条记录：`fenced_at_ms`；`cause` 为 `dependency`（数据库规则所为：Agent 被停止，或它的预留被收回）或 `service`（服务所为：发现租约已过期，或超时兜底放弃了该进程）；`facts` 记下 `stateBefore`、`stopped`、`leaseEndedMsAgo`（作废时活动租约已过期多久；为负表示租约当时还有时间，即原因不是租约）、`startWindowEndedMsAgo`、`controlMode`、`assignmentState`、`reservationFenced`，以及该进程已拿到但从未开始的消息数（`workNeverStarted`）和结果未知的消息数（`workUnknown`）。据此可以判断是哪个时限结束了一次运行。迁移 `2026-11-26-000156` 的回退只停止写入这两类新记录，已有记录保留。
+
+离线未开始请求的期限由 `queue.event_ttl_ms` 配置，默认 24 小时，范围 1 秒至 30 天，按可信 AS 入站时间计时，路由重试不延长。发给资源池 Agent 的消息不受此项影响，固定等待 24 小时（见 [Agent 执行的时限](design/hagency-time-limits.md)（英文））。过期请求不能领取、ACK 或开始新的模型/工具动作；已开始任务的已知原结果仍须核验当前权限后结算及发送，unknown 与成本保留不自动释放。设备 poll 必须指定 `bindingId`，只领取明确启动的 Room。发现所有者成员资格或关联失效、傀儡被移除后，撤销受影响 binding 并递增 generation，进入 leaving 并在确认实际退群后 left；重新加入不自动恢复，需显式重新绑定/采纳，旧 dispatch 不复活。发送还核验傀儡当前 `m.room.message` power level；已观测撤权的旧回复不会在恢复权限后自动发送。
 
 
 ## 成员资格丢失与重新绑定
@@ -178,6 +192,11 @@ leaving，实际 Matrix 退群确认后成为 left。后台也检查 suspended�
 503，恢复后重新健康。空闲队列的成功检查也计作进展。这是队列运行健康，
 不是对所有外部依赖持续发送主动探针。响应仅有队列名、固定错误码和时间，
 不含用户、凭据或消息正文；错误日志按队列节流。
+`membership` 队列的每一轮还会放弃超过宽限期仍无消息的资源池进程。某个进程放弃失败
+不会挡住其他进程：它被记入日志（`Shared attempt time bound failed`，带运行 ID
+和错误码），这一轮记为失败（`shared_attempt_timeouts_failed`），下一轮再试。
+执行端的尝试轮询也会在自己的事务里先以同样方式放弃该电脑上无消息的进程：放弃失败的
+那个进程以同一行日志记录、单独回滚，轮询继续进行。
 
 SIGTERM 先停止领取新工作，内部 Matrix listener 继续处理已领取的上传/发送，
 最多排空 35 秒并保存原回执，再优雅停止 HTTP 与 Pasion。Compose 停机宽限为

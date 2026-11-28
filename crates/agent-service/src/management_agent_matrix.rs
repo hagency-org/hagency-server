@@ -86,7 +86,12 @@ async fn current(db: &mut AsyncPgConnection, m: &Membership, w: &Work, now: i64)
     }
     if m.state == "fenced" || !live(db, w, &c, now).await? {
         if m.state == "fenced" || !identity_retained(db, w, &c, now).await? {
-            fence(db, &w.intent_id).await?;
+            let source = if m.state == "fenced" {
+                "matrix_membership"
+            } else {
+                "matrix_readiness"
+            };
+            fence(db, &w.intent_id, source).await?;
         }
         return Ok(false);
     }
@@ -138,10 +143,10 @@ async fn delivery(
     let token = secret_token();
     // Historical tickets may upload observations, never extend their fixed validity.
     let until = sql_query(
-        "SELECT least(valid_until_ms,$2+30000) AS now FROM hagency_agent_v1.sessions WHERE id=$1",
+        "SELECT least(valid_until_ms,$2) AS now FROM hagency_agent_v1.sessions WHERE id=$1",
     )
     .bind::<Text, _>(&p.session_id)
-    .bind::<BigInt, _>(now)
+    .bind::<BigInt, _>(now + crate::identity::CLAIM_WINDOW_MS)
     .get_result::<Clock>(db)
     .await?
     .now;
@@ -189,7 +194,7 @@ impl DomainStore {
                 let a=super::projection(db,&m.request_id).await?.ok_or(Error::Conflict("agent_assignment_required"))?;
                 let reserve:ManagedAgentReserveCommand=decode(&w.payload)?;
                 let lifetime=super::reserve_lifetime(db,&reserve,now).await?;
-                let c=ManagedAgentMatrixChallenge {version:1,capability:AGENT_MATRIX_CAPABILITY.into(),operation:"agent.matrix.check".into(),command_id:format!("mmc_{}",entity_id()?),assignment_id:m.assignment_id.clone(),assignment_generation:a.generation,agent_reservation_id:a.agent_reservation_id,reserve_command:reserve.clone(),reserve_command_digest:w.digest.clone(),reserve_receipt_digest:a.reserve_receipt_digest,space_id:m.space_id.clone(),puppet_mxid:m.puppet_mxid.clone(),issued_at_ms:now,expires_at_ms:(now+30_000).min(lifetime)};
+                let c=ManagedAgentMatrixChallenge {version:1,capability:AGENT_MATRIX_CAPABILITY.into(),operation:"agent.matrix.check".into(),command_id:format!("mmc_{}",entity_id()?),assignment_id:m.assignment_id.clone(),assignment_generation:a.generation,agent_reservation_id:a.agent_reservation_id,reserve_command:reserve.clone(),reserve_command_digest:w.digest.clone(),reserve_receipt_digest:a.reserve_receipt_digest,space_id:m.space_id.clone(),puppet_mxid:m.puppet_mxid.clone(),issued_at_ms:now,expires_at_ms:(now+crate::identity::CLAIM_WINDOW_MS).min(lifetime)};
                 c.validate(&self.server)?;let digest=allocation_digest(&c)?;
                 sql_query("INSERT INTO hagency_agent_v1.management_agent_matrix_checks(id,assignment_id,payload,digest,expires_at_ms) VALUES($1,$2,$3,$4,$5)").bind::<Text,_>(&c.command_id).bind::<Text,_>(&m.assignment_id).bind::<Text,_>(wire(&c)?).bind::<Text,_>(&digest).bind::<BigInt,_>(c.expires_at_ms).execute(db).await?;
                 sql_query("UPDATE hagency_agent_v1.management_agent_matrix SET state='waiting_native',challenge_id=$2,native_until_ms=0,verified_at_ms=NULL WHERE assignment_id=$1").bind::<Text,_>(&m.assignment_id).bind::<Text,_>(&c.command_id).execute(db).await?;
@@ -331,17 +336,17 @@ impl DomainStore {
             let r=row(db,&m.request_id).await?;let cx=if r.pool_contribution_id.is_some() {None} else {Some(context(db,&r.plan_id,now).await?)};
             let manager_mxid=sql_query("SELECT mxid AS payload FROM hagency_agent_v1.users WHERE id=$1").bind::<Text,_>(&r.manager_user_id).get_result::<Json>(db).await?.payload;
             let agent:Agent=sql_query("SELECT id,owner_user_id,puppet_mxid,display_name,state,generation,owner_direct_room_id,execution_device_id,visibility FROM hagency_agent_v1.agents WHERE id=$1 AND execution_kind='shared_project'").bind::<Text,_>(&m.agent_id).get_result(db).await?;
-            if agent.owner_user_id!=r.manager_user_id||agent.puppet_mxid!=m.puppet_mxid||agent.state!="suspended"||agent.execution_device_id.is_some()||agent.owner_direct_room_id.is_some()||cx.as_ref().is_some_and(|c|c.setup.space_id.as_deref()!=Some(&m.space_id)||c.setup.room_id.as_deref()!=Some(&m.room_id))||cx.is_none()&&(!m.space_id.is_empty()||m.room_id!=r.room_id) {fence(db,&w.intent_id).await?;return Ok(None);}
+            if agent.owner_user_id!=r.manager_user_id||agent.puppet_mxid!=m.puppet_mxid||agent.state!="suspended"||agent.execution_device_id.is_some()||agent.owner_direct_room_id.is_some()||cx.as_ref().is_some_and(|c|c.setup.space_id.as_deref()!=Some(&m.space_id)||c.setup.room_id.as_deref()!=Some(&m.room_id))||cx.is_none()&&(!m.space_id.is_empty()||m.room_id!=r.room_id) {fence(db,&w.intent_id,"matrix_identity").await?;return Ok(None);}
             if effect {sql_query("UPDATE hagency_agent_v1.management_agent_matrix SET effect_started=true WHERE assignment_id=$1").bind::<Text,_>(id).execute(db).await?;}
             Ok(Some(Phase {membership:m,context:cx,manager_mxid,agent}))
         }).await
     }
-    async fn matrix_fence(&self, id: &str) -> Result<()> {
+    async fn matrix_fence(&self, id: &str, source: &str) -> Result<()> {
         self.db
             .write_transaction(async |db: &mut AsyncPgConnection| {
                 let m = membership(db, id).await?;
                 let w = original(db, &m).await?;
-                fence(db, &w.intent_id).await
+                fence(db, &w.intent_id, source).await
             })
             .await
     }
@@ -373,7 +378,7 @@ impl DomainStore {
         let (at, events) = match observation {
             Ok(v) => v,
             Err(Error::Conflict(_) | Error::Unauthorized(_)) => {
-                self.matrix_fence(id).await?;
+                self.matrix_fence(id, "matrix_observation").await?;
                 return Ok(None);
             }
             Err(e) => return Err(e),
@@ -471,7 +476,7 @@ impl DomainStore {
             {
                 Ok(invited) => invited,
                 Err(Error::Conflict(_) | Error::Unauthorized(_)) => {
-                    self.matrix_fence(id).await?;
+                    self.matrix_fence(id, "matrix_pool_invitation").await?;
                     return self.matrix_cleanup(id, gateway, matrix).await;
                 }
                 Err(error) => return Err(error),

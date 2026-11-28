@@ -1,6 +1,8 @@
 //! ADR-193 amendment: an event whose attempt provably never started runs again
 //! in place, at most three times, and only on the executor's own evidence.
 use super::*;
+#[path = "management_shared_status_tests.rs"]
+mod status_tests;
 
 async fn retry(
     f: &Fixture,
@@ -364,6 +366,15 @@ async fn shared_demand_v2_retry_cap_ends_the_event_and_the_queue_moves_on() {
         .unwrap();
     assert_eq!(reply.demand.state, "head_changed", "the cap ends the event");
     assert_eq!(work_items(&f, "$cap_lost").await, 0);
+    // Its sender reads which record ended it and may send it again; the
+    // resource's owner, who did not send it, may not.
+    let room = work::message(&f, &r, "scope").await.room_id;
+    for (reader, again) in [(&f.outsider.p, true), (&f.owner.p, false)] {
+        assert_eq!(
+            status_of(&f, &room, reader, "$cap_lost").await,
+            json!(["blocked", "head_changed", "retry_exhausted", again])
+        );
+    }
     let next = next_offer(&f).await;
     assert_eq!(next.offer.event_id, "$cap_next");
     assert_eq!(
@@ -524,6 +535,7 @@ async fn shared_demand_executor_without_retries_never_sees_them_and_ends_an_open
             SharedDemandPollInput {
                 after: None,
                 retries: true,
+                reoffers: true,
             },
         )
         .await
@@ -544,6 +556,7 @@ async fn shared_demand_executor_without_retries_never_sees_them_and_ends_an_open
             SharedDemandRecoverInput {
                 demand_digest: lost.demand_digest.clone(),
                 retries: false,
+                reoffers: false,
             },
         )
         .await

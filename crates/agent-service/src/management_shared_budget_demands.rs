@@ -52,6 +52,19 @@ async fn original_block(
         .bind::<Text,_>(id).get_result::<Block>(db).await.optional()?
         .map(original_block_evidence).transpose()
 }
+/// A v2 block other than on allowance: v3 never takes such a message up (its
+/// records refuse it, `validate_shared_budget_demand`).
+async fn ended_in_v2(db: &mut AsyncPgConnection, id: &str) -> Result<bool> {
+    Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks WHERE demand_id=$1 AND reason<>'budget_blocked') AS matched")
+        .bind::<Text,_>(id).get_result::<Flag>(db).await?.matched)
+}
+/// A block on usage in this queue, under any budget revision. It ends the
+/// message at once, as a block on usage does without a budget: a new budget
+/// counts the same calls.
+async fn blocked_on_usage(db: &mut AsyncPgConnection, id: &str) -> Result<bool> {
+    Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_blocks WHERE demand_id=$1 AND reason='usage_unrepresentable') AS matched")
+        .bind::<Text,_>(id).get_result::<Flag>(db).await?.matched)
+}
 async fn started(db: &mut AsyncPgConnection, id: &str) -> Result<Option<Started>> {
     Ok(sql_query("SELECT runtime_id,payload,digest FROM hagency_agent_v1.management_shared_budget_demand_starts WHERE demand_id=$1")
         .bind::<Text,_>(id).get_result(db).await.optional()?)
@@ -139,13 +152,17 @@ pub(super) async fn status(
         binding: b,
     })
 }
+/// The next message of the budget queue. A message blocked when it arrived
+/// has no demand and never gets one, and one whose room binding is gone
+/// cannot be offered again: neither holds back the messages after it (the
+/// status reads their ends).
 pub(super) async fn oldest(
     db: &mut AsyncPgConnection,
     id: &str,
     revision: i64,
 ) -> Result<Option<Queued>> {
     let start = super::period_start(db, id).await?;
-    Ok(sql_query("SELECT q.* FROM hagency_agent_v1.management_shared_intake q LEFT JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=q.id WHERE q.assignment_id=$1 AND q.control_revision=$2 AND q.received_at_ms>=$3 AND (q.state='pending' OR q.state='blocked') AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=d.id) ORDER BY q.received_at_ms,q.id LIMIT 1")
+    Ok(sql_query("SELECT q.* FROM hagency_agent_v1.management_shared_intake q LEFT JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=q.id WHERE q.assignment_id=$1 AND q.control_revision=$2 AND q.received_at_ms>=$3 AND (q.state='pending' OR (q.state='blocked' AND d.id IS NOT NULL)) AND (q.room_binding_id IS NULL OR EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m WHERE m.binding_id=q.room_binding_id AND m.binding_generation=q.room_binding_generation)) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=d.id) ORDER BY q.received_at_ms,q.id LIMIT 1")
         .bind::<Text,_>(id).bind::<BigInt,_>(revision).bind::<BigInt,_>(start).get_result(db).await.optional()?)
 }
 async fn block(
@@ -230,20 +247,39 @@ impl DomainStore {
                 // replacing event IDs or spinning forever on one expired block.
                 for _ in 0..16 {
                     let Some(q)=oldest(db,&id.id,revision).await? else{break};
-                    let w=authorize(db,p,&q,&self.server,now,true).await?;let Some(h)=head(db,&id.id).await? else{break};
+                    // An Agent this computer cannot be offered a message for
+                    // now (its reservation, protocol or run changed) is passed
+                    // over, as the v2 poll does; the others are still offered.
+                    let w=match authorize(db,p,&q,&self.server,now,true).await {
+                        Ok(w)=>w,
+                        Err(e@(Error::Conflict(_)|Error::NotFound(_)))=>{
+                            tracing::debug!(assignment_id=%id.id,intake_id=%q.id,code=%e,"Shared budget demand passed over");
+                            continue 'scan;
+                        }
+                        Err(e)=>return Err(e),
+                    };
+                    let Some(h)=head(db,&id.id).await? else{break};
                     let existing=sql_query("SELECT * FROM hagency_agent_v1.management_shared_demands WHERE intake_id=$1").bind::<Text,_>(&q.id).get_result::<Demand>(db).await.optional()?;
+                    // A block on usage has ended the message, whatever its
+                    // time. Its end is recorded as `head_changed`, the end
+                    // every computer keeps of this queue; the block names
+                    // the cause, which the status reads. Offer the next.
+                    if let Some(d)=&existing&&blocked_on_usage(db,&d.id).await?{terminal(db,d,"head_changed").await?;continue;}
                     if q.expires_at_ms<=now {
                         if let Some(d)=existing{terminal(db,&d,"expired").await?;}else{intake::expire(db,&id.id,now).await?;}continue;
                     }
                     if existing.is_none()&&awaits_first_start(db,&q,&h).await?{break;}
                     let d=if let Some(d)=existing{d}else{ensure(db,&q,&h).await?};let o=offer(&d,&q)?;
-                    if super::started(db,&d.id).await?.is_some()||super::binding(db,&d.id).await?.is_some(){break;}
+                    if super::binding(db,&d.id).await?.is_some(){break;}
+                    // The applied budget retired v2 for this Agent. A message v2
+                    // started, or ended other than on allowance, can be neither
+                    // bound there nor started here: end it, and offer the next.
+                    if super::started(db,&d.id).await?.is_some()||ended_in_v2(db,&d.id).await?{terminal(db,&d,"head_changed").await?;continue;}
                     let (pin,_,known)=super::super::super::super::budget::execution_head(db,&w.request_id,&self.server).await?;
                     if started(db,&d.id).await?.is_none(){save_pin(db,&d,&pin).await?;}
                     let s=started(db,&d.id).await?;
                     let expected=s.as_ref().map_or(o.predecessor_command_id.as_str(),|v|v.runtime_id.as_str());
                     if h.id!=expected || s.is_some()&&h.state=="stopped" {terminal(db,&d,"head_changed").await?;continue;}
-                    if original_block(db,&d.id).await?.is_some_and(|b|b.reason!="budget_blocked"){break;}
                     if s.is_none()&&known>=pin.effective_ceiling_tokens {
                         let payload=wire(&json!({"reason":"budget_blocked","source":"known_consumption_exhausted","executionBudget":pin}))?;block(db,&d,&pin,"budget_blocked",&payload).await?;break;
                     }

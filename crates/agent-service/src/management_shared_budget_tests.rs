@@ -7,7 +7,7 @@ struct Clock {
 use crate::management_shared_work_types::{SharedWorkRecoverInput, SharedWorkResultUpload};
 use crate::{management_agent_budget_types::*, management_shared_budget_types::*};
 
-async fn apply_delta(
+pub(super) async fn apply_delta(
     f: &Fixture,
     r: &ManagedAgentRequest,
     admin: &Actor,
@@ -310,6 +310,297 @@ async fn stopped_missing_usage_v3_remains_discoverable_without_execution_authori
             .unwrap()
             .is_none()
     );
+}
+/// With durable intake off, messages reach Agents by direct routing. Once a
+/// budget is applied to an Agent, its plain process, which no budget limits,
+/// is given no work; budget processes still are (the tests above), and their
+/// work poll holds them to the budget.
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn direct_routing_gives_a_plain_process_no_work_once_a_budget_is_applied() {
+    let (mut f, r, admin, _, m) = Box::pin(prepared()).await;
+    f.policy = f
+        .policy
+        .with_shared_successors(true)
+        .with_agent_budget_deltas(true)
+        .with_shared_budget_execution(true);
+    assert!(!f.policy.shared_durable_intake());
+    let (d, a) = qualify(&f).await;
+    apply_delta(&f, &r, &admin, 25, 230).await;
+    let e = work::message(&f, &r, "plain_after_budget").await;
+    let now = {
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now")
+            .get_result::<Clock>(&mut db)
+            .await
+            .unwrap()
+            .now
+    };
+    f.domain
+        .route_shared_event(&f.policy, &e, now, &m.gateway)
+        .await
+        .unwrap();
+    #[derive(QueryableByName)]
+    struct Rows {
+        #[diesel(sql_type = BigInt)]
+        n: i64,
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let rows = sql_query(
+        "SELECT count(*)::bigint AS n FROM hagency_agent_v1.management_shared_work WHERE runtime_id=$1",
+    )
+    .bind::<Text, _>(&d.command.command_id)
+    .get_result::<Rows>(&mut db)
+    .await
+    .unwrap()
+    .n;
+    assert_eq!(rows, 0, "the plain process is given no work");
+    assert!(
+        f.domain
+            .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+/// A work row's state, and whether it began.
+async fn work_state(f: &Fixture, id: &str) -> (String, bool) {
+    #[derive(QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = Text)]
+        state: String,
+        #[diesel(sql_type = Bool)]
+        begun: bool,
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let row = sql_query(
+        "SELECT state,started_at_ms IS NOT NULL AS begun FROM hagency_agent_v1.management_shared_work WHERE id=$1",
+    )
+    .bind::<Text, _>(id)
+    .get_result::<Row>(&mut db)
+    .await
+    .unwrap();
+    (row.state, row.begun)
+}
+fn plain_and_budget(f: &mut Fixture) {
+    f.policy = f
+        .policy
+        .clone()
+        .with_shared_successors(true)
+        .with_agent_budget_deltas(true)
+        .with_shared_budget_execution(true);
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn direct_routing_work_given_before_a_budget_is_not_acknowledged_or_handed_out_again() {
+    let (mut f, r, admin, _, m) = Box::pin(prepared()).await;
+    plain_and_budget(&mut f);
+    assert!(!f.policy.shared_durable_intake());
+    let (_, a) = qualify(&f).await;
+    // One message begins before the budget is applied; the next is only
+    // handed out.
+    let begun = work::started(&f, &r, &m, &a, "begun_before_budget").await;
+    let given = work::queued(&f, &r, &m, &a, "given_before_budget").await;
+    apply_delta(&f, &r, &admin, 25, 230).await;
+    assert!(matches!(
+        f.domain
+            .acknowledge_shared_work(&f.owner.p, &f.policy, input(&a, &given), &m.gateway)
+            .await,
+        Err(crate::Error::Conflict(
+            "shared_work_definitively_not_started"
+        ))
+    ));
+    // What began is left alone: a replay of its start still says it began.
+    assert!(
+        !f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &begun), &m.gateway)
+            .await
+            .unwrap()
+            .newly_started
+    );
+    assert!(
+        f.domain
+            .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(work_state(&f, &given.id).await, ("cancelled".into(), false));
+    assert_eq!(work_state(&f, &begun.id).await, ("started".into(), true));
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn direct_routing_work_accepted_before_a_budget_does_not_start() {
+    let (mut f, r, admin, _, m) = Box::pin(prepared()).await;
+    plain_and_budget(&mut f);
+    let (_, a) = qualify(&f).await;
+    let w = work::queued(&f, &r, &m, &a, "accepted_before_budget").await;
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .await
+        .unwrap();
+    apply_delta(&f, &r, &admin, 25, 230).await;
+    // Unencrypted work starts through its frozen context.
+    assert!(!w.encrypted);
+    assert!(matches!(
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .await,
+        Err(crate::Error::Conflict(
+            "shared_work_definitively_not_started"
+        ))
+    ));
+    assert_eq!(work_state(&f, &w.id).await, ("acknowledged".into(), false));
+    assert!(
+        f.domain
+            .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(work_state(&f, &w.id).await, ("cancelled".into(), false));
+}
+/// An encrypted message that the v2 work poll bound to a plain process, and
+/// acknowledged: (fixture, request, administrator, Matrix, lease, work, room,
+/// event).
+#[allow(clippy::type_complexity)]
+async fn bound_and_acknowledged(
+    id: &str,
+) -> (
+    Fixture,
+    ManagedAgentRequest,
+    Actor,
+    MatrixFixture,
+    SharedActivityLease,
+    SharedWorkItem,
+    String,
+    String,
+) {
+    let (mut f, r, admin, assignment, m) = Box::pin(prepared()).await;
+    plain_and_budget(&mut f);
+    f.policy = f
+        .policy
+        .clone()
+        .with_shared_durable_intake(true)
+        .with_shared_demands(true);
+    intake_tests::arm(&f, &assignment, &m).await;
+    let (_, a) = qualify(&f).await;
+    let room = read_matrix(&f, &r).await.room_id;
+    m.states.lock().unwrap().get_mut(&room).unwrap().push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
+    let mut e = work::message(&f, &r, id).await;
+    e.encrypted = true;
+    e.body.clear();
+    e.mentioned_mxids.clear();
+    f.domain
+        .route_shared_event(&f.policy, &e, crate::api::now_ms(), &m.gateway)
+        .await
+        .unwrap();
+    f.domain.shared_crypto_confirm(&f.owner.p,serde_json::from_value(json!({"assignmentId":assignment.id,"eventId":e.event_id,"addressed":true,"mentioned":true})).unwrap(),&m.gateway).await.unwrap();
+    // The v2 work poll binds the message to the plain process.
+    let w = f
+        .domain
+        .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(w.encrypted);
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .await
+        .unwrap();
+    (f, r, admin, m, a, w, room, e.event_id)
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn a_message_bound_before_a_budget_does_not_start_and_reads_never_started() {
+    let (f, r, admin, m, a, w, room, event) =
+        Box::pin(bound_and_acknowledged("bound_before_budget")).await;
+    apply_delta(&f, &r, &admin, 25, 230).await;
+    // Encrypted work starts through the plain start.
+    assert!(matches!(
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .await,
+        Err(crate::Error::Conflict(
+            "shared_work_definitively_not_started"
+        ))
+    ));
+    assert!(
+        f.domain
+            .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(work_state(&f, &w.id).await, ("cancelled".into(), false));
+    // The room reads that end when it reads the message: not begun.
+    let query = serde_json::from_value(json!({"roomId":room})).unwrap();
+    let row = f
+        .domain
+        .shared_approvals(&f.outsider.p, query)
+        .await
+        .unwrap()["executions"][0]
+        .clone();
+    assert_eq!(
+        (
+            &row["eventId"],
+            &row["state"],
+            &row["reason"],
+            &row["endReason"]
+        ),
+        (
+            &json!(event),
+            &json!("cancelled"),
+            &json!("never_started"),
+            &json!("never_started")
+        )
+    );
+    // Its sender may send it again, and nothing says that the Agent stands
+    // in the way: a copy goes to the budget's queue, which offers it for a
+    // budget process once the plain one has stopped. Nobody else is offered
+    // it, and the outcome is known, so nobody is offered a review.
+    for (reader, again) in [(&f.outsider.p, true), (&f.owner.p, false)] {
+        let query = serde_json::from_value(json!({"roomId":room})).unwrap();
+        let row = f.domain.shared_approvals(reader, query).await.unwrap()["executions"][0].clone();
+        assert_eq!(
+            (
+                &row["canSendAgain"],
+                row.get("notOfferedBecause"),
+                row.get("viewerCanReview")
+            ),
+            (&json!(again), None, None)
+        );
+    }
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn a_message_begun_before_a_budget_is_left_alone() {
+    let (f, r, admin, m, a, w, _, _) = Box::pin(bound_and_acknowledged("begun_bound")).await;
+    assert!(
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .await
+            .unwrap()
+            .newly_started
+    );
+    apply_delta(&f, &r, &admin, 25, 230).await;
+    // Its end is unknown: a replay of its start still says it began, and
+    // nothing ends it.
+    assert!(
+        !f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .await
+            .unwrap()
+            .newly_started
+    );
+    assert!(
+        f.domain
+            .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(work_state(&f, &w.id).await, ("started".into(), true));
 }
 #[tokio::test]
 #[ignore = "dedicated PostgreSQL"]
@@ -823,6 +1114,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
         reason: "budget_blocked".into(),
         budget: Some(old_start.budget_observation.clone()),
         retries: false,
+        reoffers: false,
     };
     let original_block_payload = serde_json::to_string(&original_block_input).unwrap();
     let original_block_digest = crate::hash(&original_block_payload);
@@ -1063,6 +1355,7 @@ async fn budget_execution_v3_original_block_reassessment_fifo_same_event_and_los
             SharedDemandRecoverInput {
                 demand_digest: old.demand_digest,
                 retries: true,
+                reoffers: true,
             },
         )
         .await
@@ -1182,6 +1475,88 @@ async fn current_budget_block_is_visible_until_a_new_revision_is_applied() {
     assert!(restored["executions"][0].get("budgetState").is_none());
 }
 
+/// A message blocked on allowance under an applied budget, once its time is
+/// over, is not offered again while that budget is the one applied: a copy
+/// would wait for the same allowance and end the same way a day later. A
+/// budget applied since lifts that.
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn an_allowance_block_is_offered_again_only_under_a_new_budget() {
+    let (mut f, r, admin, m, i) = Box::pin(fixture()).await;
+    running(&mut f, &m, &i.assignment_id).await;
+    retain_event(&f, &r, &m, "allowance_ended").await;
+    let d = offered(&f).await;
+    let mut budget = i.budget_observation;
+    budget.known_consumed_tokens = budget.allocated_tokens;
+    budget.retained_tokens = budget.allocated_tokens;
+    budget.remaining_tokens = 0;
+    budget.usage_complete = false;
+    f.domain
+        .block_shared_budget_demand(
+            &f.owner.p,
+            &d.offer.demand_id,
+            SharedBudgetDemandBlockInput {
+                demand_digest: d.demand_digest,
+                expected_control_revision: d.offer.control_revision,
+                original_block: d.original_block,
+                execution_budget: d.execution_budget,
+                reason: "budget_blocked".into(),
+                budget: Some(budget),
+            },
+        )
+        .await
+        .unwrap();
+    // Its 24 hours end a millisecond after it arrived; it is read a claim
+    // window after that.
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute(&format!(
+        "ALTER TABLE hagency_agent_v1.management_shared_intake DISABLE TRIGGER USER;\
+         UPDATE hagency_agent_v1.management_shared_intake SET expires_at_ms=received_at_ms+1 WHERE assignment_id='{id}' AND event_id='$allowance_ended';\
+         ALTER TABLE hagency_agent_v1.management_shared_intake ENABLE TRIGGER USER",
+        id = i.assignment_id
+    ))
+    .await
+    .unwrap();
+    let late = sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now")
+        .get_result::<Clock>(&mut db)
+        .await
+        .unwrap()
+        .now
+        + crate::identity::CLAIM_WINDOW_MS
+        + 1_000;
+    let room = work::message(&f, &r, "scope").await.room_id;
+    let read = async || {
+        let query = serde_json::from_value(json!({"roomId": room})).unwrap();
+        f.domain.set_management_test_clock(late).await.unwrap();
+        let read = f.domain.shared_approvals(&f.outsider.p, query).await;
+        f.domain.reset_management_test_clock().await.unwrap();
+        let row = read.unwrap()["executions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["eventId"] == "$allowance_ended")
+            .cloned()
+            .unwrap();
+        json!([
+            row["state"],
+            row["endReason"],
+            row["canSendAgain"],
+            row["notOfferedBecause"]
+        ])
+    };
+    assert_eq!(
+        read().await,
+        json!(["expired", "event_expired", false, null]),
+        "not under the budget that blocked it"
+    );
+    apply_delta(&f, &r, &admin, 25, 250).await;
+    assert_eq!(
+        read().await,
+        json!(["expired", "event_expired", true, null]),
+        "under a budget applied since"
+    );
+}
+
 #[tokio::test]
 #[ignore = "dedicated PostgreSQL"]
 async fn budget_execution_v3_idle_promotion_fifo_never_creates_second_start() {
@@ -1282,6 +1657,7 @@ async fn budget_execution_v3_stop_run_aba_retains_original_event_and_rejects_old
             SharedDemandRecoverInput {
                 demand_digest: old.demand_digest.clone(),
                 retries: true,
+                reoffers: true,
             },
         )
         .await
@@ -1347,6 +1723,7 @@ async fn budget_execution_v3_unrelated_head_advance_retains_terminal_original_of
             SharedDemandRecoverInput {
                 demand_digest: old.demand_digest.clone(),
                 retries: true,
+                reoffers: true,
             },
         )
         .await
@@ -1365,6 +1742,14 @@ async fn budget_execution_v3_unrelated_head_advance_retains_terminal_original_of
             .await
             .is_err()
     );
+    // Its sender reads that it ended without a turn, and may send it again.
+    let room = work::message(&f, &r, "scope").await.room_id;
+    for (reader, again) in [(&f.outsider.p, true), (&f.owner.p, false)] {
+        assert_eq!(
+            status_of(&f, &room, reader, "$budget_original_head").await,
+            json!(["blocked", "head_changed", "head_changed", again])
+        );
+    }
 }
 #[tokio::test]
 #[ignore = "dedicated PostgreSQL"]
@@ -1977,4 +2362,93 @@ async fn budget_execution_v3_process_revision_is_free_again_in_a_newly_declared_
     submit(&f, &fence, fence_at(&fence, 230)).await.unwrap();
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     assert!(sql_query("SELECT array_agg(o.ledger_epoch ORDER BY o.ledger_revision)=ARRAY[0,0,1]::bigint[] AS matched FROM hagency_agent_v1.management_shared_process_receipts o JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=o.runtime_id WHERE r.assignment_id=$1").bind::<Text, _>(&assignment).get_result::<Check>(&mut db).await.unwrap().matched);
+}
+/// A message that waited out its 24 hours reads as ended one claim window
+/// later, before any poll records it, and reading it writes nothing. The end
+/// the budget poll records, and a message that arrived already past its 24
+/// hours, read the same.
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn budget_execution_v3_message_past_its_time_reads_ended_before_any_poll() {
+    #[derive(QueryableByName)]
+    struct Saved {
+        #[diesel(sql_type=Text)]
+        payload: String,
+    }
+    let (mut f, r, _, m, i) = Box::pin(fixture()).await;
+    running(&mut f, &m, &i.assignment_id).await;
+    let received = retain_event(&f, &r, &m, "budget_waits_out").await;
+    let offer = offered(&f).await;
+    assert_eq!(offer.offer.event_id, "$budget_waits_out");
+    let room = work::message(&f, &r, "scope").await.room_id;
+    let readers = [(&f.outsider.p, true), (&f.owner.p, false)];
+    for (reader, _) in readers {
+        assert_eq!(
+            status_of(&f, &room, reader, "$budget_waits_out").await,
+            json!(["pending", null, null, false])
+        );
+    }
+    // A day and a claim window later, with no poll in between.
+    f.domain
+        .set_management_test_clock(received + 86_400_000 + crate::identity::CLAIM_WINDOW_MS)
+        .await
+        .unwrap();
+    for (reader, again) in readers {
+        assert_eq!(
+            status_of(&f, &room, reader, "$budget_waits_out").await,
+            json!(["expired", "event_expired", "event_expired", again])
+        );
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let state = sql_query(
+        "SELECT state AS payload FROM hagency_agent_v1.management_shared_intake WHERE event_id=$1",
+    )
+    .bind::<Text, _>("$budget_waits_out")
+    .get_result::<Saved>(&mut db)
+    .await
+    .unwrap()
+    .payload;
+    assert_eq!(state, "pending", "a read records nothing");
+    // The budget poll records this end as the demand's terminal `expired`,
+    // which reads as the same end. A test cannot run that poll a day ahead,
+    // because its executor's declaration is trusted for 300 s, so the row is
+    // written as it does.
+    let payload =
+        serde_json::to_string(&json!({"demandDigest":offer.demand_digest,"reason":"expired"}))
+            .unwrap();
+    sql_query("INSERT INTO hagency_agent_v1.management_shared_budget_demand_terminals VALUES($1,'expired',$2,$3)")
+        .bind::<Text, _>(&offer.offer.demand_id)
+        .bind::<Text, _>(&payload)
+        .bind::<Text, _>(crate::hash(&payload))
+        .execute(&mut db)
+        .await
+        .unwrap();
+    for (reader, again) in readers {
+        assert_eq!(
+            status_of(&f, &room, reader, "$budget_waits_out").await,
+            json!(["expired", "event_expired", "event_expired", again])
+        );
+    }
+    f.domain.reset_management_test_clock().await.unwrap();
+    // Received already past its 24 hours: recorded expired when it arrives.
+    let now = sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now")
+        .get_result::<Clock>(&mut db)
+        .await
+        .unwrap()
+        .now;
+    f.domain
+        .route_shared_event(
+            &f.policy,
+            &work::message(&f, &r, "budget_arrived_late").await,
+            now - 86_400_000 - 1_000,
+            &m.gateway,
+        )
+        .await
+        .unwrap();
+    for (reader, again) in readers {
+        assert_eq!(
+            status_of(&f, &room, reader, "$budget_arrived_late").await,
+            json!(["expired", "event_expired", "event_expired", again])
+        );
+    }
 }

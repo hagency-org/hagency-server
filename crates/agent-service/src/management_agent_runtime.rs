@@ -92,13 +92,13 @@ async fn current(db: &mut AsyncPgConnection, r: &RuntimeRow, w: &Work, now: i64)
         if c.reserve_command.renewal_mode.is_none()
             || !identity_retained(db, w, &c.reserve_command, now).await?
         {
-            fence(db, &w.intent_id).await?;
+            fence(db, &w.intent_id, "runtime_readiness").await?;
         }
         return Ok(false);
     }
     let codex=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_agent_requests r ON r.id=a.request_id LEFT JOIN hagency_agent_v1.management_projects p ON p.id=r.plan_id JOIN hagency_agent_v1.management_contributions c ON c.id=COALESCE(r.pool_contribution_id,p.contribution_id) WHERE a.id=$1 AND c.runtime='codex') AS matched").bind::<Text,_>(&r.assignment_id).get_result::<Flag>(db).await?.matched;
     if !codex {
-        fence(db, &w.intent_id).await?;
+        fence(db, &w.intent_id, "runtime_codex").await?;
         return Ok(false);
     }
     matrix_current(db, &r.assignment_id, now).await
@@ -177,10 +177,10 @@ async fn runtime_delivery(
                 .is_some_and(|r| matches!(r.state.as_str(), "stopped" | "not_started")),
         };
     let until = sql_query(
-        "SELECT least(valid_until_ms,$2+30000) AS now FROM hagency_agent_v1.sessions WHERE id=$1",
+        "SELECT least(valid_until_ms,$2) AS now FROM hagency_agent_v1.sessions WHERE id=$1",
     )
     .bind::<Text, _>(&p.session_id)
-    .bind::<BigInt, _>(now)
+    .bind::<BigInt, _>(now + crate::identity::CLAIM_WINDOW_MS)
     .get_result::<Clock>(db)
     .await?
     .now;
@@ -249,7 +249,7 @@ impl DomainStore {
     let codex=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_requests q LEFT JOIN hagency_agent_v1.management_projects a ON a.id=q.plan_id JOIN hagency_agent_v1.management_contributions c ON c.id=coalesce(q.pool_contribution_id,a.contribution_id) WHERE q.id=$1 AND c.runtime='codex') AS matched").bind::<Text,_>(&w.request_id).get_result::<Flag>(db).await?.matched;
     if !codex{continue;}
     let a=super::projection(db,&w.request_id).await?.ok_or(Error::Conflict("agent_assignment_required"))?;
-    let c=ManagedRuntimeProvisionCommand{version:1,capability:AGENT_RUNTIME_CAPABILITY.into(),operation:"agent.runtime.provision".into(),command_id:format!("mrp_{}",entity_id()?),assignment_id:a.id.clone(),assignment_generation:a.generation,agent_reservation_id:a.agent_reservation_id,reserve_command_digest:w.digest.clone(),reserve_receipt_digest:a.reserve_receipt_digest,policy:"codex_no_tools_v1".into(),issued_at_ms:now,expires_at_ms:(now+30000).min(reserve.expires_at_ms),reserve_command:reserve};c.validate(&self.server)?;
+    let c=ManagedRuntimeProvisionCommand{version:1,capability:AGENT_RUNTIME_CAPABILITY.into(),operation:"agent.runtime.provision".into(),command_id:format!("mrp_{}",entity_id()?),assignment_id:a.id.clone(),assignment_generation:a.generation,agent_reservation_id:a.agent_reservation_id,reserve_command_digest:w.digest.clone(),reserve_receipt_digest:a.reserve_receipt_digest,policy:"codex_no_tools_v1".into(),issued_at_ms:now,expires_at_ms:(now+crate::identity::CLAIM_WINDOW_MS).min(reserve.expires_at_ms),reserve_command:reserve};c.validate(&self.server)?;
     sql_query("INSERT INTO hagency_agent_v1.management_agent_runtime_commands(id,assignment_id,operation,created_at_ms,payload,digest,expires_at_ms) VALUES($1,$2,'agent.runtime.provision',$3,$4,$5,$6)").bind::<Text,_>(&c.command_id).bind::<Text,_>(&c.assignment_id).bind::<BigInt,_>(now).bind::<Text,_>(wire(&c)?).bind::<Text,_>(allocation_digest(&c)?).bind::<BigInt,_>(c.expires_at_ms).execute(db).await?;
     let r=runtime_row(db,&c.command_id).await?;return Ok(Some(runtime_delivery(db,p,policy,&r,&self.server,false,None).await?));
    }Ok(None)
@@ -324,7 +324,7 @@ impl DomainStore {
 const EXPIRED_INTENTS: &str = "SELECT i.id FROM hagency_agent_v1.management_agent_runtime_commands c JOIN hagency_agent_v1.management_shared_assignments a ON a.id=c.assignment_id JOIN hagency_agent_v1.management_agent_intents i ON i.request_id=a.request_id WHERE c.operation='agent.runtime.provision' AND c.expires_at_ms<=$1 AND i.state<>'fenced' AND NOT (i.payload::jsonb ? 'renewalMode') ORDER BY c.id LIMIT 64";
 
 async fn runtime_sweep(db: &mut AsyncPgConnection, now: i64) -> Result<()> {
-    sql_query(format!("UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' WHERE id IN({EXPIRED_INTENTS})")).bind::<BigInt,_>(now).execute(db).await?;
+    sql_query(format!("{}UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' FROM fence_source WHERE id IN({EXPIRED_INTENTS})", fence_source("runtime_sweep"))).bind::<BigInt,_>(now).execute(db).await?;
     Ok(())
 }
 /// Returns the ledger epoch the accepted receipt is numbered in.

@@ -103,6 +103,17 @@ async fn activity_until(
     .await?
     .now)
 }
+/// The start of a statement that fences Agent reservations. It names the part
+/// of the service that fences, `source`, for the record of each reservation
+/// the statement fences (migration `2026-11-27-000158`), and for no later
+/// statement: the statement reads it as `... SET state='fenced' FROM
+/// fence_source WHERE ...`.
+fn fence_source(source: &str) -> String {
+    debug_assert!(source.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
+    format!(
+        "WITH fence_source AS (SELECT set_config('hagency.fence_source','{source}@'||statement_timestamp(),true)) "
+    )
+}
 fn wire<T: Serialize>(value: &T) -> Result<String> {
     wire_with_limit(value, MAX_BYTES)
 }

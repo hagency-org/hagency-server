@@ -43,7 +43,7 @@ impl ManagedRuntimeProvisionCommand {
             || !valid_digest(&self.reserve_receipt_digest)
             || !(1..=MAX_EXACT).contains(&self.issued_at_ms)
             || self.expires_at_ms <= self.issued_at_ms
-            || self.expires_at_ms - self.issued_at_ms > 30_000
+            || self.expires_at_ms - self.issued_at_ms > crate::identity::CLAIM_WINDOW_MS
             || self.expires_at_ms > self.reserve_command.expires_at_ms
         {
             return Err(Error::Invalid("invalid_managed_runtime_command"));

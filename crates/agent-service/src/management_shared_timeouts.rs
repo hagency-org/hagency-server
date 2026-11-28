@@ -59,7 +59,15 @@ pub(super) async fn sweep(
 ) -> Result<()> {
     let ids = candidates(db, executor, now).await?;
     for id in ids {
-        stop(db, &id.id).await?;
+        // A savepoint each: an attempt that cannot be stopped is rolled back
+        // alone and logged as the background sweep logs it, and neither the
+        // other attempts nor the poll that sweeps are held back by it.
+        let stopped = db
+            .transaction::<_, Error, _>(async |db: &mut AsyncPgConnection| stop(db, &id.id).await)
+            .await;
+        if let Err(error) = stopped {
+            tracing::warn!(runtime_id = %id.id, code = %error, "Shared attempt time bound failed");
+        }
     }
     Ok(())
 }
@@ -85,6 +93,10 @@ async fn stop(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
 impl DomainStore {
     /// Background enforcement: no executor poll or healthy client is needed
     /// to stop an uncertain attempt and release its Agent's queue.
+    ///
+    /// An attempt that cannot be stopped does not hold back the others: it is
+    /// logged by its id and the pass goes on. The first such error is returned
+    /// once every attempt was tried.
     pub(crate) async fn sweep_shared_attempt_timeouts(&self) -> Result<()> {
         let ids = self
             .db
@@ -93,8 +105,10 @@ impl DomainStore {
                 candidates(db, None, now).await
             })
             .await?;
+        let mut failed = None;
         for id in ids {
-            self.db
+            let swept = self
+                .db
                 .write_transaction(async |db| {
                     let now = clock(db).await?;
                     if due(db, &id.id, now).await? {
@@ -102,8 +116,12 @@ impl DomainStore {
                     }
                     Ok(())
                 })
-                .await?;
+                .await;
+            if let Err(error) = swept {
+                tracing::warn!(runtime_id = %id.id, code = %error, "Shared attempt time bound failed");
+                failed.get_or_insert(error);
+            }
         }
-        Ok(())
+        failed.map_or(Ok(()), Err)
     }
 }

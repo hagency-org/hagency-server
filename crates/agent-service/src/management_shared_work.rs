@@ -64,6 +64,25 @@ fn item(w: &WorkRow, r: &Runtime) -> Result<SharedWorkItem> {
     }
     Ok(v)
 }
+/// Whether an applied budget retired `r`, a plain process (the assignment
+/// protocol). Only a budget process (version 3) is held to a budget: its work
+/// poll checks the head and the ceiling. A plain one is given no new work
+/// (route_shared_event, demands::promote), and what it was given before is
+/// not begun: its work poll ends that work `cancelled`, as a period's turn
+/// does, and an acknowledgement or a start of it is refused as definitively
+/// not started. Work that has begun is left alone: its end is unknown, and
+/// it is never run again.
+async fn budget_retired(
+    db: &mut AsyncPgConnection,
+    protocol: WorkProtocol,
+    r: &Runtime,
+) -> Result<bool> {
+    if !matches!(protocol, WorkProtocol::Assignment) {
+        return Ok(false);
+    }
+    let request = original(db, r).await?.request_id;
+    demands::has_applied_budget(db, &request).await
+}
 async fn require_activity(
     db: &mut AsyncPgConnection,
     p: &Principal,
@@ -190,6 +209,11 @@ impl DomainStore {
 
                 let r=runtime(db,&id.id).await?;let w=original(db,&r).await?;let c=command(&r,&self.server)?;let now=clock(db).await?;
                 if !runtime_issuing(db,policy,&r).await? || r.state!="qualified" || r.activity_until_ms<=now || received<c.issued_at_ms || received>now || now-received>86_400_000 || !current(db,&r,&w,&c,now).await? {return Ok(());}
+                // Only a budget process (version 3) is held to a budget: its
+                // work poll checks the head and the ceiling. A plain process
+                // of an Agent with an applied budget is passed over, as one
+                // that does not qualify is: no work, no record.
+                if runtime_version(&r)?!=3 && demands::has_applied_budget(db,&w.request_id).await? {return Ok(());}
                 let m=membership_for(db,&r,&event.room_id).await?;facts(&m,&observed)?;
                 if observed.encrypted!=event.encrypted || event.room_id!=m.room_id || !m.addressed_by(&event.sender_mxid,&event.mentioned_mxids,observed.requires_mention) {return Err(Error::Unauthorized("shared_room_authority_changed"));}
                 let old=sql_query("SELECT w.* FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes old ON old.id=w.runtime_id WHERE old.assignment_id=$1 AND w.event_id=$2").bind::<Text,_>(&r.assignment_id).bind::<Text,_>(&event.event_id).get_result::<WorkRow>(db).await.optional()?;
@@ -293,6 +317,10 @@ impl DomainStore {
                 let period=calendar.period_at(now as u64).map_err(|_|Error::Conflict("agent_period_changed"))?;
                 sql_query("UPDATE hagency_agent_v1.management_shared_work SET state='cancelled' WHERE runtime_id=$1 AND state IN ('queued','acknowledged') AND started_at_ms IS NULL AND created_at_ms<$2").bind::<Text,_>(&r.id).bind::<BigInt,_>(period.start_ms as i64).execute(db).await?;
             }
+            if budget_retired(db,protocol,&r).await? {
+                sql_query("UPDATE hagency_agent_v1.management_shared_work SET state='cancelled' WHERE runtime_id=$1 AND state IN ('queued','acknowledged') AND started_at_ms IS NULL").bind::<Text,_>(&r.id).execute(db).await?;
+                return Ok(None);
+            }
             let row=sql_query("SELECT * FROM hagency_agent_v1.management_shared_work WHERE runtime_id=$1 AND state IN('queued','acknowledged') ORDER BY created_at_ms,id LIMIT 1").bind::<Text,_>(&r.id).get_result::<WorkRow>(db).await.optional()?;row.map(|w|item(&w,&r)).transpose()
         }).await
     }
@@ -348,6 +376,7 @@ impl DomainStore {
                 let period=calendar.period_at(now as u64).map_err(|_|Error::Conflict("agent_period_changed"))?;
                 if v.created_at_ms<period.start_ms as i64 || v.created_at_ms>=period.end_ms as i64 {return Err(Error::Conflict("agent_period_changed"));}
             }
+            if w.started_at_ms.is_none() && budget_retired(db,protocol,&r).await? {return Err(Error::Conflict("shared_work_definitively_not_started"));}
             if w.state=="queued" {sql_query("UPDATE hagency_agent_v1.management_shared_work SET state='acknowledged',acknowledged_at_ms=$2 WHERE id=$1").bind::<Text,_>(&w.id).bind::<BigInt,_>(now).execute(db).await?;}Ok(())
         }).await
     }
@@ -397,6 +426,7 @@ impl DomainStore {
                 let period=calendar.period_at(now as u64).map_err(|_|Error::Conflict("agent_period_changed"))?;
                 if v.created_at_ms<period.start_ms as i64 || v.created_at_ms>=period.end_ms as i64 {return Err(Error::Conflict("agent_period_changed"));}
             }
+            if w.started_at_ms.is_none() && budget_retired(db,protocol,&r).await? {return Err(Error::Conflict("shared_work_definitively_not_started"));}
             if w.state=="queued" {return Err(Error::Conflict("shared_work_not_acknowledged"));}
             let newly=w.state=="acknowledged";
             if newly {let busy=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work WHERE runtime_id=$1 AND (state IN('started','unknown') OR (started_at_ms IS NOT NULL AND NOT usage_complete))) AS matched").bind::<Text,_>(&r.id).get_result::<Flag>(db).await?.matched;if busy {return Err(Error::Conflict("shared_work_unsettled"));}
@@ -793,7 +823,7 @@ impl DomainStore {
                     sql_query("UPDATE hagency_agent_v1.management_shared_replies SET state='blocked' WHERE work_id=$1").bind::<Text,_>(&reply.work_id).execute(db).await?;return Ok(None);
                 }
                 if hash(&reply.content)!=reply.content_digest {return Err(Error::Conflict("shared_reply_changed"));}
-                let token=secret_token();sql_query("UPDATE hagency_agent_v1.management_shared_replies SET state='issued',lease_hash=$2,lease_until_ms=$3 WHERE work_id=$1").bind::<Text,_>(&reply.work_id).bind::<Text,_>(hash(&token)).bind::<BigInt,_>(now+30_000).execute(db).await?;
+                let token=secret_token();sql_query("UPDATE hagency_agent_v1.management_shared_replies SET state='issued',lease_hash=$2,lease_until_ms=$3 WHERE work_id=$1").bind::<Text,_>(&reply.work_id).bind::<Text,_>(hash(&token)).bind::<BigInt,_>(now+crate::identity::CLAIM_WINDOW_MS).execute(db).await?;
                 Ok(Some(SendClaim {work_id:reply.work_id,content:decode(&reply.content)?,content_digest:reply.content_digest,transaction:reply.matrix_txn_id,scope:m}))
             }).await?
             };
