@@ -11,17 +11,8 @@ async fn fresh(
     let o = offer(d, q)?;
     input.validate_for(&o)?;
     let original = authorize(db, p, q, server, now, true).await?;
-    if has_applied_budget(db, &original.request_id).await? {
-        return Err(Error::Conflict("shared_budget_execution_required"));
-    }
-    if q.state != "pending"
-        || q.expires_at_ms <= now
-        || oldest(db, &q.assignment_id, q.control_revision)
-            .await?
-            .is_none_or(|v| v.id != q.id)
-        || binding(db, &d.id).await?.is_some()
-    {
-        return Err(Error::Conflict("shared_demand_not_current"));
+    if let Some(code) = start_refusal(db, d, q, &original, now).await? {
+        return Err(Error::Conflict(code));
     }
     let state = status(db, d).await?.state;
     match input.retry {
@@ -163,7 +154,7 @@ impl DomainStore {
                     _ => return Err(Error::Invalid("invalid_shared_demand_block")),
                 }
                 block(db, &d, &q, &input.reason, &wire(&input)?).await?;
-                visible(db, &d, input.retries).await
+                visible(db, &d, input.retries, input.reoffers).await
             })
             .await
     }

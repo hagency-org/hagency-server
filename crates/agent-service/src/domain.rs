@@ -471,6 +471,14 @@ impl DomainStore {
     pub fn set_pool_grant_succession(&self, enabled: bool) {
         self.db.set_pool_chain_lifetime(enabled);
     }
+    /// [management] enable_shared_demand_reoffers, with every gate of demand
+    /// retries (`ManagementPolicy::shared_demand_reoffers`): the database
+    /// gives a message back to the queue at its process's fence only in a
+    /// transaction of a store where this is on. Applied to every database
+    /// session of this store.
+    pub fn set_shared_demand_reoffers(&self, enabled: bool) {
+        self.db.set_shared_demand_reoffers(enabled);
+    }
     /// Trusted Appservice existence query; cannot allocate an ownerless puppet.
     pub async fn known_puppet(&self, mxid: &str) -> Result<bool> {
         self.db

@@ -4,13 +4,15 @@
 //! an attempt it cannot stop.
 use super::*;
 
-/// How v2 ended a message before a budget was applied to its Agent.
+/// How v2 left a message before a budget was applied to its Agent.
 #[derive(Clone, Copy, Debug)]
 enum V2End {
-    /// Its start reported a process, which the time bound then gave up.
+    /// Its start reported a process, which the time bound then gave up: it
+    /// ended (`time_bound_stopped`).
     Interrupted,
     /// Its start never reported one: the time bound stopped it, and the
-    /// computer asked for no retry.
+    /// computer asked for no retry. It still waits for the computer's
+    /// evidence, and the budget ends it (`budget_applied`).
     NeverReported,
     /// Its usage could not be represented.
     Unrepresentable,
@@ -96,7 +98,11 @@ async fn budget_queue_moves_past_a_message_v2_ended_before_the_budget() {
         // Reading writes nothing.
         let (read_end, again) = match end {
             V2End::Unrepresentable => (json!(["cancelled", null, "usage_unrepresentable"]), false),
-            _ => (json!(["blocked", "head_changed", "head_changed"]), true),
+            V2End::Interrupted => (
+                json!(["blocked", "head_changed", "time_bound_stopped"]),
+                true,
+            ),
+            V2End::NeverReported => (json!(["blocked", "head_changed", "budget_applied"]), true),
         };
         let reads = |again: bool| {
             let mut read = read_end.clone();
@@ -175,7 +181,7 @@ async fn chat_status_lists_the_readers_sixteen_newest_messages() {
 
 /// Moves the end of the allocation that `r`'s Agent is reserved under to
 /// `at`, and returns the end it had.
-async fn allocation_ends(f: &Fixture, r: &ManagedAgentRequest, at: i64) -> i64 {
+pub(super) async fn allocation_ends(f: &Fixture, r: &ManagedAgentRequest, at: i64) -> i64 {
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     let before = sql_query("SELECT al.expires_at_ms AS count FROM hagency_agent_v1.management_allocations al JOIN hagency_agent_v1.management_agent_requests r ON r.allocation_id=al.id WHERE r.id=$1")
         .bind::<Text, _>(&r.id)
@@ -743,6 +749,62 @@ async fn sweep_goes_on_past_an_attempt_it_cannot_stop() {
     f.domain.reset_management_test_clock().await.unwrap();
 }
 
+/// Nor does such an attempt hold back a message given back whose wait is
+/// over: the sweep ends that message all the same, and reports the attempt.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn sweep_ends_a_message_given_back_past_an_attempt_it_cannot_stop() {
+    let (f, r, admin, _a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "swept_given_back").await;
+    let (lost, issued, first, _) = given(&f, &m, &d, &stopped, true).await;
+    record(&f, &issued, attempts::result(&issued, "stopped", 220))
+        .await
+        .unwrap();
+    assert_eq!(released(&f, &first.id).await, 1);
+    // Another Agent has an attempt that the time bound cannot stop.
+    let (_, b) = Box::pin(work::another_assignment(&f, &r, &admin, &m, 2)).await;
+    let second = shared_poll(&f).await;
+    assert_eq!(second.command.assignment_id, b.id);
+    save(&f, &second, "qualified", 310).await.unwrap();
+    let stop = attempts::stop(&f, &second, 311).await;
+    let refused = issue_lapsed(&f, &m, attempts::start(&second, &stop))
+        .await
+        .command
+        .command_id;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute(&format!(
+        "CREATE FUNCTION hagency_agent_v1.fixture_refuse_stop() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture_refuse_stop'; END; $$;\
+         CREATE TRIGGER fixture_refuse_stop BEFORE UPDATE ON hagency_agent_v1.management_shared_runtimes FOR EACH ROW WHEN (OLD.id='{refused}' AND NEW.state='stopped') EXECUTE FUNCTION hagency_agent_v1.fixture_refuse_stop()"
+    ))
+    .await
+    .unwrap();
+    // Past both the attempt's grace and the message's bound.
+    let at = (db_now(&f).await + 180_000 + 1_000)
+        .max(issued.command.expires_at_ms + 30_000 + 180_000 + 180_000);
+    f.domain.set_management_test_clock(at).await.unwrap();
+    let swept = f.domain.sweep_shared_attempt_timeouts().await;
+    let (payload, state) = (
+        block_payload(&f, &lost.offer.demand_id).await,
+        runtime_state(&f, &refused).await.0,
+    );
+    db.batch_execute("DROP TRIGGER fixture_refuse_stop ON hagency_agent_v1.management_shared_runtimes;DROP FUNCTION hagency_agent_v1.fixture_refuse_stop()")
+        .await
+        .unwrap();
+    f.domain.reset_management_test_clock().await.unwrap();
+    assert!(
+        swept.is_err(),
+        "the pass reports the attempt it could not stop"
+    );
+    assert_ne!(state, "stopped");
+    assert_eq!(
+        payload.as_deref(),
+        Some("\"retry_lapsed\""),
+        "the message given back ends all the same"
+    );
+    assert_eq!(recovered(&f, &lost).await.state, "head_changed");
+}
 /// The row that `reader` reads of `event` in `room`, whole.
 async fn row_of(f: &Fixture, room: &str, reader: &Principal, event: &str) -> Value {
     let query = serde_json::from_value(json!({"roomId": room})).unwrap();

@@ -110,176 +110,262 @@ nothing is running on that client yet.
 
 ### 3. What can be redone is redone; what cannot is never guessed
 
-The line between the two is **acceptance**: the moment a process takes a
-message as its work.
+The line between the two is **the start of the turn**: the record the server
+makes, at the computer's request and before the Agent's program is given the
+message, that work on it begins. The rule rests on one premise about the
+computer: it starts the turn only when the answer to its request says that
+the record was made now.
 
-Before acceptance everything is redone:
+Before the start everything is redone:
 
-- **A start that was not claimed, or that failed before its process
-  reported**, is reported as `not_started` once its claim window has ended,
-  and the same message goes to a new attempt. One message has its first
-  attempt and at most three more. While an attempt is being offered again,
-  the room shows the message as waiting for the Agent, never as failed.
-  Three starts are not tried again today and end the message, which its
-  sender can then send again (below): one whose process reported and then
-  ended before it was given the message, any failed start of an Agent with an
-  applied budget, and any failed start on a computer whose daemon does not ask
-  for retries.
+- **A start of a process that was not claimed, or that failed before its
+  process reported**, is reported as `not_started` once its claim window has
+  ended, and the same message goes to a new attempt.
+- **A process that ended before the turn began**, whether or not it had been
+  given the message, is reported as stopped, and the same message goes to a
+  new attempt, if the computer said, when it started that process, that it
+  takes messages back, and the operator has this switched on (it is off
+  unless configured; see "Bringing the re-offer into service" below for the
+  switch and the way back). Whether a turn had begun is not taken on the
+  computer's word: the server reads its own record. A start is recorded only
+  for a process that holds a live lease, a fence ends the lease, the server
+  makes one change at a time, and it never records a start for a message it
+  took back; so, with the premise above, a fenced process whose message has
+  no recorded start never began it and never will. At the fence the server
+  takes the message back from that process, keeping a record of what it had
+  handed out, while the Agent can serve it: by the same rule that decides
+  who is offered a message sent again (below), and only while no budget
+  change was applied to it. So a Stop gives nothing back: it ends the
+  Agent's processes, the message a process held ends as before, and the
+  waiting messages are cancelled. A message taken back is a waiting message
+  again in its old place: a Stop cancels it with the others, and its time
+  and its period end it as they end any waiting message. If a budget change
+  is applied to the Agent first, it is no longer offered and ends as every
+  message the earlier protocol had started when the budget was applied
+  (see the state of the implementation): its status says so at once, and
+  the budget's queue offers the next message. While a process holds a
+  message that it has not begun, from a start that said it takes messages
+  back, the message after it is not offered yet: if the first is taken
+  back, it runs first, in the next process, and the next one follows it
+  there. Offered earlier, the next message would name a process that is no
+  longer the last one, and would have to end. The hold adds no wait of its
+  own: a process is given one message, and a start of the next one needs
+  that process stopped, so the next message runs only after it, held or
+  not. It ends with that message or that process: when the turn begins, at
+  the process's fence (a Stop, the end of the reservation, the end of its
+  activity lease, the time bound once it goes silent), at its first work
+  poll after a pool Agent's period has turned (which ends work from the
+  earlier period), or when a budget is applied to the Agent. The message's
+  24 hours do not end it: they end a message that waits, and this one is
+  given to the process. So a process that keeps renewing its lease and
+  never begins its message (one whose room key never arrives, for
+  example) keeps the Agent's later messages waiting until one of those
+  happens; only a Stop of the Agent ends that sooner. Ending the hold
+  earlier would not let the next message run, and would let it end once
+  the first is taken back.
+- One message has its first attempt and at most three more. While an attempt
+  is being offered again, the room shows the message as waiting for the
+  Agent, never as failed.
 - **An answer that did not arrive** is asked for again with the exact same
   request, and the server answers a replay with what it already did.
 
-After acceptance:
+A new attempt is made only when the computer asks for one with its evidence
+that the earlier process stopped, and before it asks for its next message.
+The server never hands a message to a computer a second time unasked: a
+computer that did not ask has its own record of that message, and would
+refuse it. Nor does a message wait for a computer that does not come back.
+Its wait has one bound, counted once: 3 minutes after the later of the end of
+the grace before its first process is given up (see the table below) and the
+computer's first request to run it again. A message that is waiting for its
+computer when the bound has passed ends then, and no new attempt is started
+for it after that; later attempts do not move the bound. That end is one
+that a write records (`retry_lapsed`): the sweep, the demand poll and the
+work poll, or the computer's request for a retry records it once the bound
+has passed, and a start of the retry is refused from the bound on. The status never works it out from the clock, so it is
+read as soon as it is recorded, with no claim window added (an end that a
+poll recorded, below); until then the message reads as waiting. Its own
+time and its period end a message taken back as any waiting message, one
+claim window late in the status. An attempt that
+started in time and then ends without its turn ends the message at once. A
+computer that does not take messages back never reads one that was taken
+back: for it the message ends, as before. Three kinds of start are therefore
+not tried again and end the message: any failed start of an Agent with an
+applied budget, whose protocol has no retry; any process that ended before
+its turn whose computer did not say that it takes messages back; and any
+that a computer does not ask about in time (see the state of the
+implementation for which daemons ask for what). For those, and for a
+message that was taken back and then ends, the message's status says that
+the Agent did not process it, names the Agent, and names the record that
+ended it. One taken back reads as any other end of a waiting message of the
+earlier protocol: state `blocked`, reason `head_changed`, and as the record
+that ended it the cause its block records (`endReason`, below). Hagency
+Desktop reads that as "did not process" when the status names the Agent; a
+released Hagency Desktop up to rc.19 shows "Message could not start. Check
+the resource and Agent connection." instead. Its sender
+can send it again with one action. A message sent again is a new message.
+The server decides who is offered that, and offers it only while the Agent
+can serve a new message: its reservation stands, by the same check that a
+new message meets when it arrives and that the polls make before they offer
+one; its executor's ledger was not replaced, it has not been stopped, and it
+is a verified member of the room. A reservation stands while neither it nor
+the intent behind it is fenced and its time is not over. That time is its
+reserve command's end; for a pool Agent that follows its pool's grants (a
+recurring one, or any one under grant succession), the end of the run of
+grants it was reserved under, so at the turn of a period it serves again
+once the next grant is in place; for a project Agent, also the end of its
+allocation and of that allocation's grant. An Agent with an applied budget
+serves too, through its own queue. The offer is part of the status of the
+reader's 16 newest messages in the room (their own, and every message to an
+Agent they own), or in the thread when the read names one, so a thread's
+read lists its own 16. Each message comes with every Agent's row of it, so
+that no message is listed, nor offered, for only some of its Agents; a
+message that waits for a computer that can read it (an encrypted one)
+counts among the 16 as well. An older message is not offered by that read.
+Hagency Desktop keeps what an earlier read offered of a message that a
+later read does not list. The server takes a message
+back only from an Agent that serves by this same rule, and only while no
+budget was applied to it. The rule is written once, in the database
+(`shared_agent_serves()`), the reservation's time included; the status also
+makes the check a new message meets when it arrives, which in addition holds
+the reservation to the command, the people and the device it was approved
+for.
+
+Every message that ended without a turn ends the same way for this rule,
+whichever record ended it: work that was given to a process that never
+began it, a message that was stopped while it waited or arrived while the
+Agent was stopped, one whose start failed for good (for an Agent with an
+applied budget too), one that was taken back and then ended, one blocked on
+usage (below), and one that waited out its 24 hours or its period. The status derives that end when it is read, from every record that
+can end a message, and writes nothing: a message whose time is over reads as
+ended before any poll has recorded it, one claim window (30 s) after its
+time is over. A poll binds a message only while its own clock is before
+that end, and every database operation of the server commits within 30 s
+of its start or is undone (`OPERATION_TIMEOUT` of `hagency-db-runtime`; the
+server is not built when that is longer than the claim window). So a
+message whose sender is offered to send it again is one that no poll can
+still bind and run; only a commit already sent when those 30 s run out can
+land a moment later. An end that a poll recorded reads at once, as nothing
+binds a message after it. One end reads one reason whichever
+record holds it: a message that waited out its time reads `event_expired`,
+also when the budget's queue recorded it (as `expired`), and so does one
+blocked on allowance once its time is over, never the reason of its block,
+which says it still waits. A message that the earlier protocol ended keeps that end when a
+budget is applied later, also once the budget's queue has recorded an end of
+its own for it. A message that it had started and not ended, one taken
+back included, reads `budget_applied` as its `endReason` (its reason stays
+`head_changed`) once a budget is applied to its Agent, as the budget's
+queue then records its end, and a block that ends it later for its
+computer records the same cause.
+
+A block on usage (`usage_unrepresentable`) ends the message at once, with
+or without an applied budget. The computer blocks a
+message so when it cannot account for the Agent's earlier calls in the
+current period (for an Agent without periods, in its whole life): a call
+whose usage overflowed or could not be observed, or one it cannot match to
+the Agent's assignment. Nothing clears that: neither the owner nor the
+sender can change it, and an applied budget counts the same calls, so a new
+budget does not either. Waiting out the message's time would therefore
+change nothing, and a copy sent in the same period is blocked the same way,
+so its sender is offered to send it again only once the Agent's period has
+turned since it arrived, and never for an Agent without periods.
+
+A block on allowance under an applied budget (`budget_blocked`) is lifted
+by a new budget, and the message waits for one until its time is over.
+A copy sent while the budget that blocked it is still the one applied
+would wait for the same allowance and end the same way a day later, so
+its sender is offered to send it again only once another budget has been
+applied, or the Agent's period has turned since it arrived.
+
+Without an applied budget, the earlier protocol blocks a message on
+allowance when the Agent's known use in its period has reached its
+reservation's tokens, or when its computer reports that none of them are
+left. In a period the known use only grows, and the reservation does not
+change, so while that use still covers the reservation a copy would be
+blocked the same way and end the same way a day later. The sender of such
+a message is therefore offered to send it again only while the Agent's
+known use in its current period is below its reservation's tokens (its
+period has turned since, or the computer blocked it on tokens that work
+still in flight held, which the server does not count), or once a budget
+has been applied. A copy offered after a block on held tokens can be
+blocked once more while that work holds them; once it has ended, its use
+is known and read here.
+
+Under an applied budget, the budget's queue records the end of a message
+blocked on usage as `head_changed` and offers the next message. A
+computer keeps only the ends `expired`, `cancelled` and `head_changed` of
+that queue, and every version of Hagency Desktop keeps this one. The block
+beside that end names the cause. In either lane the status reads such a
+message as `cancelled`, with no `reason` and `usage_unrepresentable` as
+its `endReason`: a computer's own record of the message reads
+`head_changed`, while the room reads the cause. The status reads this end
+as soon as the block is recorded, before the queue has recorded its end,
+and keeps it when the message's time is over or its Agent is stopped
+later; the database records no block of a message that has ended.
+Hagency Desktop reads `endReason` first and says that the Agent's usage
+could not be accounted for. Hagency Desktop 0.5.0-rc.19 reads the reason
+`usage_unrepresentable` as a wait for usage to be confirmed, with nothing
+that ends it, and reads the state `cancelled` as an end that will not be
+tried again; the state and reason above are chosen so that it shows such
+a message as ended.
+
+No message holds a queue that cannot move it: a poll passes over an Agent it
+cannot offer a message to and goes on with the next Agent, and the budget's
+queue passes over a message whose room binding is gone or that was blocked
+when it arrived, and ends one blocked on usage. None of these can be offered
+again, and the status reads its end.
+
+Beside its state and reason, a row of the status says:
+
+- `endReason`: the reason of the record that ended it (above). A message
+  that still waits, or waits for allowance in its period, has none, and so
+  has one taken back while it waits to be offered again. A message of the
+  earlier protocol that ended while it waited has the cause its block
+  records: `head_changed` (a later process took the Agent's queue),
+  `retry_not_requested` (its process stopped, and its computer reported
+  that without asking for a retry, or the process had reported before it
+  stopped), `time_bound_stopped` (the server's time bound gave up its
+  process, which had reported), `retry_exhausted`, `retry_unsupported`,
+  `usage_unrepresentable`, `budget_applied` (a budget was applied to the
+  Agent after the message had started: read so from then on, whether the
+  budget's queue or a block records the end), and, for one taken back,
+  `retry_lapsed` or `reoffer_unsupported`. Its state stays `blocked` and
+  its reason `head_changed` for each of them but `usage_unrepresentable`
+  (above), and a computer reads the demand's state `head_changed`: those
+  are what computers and Hagency Desktop read. Of these values Hagency
+  Desktop reads only `usage_unrepresentable`, and 0.5.0-rc.19 reads none.
+- `canSendAgain`: true when the reader sent the message, a copy sent now
+  could run (after a block on usage or on allowance, as above), its Agent
+  can serve a new message, and the row names the Agent by its Matrix ID
+  (`agentMxid`). The client sends the copy to the Agent the row names, so
+  a row without that ID offers nothing.
+- `notOfferedBecause`: present only on a row of the reader's own message
+  that ended without a turn and whose copy could run, when nothing but
+  its Agent keeps it from being offered; `canSendAgain` is then false. Its
+  value is `agent_unnamed` when the row has no Matrix ID for the Agent;
+  otherwise `agent_stopped` when the Agent does not run (it was stopped,
+  or waits to be started); otherwise `agent_unavailable` (its assignment
+  ended, its reservation does not stand, its executor's ledger was
+  replaced, or it is not a verified member of the room). A row without
+  the field is offered, or is not offered for the message itself (it has
+  not ended, or a copy could not run), or is read by someone who did not
+  send the message. The field says no more than that: whether an Agent is
+  available is the server's decision, not worked out by a client from the
+  facts behind it, and which check failed stays with the Agent's owner.
+- `viewerCanReview`: present only on a row whose outcome is unknown
+  (`unknown` or `reply_unknown`). True when the reader manages the Agent,
+  or administers its project or its pool: the rule by which the review of
+  original task records lists an Agent (with pool Agents included, as
+  Hagency Desktop asks for them). A sender who does neither reads false,
+  as the review would list nothing for them.
+
+After the start:
 
 - **Work that began and whose end is unknown** is never run again by the
   server: it may have acted, or cost something. Its sender is told that the
-  outcome is unknown, and decides.
-- **Work that was accepted and never began** when its process ended is the one
-  case this design leaves open. The owner's policy is that what is confirmed
-  not to have run is run again without anyone asking. The confirmation exists:
-  the server never recorded a start and refuses one after the process is
-  fenced, and the computer keeps a record of each message it began. What is
-  missing is a way to give the message to the next process, because one
-  message has one binding to one process on both sides, and that rule is what
-  protects its sender from a second answer and a second charge. Giving it a
-  second binding safely means new records and a proof from both sides, and is
-  a decision of its own. Until it is taken:
-  - rule 4 is to keep the computer from ending a process over a step that
-    could not be made, which is how this case arose in production; it is in
-    review in Hagency Desktop (see the state of the implementation);
-  - when a process does end, the message's status says so, names the Agent,
-    and its sender can send it again with one action. A message sent again is
-    a new message. The server decides who is offered that, and offers it only
-    while the Agent can serve a new message: its reservation stands, by the
-    same check that a new message meets when it arrives and that the polls
-    make before they offer one; its executor's ledger was not replaced, it
-    has not been stopped, and it is a verified member of the room. A
-    reservation stands while neither it nor the intent behind it is fenced
-    and its time is not over. That time is its reserve command's end; for a
-    pool Agent that follows its pool's grants (a recurring one, or any one
-    under grant succession), the end of the run of grants it was reserved
-    under, so at the turn of a period it serves again once the next grant is
-    in place; for a project Agent, also the end of its allocation and of that
-    allocation's grant. An Agent with an applied budget serves too, through
-    its own queue. The offer is part of the status of the reader's 16 newest
-    messages in the room (their own, and every message to an Agent they
-    own), or in the thread when the read names one, so a thread's read lists
-    its own 16. Each message comes with every Agent's row of it, so that no
-    message is listed, nor offered, for only some of its Agents; a message
-    that waits for a computer that can read it (an encrypted one) counts
-    among the 16 as well. An older message is not offered by that read.
-    Hagency Desktop keeps what an earlier read offered of a message that a
-    later read does not list.
+  outcome is unknown, and decides. This includes a start whose record was
+  made and whose answer never reached the computer: the computer did not
+  begin the turn, and the server cannot know that.
 
-  Every message that ended without a turn ends the same way for this rule,
-  whichever record ended it: work that was given to a process that never
-  began it, a message that was stopped while it waited or arrived while the
-  Agent was stopped, one whose start failed for good (for an Agent with an
-  applied budget too), one blocked on usage (below), and one that waited
-  out its 24 hours or its period. The status derives that end when it is
-  read, from every record that can end a message, and writes nothing: a
-  message whose time is over reads as ended before any poll has recorded
-  it, one claim window (30 s) after its time is over. A poll binds a
-  message only while its own clock is before that end, and every database
-  operation of the server commits within 30 s of its start or is undone
-  (`OPERATION_TIMEOUT` of `hagency-db-runtime`; the server is not built
-  when that is longer than the claim window). So a message whose sender
-  is offered to send it again is one that no poll can still bind and run;
-  only a commit already sent when those 30 s run out can land a moment
-  later. An end that a poll recorded reads at once, as nothing binds a
-  message after it. One end reads one reason whichever record holds it: a
-  message that waited out its time reads `event_expired`, also when the
-  budget's queue recorded it (as `expired`), and so does one blocked on
-  allowance once its time is over, never the reason of its block, which
-  says it still waits. A message that the earlier protocol ended keeps that
-  end when a budget is applied later, also once the budget's queue has
-  recorded an end of its own for it.
-
-  A block on usage (`usage_unrepresentable`) ends the message at once, with
-  or without an applied budget. The computer blocks a
-  message so when it cannot account for the Agent's earlier calls in the
-  current period (for an Agent without periods, in its whole life): a call
-  whose usage overflowed or could not be observed, or one it cannot match to
-  the Agent's assignment. Nothing clears that: neither the owner nor the
-  sender can change it, and an applied budget counts the same calls, so a
-  new budget does not either. Waiting out the message's time would
-  therefore change nothing, and a copy sent in the same period is blocked
-  the same way, so its sender is offered to send it again only once the
-  Agent's period has turned since it arrived, and never for an Agent
-  without periods.
-
-  A block on allowance under an applied budget (`budget_blocked`) is lifted
-  by a new budget, and the message waits for one until its time is over.
-  A copy sent while the budget that blocked it is still the one applied
-  would wait for the same allowance and end the same way a day later, so
-  its sender is offered to send it again only once another budget has been
-  applied, or the Agent's period has turned since it arrived.
-
-  Without an applied budget, the earlier protocol blocks a message on
-  allowance when the Agent's known use in its period has reached its
-  reservation's tokens, or when its computer reports that none of them are
-  left. In a period the known use only grows, and the reservation does not
-  change, so while that use still covers the reservation a copy would be
-  blocked the same way and end the same way a day later. The sender of such
-  a message is therefore offered to send it again only while the Agent's
-  known use in its current period is below its reservation's tokens (its
-  period has turned since, or the computer blocked it on tokens that work
-  still in flight held, which the server does not count), or once a budget
-  has been applied. A copy offered after a block on held tokens can be
-  blocked once more while that work holds them; once it has ended, its use
-  is known and read here.
-
-  Under an applied budget, the budget's queue records the end of a message
-  blocked on usage as `head_changed` and offers the next message. A
-  computer keeps only the ends `expired`, `cancelled` and `head_changed` of
-  that queue, and every version of Hagency Desktop keeps this one. The block
-  beside that end names the cause. In either lane the status reads such a
-  message as `cancelled`, with no `reason` and `usage_unrepresentable` as
-  its `endReason`: a computer's own record of the message reads
-  `head_changed`, while the room reads the cause. The status reads this end
-  as soon as the block is recorded, before the queue has recorded its end,
-  and keeps it when the message's time is over or its Agent is stopped
-  later; the database records no block of a message that has ended.
-  Hagency Desktop reads `endReason` first and says that the Agent's usage
-  could not be accounted for. Hagency Desktop 0.5.0-rc.19 reads the reason
-  `usage_unrepresentable` as a wait for usage to be confirmed, with nothing
-  that ends it, and reads the state `cancelled` as an end that will not be
-  tried again; the state and reason above are chosen so that it shows such
-  a message as ended.
-
-  No message holds a queue that cannot move it: a poll passes over an Agent
-  it cannot offer a message to and goes on with the next Agent, and the
-  budget's queue passes over a message whose room binding is gone or that
-  was blocked when it arrived, and ends one blocked on usage. None of these
-  can be offered again, and the status reads its end.
-
-  Beside its state and reason, a row of the status says:
-
-  - `endReason`: the reason of the record that ended it (above). A message
-    that still waits, or waits for allowance in its period, has none.
-  - `canSendAgain`: true when the reader sent the message, a copy sent now
-    could run (after a block on usage or on allowance, as above), its Agent
-    can serve a new message, and the row names the Agent by its Matrix ID
-    (`agentMxid`). The client sends the copy to the Agent the row names, so
-    a row without that ID offers nothing.
-  - `notOfferedBecause`: present only on a row of the reader's own message
-    that ended without a turn and whose copy could run, when nothing but
-    its Agent keeps it from being offered; `canSendAgain` is then false. Its
-    value is `agent_unnamed` when the row has no Matrix ID for the Agent;
-    otherwise `agent_stopped` when the Agent does not run (it was stopped,
-    or waits to be started); otherwise `agent_unavailable` (its assignment
-    ended, its reservation does not stand, its executor's ledger was
-    replaced, or it is not a verified member of the room). A row without
-    the field is offered, or is not offered for the message itself (it has
-    not ended, or a copy could not run), or is read by someone who did not
-    send the message. The field says no more than that: whether an Agent is
-    available is the server's decision, not worked out by a client from the
-    facts behind it, and which check failed stays with the Agent's owner.
-  - `viewerCanReview`: present only on a row whose outcome is unknown
-    (`unknown` or `reply_unknown`). True when the reader manages the Agent,
-    or administers its project or its pool: the rule by which the review of
-    original task records lists an Agent (with pool Agents included, as
-    Hagency Desktop asks for them). A sender who does neither reads false,
-    as the review would list nothing for them.
 
 ### 4. A check that cannot be made is not a refusal
 
@@ -382,16 +468,14 @@ session per call, and it is also every build that could use a longer window
 but does not yet send the second header. Such a build returns to the longer
 window at its first proof after it sends the second header.
 
-The open case of rule 3 follows the same order. If the owner chooses to have
-accepted work that never began run again, a computer says that it takes such
+The re-offer of rule 3 follows the same order. A computer says that it takes
 a message back with `reoffers` on its demand start, poll, recover and block
-requests. This server already reads that field and acts on nothing in it: a
-start that carries it is stored and compared exactly as it was sent, so a
-start is answered again the same way by a server that acts on the field and
-by one that does not, and a start without it keeps the bytes it always had.
-A server that acts on `reoffers` is therefore put into service only after
-this one, and is moved back only to this release or a later one (see "Going
-back").
+requests. A release that reads the field and acts on nothing in it goes into
+service first. It stores and compares a start that carries the field exactly
+as it was sent, so the two releases answer a start again the same way, and a
+start without it keeps the bytes it always had. The release that acts on it
+goes back only to that release or a later one, and it has a switch of its
+own (see "Bringing the re-offer into service, and back").
 
 ## Every time limit on the path of a pooled message
 
@@ -413,6 +497,7 @@ back").
 | Token refresh | as soon as a proof has lost 10 s of the window, at most once a minute for that reason; and always when a proof has 20 s or less left | — | computer |
 | Local session of the daemon | 60 s, reused while 30 s are left, at most 16 at a time | bounds a request | computer |
 | Grace before a silent process is given up | 180 s after the end of its last lease or start window, or after its last recorded step when that is later. The server gives such processes up in the background and in its computer's attempt polls; in both, one it cannot give up is logged and does not hold back the others | recovery | server |
+| How long a message taken back from a process waits for its computer | 180 s after that grace ends for its first process, or after the computer first asked for its retry when that is later; counted once per message, so later attempts do not extend it, and an attempt started before then that ends without its turn ends the message at once | recovery | server |
 | A tool request waiting for its sender's answer | as long as the computer asks, 120 s at most | bounds a request | computer, capped by the server |
 | A worker's declaration of what it can run | trusted for 300 s | — | server |
 | A reservation for one encryption exchange | 15 s, of which 12 s are for the exchange | offered | server |
@@ -444,8 +529,9 @@ renewal offers (7 days).
 | 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window is in review (#97), and renewing them early enough for it to matter is in review in Hagency Desktop (#243, #251) |
 | 6. A window over 30 s only for a client that says it can hold one | implemented: granted only through `x-hagency-authorization-window-v2-ms`; the first header gives 30 s |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
-| 3. A failed start is tried again | implemented for a start that never reported a process (demand retries); see rule 3 for the three that are not |
-| 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. The server reads the field by which a computer would say that it takes such a message back (`reoffers`) and acts on nothing in it (rule 6). Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one blocked on usage) says whether its reader can send it again (`canSendAgain`: the reader sent it, a copy could run, the Agent can serve a new message, and the row names it; see rule 3), which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance once its time was over), `head_changed`, `retry_exhausted` or `usage_unrepresentable`), and, to its sender only, why it is not offered when nothing but its Agent stands in the way (`notOfferedBecause`: `agent_stopped`, `agent_unavailable` or `agent_unnamed`). A row whose outcome is unknown says whether its reader may review the Agent's original task records (`viewerCanReview`). The status lists the reader's 16 newest messages, each with every Agent's row. Hagency Desktop names the Agent in the room from the row's `agentMxid` and offers the sender "Send again" where `canSendAgain` is true |
+| 3. A start that was never claimed is tried again | implemented (demand retries, `shared-demand-retry-v1`) |
+| 3. A process that ended before the turn began is tried again | implemented on the server (migration `2026-11-28-000161`, `shared-demand-retry-v2`), off unless the operator sets `enable_shared_demand_reoffers`, for a computer that says, in each demand start and read, that it takes messages back (`reoffers`): the message is a waiting message again at the fence, a retry is opened by the evidence that the process stopped, a message whose computer does not come back for it ends after one bound counted from its first process (`retry_lapsed`), and while a process holds a message before its turn the next one is not offered. A computer says it from the Hagency Desktop change that is in review; an earlier daemon does not, and for it the message ends as before |
+| 3. A message that ended without a turn can be sent again | implemented. Every message that ended without a turn (one given to a process that never began it, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one taken back that then ended, and one blocked on usage) says whether its reader can send it again (`canSendAgain`: the reader sent it, a copy could run, the Agent can serve a new message, and the row names it; see rule 3), which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance once its time was over), `head_changed`, `retry_not_requested`, `retry_exhausted`, `budget_applied`, `usage_unrepresentable` or, for one taken back, `retry_lapsed`; the list is under `endReason` above), and, to its sender only, why it is not offered when nothing but its Agent stands in the way (`notOfferedBecause`: `agent_stopped`, `agent_unavailable` or `agent_unnamed`). A row whose outcome is unknown says whether its reader may review the Agent's original task records (`viewerCanReview`). The status lists the reader's 16 newest messages, each with every Agent's row. Hagency Desktop names the Agent in the room from the row's `agentMxid` and offers the sender "Send again" where `canSendAgain` is true |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop |
 | 5. The wall clock only ends a lease early | holds for a ticket and a start window. Not yet for the session's proof: Hagency Desktop refuses a proof that comes without a date it can read when the proof's end lies more than 31 s away on its wall clock, which a clock behind by more than a second makes of every such proof under the default window (rule 5); in review in Hagency Desktop (#246). Not yet for the activity lease: its store still refuses an activity lease that reads longer than allowed by the wall clock, which a slow clock makes of every fresh lease; in review in Hagency Desktop (#243, #251). Not yet for the Agent execution lease, which Hagency Desktop reads without the answer's date (rule 5); in review in Hagency Desktop (#246) |
@@ -475,7 +561,8 @@ Each of these is a bound that was looked at and left, with its reason.
   has no retry: a start that fails ends the message. Its status says so and
   its sender can send it again, as for every other message that ended
   without a turn. A message that the earlier protocol had started when the
-  budget was applied ends the same way (`head_changed`), and one that it had
+  budget was applied ends the same way (`head_changed`, with the `endReason`
+  `budget_applied`), and one that it had
   already ended keeps that end: the budget's queue can take neither up, and
   offers the next message instead of waiting behind it. A message that the
   earlier protocol had given to a process, which had not begun it, does not
@@ -556,8 +643,63 @@ Going back:
   number. That is harmless: it only replaces the CHECK constraint on the
   epochs of activity renewal rows, which neither later migration reads or
   changes.
-- A server that acts on `reoffers` (rule 3, if it is chosen) goes back only
-  to a release that reads the field (rule 6) or a later one. A release
-  before that refuses every demand request that carries `reoffers`, and a
-  computer sends a saved start again with its original bytes; to go back
-  further, first let every start that said `reoffers` finish.
+- This release acts on `reoffers` (rule 3): "Bringing the re-offer into
+  service, and back" below has its order and its way back.
+
+## Bringing the re-offer into service, and back
+
+Rule 3's re-offer has its own switch, `enable_shared_demand_reoffers` in the
+host's management configuration. It is off by default, and it takes effect
+only together with demand retries (`shared-demand-retry-v1`), which keep
+their own switches and keep working when it is off. While it is on,
+discovery lists `shared-demand-retry-v2`, and a computer says `reoffers`
+only while discovery lists it. The service also sets the database session
+setting `hagency.shared_demand_reoffers` in every transaction of its agent
+domain store; the database
+takes a message back only when that setting is `on`, so a binary that does
+not set it (an older release) takes nothing back.
+
+In order:
+
+1. **A server that reads `reoffers` first** (rule 6): a release from before
+   it refuses every demand request that carries the field.
+2. **Then this release, with the switch off.** It behaves as the reader,
+   except that it opens a retry only where the retry's start would be
+   accepted, and the fence records say more (the operations guide).
+3. **Then switch it on.** Computers that support it start saying `reoffers`
+   as they next read discovery.
+
+Going back:
+
+1. **Switch it off** (and restart the service). Nothing more is taken back:
+   a stop on the retry route is refused as for a start that did not say
+   `reoffers`, and the computer reports it on the plain route. A message
+   that was already taken back still ends visibly: at its bound
+   (`retry_lapsed`), or earlier when its computer reads it without
+   `reoffers` (`reoffer_unsupported`), or at the computer's next demand
+   poll when the stop that gave it back came on the plain route and no
+   retry was asked for (`retry_not_requested`). A retry that was already
+   opened may still be started; if that process also ends before its turn, the
+   message ends as for any start, as before.
+2. **Let those answers settle**: until no message still waits for a
+   computer that takes messages back, whether it was taken back or its
+   process stopped before it was given the message. Each one ends by its
+   bound (the table above), on or off, so this takes minutes; the
+   operations guide's query counts them by the bound's own condition. An
+   older binary would wait for such a message's evidence until its own
+   time ends.
+3. **Then move the binary back**, to the reader release (rule 6) or a later
+   one. Going further back needs every start that said `reoffers` finished
+   first: a computer sends a saved start again with its original bytes.
+4. **The down migration of `2026-11-28-000161` later, if at all.** It
+   removes the trigger that takes messages back, puts the four guards it
+   relaxed and the guard on work starts back as they were, and puts back
+   the fence record of `2026-11-26-000156` without the release counts and
+   the stop source. It keeps the record of what was taken back
+   (`management_shared_demand_released_bindings`), that table's guards, and
+   the functions `shared_work_never_began()`, `shared_start_reoffers()`,
+   `shared_agent_serves()` and `shared_agent_budget_applied()`, which that
+   table's guards use (and this release's chat status). Run it only after
+   the binary went back: this release applies the migration again when it
+   next starts. Without the down migration, an older binary takes nothing
+   back, because it does not set the session setting.

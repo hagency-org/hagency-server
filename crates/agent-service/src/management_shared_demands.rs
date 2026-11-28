@@ -163,6 +163,21 @@ async fn block(
         }
         return Ok(());
     }
+    // Once a budget was applied to its Agent, a message v2 had started ends
+    // because of that budget (`budget_applied`), whatever ends it: the status
+    // reads that end from the budget's application on, and the budget's
+    // queue records it as `head_changed` (what every computer keeps of that
+    // queue). Its block says so too, so the message reads one way whichever
+    // record ends it first. One that ended before keeps its own cause.
+    let retired = reason == "head_changed" && started(db, &d.id).await?.is_some() && {
+        let request = intake::assignment(db, &q.assignment_id).await?.request_id;
+        has_applied_budget(db, &request).await?
+    };
+    let payload = if retired {
+        "\"budget_applied\""
+    } else {
+        payload
+    };
     sql_query("INSERT INTO hagency_agent_v1.management_shared_demand_blocks VALUES($1,$2,$3,$4)")
         .bind::<Text, _>(&d.id)
         .bind::<Text, _>(reason)
@@ -172,6 +187,17 @@ async fn block(
         .await?;
     if q.state == "pending" {
         sql_query("UPDATE hagency_agent_v1.management_shared_intake SET state='blocked',reason=$2 WHERE id=$1").bind::<Text,_>(&q.id).bind::<Text,_>(reason).execute(db).await?;
+    }
+    // A message given back to the queue that ends is reported, as its
+    // release was: by ids and the block's reason. (A budget block is not an
+    // end: the message goes on when allowance is granted.)
+    if reason == "head_changed" && released(db, &d.id).await? {
+        crate::database::after_commit(crate::database::ReofferNote {
+            kind: "ended".into(),
+            demand: Some(d.id.clone()),
+            reason: serde_json::from_str::<String>(payload).ok(),
+            ..Default::default()
+        });
     }
     Ok(())
 }
@@ -210,29 +236,47 @@ async fn status(db: &mut AsyncPgConnection, d: &Demand) -> Result<SharedDemandSt
         retry,
     })
 }
-/// The status an executor can read. One that does not run retries never sees
-/// `retry_offered` or `retry`: an unbound retry it cannot finish ends the
-/// event as before (head_changed), and a bound one reads as bound.
+/// The status an executor can read. One that does not take messages back
+/// never sees one that was (a downgrade): an unbound message that a process
+/// gave back ends as before (head_changed, `reoffer_unsupported`), whether or
+/// not a retry was opened or started for it. One that does not run retries
+/// never sees `retry_offered` or `retry`: an unbound retry it cannot finish
+/// ends the event as before (head_changed, `retry_unsupported`), and a bound
+/// one reads as bound. A status of a stopped Run is left as it is.
 async fn visible(
     db: &mut AsyncPgConnection,
     d: &Demand,
     retries: bool,
+    reoffers: bool,
 ) -> Result<SharedDemandStatus> {
     let mut s = status(db, d).await?;
-    if retries || s.retry.is_none() {
-        return Ok(s);
-    }
     if s.binding.is_none() && matches!(s.state.as_str(), "retry_offered" | "start_committed") {
-        let q = queued(db, &d.intake_id).await?;
-        let running = sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_controls c WHERE c.assignment_id=$1 AND c.mode='running' AND c.revision=$2) AS matched")
-            .bind::<Text, _>(&q.assignment_id).bind::<BigInt, _>(q.control_revision).get_result::<Flag>(db).await?.matched;
-        if running {
-            block(db, d, &q, "head_changed", "\"retry_unsupported\"").await?;
-            s = status(db, d).await?;
+        let end = if !reoffers && released(db, &d.id).await? {
+            Some("\"reoffer_unsupported\"")
+        } else if !retries && s.retry.is_some() {
+            Some("\"retry_unsupported\"")
+        } else {
+            None
+        };
+        if let Some(payload) = end {
+            let q = queued(db, &d.intake_id).await?;
+            let running = sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_controls c WHERE c.assignment_id=$1 AND c.mode='running' AND c.revision=$2) AS matched")
+                .bind::<Text, _>(&q.assignment_id).bind::<BigInt, _>(q.control_revision).get_result::<Flag>(db).await?.matched;
+            if running {
+                block(db, d, &q, "head_changed", payload).await?;
+                s = status(db, d).await?;
+            }
         }
     }
-    s.retry = None;
+    if !retries {
+        s.retry = None;
+    }
     Ok(s)
+}
+/// A process gave this demand's message back at its fence.
+async fn released(db: &mut AsyncPgConnection, id: &str) -> Result<bool> {
+    Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_released_bindings WHERE demand_id=$1) AS matched")
+        .bind::<Text, _>(id).get_result::<Flag>(db).await?.matched)
 }
 async fn authorize(
     db: &mut AsyncPgConnection,
@@ -279,6 +323,38 @@ async fn awaits_first_start(db: &mut AsyncPgConnection, q: &Queued, h: &Runtime)
         .await?
         .matched)
 }
+/// Time-limit rule 3: while the last process holds a message whose turn has
+/// not begun, from a start that said its executor takes messages back, the
+/// next message gets no demand yet. If the process ends first, the message
+/// is taken back and runs first, in the next process; a demand made now
+/// would name a process that is no longer the last one, and could only end
+/// (`head_changed`). Once the turn has begun, or the message has ended, the
+/// next one is offered. Asked only for an executor that takes messages back
+/// while the re-offer is on; an existing demand is left to its own course.
+/// Whether the Agent serves, and whether a budget was applied to it, are
+/// left to the release, which asks them at the fence: asked here, at the
+/// poll, an Agent that serves again by the fence would have its first
+/// message given back and run in the next process, and the next message,
+/// offered meanwhile behind the process that ended, could only end. The
+/// hold lifts once the work begins, or once the fence or a budget ends it
+/// (`cancelled`). An Agent with an applied budget is offered nothing here.
+async fn holds_unbegun_reoffer(
+    db: &mut AsyncPgConnection,
+    q: &Queued,
+    h: &Runtime,
+) -> Result<bool> {
+    Ok(sql_query("SELECT NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demands WHERE intake_id=$1) \
+        AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings b \
+          JOIN hagency_agent_v1.management_shared_work w ON w.id=b.work_id \
+          WHERE b.runtime_id=$2 AND w.state IN('queued','acknowledged') AND w.started_at_ms IS NULL AND w.latest_receipt IS NULL \
+            AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work_refusals x WHERE x.work_id=w.id) \
+            AND hagency_agent_v1.shared_start_reoffers(b.demand_id,b.runtime_id)) AS matched")
+        .bind::<Text, _>(&q.id)
+        .bind::<Text, _>(&h.id)
+        .get_result::<Flag>(db)
+        .await?
+        .matched)
+}
 async fn ensure(db: &mut AsyncPgConnection, q: &Queued, h: &Runtime) -> Result<Demand> {
     let old =
         sql_query("SELECT * FROM hagency_agent_v1.management_shared_demands WHERE intake_id=$1")
@@ -316,7 +392,13 @@ async fn ensure(db: &mut AsyncPgConnection, q: &Queued, h: &Runtime) -> Result<D
         .await?;
     load(db, &id).await
 }
-async fn refresh(db: &mut AsyncPgConnection, d: &Demand, q: &Queued, h: &Runtime) -> Result<()> {
+async fn refresh(
+    db: &mut AsyncPgConnection,
+    d: &Demand,
+    q: &Queued,
+    h: &Runtime,
+    now: i64,
+) -> Result<()> {
     if q.state != "pending" || binding(db, &d.id).await?.is_some() {
         return Ok(());
     }
@@ -329,27 +411,53 @@ async fn refresh(db: &mut AsyncPgConnection, d: &Demand, q: &Queued, h: &Runtime
     if h.id != expected {
         return block(db, d, q, "head_changed", "\"head_changed\"").await;
     }
-    if s.is_none() || h.state != "stopped" || retries::offered(db, &d.id).await?.is_some() {
+    let Some(s) = s else { return Ok(()) };
+    if h.state != "stopped" {
         return Ok(());
     }
-    // An attempt that never reported a process, stopped by the time bound,
-    // waits for the executor's evidence: not_started may still retry its
-    // event, and only the executor can prove it (ADR-193 amendment).
-    if h.process_digest.is_none()
-        && h.activity_epoch == 0
-        && attempts::latest_evidence(db, &h.id, None).await?.is_none()
-    {
-        return Ok(());
+    if s.reoffers {
+        // An executor that takes messages back is waited for, whether or not
+        // the attempt had reported a process: with its evidence that the
+        // process stopped it may ask for the event to be retried (time-limit
+        // rule 3), and then start the retry. The wait is bounded, so a
+        // message never waits for an executor that does not come back.
+        if timeouts::reoffer_lapsed(db, &d.id, now).await? {
+            return end_wait(db, d, q).await;
+        }
+        if retries::offered(db, &d.id).await?.is_some()
+            || timeouts::awaiting_evidence(db, h).await?
+        {
+            return Ok(());
+        }
+    } else {
+        if retries::offered(db, &d.id).await?.is_some() {
+            return Ok(());
+        }
+        // An attempt that never reported a process, stopped by the time
+        // bound, waits for the executor's evidence: not_started may still
+        // retry its event, and only the executor can prove it (ADR-193
+        // amendment).
+        if h.process_digest.is_none()
+            && h.activity_epoch == 0
+            && attempts::latest_evidence(db, &h.id, None).await?.is_none()
+        {
+            return Ok(());
+        }
     }
-    block(db, d, q, "head_changed", "\"head_changed\"").await
+    // Evidence that came without a request to retry ends the event: the
+    // process had reported, or its executor proved the stop and did not ask
+    // for the retry (`retry_not_requested`).
+    block(db, d, q, "head_changed", "\"retry_not_requested\"").await
 }
 /// The time bound stopped `runtime` without a work binding. If it reported a
-/// process, end the demand that started it now (as a later poll would). A v2
-/// attempt that never did keeps its demand for the executor's evidence (see
-/// refresh): only that evidence may retry the event. Only a still-current,
-/// unbound, unblocked demand changes.
+/// process, end the demand that started it now (as a later poll would), unless
+/// that start said its executor takes messages back: such a demand waits for
+/// the executor's evidence, a bounded time (see refresh). A v2 attempt that
+/// never reported a process keeps its demand for the executor's evidence:
+/// only that evidence may retry the event. A budget demand has no retry and
+/// ends now. Only a still-current, unbound, unblocked demand changes.
 pub(super) async fn interrupt(db: &mut AsyncPgConnection, runtime: &str) -> Result<()> {
-    let v2 = sql_query("SELECT s.demand_id AS id FROM (SELECT demand_id,runtime_id FROM hagency_agent_v1.management_shared_demand_starts UNION ALL SELECT demand_id,runtime_id FROM hagency_agent_v1.management_shared_demand_retry_starts) s JOIN hagency_agent_v1.management_shared_demands d ON d.id=s.demand_id JOIN hagency_agent_v1.management_shared_intake q ON q.id=d.intake_id JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=s.runtime_id WHERE s.runtime_id=$1 AND (r.process_digest IS NOT NULL OR r.activity_epoch>0) AND q.state='pending' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks k WHERE k.demand_id=d.id) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_controls c WHERE c.assignment_id=q.assignment_id AND c.mode='running' AND c.revision=q.control_revision)")
+    let v2 = sql_query("SELECT s.demand_id AS id FROM (SELECT demand_id,runtime_id FROM hagency_agent_v1.management_shared_demand_starts UNION ALL SELECT demand_id,runtime_id FROM hagency_agent_v1.management_shared_demand_retry_starts) s JOIN hagency_agent_v1.management_shared_demands d ON d.id=s.demand_id JOIN hagency_agent_v1.management_shared_intake q ON q.id=d.intake_id JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=s.runtime_id WHERE s.runtime_id=$1 AND (r.process_digest IS NOT NULL OR r.activity_epoch>0) AND NOT hagency_agent_v1.shared_start_reoffers(s.demand_id,s.runtime_id) AND q.state='pending' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks k WHERE k.demand_id=d.id) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_controls c WHERE c.assignment_id=q.assignment_id AND c.mode='running' AND c.revision=q.control_revision)")
         .bind::<Text, _>(runtime)
         .get_result::<Id>(db)
         .await
@@ -357,7 +465,7 @@ pub(super) async fn interrupt(db: &mut AsyncPgConnection, runtime: &str) -> Resu
     if let Some(id) = v2 {
         let d = load(db, &id.id).await?;
         let q = queued(db, &d.intake_id).await?;
-        block(db, &d, &q, "head_changed", "\"head_changed\"").await?;
+        block(db, &d, &q, "head_changed", "\"time_bound_stopped\"").await?;
     }
     let v3 = sql_query("SELECT s.demand_id AS id FROM hagency_agent_v1.management_shared_budget_demand_starts s WHERE s.runtime_id=$1 AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_bindings b WHERE b.demand_id=s.demand_id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_terminals t WHERE t.demand_id=s.demand_id)")
         .bind::<Text, _>(runtime)
@@ -369,6 +477,22 @@ pub(super) async fn interrupt(db: &mut AsyncPgConnection, runtime: &str) -> Resu
         budget::terminal(db, &d, "head_changed").await?;
     }
     Ok(())
+}
+/// The bounded wait of a message given back has ended (see
+/// `timeouts::reoffer_lapsed`, checked again by the caller in this
+/// transaction): the event ends, and the queue moves on.
+pub(super) async fn lapse(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
+    let d = load(db, id).await?;
+    let q = queued(db, &d.intake_id).await?;
+    end_wait(db, &d, &q).await
+}
+/// End a message given back whose wait is over. It ends by its wait
+/// (`retry_lapsed`), unless a budget was applied to its Agent since: then it
+/// ends as every message the earlier protocol had started when the budget
+/// was applied (`budget_applied`, see block), which its status has read
+/// since then and the budget's queue records as it moves on.
+async fn end_wait(db: &mut AsyncPgConnection, d: &Demand, q: &Queued) -> Result<()> {
+    block(db, d, q, "head_changed", "\"retry_lapsed\"").await
 }
 // Restriction remains effective when the feature is disabled; old linked
 // processes/work cannot fall back to legacy authority after Stop or rearming.
@@ -450,7 +574,7 @@ impl DomainStore {
         self.db.write_transaction(async|db:&mut AsyncPgConnection|{
  Self::authorize(db,p,0).await?;let (device,generation)=device(p)?;let now=clock(db).await?;
  let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id) AND c.mode='running' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes root WHERE root.assignment_id=a.id AND NOT root.issuance_void AND (root.payload::jsonb->>'version'='1' OR ($5 AND root.payload::jsonb->>'version'='4') OR ($6 AND root.payload::jsonb->>'version'='5'))) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.control_revision=c.revision AND q.state='pending') ORDER BY (a.id<=$4),a.id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<Bool,_>(allow_claude).bind::<Bool,_>(allow_octos).load::<Id>(db).await?;
- let mut found=None;let mut after=None;for id in ids {after=Some(id.id.clone());intake::expire(db,&id.id,now).await?;let revision=intake::running_revision(db,&id.id).await?;let Some(q)=oldest(db,&id.id,revision).await? else{continue};let w=match authorize(db,p,&q,&self.server,now,true).await {Ok(w)=>w,Err(Error::Conflict(_)|Error::NotFound(_))=>continue,Err(e)=>return Err(e)};let Some(h)=head(db,&id.id).await? else{continue};if runtime_version(&h)?==3 || has_applied_budget(db,&w.request_id).await? || awaits_first_start(db,&q,&h).await? {continue;}let d=ensure(db,&q,&h).await?;refresh(db,&d,&q,&h).await?;if status(db,&d).await?.state!="offered" && started(db,&d.id).await?.is_none(){continue}let c:ManagedAgentReserveCommand=decode(&w.payload)?;if known(db,&id.id).await?>=c.requested_tokens && started(db,&d.id).await?.is_none(){block(db,&d,&q,"budget_blocked",r#"{"reason":"budget_blocked","source":"known_consumption_exhausted"}"#).await?;}let value=visible(db,&d,input.retries).await?;if matches!(value.state.as_str(),"offered"|"start_committed"|"retry_offered"){found=Some(value);break}}
+ let mut found=None;let mut after=None;for id in ids {after=Some(id.id.clone());intake::expire(db,&id.id,now).await?;let revision=intake::running_revision(db,&id.id).await?;let Some(q)=oldest(db,&id.id,revision).await? else{continue};let w=match authorize(db,p,&q,&self.server,now,true).await {Ok(w)=>w,Err(Error::Conflict(_)|Error::NotFound(_))=>continue,Err(e)=>return Err(e)};let Some(h)=head(db,&id.id).await? else{continue};if runtime_version(&h)?==3 || has_applied_budget(db,&w.request_id).await? || awaits_first_start(db,&q,&h).await? || (policy.shared_demand_reoffers() && input.reoffers && holds_unbegun_reoffer(db,&q,&h).await?) {continue;}let d=ensure(db,&q,&h).await?;refresh(db,&d,&q,&h,now).await?;if status(db,&d).await?.state!="offered" && started(db,&d.id).await?.is_none(){continue}let c:ManagedAgentReserveCommand=decode(&w.payload)?;if known(db,&id.id).await?>=c.requested_tokens && started(db,&d.id).await?.is_none(){block(db,&d,&q,"budget_blocked",r#"{"reason":"budget_blocked","source":"known_consumption_exhausted"}"#).await?;}let value=visible(db,&d,input.retries,input.reoffers).await?;if matches!(value.state.as_str(),"offered"|"start_committed"|"retry_offered"){found=Some(value);break}}
  record_discovery(db,p,false).await?;
  Ok(SharedDemandPoll{demand:found,next_after:after})
  }).await
@@ -473,7 +597,7 @@ impl DomainStore {
                     return Err(Error::Conflict("shared_demand_changed"));
                 }
                 intake::expire(db, &q.assignment_id, now).await?;
-                visible(db, &d, input.retries).await
+                visible(db, &d, input.retries, input.reoffers).await
             })
             .await
     }
@@ -521,7 +645,7 @@ pub(super) async fn promote(
         return Ok(());
     }
     let d = ensure(db, &q, r).await?;
-    refresh(db, &d, &q, r).await?;
+    refresh(db, &d, &q, r, now).await?;
     let s = status(db, &d).await?;
     if !matches!(s.state.as_str(), "offered" | "start_committed") {
         return Ok(());
@@ -594,6 +718,34 @@ pub(super) async fn promote(
     Ok(())
 }
 
+/// Why a start of `d`'s event would be refused now, if it would be: a budget
+/// was applied to the Agent (its messages then run under the budget
+/// protocol), or the event is no longer the next waiting one of the current
+/// period. A retry is opened only where its start would be accepted.
+async fn start_refusal(
+    db: &mut AsyncPgConnection,
+    d: &Demand,
+    q: &Queued,
+    w: &Work,
+    now: i64,
+) -> Result<Option<&'static str>> {
+    if has_applied_budget(db, &w.request_id).await? {
+        return Ok(Some("shared_budget_execution_required"));
+    }
+    // A message given back whose wait is over gets no new attempt
+    // (`timeouts::REOFFER_GRACE_MS`): it ends at the next read or sweep.
+    if q.state != "pending"
+        || q.expires_at_ms <= now
+        || oldest(db, &q.assignment_id, q.control_revision)
+            .await?
+            .is_none_or(|v| v.id != q.id)
+        || binding(db, &d.id).await?.is_some()
+        || timeouts::reoffer_lapsed(db, &d.id, now).await?
+    {
+        return Ok(Some("shared_demand_not_current"));
+    }
+    Ok(None)
+}
 /// Whether a budget change was applied to the Agent of request `id`. Applied
 /// results are permanent (migration 2026-11-19-000122).
 pub(super) async fn has_applied_budget(db: &mut AsyncPgConnection, id: &str) -> Result<bool> {

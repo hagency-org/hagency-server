@@ -3,6 +3,18 @@
 //! attempt naming the not_started one. Only the executor's own evidence, sent
 //! with its explicit request, opens a retry: the time bound never does, and an
 //! executor that never asks keeps today's terminal behavior.
+//!
+//! The same holds for an attempt whose process did start and then ended
+//! before a turn began for the event (time-limit rule 3: the line between
+//! what is redone and what is never guessed is the start of a turn), when
+//! the start that began it said that its executor takes messages back
+//! (`reoffers`). The evidence is then the process's `stopped` receipt, and
+//! whether a turn began is the server's own record, not the executor's claim:
+//! a start is recorded before the turn and refused once the process is
+//! fenced. If the event had been given to that process, the database released
+//! it at the fence (migration 2026-11-28-000161), so it is a waiting event
+//! again here. A `stopped` receipt for any other start is refused on this
+//! route, as before.
 use super::*;
 
 #[derive(QueryableByName)]
@@ -11,6 +23,9 @@ pub(super) struct LatestStart {
     pub(super) retry: i64,
     #[diesel(sql_type=Text)]
     pub(super) runtime_id: String,
+    /// The start said that its executor takes messages back.
+    #[diesel(sql_type=Bool)]
+    pub(super) reoffers: bool,
 }
 /// The demand's latest started attempt: its original start (retry 0) or its
 /// newest retry start.
@@ -18,7 +33,7 @@ pub(super) async fn latest_start(
     db: &mut AsyncPgConnection,
     demand: &str,
 ) -> Result<Option<LatestStart>> {
-    Ok(sql_query("SELECT retry,runtime_id FROM (SELECT 0::bigint AS retry,runtime_id FROM hagency_agent_v1.management_shared_demand_starts WHERE demand_id=$1 UNION ALL SELECT retry,runtime_id FROM hagency_agent_v1.management_shared_demand_retry_starts WHERE demand_id=$1) s ORDER BY retry DESC LIMIT 1")
+    Ok(sql_query("SELECT retry,runtime_id,hagency_agent_v1.shared_start_reoffers($1,runtime_id) AS reoffers FROM (SELECT 0::bigint AS retry,runtime_id FROM hagency_agent_v1.management_shared_demand_starts WHERE demand_id=$1 UNION ALL SELECT retry,runtime_id FROM hagency_agent_v1.management_shared_demand_retry_starts WHERE demand_id=$1) s ORDER BY retry DESC LIMIT 1")
         .bind::<Text, _>(demand).get_result(db).await.optional()?)
 }
 #[derive(QueryableByName)]
@@ -48,9 +63,12 @@ struct Retry {
     #[diesel(sql_type=Text)]
     receipt_id: String,
 }
-/// Open retry `n` after the not_started receipt `receipt` of `previous`, or
-/// end the demand once the cap is reached. A demand that is no longer current
-/// (stopped, cancelled, expired, moved on) is left to its own state.
+/// Open retry `n` after the receipt `receipt` of `previous` (not_started, or
+/// stopped with no turn begun for the event; the insert's trigger checks
+/// which), or end the demand once the cap is reached. A demand that is no
+/// longer current (stopped, cancelled, expired, moved on, or bound to work
+/// that did begin), or whose retry's start would be refused (a budget was
+/// applied, or its period has turned), is left to its own state.
 async fn open(
     db: &mut AsyncPgConnection,
     p: &Principal,
@@ -70,14 +88,19 @@ async fn open(
     }
     let q = queued(db, &d.intake_id).await?;
     let now = clock(db).await?;
-    if q.state != "pending"
-        || q.expires_at_ms <= now
-        || binding(db, &d.id).await?.is_some()
+    // A message given back whose wait is over ends now, as a read or the
+    // sweep would end it, and nothing is opened for it.
+    if timeouts::reoffer_lapsed(db, &d.id, now).await? {
+        return end_wait(db, d, &q).await;
+    }
+    let Ok(w) = authorize(db, p, &q, server, now, true).await else {
+        return Ok(());
+    };
+    if start_refusal(db, d, &q, &w, now).await?.is_some()
         || status(db, d).await?.state != "start_committed"
         || head(db, &q.assignment_id)
             .await?
             .is_none_or(|h| h.id != previous)
-        || authorize(db, p, &q, server, now, true).await.is_err()
     {
         return Ok(());
     }
@@ -90,9 +113,10 @@ async fn open(
     Ok(())
 }
 impl DomainStore {
-    /// Record the executor's not_started evidence for the demand's latest
-    /// attempt (exactly as the attempt result route does, on its cleanup
-    /// ticket) and, in the same transaction, re-offer the same event.
+    /// Record the executor's evidence that the demand's latest attempt never
+    /// started, or stopped (exactly as the attempt result route does, with
+    /// the same ticket) and, in the same transaction, re-offer the same
+    /// event if no turn began for it.
     pub async fn retry_shared_demand(
         &self,
         p: &Principal,
@@ -124,6 +148,16 @@ impl DomainStore {
                     .ok_or(Error::Conflict("shared_demand_retry_changed"))?;
                 if latest.runtime_id != input.attempt_id || input.retry != latest.retry + 1 {
                     return Err(Error::Conflict("shared_demand_retry_changed"));
+                }
+                // A process that ran is retried only for a start that said
+                // its executor takes messages back, and only while the
+                // re-offer is on; otherwise the route refuses the receipt and
+                // records nothing, as before (the plain result route records
+                // it).
+                if input.result.receipt.state == "stopped"
+                    && !(latest.reoffers && policy.shared_demand_reoffers())
+                {
+                    return Err(Error::Invalid("invalid_shared_demand_retry"));
                 }
                 let acknowledgement = attempts::record_in(
                     db,

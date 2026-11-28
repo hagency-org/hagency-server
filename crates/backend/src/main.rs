@@ -272,7 +272,8 @@ async fn run() -> anyhow::Result<()> {
                     .with_shared_thread_context(management.enable_shared_thread_context)
                     .with_agent_budget_deltas(management.enable_agent_budget_deltas)
                     .with_shared_budget_execution(management.enable_shared_budget_execution)
-                    .with_pool_grant_succession(management.enable_pool_grant_succession),
+                    .with_pool_grant_succession(management.enable_pool_grant_succession)
+                    .with_shared_demand_reoffers(management.enable_shared_demand_reoffers),
             );
         }
         agent_service = Some(app);

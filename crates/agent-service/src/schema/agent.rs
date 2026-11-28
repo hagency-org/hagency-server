@@ -1062,6 +1062,17 @@ pub mod hagency_agent_v1 {
     }
 
     diesel::table! {
+        hagency_agent_v1.management_shared_demand_released_bindings (work_id) {
+            work_id -> Text,
+            demand_id -> Text,
+            runtime_id -> Text,
+            payload -> Text,
+            digest -> Text,
+            released_at_ms -> Int8,
+        }
+    }
+
+    diesel::table! {
         hagency_agent_v1.management_shared_demand_retries (demand_id, retry) {
             demand_id -> Text,
             retry -> Int8,
@@ -1812,6 +1823,7 @@ pub mod hagency_agent_v1 {
         management_shared_controls,
         management_shared_demand_bindings,
         management_shared_demand_blocks,
+        management_shared_demand_released_bindings,
         management_shared_demand_retries,
         management_shared_demand_retry_starts,
         management_shared_demand_starts,

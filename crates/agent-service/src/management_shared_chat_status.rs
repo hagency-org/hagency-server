@@ -41,6 +41,38 @@ async fn reservation_stands(
     }
 }
 
+#[cfg(test)]
+impl DomainStore {
+    /// Both reads of whether the Agent of `assignment` serves a new message
+    /// in `room` at `now`, in one of the service's transactions: the rule
+    /// written once in the database, which the release at a process's fence
+    /// reads alone, and the service's check of the reservation, which this
+    /// status reads with it.
+    pub(crate) async fn shared_agent_serves_at(
+        &self,
+        assignment: &str,
+        room: &str,
+        now: i64,
+    ) -> Result<(bool, bool)> {
+        self.db
+            .transaction(async |db| {
+                let serves =
+                    sql_query("SELECT hagency_agent_v1.shared_agent_serves($1,$2,$3) AS matched")
+                        .bind::<Text, _>(assignment)
+                        .bind::<Text, _>(room)
+                        .bind::<BigInt, _>(now)
+                        .get_result::<Flag>(db)
+                        .await?
+                        .matched;
+                Ok((
+                    serves,
+                    reservation_stands(db, assignment, &self.server, now).await?,
+                ))
+            })
+            .await
+    }
+}
+
 pub(super) async fn query(
     db: &mut AsyncPgConnection,
     p: &Principal,
@@ -165,6 +197,13 @@ pub(super) async fn query(
                 -- for accepted work only, so nothing of this message has run
                 -- or will.
                 WHEN w.state='cancelled' AND w.started_at_ms IS NULL THEN 'never_started'
+                -- A message given back by a process that ended before its
+                -- turn, which then ended without one, reads as any end of a
+                -- waiting message: `head_changed`, with its block's cause as
+                -- `endReason` (the causes of a v2 end, below). Hagency Desktop reads
+                -- that as "did not process" when the row names the Agent; a
+                -- released Hagency Desktop up to rc.19 shows "Message could
+                -- not start". Neither reads these values of `endReason`.
                 ELSE i.reason END,
             'resourceRecovery', CASE WHEN queue.reason='budget_blocked' AND req.id IS NOT NULL
                 THEN jsonb_build_object('requestId',req.id,'role',
@@ -308,31 +347,41 @@ pub(super) async fn query(
                 -- time ended its intake.
                 WHEN t.reason='usage_unrepresentable' THEN t.reason
                 WHEN i.state IN ('cancelled','expired','paused') THEN i.reason
-                -- A v2 end names its cause: head_changed, retry_exhausted,
-                -- retry_unsupported, or usage_unrepresentable (a block on
-                -- usage, which nothing lifts in its period).
+                -- A v2 end names its cause: head_changed (a later process
+                -- took the queue), retry_not_requested (the process stopped
+                -- and its executor did not ask for a retry), time_bound_stopped
+                -- (the time bound gave up a process that had reported),
+                -- retry_exhausted, retry_unsupported, budget_applied (below),
+                -- or usage_unrepresentable (a block on usage, which nothing
+                -- lifts in its period), and for a message given back also
+                -- retry_lapsed or reoffer_unsupported.
                 WHEN i.state='blocked' AND i.reason<>'budget_blocked'
                     THEN coalesce((SELECT b.payload::jsonb#>>'{}' FROM hagency_agent_v1.management_shared_demand_blocks b
                         WHERE b.demand_id=d.id AND jsonb_typeof(b.payload::jsonb)='string'), i.reason)
+                -- A message v2 had started when a budget was applied to its
+                -- Agent ends because of that budget, read so before any
+                -- record and once the budget's queue has recorded its end
+                -- (as `head_changed`); a block v2 records later says so too.
+                WHEN coalesce(t.reason, lapse.reason)='head_changed' AND applied.revision IS NOT NULL
+                    AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_starts s WHERE s.demand_id=d.id)
+                    THEN 'budget_applied'
                 WHEN t.reason IS NOT NULL THEN t.reason
                 ELSE lapse.reason END AS reason
         ) ended ON true
         -- The Agent can serve a new message in this room now: its reservation
         -- stands (neither it nor its intent is fenced, and its time is not
-        -- over: $5, read by the check a new message meets when it arrives
-        -- and the polls make before they offer one), its executor's ledger
-        -- was not replaced, it runs, and it is a verified member of the room.
-        -- An Agent with an applied budget serves too, through its own queue.
-        -- The one definition of an available Agent.
+        -- over), its executor's ledger was not replaced, it runs, and it is a
+        -- verified member of the room. An Agent with an applied budget serves
+        -- too, through its own queue. The one definition of an available
+        -- Agent, which also decides whether a message is given back at its
+        -- process's fence (migration 2026-11-28-000161). Here it is read
+        -- together with $5, the check that a new message meets when it
+        -- arrives and the polls make before they offer one, which also
+        -- holds the reservation to the command, the people and the device
+        -- it was approved for.
         LEFT JOIN LATERAL (
-            SELECT a.state='pending_native' AND control.mode='running'
-                AND a.id=ANY($5::text[])
-                AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id)
-                AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_intents ai
-                    WHERE ai.request_id=a.request_id AND ai.state<>'fenced')
-                AND EXISTS(SELECT 1 FROM hagency_agent_v1.shared_room_memberships m
-                    WHERE m.assignment_id=a.id AND m.room_id=i.event_payload::jsonb->>'room_id'
-                      AND m.state='matrix_verified') AS available
+            SELECT hagency_agent_v1.shared_agent_serves(a.id, i.event_payload::jsonb->>'room_id', $4)
+                AND a.id=ANY($5::text[]) AS available
         ) serves ON true
         WHERE a.executor_owner_user_id=$1 OR i.event_payload::jsonb->>'sender_mxid'=$2
         ORDER BY i.received_at_ms DESC, i.id DESC

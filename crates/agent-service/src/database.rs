@@ -51,6 +51,7 @@ pub(crate) async fn retry_crypto_write<T, F: Future<Output = Result<T>> + Send>(
 pub(crate) struct Database {
     runtime: hagency_db_runtime::Database,
     pool_chain_lifetime: Arc<AtomicBool>,
+    shared_demand_reoffers: Arc<AtomicBool>,
     writer: Arc<Mutex<()>>,
     #[cfg(test)]
     test_clock: Arc<std::sync::atomic::AtomicI64>,
@@ -76,13 +77,14 @@ impl Database {
             runtime: hagency_db_runtime::Database::connect(url, size)?,
             writer: Default::default(),
             pool_chain_lifetime: Arc::new(AtomicBool::new(false)),
+            shared_demand_reoffers: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             test_clock: Default::default(),
             #[cfg(test)]
             url: url.into(),
         })
     }
-    /// A single bounded Horme checkout covers BEGIN, the policy setting and commit/rollback.
+    /// A single bounded Horme checkout covers BEGIN, the policy settings and commit/rollback.
     pub(crate) fn transaction<'a, 'conn, T, F>(
         &'conn self,
         callback: F,
@@ -92,17 +94,28 @@ impl Database {
         T: Send + 'a,
         'a: 'conn,
     {
-        Box::pin(async move {
-            self.runtime
+        // Lines about what a transaction did are written once it has
+        // committed, and never for one that rolled back.
+        Box::pin(AFTER_COMMIT.scope(RefCell::new(Vec::new()), async move {
+            let outcome = self
+                .runtime
                 .with_connection(async move |db| {
                     let result =
                         horme::transaction(db, async move |conn: &mut AsyncPgConnection| {
-                            let setting = if self.pool_chain_lifetime.load(Ordering::Acquire) {
-                                "SET LOCAL hagency.pool_chain_lifetime = 'on'"
-                            } else {
-                                "SET LOCAL hagency.pool_chain_lifetime = 'off'"
+                            let on = |flag: &AtomicBool| {
+                                if flag.load(Ordering::Acquire) {
+                                    "on"
+                                } else {
+                                    "off"
+                                }
                             };
-                            conn.batch_execute(setting).await?;
+                            conn.batch_execute(&format!(
+                                "SET LOCAL hagency.pool_chain_lifetime = '{}';\
+                                 SET LOCAL hagency.shared_demand_reoffers = '{}'",
+                                on(&self.pool_chain_lifetime),
+                                on(&self.shared_demand_reoffers)
+                            ))
+                            .await?;
                             #[cfg(test)]
                             if let now @ 1.. = self.test_clock.load(Ordering::Acquire) {
                                 conn.batch_execute(&format!(
@@ -110,7 +123,16 @@ impl Database {
                                 ))
                                 .await?;
                             }
-                            callback(conn).await
+                            let outcome = callback(conn).await?;
+                            // What the database gave back to the queue, or
+                            // could not, it notes only while the re-offer is
+                            // on (migration 2026-11-28-000161).
+                            if self.shared_demand_reoffers.load(Ordering::Acquire) {
+                                for note in database_notes(conn).await? {
+                                    after_commit(note);
+                                }
+                            }
+                            Ok(outcome)
                         })
                         .await;
                     // A completed rollback drained the transaction. Business rejections can reuse
@@ -120,8 +142,13 @@ impl Database {
                         outcome => Ok(outcome),
                     }
                 })
-                .await?
-        })
+                .await?;
+            if outcome.is_ok() {
+                let _ = AFTER_COMMIT
+                    .try_with(|notes| notes.borrow_mut().drain(..).for_each(|note| note.emit()));
+            }
+            outcome
+        }))
     }
     /// Wait for the domain writer without occupying a PostgreSQL connection.
     /// Only the successful attempt consumes the callback, so writes are never replayed.
@@ -182,6 +209,10 @@ impl Database {
     pub(crate) fn set_pool_chain_lifetime(&self, enabled: bool) {
         self.pool_chain_lifetime.store(enabled, Ordering::Release);
     }
+    pub(crate) fn set_shared_demand_reoffers(&self, enabled: bool) {
+        self.shared_demand_reoffers
+            .store(enabled, Ordering::Release);
+    }
     /// Independent fixture/observer session; never used by production operations.
     #[cfg(test)]
     pub(crate) async fn test_connection(&self) -> Result<TestConnection> {
@@ -213,10 +244,98 @@ impl DerefMut for TestConnection {
         &mut self.0
     }
 }
+use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, MutexGuard};
+
+/// What a write did to a message that was given back to the queue at its
+/// process's fence (time-limit rule 3), for the service log: ids and reasons,
+/// never content. The database notes `released`, `release_failed` and
+/// `release_search_failed` (migration 2026-11-28-000161); the service notes
+/// `ended`, with the block's reason.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct ReofferNote {
+    pub(crate) kind: String,
+    #[serde(default)]
+    pub(crate) demand: Option<String>,
+    #[serde(default)]
+    pub(crate) work: Option<String>,
+    #[serde(default)]
+    pub(crate) runtime: Option<String>,
+    #[serde(default)]
+    pub(crate) reason: Option<String>,
+}
+/// What the tests read of the service log.
+#[cfg(test)]
+pub(crate) static EMITTED: std::sync::Mutex<Vec<ReofferNote>> = std::sync::Mutex::new(Vec::new());
+/// The notes written for `demand`, oldest first.
+#[cfg(test)]
+pub(crate) fn emitted(demand: &str) -> Vec<ReofferNote> {
+    EMITTED
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|n| n.demand.as_deref() == Some(demand))
+        .cloned()
+        .collect()
+}
+impl ReofferNote {
+    fn emit(&self) {
+        #[cfg(test)]
+        EMITTED.lock().unwrap().push(self.clone());
+        let field = |v: &Option<String>| v.clone().unwrap_or_default();
+        let (demand, work, runtime, reason) = (
+            field(&self.demand),
+            field(&self.work),
+            field(&self.runtime),
+            field(&self.reason),
+        );
+        match self.kind.as_str() {
+            "released" => tracing::info!(
+                demand = %demand, work = %work, runtime = %runtime,
+                "message given back to the queue at its process's fence"
+            ),
+            "release_failed" | "release_search_failed" => tracing::warn!(
+                kind = %self.kind, demand = %demand, work = %work, runtime = %runtime, sqlstate = %reason,
+                "message could not be given back to the queue; it ends as before"
+            ),
+            _ => tracing::info!(
+                kind = %self.kind, demand = %demand, reason = %reason,
+                "message that was given back to the queue ended"
+            ),
+        }
+    }
+}
+tokio::task_local! {
+    static AFTER_COMMIT: RefCell<Vec<ReofferNote>>;
+}
+/// Write `note` to the service log once the transaction it belongs to has
+/// committed, and never if it rolls back. Outside a transaction (a statement
+/// that commits by itself) it is written now.
+pub(crate) fn after_commit(note: ReofferNote) {
+    let mut note = Some(note);
+    let _ = AFTER_COMMIT.try_with(|notes| notes.borrow_mut().extend(note.take()));
+    if let Some(note) = note {
+        note.emit();
+    }
+}
+/// The database's notes of this transaction (`hagency.shared_reoffer_notes`).
+async fn database_notes(conn: &mut AsyncPgConnection) -> Result<Vec<ReofferNote>> {
+    use diesel_async::RunQueryDsl;
+    #[derive(diesel::QueryableByName)]
+    struct Notes {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        value: String,
+    }
+    let notes = diesel::sql_query(
+        "SELECT coalesce(current_setting('hagency.shared_reoffer_notes', true), '') AS value",
+    )
+    .get_result::<Notes>(conn)
+    .await?;
+    Ok(serde_json::from_str(&notes.value).unwrap_or_default())
+}
 
 /// Session setting read by SQL and by pool Agent lifetime checks: a reserved
 /// pool Agent lives while its pool's capacity chain continues.
@@ -385,18 +504,72 @@ mod tests {
         let clone = db.clone();
         for (enabled, expected) in [(true, "on"), (false, "off"), (true, "on")] {
             db.set_pool_chain_lifetime(enabled);
+            // The re-offer has its own switch, set the other way here.
+            db.set_shared_demand_reoffers(!enabled);
             let current = clone
                 .transaction(async |conn| {
                     Ok(diesel::sql_query(
-                        "SELECT current_setting('hagency.pool_chain_lifetime', true) AS value",
+                        "SELECT current_setting('hagency.pool_chain_lifetime', true)||'/'||\
+                         current_setting('hagency.shared_demand_reoffers', true) AS value",
                     )
                     .get_result::<Setting>(conn)
                     .await?)
                 })
                 .await
                 .unwrap();
-            assert_eq!(current.value, expected);
+            let other = if enabled { "off" } else { "on" };
+            assert_eq!(current.value, format!("{expected}/{other}"));
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+    async fn reoffer_notes_are_written_once_their_transaction_commits() {
+        use diesel_async::RunQueryDsl;
+        let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+        let db = Database::connect(&url, 1).unwrap();
+        for (on, commits) in [(true, true), (true, false), (false, true)] {
+            let demand = format!("sdm_note_{on}_{commits}");
+            db.set_shared_demand_reoffers(on);
+            // A note as the database writes it, and one of the service's own.
+            let note = format!(
+                "SELECT set_config('hagency.shared_reoffer_notes',\
+                 '[{{\"kind\":\"released\",\"demand\":\"{demand}\",\"work\":\"w\",\"runtime\":\"r\"}}]',true)"
+            );
+            let outcome = db
+                .transaction(async |conn| {
+                    diesel::sql_query(&note).execute(conn).await?;
+                    after_commit(ReofferNote {
+                        kind: "ended".into(),
+                        demand: Some(demand.clone()),
+                        reason: Some("retry_lapsed".into()),
+                        ..Default::default()
+                    });
+                    assert!(emitted(&demand).is_empty(), "nothing before the commit");
+                    if commits {
+                        Ok(())
+                    } else {
+                        Err(Error::Conflict("rolled_back"))
+                    }
+                })
+                .await;
+            assert_eq!(outcome.is_ok(), commits);
+            let kinds: Vec<String> = emitted(&demand).into_iter().map(|n| n.kind).collect();
+            // The database's notes are read only while the re-offer is on.
+            let expected: &[&str] = match (on, commits) {
+                (_, false) => &[],
+                (true, true) => &["ended", "released"],
+                (false, true) => &["ended"],
+            };
+            assert_eq!(kinds, expected, "on={on} commits={commits}");
+        }
+        // The setting lives as long as its transaction.
+        db.set_shared_demand_reoffers(true);
+        let next = db
+            .transaction(async |conn| Ok(database_notes(conn).await?))
+            .await
+            .unwrap();
+        assert!(next.is_empty());
     }
 
     #[tokio::test]
