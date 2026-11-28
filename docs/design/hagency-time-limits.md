@@ -46,7 +46,7 @@ The two have different clocks:
 
 | | Clock | Ends at | When it is missed |
 |---|---|---|---|
-| Held | the **authorization window**: how long the server trusts a proof of sign-in without hearing from the computer again. 30 seconds by default, up to two minutes when the host is configured for it and the client asks | never later than the session's end, and the session's end is never more than one window after its last proof | the run is unknown; nothing is run again |
+| Held | the **authorization window**: how long the server trusts a proof of sign-in without hearing from the computer again. 30 seconds by default, up to two minutes when the host is configured for it and the client asks in the way that says it can use one (rule 6) | never later than the session's end, and the session's end is never more than one window after its last proof | the run is unknown; nothing is run again |
 | Offered | the **claim window** (`CLAIM_WINDOW_MS`): a fixed 30 seconds | `now + 30 s`, or the session's end when that is sooner. Some kinds are cut to something else (see the table of limits): a command that starts a process and the challenge that checks an Agent's Matrix membership end at `now + 30 s` or the end of the reservation they run under, and the poll hand-outs of allocation and parent commands and of replies use the plain 30 s | it is offered again (rule 3) |
 
 Consequences that are intended:
@@ -349,6 +349,27 @@ operator's switch is the authorization window itself: lowering it shortens
 nothing that was already given (rule 2) and takes effect as each session is
 next renewed.
 
+A window longer than 30 seconds is issued the same way: only to a client that
+has said it can hold one. A client says so by asking for the window with the
+request header `x-hagency-authorization-window-v2-ms` when it presents its
+proof (`sessions/pasion` and `sessions/current/renew`). Its value is the
+milliseconds asked for, and the window granted is that, at least 30 s and at
+most the host's `authorization_window_ms`. By sending it, a client declares
+that it shares one local session per server session, so a longer window
+costs it nothing; a client that makes one local session per call is the one
+that failure 2 above describes. The header that the first clients sent,
+`x-hagency-authorization-window-ms`, is still accepted and gives 30 s
+whatever it asks. When both are sent, the second header decides; a second
+header whose value cannot be read gives 30 s, also beside a readable first
+one. A client that can use a longer window sends both, so that a server from
+before the second header grants it the window too.
+
+So a computer that sends only the first header runs at 30 s, whatever window
+is configured. That is Hagency Desktop 0.5.0-rc.19, which makes one local
+session per call, and it is also every build that could use a longer window
+but does not yet send the second header. Such a build returns to the longer
+window at its first proof after it sends the second header.
+
 The open case of rule 3 follows the same order. If the owner chooses to have
 accepted work that never began run again, a computer says that it takes such
 a message back with `reoffers` on its demand start, poll, recover and block
@@ -368,7 +389,7 @@ back").
 | Limit | Value | Kind | Set by |
 |---|---|---|---|
 | Access token life | the identity service's choice | — | identity service |
-| Authorization window | 30 s by default; up to 120 s when `authorization_window_ms` is configured and the client asks with `x-hagency-authorization-window-ms` | held | host configuration and the client's request |
+| Authorization window | 30 s by default; up to 120 s when `authorization_window_ms` is configured and the client asks with `x-hagency-authorization-window-v2-ms`. The first header, `x-hagency-authorization-window-ms`, gives 30 s whatever it asks (rule 6) | held | host configuration and the client's request |
 | Session end | see above; only grows | held | server |
 | Agent execution lease | `least(session end, now + asked length)`; a length outside 1 s to the host's `max_lease_ms` (120 s unless configured lower) is refused | held | server, from the client's request |
 | Activity lease of a working process | `least(session end, now + 30 s)` whatever the window, and never past the pool reservation it runs under. A lease that follows the window, `least(session end, now + window)` for a session whose client asks for it, is in review (#97); see the state table | held | server |
@@ -409,6 +430,7 @@ renewal offers (7 days).
 |---|---|
 | 2. A session's end only grows; fencing only on withdrawal | implemented (migration `2026-11-26-000155`) |
 | 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window is in review (#97), and renewing them early enough for it to matter is in review in Hagency Desktop (#243, #251) |
+| 6. A window over 30 s only for a client that says it can hold one | implemented: granted only through `x-hagency-authorization-window-v2-ms`; the first header gives 30 s |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A failed start is tried again | implemented for a start that never reported a process (demand retries); see rule 3 for the three that are not |
 | 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. The server reads the field by which a computer would say that it takes such a message back (`reoffers`) and acts on nothing in it (rule 6). Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one blocked on usage) says whether its reader can send it again (`canSendAgain`: the reader sent it, a copy could run, the Agent can serve a new message, and the row names it; see rule 3), which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance once its time was over), `head_changed`, `retry_exhausted` or `usage_unrepresentable`), and, to its sender only, why it is not offered when nothing but its Agent stands in the way (`notOfferedBecause`: `agent_stopped`, `agent_unavailable` or `agent_unnamed`). A row whose outcome is unknown says whether its reader may review the Agent's original task records (`viewerCanReview`). The status lists the reader's 16 newest messages, each with every Agent's row. Hagency Desktop names the Agent in the room from the row's `agentMxid` and offers the sender "Send again" where `canSendAgain` is true |
@@ -468,19 +490,33 @@ The order matters, because the parts were released at different times.
    On such a server the window must not be lowered, and a computer must not
    be moved back to a client that asks for a shorter one, while pool Agents
    exist. With the migration, lowering the window withdraws nothing.
+
+   The server must also be one that grants a longer window only through the
+   second header (rule 6). An earlier server grants it through the first
+   header too, and so to Hagency Desktop 0.5.0-rc.19, which makes one local
+   session per call and can then refuse its own calls (failure 2).
 2. **Then the computers.** A window above 30 s is safe only for computers
-   whose daemon shares one local session among its calls (Hagency Desktop
-   after 0.5.0-rc.19; that release still makes one per call and can refuse
-   its own calls under a longer window). Older daemons keep working at 30 s:
-   the window is only granted to a client that asks for it.
+   whose daemon shares one local session among its calls, and such a daemon
+   says so with the second header. Every other computer keeps working at
+   30 s: the server does not grant it a longer window, whatever is
+   configured. That includes a build that shares its local session but sends
+   only the first header; it runs at 30 s until it sends the second.
 3. **Then raise the window.** It takes effect as each session is next
-   renewed.
+   renewed, for the computers that send the second header. Such a computer
+   reads a proof with a longer window only by the answer's `Date` header
+   (rule 5), so a proxy in front of the server that drops or rewrites that
+   header, or adds an `Age`, makes it refuse its own proof: check the proxy
+   first.
 
 Going back:
 
 - Lowering the window again is safe once step 1 is done.
-- Moving the server back to an older binary is safe; the older binary reads
-  everything a newer one wrote, because an offer never exceeds 30 seconds.
+- Moving the server back to an older binary is safe for what it reads: the
+  older binary reads everything a newer one wrote, because an offer never
+  exceeds 30 seconds. A binary from before the second header (rule 6),
+  though, grants a longer window through the first header, so to Hagency
+  Desktop 0.5.0-rc.19 too. While a computer may run that release, lower the
+  window to 30 s before moving the server back so far.
 - Do not run the down migration of `2026-11-26-000155` while pool Agents
   exist: it puts back the rule that fences on a smaller end.
 - The down migration of `2026-11-26-000156` removes the rules that write

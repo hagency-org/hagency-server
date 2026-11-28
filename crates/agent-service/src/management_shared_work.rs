@@ -190,6 +190,11 @@ impl DomainStore {
 
                 let r=runtime(db,&id.id).await?;let w=original(db,&r).await?;let c=command(&r,&self.server)?;let now=clock(db).await?;
                 if !runtime_issuing(db,policy,&r).await? || r.state!="qualified" || r.activity_until_ms<=now || received<c.issued_at_ms || received>now || now-received>86_400_000 || !current(db,&r,&w,&c,now).await? {return Ok(());}
+                // Only a budget process (version 3) is held to a budget: its
+                // work poll checks the head and the ceiling. A plain process
+                // of an Agent with an applied budget is passed over, as one
+                // that does not qualify is: no work, no record.
+                if runtime_version(&r)?!=3 && demands::has_applied_budget(db,&w.request_id).await? {return Ok(());}
                 let m=membership_for(db,&r,&event.room_id).await?;facts(&m,&observed)?;
                 if observed.encrypted!=event.encrypted || event.room_id!=m.room_id || !m.addressed_by(&event.sender_mxid,&event.mentioned_mxids,observed.requires_mention) {return Err(Error::Unauthorized("shared_room_authority_changed"));}
                 let old=sql_query("SELECT w.* FROM hagency_agent_v1.management_shared_work w JOIN hagency_agent_v1.management_shared_runtimes old ON old.id=w.runtime_id WHERE old.assignment_id=$1 AND w.event_id=$2").bind::<Text,_>(&r.assignment_id).bind::<Text,_>(&event.event_id).get_result::<WorkRow>(db).await.optional()?;
