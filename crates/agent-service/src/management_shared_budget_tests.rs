@@ -555,6 +555,22 @@ async fn a_message_bound_before_a_budget_does_not_start_and_reads_never_started(
             &json!("never_started")
         )
     );
+    // Its sender may send it again, and nothing says that the Agent stands
+    // in the way: a copy goes to the budget's queue, which offers it for a
+    // budget process once the plain one has stopped. Nobody else is offered
+    // it, and the outcome is known, so nobody is offered a review.
+    for (reader, again) in [(&f.outsider.p, true), (&f.owner.p, false)] {
+        let query = serde_json::from_value(json!({"roomId":room})).unwrap();
+        let row = f.domain.shared_approvals(reader, query).await.unwrap()["executions"][0].clone();
+        assert_eq!(
+            (
+                &row["canSendAgain"],
+                row.get("notOfferedBecause"),
+                row.get("viewerCanReview")
+            ),
+            (&json!(again), None, None)
+        );
+    }
 }
 #[tokio::test]
 #[ignore = "dedicated PostgreSQL"]
