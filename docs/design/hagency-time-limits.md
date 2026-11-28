@@ -538,6 +538,15 @@ Going back:
   though, grants a longer window through the first header, so to Hagency
   Desktop 0.5.0-rc.19 too. While a computer may run that release, lower the
   window to 30 s before moving the server back so far.
+- Run the down migrations of #97, `2026-11-26-000154` and the identity
+  migration `2026-11-26-000002`, only once the server runs a binary from
+  before #97 again. A server with #97 writes what they take away: the first
+  lease's row from epoch 0, which the down migration of `000154` refuses
+  again, and the window a session follows (`sessions.activity_window_ms`),
+  the column that the down migration of `000002` drops. While such a server
+  still serves, either down migration makes every first activity lease
+  fail, and the second also every renewal of a lease, every sign-in and
+  every renewal of a session.
 - Do not run the down migration of `2026-11-26-000155` while pool Agents
   exist: it puts back the rule that fences on a smaller end.
 - The down migration of `2026-11-26-000156` removes the rules that write
