@@ -197,7 +197,7 @@ async fn stopped_missing_usage_v1_remains_discoverable_without_execution_authori
 pub(super) struct Sender {
     pub(super) matrix: MatrixClient,
     pub(super) calls: Arc<Mutex<Vec<(String, Value)>>>,
-    drop_first: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) drop_first: Arc<std::sync::atomic::AtomicBool>,
     hold: Arc<std::sync::atomic::AtomicBool>,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Semaphore>,

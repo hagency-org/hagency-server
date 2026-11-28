@@ -19,6 +19,14 @@ tokio::task_local! {
     static ACTIVE_DATABASES: Vec<usize>;
 }
 
+/// How long one operation of a pool made by `Database::connect` may take: all
+/// its callback does, a transaction with its commit included. An operation
+/// that takes longer is cancelled and rolled back, unless its commit was
+/// already sent, which can then still land a moment later. Callers rely on
+/// it: an operation that read the clock commits within about this of that
+/// reading, or not at all.
+pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Clone)]
 pub struct Database(Arc<Inner>);
 
@@ -83,12 +91,7 @@ fn cancel_and_discard(
 
 impl Database {
     pub fn connect(url: &str, pool_size: usize) -> QueryResult<Self> {
-        Self::with_timeouts(
-            url,
-            pool_size,
-            Duration::from_secs(5),
-            Duration::from_secs(30),
-        )
+        Self::with_timeouts(url, pool_size, Duration::from_secs(5), OPERATION_TIMEOUT)
     }
 
     pub fn with_timeouts(

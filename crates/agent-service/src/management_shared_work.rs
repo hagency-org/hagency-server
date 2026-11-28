@@ -64,6 +64,25 @@ fn item(w: &WorkRow, r: &Runtime) -> Result<SharedWorkItem> {
     }
     Ok(v)
 }
+/// Whether an applied budget retired `r`, a plain process (the assignment
+/// protocol). Only a budget process (version 3) is held to a budget: its work
+/// poll checks the head and the ceiling. A plain one is given no new work
+/// (route_shared_event, demands::promote), and what it was given before is
+/// not begun: its work poll ends that work `cancelled`, as a period's turn
+/// does, and an acknowledgement or a start of it is refused as definitively
+/// not started. Work that has begun is left alone: its end is unknown, and
+/// it is never run again.
+async fn budget_retired(
+    db: &mut AsyncPgConnection,
+    protocol: WorkProtocol,
+    r: &Runtime,
+) -> Result<bool> {
+    if !matches!(protocol, WorkProtocol::Assignment) {
+        return Ok(false);
+    }
+    let request = original(db, r).await?.request_id;
+    demands::has_applied_budget(db, &request).await
+}
 async fn require_activity(
     db: &mut AsyncPgConnection,
     p: &Principal,
@@ -298,6 +317,10 @@ impl DomainStore {
                 let period=calendar.period_at(now as u64).map_err(|_|Error::Conflict("agent_period_changed"))?;
                 sql_query("UPDATE hagency_agent_v1.management_shared_work SET state='cancelled' WHERE runtime_id=$1 AND state IN ('queued','acknowledged') AND started_at_ms IS NULL AND created_at_ms<$2").bind::<Text,_>(&r.id).bind::<BigInt,_>(period.start_ms as i64).execute(db).await?;
             }
+            if budget_retired(db,protocol,&r).await? {
+                sql_query("UPDATE hagency_agent_v1.management_shared_work SET state='cancelled' WHERE runtime_id=$1 AND state IN ('queued','acknowledged') AND started_at_ms IS NULL").bind::<Text,_>(&r.id).execute(db).await?;
+                return Ok(None);
+            }
             let row=sql_query("SELECT * FROM hagency_agent_v1.management_shared_work WHERE runtime_id=$1 AND state IN('queued','acknowledged') ORDER BY created_at_ms,id LIMIT 1").bind::<Text,_>(&r.id).get_result::<WorkRow>(db).await.optional()?;row.map(|w|item(&w,&r)).transpose()
         }).await
     }
@@ -353,6 +376,7 @@ impl DomainStore {
                 let period=calendar.period_at(now as u64).map_err(|_|Error::Conflict("agent_period_changed"))?;
                 if v.created_at_ms<period.start_ms as i64 || v.created_at_ms>=period.end_ms as i64 {return Err(Error::Conflict("agent_period_changed"));}
             }
+            if w.started_at_ms.is_none() && budget_retired(db,protocol,&r).await? {return Err(Error::Conflict("shared_work_definitively_not_started"));}
             if w.state=="queued" {sql_query("UPDATE hagency_agent_v1.management_shared_work SET state='acknowledged',acknowledged_at_ms=$2 WHERE id=$1").bind::<Text,_>(&w.id).bind::<BigInt,_>(now).execute(db).await?;}Ok(())
         }).await
     }
@@ -402,6 +426,7 @@ impl DomainStore {
                 let period=calendar.period_at(now as u64).map_err(|_|Error::Conflict("agent_period_changed"))?;
                 if v.created_at_ms<period.start_ms as i64 || v.created_at_ms>=period.end_ms as i64 {return Err(Error::Conflict("agent_period_changed"));}
             }
+            if w.started_at_ms.is_none() && budget_retired(db,protocol,&r).await? {return Err(Error::Conflict("shared_work_definitively_not_started"));}
             if w.state=="queued" {return Err(Error::Conflict("shared_work_not_acknowledged"));}
             let newly=w.state=="acknowledged";
             if newly {let busy=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_work WHERE runtime_id=$1 AND (state IN('started','unknown') OR (started_at_ms IS NOT NULL AND NOT usage_complete))) AS matched").bind::<Text,_>(&r.id).get_result::<Flag>(db).await?.matched;if busy {return Err(Error::Conflict("shared_work_unsettled"));}

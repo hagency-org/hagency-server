@@ -90,14 +90,12 @@ async fn budget_queue_moves_past_a_message_v2_ended_before_the_budget() {
         }
         let room = work::message(&f, &r, "scope").await.room_id;
         // How the message reads once it ended, and whether its sender may
-        // send it again. A block on usage without a budget ends it at once
-        // and keeps its reason; a copy would be blocked the same way, since
-        // this Agent has no periods to turn. Reading writes nothing.
+        // send it again. A block on usage without a budget ends it at once,
+        // reads as cancelled and keeps its cause as the end; a copy would be
+        // blocked the same way, since this Agent has no periods to turn.
+        // Reading writes nothing.
         let (read_end, again) = match end {
-            V2End::Unrepresentable => (
-                json!(["blocked", "usage_unrepresentable", "usage_unrepresentable"]),
-                false,
-            ),
+            V2End::Unrepresentable => (json!(["cancelled", null, "usage_unrepresentable"]), false),
             _ => (json!(["blocked", "head_changed", "head_changed"]), true),
         };
         let reads = |again: bool| {
@@ -481,12 +479,10 @@ async fn a_block_on_usage_ends_the_message_in_the_budget_queue_at_once() {
         // The answer that the computer checks names the block.
         assert_eq!(blocked.state, "usage_unrepresentable");
     };
-    let ended = json!([
-        "blocked",
-        "usage_unrepresentable",
-        "usage_unrepresentable",
-        false
-    ]);
+    // It reads as cancelled, with its cause as its end and no other reason:
+    // Hagency Desktop 0.5.0-rc.19 reads the reason `usage_unrepresentable`
+    // as a wait for usage to be confirmed, and `cancelled` as an end.
+    let ended = json!(["cancelled", null, "usage_unrepresentable", false]);
     let first = poll().await.expect("the oldest message is offered");
     assert_eq!(first.offer.event_id, "$usage_first");
     block(&first).await;
@@ -802,4 +798,500 @@ async fn sweep_ends_a_message_given_back_past_an_attempt_it_cannot_stop() {
         "the message given back ends all the same"
     );
     assert_eq!(recovered(&f, &lost).await.state, "head_changed");
+}
+/// The row that `reader` reads of `event` in `room`, whole.
+async fn row_of(f: &Fixture, room: &str, reader: &Principal, event: &str) -> Value {
+    let query = serde_json::from_value(json!({"roomId": room})).unwrap();
+    let read = f.domain.shared_approvals(reader, query).await.unwrap();
+    read["executions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["eventId"] == event)
+        .cloned()
+        .unwrap_or_else(|| panic!("{event} is among the reader's newest messages"))
+}
+
+/// Whether `reader` may send `event` again, and why not when only its Agent
+/// stands in the way.
+async fn offer_of(f: &Fixture, room: &str, reader: &Principal, event: &str) -> Value {
+    let row = row_of(f, room, reader, event).await;
+    // What the answer is worked out from stays on the server.
+    for kept in ["fromViewer", "agentAvailable", "agentRuns", "copyCanRun"] {
+        assert!(row.get(kept).is_none(), "{kept}");
+    }
+    json!([row["canSendAgain"], row["notOfferedBecause"]])
+}
+
+/// A message that ended without a turn tells its sender why it is not
+/// offered when nothing but its Agent stands in the way: the Agent does not
+/// run, it cannot serve a new message, or the status has no Matrix ID to name
+/// it by. In the last case it is not offered at all, as the client could not
+/// say which Agent to send it to. Nobody else is told, and a message that
+/// still waits says nothing.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_message_not_offered_for_its_agent_says_why() {
+    let (f, r, _admin, a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    attempts::stop(&f, &d, 201).await;
+    let room = work::message(&f, &r, "scope").await.room_id;
+    retain(&f, &r, &m, "why_ended").await;
+    let read = async |reader: &Principal| offer_of(&f, &room, reader, "$why_ended").await;
+    let said = |again: bool, why: Option<&str>| json!([again, why]);
+    assert_eq!(read(&f.outsider.p).await, said(false, None), "it waits");
+    let revision = f
+        .domain
+        .shared_run_control(&f.outsider.p, &a.id)
+        .await
+        .unwrap()
+        .revision;
+    let control = async |command: &str, revision: i64, mode: &str| {
+        f.domain
+            .change_shared_run_control(
+                &f.outsider.p,
+                &f.policy,
+                &a.id,
+                intake_tests::change(command, revision, mode),
+                &m.gateway,
+            )
+            .await
+            .unwrap();
+    };
+    // Stopped while it waited: it has ended, and the Agent does not run.
+    control("why_pause", revision, "paused").await;
+    assert_eq!(
+        read(&f.outsider.p).await,
+        said(false, Some("agent_stopped"))
+    );
+    assert_eq!(read(&f.owner.p).await, said(false, None), "not its sender");
+    control("why_resume", revision + 1, "running").await;
+    assert_eq!(read(&f.outsider.p).await, said(true, None));
+    // The Agent runs, but its reservation's time is over.
+    let end = allocation_ends(&f, &r, db_now(&f).await - 1).await;
+    assert_eq!(
+        read(&f.outsider.p).await,
+        said(false, Some("agent_unavailable"))
+    );
+    assert_eq!(read(&f.owner.p).await, said(false, None), "not its sender");
+    allocation_ends(&f, &r, end).await;
+    assert_eq!(read(&f.outsider.p).await, said(true, None));
+    // No Matrix ID for the Agent: the row cannot name it.
+    let hide = async |from: &str, to: &str| {
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        db.batch_execute(&format!(
+            "SET session_replication_role=replica;\
+             UPDATE hagency_agent_v1.management_agent_matrix SET assignment_id='{to}' WHERE assignment_id='{from}';\
+             SET session_replication_role=origin"
+        ))
+        .await
+        .unwrap();
+    };
+    let hidden = format!("{}_hidden", a.id);
+    hide(&a.id, &hidden).await;
+    let unnamed = row_of(&f, &room, &f.outsider.p, "$why_ended").await;
+    hide(&hidden, &a.id).await;
+    assert_eq!(unnamed["agentMxid"], Value::Null);
+    assert_eq!(
+        json!([unnamed["canSendAgain"], unnamed["notOfferedBecause"]]),
+        said(false, Some("agent_unnamed"))
+    );
+    assert_eq!(read(&f.outsider.p).await, said(true, None));
+}
+
+/// The status says that a message's 24 hours are over only one claim window
+/// after they are. A poll binds a message only while its own clock is before
+/// that end, and commits within the claim window of reading it; so a message
+/// whose sender is offered to send it again is one no poll can still run. An
+/// end that a poll recorded reads at once: nothing binds a message after it.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_message_reads_as_expired_one_claim_window_after_its_time() {
+    use crate::identity::CLAIM_WINDOW_MS;
+    let (f, r, _admin, a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    attempts::stop(&f, &d, 201).await;
+    let room = work::message(&f, &r, "scope").await.room_id;
+    let received = retain(&f, &r, &m, "margin_waits").await;
+    // Its time ends a millisecond after it arrived.
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute(&format!(
+        "ALTER TABLE hagency_agent_v1.management_shared_intake DISABLE TRIGGER USER;\
+         UPDATE hagency_agent_v1.management_shared_intake SET expires_at_ms=received_at_ms+1 WHERE assignment_id='{id}' AND event_id='$margin_waits';\
+         ALTER TABLE hagency_agent_v1.management_shared_intake ENABLE TRIGGER USER",
+        id = a.id
+    ))
+    .await
+    .unwrap();
+    let ends = received + 1;
+    let read_at = async |at: i64| {
+        f.domain.set_management_test_clock(at).await.unwrap();
+        let read = status_of(&f, &room, &f.outsider.p, "$margin_waits").await;
+        f.domain.reset_management_test_clock().await.unwrap();
+        read
+    };
+    let waits = json!(["pending", null, null, false]);
+    let expired = json!(["expired", "event_expired", "event_expired", true]);
+    assert_eq!(
+        read_at(ends + CLAIM_WINDOW_MS - 1).await,
+        waits,
+        "within the claim window"
+    );
+    assert_eq!(
+        read_at(ends + CLAIM_WINDOW_MS).await,
+        expired,
+        "a claim window after"
+    );
+    // Recorded by a poll, the end reads at once.
+    assert_eq!(read_at(ends).await, waits);
+    assert!(
+        f.domain
+            .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
+            .await
+            .unwrap()
+            .demand
+            .is_none(),
+        "the poll offers no message whose time is over"
+    );
+    assert_eq!(read_at(ends).await, expired, "recorded by the poll");
+}
+
+/// A message to two Agents is listed with both of its rows or not at all:
+/// the status lists the reader's 16 newest messages, not 16 rows, so no
+/// message is listed, nor offered, for only some of its Agents.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn chat_status_lists_each_message_with_all_of_its_agents() {
+    let (f, r, admin, _a, m) = Box::pin(setup()).await;
+    let (second, _b) = Box::pin(work::another_assignment(&f, &r, &admin, &m, 2)).await;
+    let mut both = work::message(&f, &r, "cut_both").await;
+    let other = work::message(&f, &second, "cut_other").await;
+    assert_eq!(other.room_id, both.room_id, "one room");
+    both.mentioned_mxids.extend(other.mentioned_mxids);
+    f.domain
+        .route_shared_event(&f.policy, &both, received(&f).await, &m.gateway)
+        .await
+        .unwrap();
+    for n in 0..15 {
+        retain(&f, &r, &m, &format!("cut_one_{n:02}")).await;
+    }
+    let listed = async |reader: &Principal| {
+        let query = serde_json::from_value(json!({"roomId": both.room_id})).unwrap();
+        let read = f.domain.shared_approvals(reader, query).await.unwrap();
+        let events: Vec<String> = read["executions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["eventId"].as_str().unwrap().to_owned())
+            .collect();
+        let mut messages = events.clone();
+        messages.dedup();
+        (
+            messages.len(),
+            events.iter().filter(|e| *e == "$cut_both").count(),
+        )
+    };
+    for reader in [&f.outsider.p, &f.owner.p] {
+        assert_eq!(listed(reader).await, (16, 2), "both rows of the oldest");
+    }
+    retain(&f, &r, &m, "cut_one_15").await;
+    for reader in [&f.outsider.p, &f.owner.p] {
+        assert_eq!(listed(reader).await, (16, 0), "neither row");
+    }
+}
+
+/// What `reader` reads of `event` once the database's clock is `at`.
+async fn status_at(f: &Fixture, room: &str, reader: &Principal, event: &str, at: i64) -> Value {
+    f.domain.set_management_test_clock(at).await.unwrap();
+    let read = status_of(f, room, reader, event).await;
+    f.domain.reset_management_test_clock().await.unwrap();
+    read
+}
+
+/// Without an applied budget, a message blocked on allowance is offered
+/// again only where a copy could have the allowance. While the Agent's known
+/// use in its period still covers its reservation's tokens, a copy would be
+/// blocked the same way, and end the same way a day later, so the message
+/// is not offered once its time is over. It is while that use is below them,
+/// as when the computer blocked it on tokens its work still held, and once a
+/// budget has been applied.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_spent_allowance_without_a_budget_offers_no_copy() {
+    use crate::identity::CLAIM_WINDOW_MS;
+    let (mut f, r, admin, a, m) = Box::pin(setup()).await;
+    let (d, activity) = qualify(&f).await;
+    retain(&f, &r, &m, "spent_work").await;
+    let w = f
+        .domain
+        .poll_shared_work(
+            &f.owner.p,
+            &f.policy,
+            activity.authority.clone(),
+            &m.gateway,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let input = SharedWorkInput {
+        authority: activity.authority,
+        work_id: w.id.clone(),
+        work_digest: allocation_digest(&w).unwrap(),
+    };
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input.clone(), &m.gateway)
+        .await
+        .unwrap();
+    assert!(
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input, &m.gateway)
+            .await
+            .unwrap()
+            .newly_started
+    );
+    // The work uses exactly the reservation's tokens.
+    let tokens = d.command.reserve_command.requested_tokens;
+    let t = work::ticket(&f, &d, &w).await;
+    let mut result = work::outcome(&d, &w, &t, 211, "completed");
+    result.receipt.known_consumed_tokens = tokens;
+    result.receipt.retained_tokens = Some(tokens);
+    f.domain
+        .record_shared_work_result(&f.owner.p, &f.policy, &w.id, result)
+        .await
+        .unwrap();
+    attempts::stop(&f, &d, 212).await;
+    let room = work::message(&f, &r, "scope").await.room_id;
+    let received = retain(&f, &r, &m, "spent_blocked").await;
+    assert!(
+        f.domain
+            .poll_shared_demand(&f.owner.p, &f.policy, SharedDemandPollInput::default())
+            .await
+            .unwrap()
+            .demand
+            .is_none(),
+        "blocked on allowance"
+    );
+    assert_eq!(
+        status_of(&f, &room, &f.outsider.p, "$spent_blocked").await,
+        json!(["blocked", "budget_blocked", null, false])
+    );
+    // Its time ends a millisecond after it arrived.
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute(&format!(
+        "ALTER TABLE hagency_agent_v1.management_shared_intake DISABLE TRIGGER USER;\
+         UPDATE hagency_agent_v1.management_shared_intake SET expires_at_ms=received_at_ms+1 WHERE assignment_id='{id}' AND event_id='$spent_blocked';\
+         ALTER TABLE hagency_agent_v1.management_shared_intake ENABLE TRIGGER USER",
+        id = a.id
+    ))
+    .await
+    .unwrap();
+    let over = received + 1 + CLAIM_WINDOW_MS;
+    let ended = |again: bool| json!(["expired", "event_expired", "event_expired", again]);
+    assert_eq!(
+        status_at(&f, &room, &f.outsider.p, "$spent_blocked", over).await,
+        ended(false),
+        "the known use covers the reservation"
+    );
+    // As if the computer had blocked it on tokens its work still held: the
+    // known use is below the reservation's tokens.
+    let known = async |db: &mut AsyncPgConnection, used: i64| {
+        db.batch_execute(&format!(
+            "ALTER TABLE hagency_agent_v1.management_shared_work DISABLE TRIGGER USER;\
+             UPDATE hagency_agent_v1.management_shared_work SET known_consumed_tokens={used},retained_tokens={used} WHERE id='{id}';\
+             ALTER TABLE hagency_agent_v1.management_shared_work ENABLE TRIGGER USER",
+            id = w.id
+        ))
+        .await
+        .unwrap();
+    };
+    known(&mut db, tokens - 1).await;
+    assert_eq!(
+        status_at(&f, &room, &f.outsider.p, "$spent_blocked", over).await,
+        ended(true),
+        "a token is left"
+    );
+    known(&mut db, tokens).await;
+    assert_eq!(
+        status_at(&f, &room, &f.outsider.p, "$spent_blocked", over).await,
+        ended(false)
+    );
+    assert_eq!(
+        status_at(&f, &room, &f.owner.p, "$spent_blocked", over).await,
+        ended(false),
+        "never to the owner"
+    );
+    f.policy = f
+        .policy
+        .clone()
+        .with_agent_budget_deltas(true)
+        .with_shared_budget_execution(true);
+    budget_tests::apply_delta(&f, &r, &admin, 25, 230).await;
+    assert_eq!(
+        status_at(&f, &room, &f.outsider.p, "$spent_blocked", over).await,
+        ended(true),
+        "a budget applied since"
+    );
+}
+
+/// A row whose reply may not have reached the room says whether its reader
+/// may review the Agent's original task records, by the rule of the review's
+/// own list: for a project's Agent, its manager and the project's
+/// administrator may, and the owner of the computer that runs it may not.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_reply_that_may_be_lost_says_who_may_review_a_project_agent() {
+    let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+    let (d, activity) = qualify(&f).await;
+    retain(&f, &r, &m, "review_reply").await;
+    let w = f
+        .domain
+        .poll_shared_work(
+            &f.owner.p,
+            &f.policy,
+            activity.authority.clone(),
+            &m.gateway,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let input = SharedWorkInput {
+        authority: activity.authority,
+        work_id: w.id.clone(),
+        work_digest: allocation_digest(&w).unwrap(),
+    };
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input.clone(), &m.gateway)
+        .await
+        .unwrap();
+    assert!(
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input, &m.gateway)
+            .await
+            .unwrap()
+            .newly_started
+    );
+    let t = work::ticket(&f, &d, &w).await;
+    f.domain
+        .record_shared_work_result(
+            &f.owner.p,
+            &f.policy,
+            &w.id,
+            work::outcome(&d, &w, &t, 211, "completed"),
+        )
+        .await
+        .unwrap();
+    let room = work::message(&f, &r, "scope").await.room_id;
+    let review = async |reader: &Principal| {
+        let row = row_of(&f, &room, reader, "$review_reply").await;
+        json!([row["state"], row.get("viewerCanReview")])
+    };
+    assert_eq!(
+        review(&f.outsider.p).await,
+        json!(["reply_pending", null]),
+        "said only where the outcome is unknown"
+    );
+    // The send is cut off before its answer.
+    let s = work::sender().await;
+    s.drop_first
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.domain
+        .send_shared_replies(&f.policy, &m.gateway, &s.matrix, &mut String::new())
+        .await
+        .unwrap();
+    // The sender manages the project and administers it; the owner of the
+    // computer does neither.
+    assert_eq!(review(&f.outsider.p).await, json!(["reply_unknown", true]));
+    assert_eq!(review(&f.owner.p).await, json!(["reply_unknown", false]));
+    // The database holds a project's administrator to its manager, and so
+    // to the Agent's manager when it was asked for. Were the Agent's manager
+    // another, both would be told that they may review: the owner as the
+    // Agent's manager, the sender as the project's administrator.
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute(&format!(
+        "ALTER TABLE hagency_agent_v1.management_agent_requests DISABLE TRIGGER USER;\
+         UPDATE hagency_agent_v1.management_agent_requests SET manager_user_id='{owner}' WHERE id='{id}';\
+         ALTER TABLE hagency_agent_v1.management_agent_requests ENABLE TRIGGER USER",
+        owner = f.owner.p.user_id,
+        id = r.id
+    ))
+    .await
+    .unwrap();
+    for reader in [&f.owner.p, &f.outsider.p] {
+        assert_eq!(review(reader).await, json!(["reply_unknown", true]));
+    }
+}
+
+/// Messages that wait, encrypted, for a daemon that can read them are listed
+/// the same way as the others: the reader's 16 newest, each with every
+/// Agent's row, so none is listed for only some of its Agents.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn chat_status_lists_whole_encrypted_messages_that_wait_for_a_daemon() {
+    let (f, r, admin, _a, m) = Box::pin(setup()).await;
+    let (_, second) = Box::pin(work::another_assignment(&f, &r, &admin, &m, 2)).await;
+    f.domain
+        .change_shared_run_control(
+            &f.outsider.p,
+            &f.policy,
+            &second.id,
+            intake_tests::change("arm_second", 1, "running"),
+            &m.gateway,
+        )
+        .await
+        .unwrap();
+    // The owner's computer has not said that it can read them.
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query(
+        "DELETE FROM hagency_agent_v1.management_shared_executor_protocols WHERE device_id=$1",
+    )
+    .bind::<Text, _>(f.owner.p.device_id.as_ref().unwrap())
+    .execute(&mut db)
+    .await
+    .unwrap();
+    let sealed = async |id: &str| {
+        let mut event = work::message(&f, &r, id).await;
+        event.body = String::new();
+        event.mentioned_mxids = Default::default();
+        event.encrypted = true;
+        f.domain
+            .route_shared_event(&f.policy, &event, now_ms(), &m.gateway)
+            .await
+            .unwrap();
+        event.room_id
+    };
+    let mut room = String::new();
+    for n in 0..16 {
+        room = sealed(&format!("sealed_{n:02}")).await;
+    }
+    // Messages listed, rows listed, and rows of the oldest message.
+    let listed = async |reader: &Principal| {
+        let query = serde_json::from_value(json!({"roomId": room})).unwrap();
+        let read = f.domain.shared_approvals(reader, query).await.unwrap();
+        let rows = read["executions"].as_array().unwrap().clone();
+        assert!(
+            rows.iter()
+                .all(|row| row["reason"] == "owner_daemon_update_required"),
+            "{rows:?}"
+        );
+        let mut messages: Vec<_> = rows.iter().map(|row| row["eventId"].clone()).collect();
+        messages.dedup();
+        (
+            messages.len(),
+            rows.len(),
+            rows.iter()
+                .filter(|row| row["eventId"] == "$sealed_00")
+                .count(),
+        )
+    };
+    for reader in [&f.outsider.p, &f.owner.p] {
+        assert_eq!(listed(reader).await, (16, 32, 2), "both rows of each");
+    }
+    sealed("sealed_16").await;
+    for reader in [&f.outsider.p, &f.owner.p] {
+        assert_eq!(
+            listed(reader).await,
+            (16, 32, 0),
+            "neither row of the oldest"
+        );
+    }
 }

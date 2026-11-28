@@ -532,6 +532,7 @@ impl DomainStore {
             if row.digest!=input.work_digest || mode(db,id).await?!="thread_context_v1" {return Err(Error::Conflict("shared_context_binding_changed"));}
             refusals::ensure_unfenced(db,id).await?;let saved=saved_context(db,&w).await?.ok_or(Error::Conflict("shared_context_required"))?;
             if saved.context_digest!=input.context_digest || saved.input_digest!=input.input_digest {return Err(Error::Conflict("shared_context_changed"));}
+            if row.started_at_ms.is_none() && super::budget_retired(db,protocol,&r).await? {return Err(Error::Conflict("shared_work_definitively_not_started"));}
             if row.state=="queued" {return Err(Error::Conflict("shared_work_not_acknowledged"));}
             let newly=row.state=="acknowledged";
             if newly {

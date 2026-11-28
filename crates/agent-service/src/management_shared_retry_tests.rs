@@ -1398,7 +1398,7 @@ async fn shared_agent_serves_reads_a_pool_reservation_across_the_turn_as_the_ser
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn shared_demand_v2_message_given_back_waits_for_its_executor_a_bounded_time() {
     for comes_back in [false, true] {
-        let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+        let (f, r, _admin, a, m) = Box::pin(setup()).await;
         let (d, _) = qualify(&f).await;
         let stopped = attempts::stop(&f, &d, 201).await;
         let event = format!("bounded_{comes_back}");
@@ -1424,6 +1424,14 @@ async fn shared_demand_v2_message_given_back_waits_for_its_executor_a_bounded_ti
             status_of(&f, &first.room_id, &f.outsider.p, &format!("${event}")).await,
             json!(["pending", null, null, false])
         );
+        // Nothing has ended: no reader is offered to send it again, nor
+        // told why not.
+        for reader in [&f.outsider.p, &f.owner.p] {
+            assert_eq!(
+                sending_again(&f, &first.room_id, reader, &format!("${event}")).await,
+                json!([false, null])
+            );
+        }
         if comes_back {
             // The executor comes back in time, proves the stop and starts the
             // retry.
@@ -1439,6 +1447,10 @@ async fn shared_demand_v2_message_given_back_waits_for_its_executor_a_bounded_ti
             assert_eq!(
                 status_of(&f, &first.room_id, &f.outsider.p, &format!("${event}")).await,
                 json!(["pending", null, null, false])
+            );
+            assert_eq!(
+                sending_again(&f, &first.room_id, &f.outsider.p, &format!("${event}")).await,
+                json!([false, null])
             );
             let started = f
                 .domain
@@ -1493,6 +1505,15 @@ async fn shared_demand_v2_message_given_back_waits_for_its_executor_a_bounded_ti
             status_of(&f, &first.room_id, &f.outsider.p, &format!("${event}")).await,
             json!(["blocked", "head_changed", "retry_lapsed", true])
         );
+        // Its sender is offered it, and nobody else is told anything.
+        assert_eq!(
+            sending_again(&f, &first.room_id, &f.outsider.p, &format!("${event}")).await,
+            json!([true, null])
+        );
+        assert_eq!(
+            sending_again(&f, &first.room_id, &f.owner.p, &format!("${event}")).await,
+            json!([false, null])
+        );
         f.domain.reset_management_test_clock().await.unwrap();
         assert_eq!(
             logged(&lost.offer.demand_id),
@@ -1505,7 +1526,40 @@ async fn shared_demand_v2_message_given_back_waits_for_its_executor_a_bounded_ti
             next_offer(&f).await.offer.event_id,
             format!("$bounded_next_{comes_back}")
         );
+        // Once only its Agent stands in the way, its sender is told why.
+        f.domain
+            .change_shared_run_control(
+                &f.owner.p,
+                &f.policy,
+                &a.id,
+                intake_tests::change("bounded_stop", 2, "paused"),
+                &m.gateway,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            sending_again(&f, &first.room_id, &f.outsider.p, &format!("${event}")).await,
+            json!([false, "agent_stopped"])
+        );
+        assert_eq!(
+            sending_again(&f, &first.room_id, &f.owner.p, &format!("${event}")).await,
+            json!([false, null])
+        );
     }
+}
+/// Whether `reader` may send `event` in `room` again, and why not when only
+/// its Agent stands in the way.
+async fn sending_again(f: &Fixture, room: &str, reader: &Principal, event: &str) -> Value {
+    let query = serde_json::from_value(json!({"roomId": room})).unwrap();
+    let read = f.domain.shared_approvals(reader, query).await.unwrap();
+    let row = read["executions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["eventId"] == event)
+        .cloned()
+        .unwrap_or_else(|| panic!("{event} is among the reader's newest messages"));
+    json!([row["canSendAgain"], row["notOfferedBecause"]])
 }
 
 #[tokio::test]

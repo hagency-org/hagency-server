@@ -155,6 +155,8 @@ PostgreSQL runner 创建并删除专用随机测试库，不对现有业务库�
 
 已验证登录的信任时长由 `authorization_window_ms` 配置，默认 30 秒，范围 30 秒至 2 分钟。会话最晚在最后一次证明后这么久结束，每个 Agent 执行租约都随会话结束，所以所有者电脑超过这个时长没有请求，就会失去它的 Agent，直到重新证明登录。有两类时限不随窗口变化：正在处理消息的进程的活动租约无论窗口多长都是 30 秒，所以这样的进程在 20 到 30 秒没有请求后失去租约；而提供出去的东西（启动命令、票据、poll 分发、挑战）固定为 30 秒，错过后会再次提供。只有在出示证明时带 `x-hagency-authorization-window-v2-ms` 请求头的客户端才会得到更长的窗口；客户端发送这个请求头，即表示它在各次调用间共用一个本地会话，更长的窗口对它没有代价。旧的请求头 `x-hagency-authorization-window-ms` 仍被接受，但无论请求多长都只给 30 秒；两个请求头同时出现时，以第二个为准；其他客户端也仍是 30 秒。因此，只发送旧请求头的电脑即使在配置了更长窗口的主机上也按 30 秒运行：Hagency Desktop 0.5.0-rc.19 是这样，本可以使用更长窗口、但还没有发送第二个请求头的构建也是这样。这样的电脑开始发送第二个请求头后，从它下一次出示证明起回到更长的窗口。代价是：在身份服务处被停用或撤销的登录，最长还能使用这么久；在本主机上的显式登出和设备撤销仍然立即生效。续期从不缩短会话：调小窗口后，每个会话保留已有的结束时间，之后再按新窗口计算，Agent 不会因此被收回。只有会话、设备或用户被撤销，或 Agent 所依据的预留结束时，才收回 Agent。以上自迁移 `2026-11-26-000155` 起成立：尚未执行该迁移的主机，在某台电脑的会话结束时间变小时会收回它的全部资源池 Agent，所以要先升级再调小窗口，并且在还有资源池 Agent 时不要执行该迁移的回退。只有在只凭第二个请求头授予更长窗口的服务端上，才把窗口调到 30 秒以上：更早的服务端凭旧请求头也会授予，于是也授予 Hagency Desktop 0.5.0-rc.19，而该版本每次调用都新建一个本地会话，随后会拒绝它自己的调用。出于同样的原因，只要还有电脑可能运行该版本，在把服务端退回到第二个请求头之前的版本前，先把窗口调回 30 秒。顺序和回退方法见下面链接的文档。所有时限及其来源见 [Agent 执行的时限](design/hagency-time-limits.md)（英文）。
 
+所有者电脑从服务器应答的 `Date` 响应头读取服务器时间。Hagency Desktop 只在应答恰好带一个 `Date`、带 `Cache-Control: no-store`（本服务器的每个 API 应答都带）、且没有非 0 的 `Age` 时才采用它。因此服务器前面的代理或负载均衡必须原样转发 `Date` 和 `Cache-Control`，不得加上非 0 的 `Age`，也不得从缓存返回 API 应答。没有可用的日期时，电脑按自己的时钟最多只承认 31 秒的登录证明：窗口更长的会话的证明会被拒绝（`authorization_time_window_unavailable`），时钟慢了一秒以上的电脑连默认窗口的证明也会拒绝。
+
 被收回（fenced）的 Agent 预留不会恢复，因此每次收回都在 `hagency_agent_v1.management_agent_fences` 留下一条记录，说明何时、为何：`fenced_at_ms`；`cause` 为 `dependency`（预留依赖的某一行发生了变化：会话或设备被撤销、授权关闭、资源池被撤回）或 `service`（服务自身的决定：启动超时、请求被取消、执行端不再持有该预留）；`facts` 是一个 JSON 对象，记下当时这些行的状态（`sessionRevoked`、`sessionEnded`、`deviceRevoked`、`deviceGenerationChanged`、`ownerActive`、`requestState`、`allocationState`、`grantState`、`poolGrantState`、`poolState`、`setupState`、`planState`、`projectActive`、`roomActive`、`startEnded`），其中不正常的那一项就是原因。此记录出现之前被收回的预留没有记录。
 
 分配和授权的时间到期时，它们的状态不会改变，所以记录还写明收回时预留命令、分配、分配所属的授权和资源池授权各自已经结束多久（`reserveEndedMsAgo`、`allocationEndedMsAgo`、`grantEndedMsAgo`、`poolGrantEndedMsAgo`）。为负表示那个时间当时还没到，即原因不是它；资源池 Agent 后来的授权可以让它的预留延续到预留命令结束之后。服务自身做出的收回在 `source` 中写明是服务的哪一部分：
@@ -196,7 +198,7 @@ WHERE (f.facts::jsonb ->> 'releaseFailed')::bigint > 0
   AND w.started_at_ms IS NULL;
 ```
 
-离线未开始请求的期限由 `queue.event_ttl_ms` 配置，默认 24 小时，范围 1 秒至 30 天，按可信 AS 入站时间计时，路由重试不延长。过期请求不能领取、ACK 或开始新的模型/工具动作；已开始任务的已知原结果仍须核验当前权限后结算及发送，unknown 与成本保留不自动释放。设备 poll 必须指定 `bindingId`，只领取明确启动的 Room。发现所有者成员资格或关联失效、傀儡被移除后，撤销受影响 binding 并递增 generation，进入 leaving 并在确认实际退群后 left；重新加入不自动恢复，需显式重新绑定/采纳，旧 dispatch 不复活。发送还核验傀儡当前 `m.room.message` power level；已观测撤权的旧回复不会在恢复权限后自动发送。
+离线未开始请求的期限由 `queue.event_ttl_ms` 配置，默认 24 小时，范围 1 秒至 30 天，按可信 AS 入站时间计时，路由重试不延长。发给资源池 Agent 的消息不受此项影响，固定等待 24 小时（见 [Agent 执行的时限](design/hagency-time-limits.md)（英文））。过期请求不能领取、ACK 或开始新的模型/工具动作；已开始任务的已知原结果仍须核验当前权限后结算及发送，unknown 与成本保留不自动释放。设备 poll 必须指定 `bindingId`，只领取明确启动的 Room。发现所有者成员资格或关联失效、傀儡被移除后，撤销受影响 binding 并递增 generation，进入 leaving 并在确认实际退群后 left；重新加入不自动恢复，需显式重新绑定/采纳，旧 dispatch 不复活。发送还核验傀儡当前 `m.room.message` power level；已观测撤权的旧回复不会在恢复权限后自动发送。
 
 
 ## 成员资格丢失与重新绑定
