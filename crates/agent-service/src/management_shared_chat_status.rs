@@ -200,11 +200,10 @@ pub(super) async fn query(
                 -- A message given back by a process that ended before its
                 -- turn, which then ended without one, reads as any end of a
                 -- waiting message: `head_changed`, with its block's cause as
-                -- `endReason` (`retry_lapsed`, `retry_exhausted`,
-                -- `retry_unsupported`, `reoffer_unsupported` or
-                -- `head_changed`). Hagency Desktop reads that as "did not
-                -- process" when the row names the Agent; a released Hagency
-                -- Desktop up to rc.19 shows "Message could not start".
+                -- `endReason` (the causes of a v2 end, below). Hagency Desktop reads
+                -- that as "did not process" when the row names the Agent; a
+                -- released Hagency Desktop up to rc.19 shows "Message could
+                -- not start". Neither reads these values of `endReason`.
                 ELSE i.reason END,
             'resourceRecovery', CASE WHEN queue.reason='budget_blocked' AND req.id IS NOT NULL
                 THEN jsonb_build_object('requestId',req.id,'role',
@@ -348,13 +347,24 @@ pub(super) async fn query(
                 -- time ended its intake.
                 WHEN t.reason='usage_unrepresentable' THEN t.reason
                 WHEN i.state IN ('cancelled','expired','paused') THEN i.reason
-                -- A v2 end names its cause: head_changed, retry_exhausted,
-                -- retry_unsupported, or usage_unrepresentable (a block on
-                -- usage, which nothing lifts in its period), and for a
-                -- message given back also retry_lapsed or reoffer_unsupported.
+                -- A v2 end names its cause: head_changed (a later process
+                -- took the queue), retry_not_requested (the process stopped
+                -- and its executor did not ask for a retry), time_bound_stopped
+                -- (the time bound gave up a process that had reported),
+                -- retry_exhausted, retry_unsupported, budget_applied (below),
+                -- or usage_unrepresentable (a block on usage, which nothing
+                -- lifts in its period), and for a message given back also
+                -- retry_lapsed or reoffer_unsupported.
                 WHEN i.state='blocked' AND i.reason<>'budget_blocked'
                     THEN coalesce((SELECT b.payload::jsonb#>>'{}' FROM hagency_agent_v1.management_shared_demand_blocks b
                         WHERE b.demand_id=d.id AND jsonb_typeof(b.payload::jsonb)='string'), i.reason)
+                -- A message v2 had started when a budget was applied to its
+                -- Agent ends because of that budget, read so before any
+                -- record and once the budget's queue has recorded its end
+                -- (as `head_changed`); a block v2 records later says so too.
+                WHEN coalesce(t.reason, lapse.reason)='head_changed' AND applied.revision IS NOT NULL
+                    AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_starts s WHERE s.demand_id=d.id)
+                    THEN 'budget_applied'
                 WHEN t.reason IS NOT NULL THEN t.reason
                 ELSE lapse.reason END AS reason
         ) ended ON true
@@ -364,7 +374,7 @@ pub(super) async fn query(
         -- verified member of the room. An Agent with an applied budget serves
         -- too, through its own queue. The one definition of an available
         -- Agent, which also decides whether a message is given back at its
-        -- process's fence (migration 2026-11-27-000159). Here it is read
+        -- process's fence (migration 2026-11-28-000161). Here it is read
         -- together with $5, the check that a new message meets when it
         -- arrives and the polls make before they offer one, which also
         -- holds the reservation to the command, the people and the device

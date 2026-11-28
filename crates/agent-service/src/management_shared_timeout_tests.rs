@@ -344,7 +344,7 @@ async fn shared_attempt_v2_uncertain_process_blocks_only_until_grace_then_server
     let room = work::message(&f, &r, "scope").await.room_id;
     assert_eq!(
         status_of(&f, &room, &f.outsider.p, "$uncertain_lost").await,
-        json!(["blocked", "head_changed", "head_changed", true])
+        json!(["blocked", "head_changed", "time_bound_stopped", true])
     );
     assert!(
         conflict(

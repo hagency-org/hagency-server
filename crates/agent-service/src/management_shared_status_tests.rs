@@ -4,13 +4,15 @@
 //! an attempt it cannot stop.
 use super::*;
 
-/// How v2 ended a message before a budget was applied to its Agent.
+/// How v2 left a message before a budget was applied to its Agent.
 #[derive(Clone, Copy, Debug)]
 enum V2End {
-    /// Its start reported a process, which the time bound then gave up.
+    /// Its start reported a process, which the time bound then gave up: it
+    /// ended (`time_bound_stopped`).
     Interrupted,
     /// Its start never reported one: the time bound stopped it, and the
-    /// computer asked for no retry.
+    /// computer asked for no retry. It still waits for the computer's
+    /// evidence, and the budget ends it (`budget_applied`).
     NeverReported,
     /// Its usage could not be represented.
     Unrepresentable,
@@ -96,7 +98,11 @@ async fn budget_queue_moves_past_a_message_v2_ended_before_the_budget() {
         // Reading writes nothing.
         let (read_end, again) = match end {
             V2End::Unrepresentable => (json!(["cancelled", null, "usage_unrepresentable"]), false),
-            _ => (json!(["blocked", "head_changed", "head_changed"]), true),
+            V2End::Interrupted => (
+                json!(["blocked", "head_changed", "time_bound_stopped"]),
+                true,
+            ),
+            V2End::NeverReported => (json!(["blocked", "head_changed", "budget_applied"]), true),
         };
         let reads = |again: bool| {
             let mut read = read_end.clone();

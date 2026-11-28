@@ -977,9 +977,48 @@ async fn shared_demand_v2_released_work_is_a_waiting_event_again_for_a_stop_and_
         assert_eq!((ended.state.as_str(), ended.retry), ("head_changed", None));
         assert_eq!(
             status_of(&f, &first.room_id, &f.outsider.p, &event).await,
-            json!(["blocked", "head_changed", "head_changed", true])
+            json!(["blocked", "head_changed", "retry_not_requested", true])
         );
     }
+}
+
+/// PostgreSQL runs the triggers of one row event in the order of their
+/// names. At a process's fence the release must see the work before
+/// `fence_shared_work` cancels it, and the fence's record counts what both
+/// did (migration 2026-11-28-000161): renamed out of that order, the release
+/// would find nothing to give back, silently.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_fence_triggers_run_in_the_order_the_release_needs() {
+    let (f, _r, _admin, _a, _m) = Box::pin(setup()).await;
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    // The row triggers that run after an update of `permanent_fence`, in the
+    // order PostgreSQL runs them.
+    let fired = sql_query(
+        "SELECT t.tgname::text AS value FROM pg_trigger t
+         WHERE t.tgrelid='hagency_agent_v1.management_shared_runtimes'::regclass AND NOT t.tgisinternal
+           AND t.tgtype & 19 = 17
+           AND (t.tgattr::int2[] = '{}' OR (SELECT attnum FROM pg_attribute
+                WHERE attrelid=t.tgrelid AND attname='permanent_fence') = ANY(t.tgattr::int2[]))
+         ORDER BY t.tgname",
+    )
+    .load::<Text1>(&mut db)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|row| row.value)
+    .collect::<Vec<_>>();
+    let at = |name: &str| {
+        fired
+            .iter()
+            .position(|fired| fired == name)
+            .unwrap_or_else(|| panic!("{name} runs at the fence: {fired:?}"))
+    };
+    assert!(
+        at("fence_shared_release") < at("fence_shared_work")
+            && at("fence_shared_work") < at("record_shared_runtime_fence"),
+        "{fired:?}"
+    );
 }
 
 #[tokio::test]
@@ -1113,18 +1152,33 @@ async fn shared_demand_v2_start_that_does_not_take_messages_back_keeps_them_as_b
     assert_eq!(next_offer(&f).await.offer.event_id, "$kept_next");
 }
 
-/// How an operator finds a message that met the conditions to be given back
-/// and could not be (`docs/OPERATIONS.md`): the fence records that counted
-/// one, and the messages their process still holds that never began.
-const NOT_GIVEN_BACK: &str =
-    "SELECT f.runtime_id, f.fenced_at_ms, x.demand_id, x.work_id, q.event_id
-FROM hagency_agent_v1.management_shared_runtime_fences f
-JOIN hagency_agent_v1.management_shared_demand_bindings x ON x.runtime_id = f.runtime_id
-JOIN hagency_agent_v1.management_shared_work w ON w.id = x.work_id
-JOIN hagency_agent_v1.management_shared_demands d ON d.id = x.demand_id
-JOIN hagency_agent_v1.management_shared_intake q ON q.id = d.intake_id
-WHERE (f.facts::jsonb ->> 'releaseFailed')::bigint > 0
-  AND w.started_at_ms IS NULL";
+/// The SQL query of the operations guide (`docs/OPERATIONS.md`) that
+/// contains `marker`, as the guide gives it; the Chinese guide gives the
+/// same queries.
+fn guide_query(marker: &str) -> String {
+    fn queries(guide: &str) -> Vec<&str> {
+        guide
+            .split("```sql\n")
+            .skip(1)
+            .map(|block| &block[..block.find("```").unwrap()])
+            .collect()
+    }
+    let english = queries(include_str!("../../../docs/OPERATIONS.md"));
+    assert_eq!(
+        english,
+        queries(include_str!("../../../docs/OPERATIONS.zh-CN.md")),
+        "both guides give the same queries"
+    );
+    let mut found = english.into_iter().filter(|query| query.contains(marker));
+    let query = found
+        .next()
+        .unwrap()
+        .trim()
+        .trim_end_matches(';')
+        .to_string();
+    assert!(found.next().is_none(), "one query contains {marker}");
+    query
+}
 
 /// A message whose release fails ends as it did before, and the operator
 /// learns of it: the service logs a warning with its ids and the SQLSTATE,
@@ -1189,7 +1243,7 @@ async fn shared_demand_v2_message_that_cannot_be_given_back_is_logged_and_found(
         #[diesel(sql_type = Text)]
         event_id: String,
     }
-    let found = sql_query(NOT_GIVEN_BACK)
+    let found = sql_query(guide_query("releaseFailed"))
         .load::<Found>(&mut db)
         .await
         .unwrap()
@@ -1204,6 +1258,134 @@ async fn shared_demand_v2_message_that_cannot_be_given_back_is_logged_and_found(
             first.id.clone(),
             "$not_given_back".to_string()
         )]
+    );
+}
+
+/// After the re-offer is switched off, an operator waits for the query of the
+/// operations guide to return 0 before moving the binary back. It counts
+/// every message whose process said it takes messages back, stopped, and
+/// left the message waiting for its executor, given back or never given to
+/// the process at all, until the bounded wait ends it. An older binary would
+/// wait for such a message's evidence until its own time ends.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_v2_guide_counts_a_wait_for_the_executor_until_it_lapses() {
+    let (mut f, r, _admin, _a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "settle").await;
+    let waiting = demand(&f).await;
+    let issued = start_lapsed(
+        &f,
+        &m,
+        &waiting,
+        reoffering(start_input(&waiting, &d, &stopped)),
+    )
+    .await;
+    // The process reports and goes silent before it is given the message;
+    // the time bound stops it, and the message waits for the executor.
+    f.domain
+        .set_management_test_clock(issued.command.issued_at_ms + 1_000)
+        .await
+        .unwrap();
+    record(&f, &issued, attempts::result(&issued, "qualified", 210))
+        .await
+        .unwrap();
+    let at = time_bound(&f, &issued).await;
+    f.policy = f.policy.clone().with_shared_demand_reoffers(false);
+    assert_eq!(recovered(&f, &waiting).await.state, "start_committed");
+    // The guide's count, by message.
+    let counted =
+        guide_query("shared_start_reoffers").replacen("SELECT count(*)", "SELECT d.id AS value", 1);
+    let settle = |f: &Fixture| {
+        let (url, counted, demand) = (
+            f.url.clone(),
+            counted.clone(),
+            waiting.offer.demand_id.clone(),
+        );
+        async move {
+            let mut db = AsyncPgConnection::establish(&url).await.unwrap();
+            sql_query(&counted)
+                .load::<Text1>(&mut db)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|row| row.value == demand)
+                .count()
+        }
+    };
+    assert_eq!(settle(&f).await, 1);
+    // Nothing was given back: a count of messages given back misses it.
+    assert_eq!(
+        count(
+            &f,
+            "SELECT count(*)::bigint AS count FROM hagency_agent_v1.management_shared_demand_released_bindings WHERE demand_id=$1",
+            &waiting.offer.demand_id
+        )
+        .await,
+        0
+    );
+    // The bounded wait ends it, with the re-offer off, and the count is 0.
+    f.domain
+        .set_management_test_clock(at + 180_000)
+        .await
+        .unwrap();
+    f.domain.sweep_shared_attempt_timeouts().await.unwrap();
+    f.domain.reset_management_test_clock().await.unwrap();
+    assert_eq!(
+        block_payload(&f, &waiting.offer.demand_id).await.as_deref(),
+        Some("\"retry_lapsed\"")
+    );
+    assert_eq!(settle(&f).await, 0);
+}
+
+/// A computer blocks a message in answer to an offer: one not yet started
+/// (`offered`), or a retry (`retry_offered`). A message given back is offered
+/// again once its computer asks for the retry; until then it waits for that
+/// computer's evidence (`start_committed`), and a block is refused as for any
+/// started message.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_v2_message_given_back_is_blocked_once_it_is_offered_again() {
+    let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "blocked_again").await;
+    let (lost, issued, first, _) = given(&f, &m, &d, &stopped, true).await;
+    // The stop comes on the plain route: the message is given back and
+    // waits for the computer.
+    let evidence = attempts::result(&issued, "stopped", 220);
+    record(&f, &issued, evidence.clone()).await.unwrap();
+    assert_eq!(released(&f, &first.id).await, 1);
+    let waiting = recovered(&f, &lost).await;
+    assert_eq!(waiting.state, "start_committed");
+    let block = |o: &SharedDemandStatus| SharedDemandBlockInput {
+        demand_digest: o.demand_digest.clone(),
+        expected_control_revision: o.offer.control_revision,
+        reason: "usage_unrepresentable".into(),
+        budget: None,
+        retries: true,
+        reoffers: true,
+    };
+    assert!(conflict(
+        f.domain
+            .block_shared_demand(&f.owner.p, &lost.offer.demand_id, block(&waiting))
+            .await,
+        "shared_demand_changed"
+    ));
+    // The computer asks for the retry with that receipt: offered again, the
+    // message can be blocked, and it ends so.
+    let reply = retry(&f, &lost, &issued, 1, evidence).await.unwrap();
+    assert_eq!(reply.demand.state, "retry_offered");
+    let blocked = f
+        .domain
+        .block_shared_demand(&f.owner.p, &lost.offer.demand_id, block(&reply.demand))
+        .await
+        .unwrap();
+    assert_eq!(blocked.state, "usage_unrepresentable");
+    assert_eq!(
+        status_of(&f, &first.room_id, &f.outsider.p, "$blocked_again").await[2],
+        "usage_unrepresentable"
     );
 }
 
@@ -1884,6 +2066,99 @@ async fn shared_demand_v2_next_message_waits_while_the_first_has_not_begun() {
     }
 }
 
+/// The hold does not ask whether the Agent serves: the release asks that at
+/// the fence. An Agent that does not serve at the poll but serves again by
+/// the fence has its first message given back, and the next one, held
+/// meanwhile, runs after it instead of ending.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_v2_next_message_is_held_while_its_agent_briefly_does_not_serve() {
+    let (f, r, _admin, a, m) = Box::pin(setup()).await;
+    let (d, _) = qualify(&f).await;
+    let stopped = attempts::stop(&f, &d, 201).await;
+    retain(&f, &r, &m, "brief_first").await;
+    retain(&f, &r, &m, "brief_next").await;
+    let (lost, issued, first, _) = given(&f, &m, &d, &stopped, true).await;
+    // At the poll the Agent's membership of the room is not confirmed (as
+    // the Matrix check records it), which the next message's own checks do
+    // not read.
+    let verified = text(
+        &f,
+        "SELECT state AS value FROM hagency_agent_v1.management_agent_matrix WHERE assignment_id=$1",
+        &a.id,
+    )
+    .await
+    .unwrap();
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("UPDATE hagency_agent_v1.management_agent_matrix SET state='waiting_native' WHERE assignment_id=$1")
+        .bind::<Text, _>(&a.id)
+        .execute(&mut db)
+        .await
+        .unwrap();
+    assert!(!serves(&f, &a.id, &first.room_id).await);
+    let early = poll_for(&f, true).await;
+    // It is confirmed again before the process ends: the first message is
+    // given back, and runs in the next process.
+    sql_query(
+        "UPDATE hagency_agent_v1.management_agent_matrix SET state=$2 WHERE assignment_id=$1",
+    )
+    .bind::<Text, _>(&a.id)
+    .bind::<Text, _>(&verified)
+    .execute(&mut db)
+    .await
+    .unwrap();
+    assert!(serves(&f, &a.id, &first.room_id).await);
+    let reply = retry(
+        &f,
+        &lost,
+        &issued,
+        1,
+        attempts::result(&issued, "stopped", 220),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply.demand.state, "retry_offered");
+    assert_eq!(released(&f, &first.id).await, 1);
+    let (started, second, input) = rerun(
+        &f,
+        &m,
+        &reply.demand,
+        &issued,
+        &reply.acknowledgement.receipt_digest,
+        1,
+        221,
+    )
+    .await;
+    assert_eq!(second.event_id, "$brief_first");
+    f.domain
+        .start_current_work(&f.owner.p, &f.policy, input, &m.gateway)
+        .await
+        .unwrap();
+    // The next message was not offered while the first one waited, so it
+    // names the process that runs the first one, and is offered.
+    if let Some(early) = early {
+        // As the next poll finds it.
+        poll_for(&f, true).await;
+        panic!(
+            "offered behind the process that ended, it ends {}",
+            recovered(&f, &early).await.state
+        );
+    }
+    let next = next_offer(&f).await;
+    assert_eq!(
+        (
+            next.offer.event_id.as_str(),
+            next.offer.predecessor_command_id.as_str(),
+            next.state.as_str()
+        ),
+        (
+            "$brief_next",
+            started.command.command_id.as_str(),
+            "offered"
+        )
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn shared_demand_v2_message_given_back_waits_once_counted_from_its_first_process() {
@@ -2145,7 +2420,7 @@ async fn shared_demand_v2_budget_applied_after_a_release_opens_no_retry_and_the_
     // the earlier protocol had started when the budget was applied, and it
     // keeps that one reading whichever record ends it below.
     budget_tests::apply_delta(&f, &r, &admin, 25, 230).await;
-    let ended = json!(["blocked", "head_changed", "head_changed", true]);
+    let ended = json!(["blocked", "head_changed", "budget_applied", true]);
     let reading =
         async || status_of(&f, &first.room_id, &f.outsider.p, "$budget_after_release").await;
     assert_eq!(reading().await, ended);
@@ -2196,14 +2471,14 @@ async fn shared_demand_v2_budget_applied_after_a_release_opens_no_retry_and_the_
     assert_eq!(recovered(&f, &lost).await.state, "head_changed");
     assert_eq!(
         block_payload(&f, &lost.offer.demand_id).await.as_deref(),
-        Some("\"head_changed\"")
+        Some("\"budget_applied\"")
     );
     assert_eq!(reading().await, ended);
     assert_eq!(
         logged(&lost.offer.demand_id),
         vec![
             ("released".into(), None),
-            ("ended".into(), Some("head_changed".into()))
+            ("ended".into(), Some("budget_applied".into()))
         ]
     );
 }

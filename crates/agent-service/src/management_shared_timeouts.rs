@@ -22,7 +22,7 @@ pub(super) const UNCERTAIN_GRACE_MS: i64 = 180_000;
 /// that process's time bound (its last evidence and `UNCERTAIN_GRACE_MS`) or
 /// from the executor's first request for a retry, whichever is later. Later
 /// attempts do not move it. Then the event ends (`head_changed`, with the
-/// cause `retry_lapsed`, or `head_changed` once a budget was applied to its
+/// cause `retry_lapsed`, or `budget_applied` once a budget was applied to its
 /// Agent), no new attempt starts for it, and the queue moves on. An
 /// attempt whose start is committed has a process of its own and is not
 /// lapsed while it runs; if it ends without its turn after the bound, the
@@ -101,7 +101,9 @@ async fn candidates(
 
 // A demand whose latest start said that its executor takes messages back,
 // whose process has stopped, and which is still waiting: no binding, no
-// block. `$1` narrows it to one demand.
+// block. `$1` narrows it to one demand. The operations guide counts the same
+// demands before the binary goes back (`docs/OPERATIONS.md`): keep the two
+// alike.
 const LAPSED: &str = "SELECT d.id FROM hagency_agent_v1.management_shared_intake q \
  JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=q.id \
  JOIN LATERAL (SELECT runtime_id FROM (SELECT 0::bigint AS retry,runtime_id FROM hagency_agent_v1.management_shared_demand_starts WHERE demand_id=d.id \
@@ -135,7 +137,7 @@ async fn lapsed(db: &mut AsyncPgConnection, demand: Option<&str>, now: i64) -> R
 
 async fn stop(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
     // The fence's record says that the time bound gave this process up
-    // (`stopSource`, migration 2026-11-27-000159).
+    // (`stopSource`, migration 2026-11-28-000161).
     sql_query("SELECT set_config('hagency.time_bound_stop',$1,true)")
         .bind::<Text, _>(id)
         .execute(db)

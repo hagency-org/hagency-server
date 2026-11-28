@@ -299,9 +299,10 @@ DECLARE b record; at_ms bigint := (extract(epoch from clock_timestamp())*1000)::
  -- read by it, as the service reads it.
  serves_at bigint := COALESCE(NULLIF(current_setting('hagency.test_clock_ms',true),'')::bigint,at_ms);
 BEGIN
- -- The operator's switch. The service sets it in every transaction it runs;
- -- a binary that does not know it (an older release) never sets it, and
- -- then nothing is released.
+ -- The operator's switch. The service sets it in every transaction of its
+ -- agent domain store, `on` only while the switch is on; a binary that does
+ -- not know it (an older release) never sets it, and then nothing is
+ -- released.
  IF current_setting('hagency.shared_demand_reoffers',true) IS DISTINCT FROM 'on' THEN
   RETURN NEW;
  END IF;
@@ -351,6 +352,14 @@ BEGIN
  RETURN NEW;
 END;
 $$;
+-- The order of the names is part of the proof. PostgreSQL runs the triggers
+-- of one row event in the order of their names, and these three run on the
+-- same fence: `fence_shared_release` < `fence_shared_work` <
+-- `record_shared_runtime_fence`. The release must see the work as the fence
+-- found it, before `fence_shared_work` cancels what it does not give back:
+-- after it, work a decision had already cancelled could not be told apart,
+-- and nothing would be given back. The record counts what both did. A test
+-- reads the names from the catalog and fails if they change order.
 DROP TRIGGER IF EXISTS fence_shared_release ON hagency_agent_v1.management_shared_runtimes;
 CREATE TRIGGER fence_shared_release AFTER UPDATE OF permanent_fence ON hagency_agent_v1.management_shared_runtimes
  FOR EACH ROW WHEN (NEW.permanent_fence AND NOT OLD.permanent_fence) EXECUTE FUNCTION hagency_agent_v1.release_unstarted_shared_work();

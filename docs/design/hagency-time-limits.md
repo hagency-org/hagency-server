@@ -148,7 +148,21 @@ Before the start everything is redone:
   back, the message after it is not offered yet: if the first is taken
   back, it runs first, in the next process, and the next one follows it
   there. Offered earlier, the next message would name a process that is no
-  longer the last one, and would have to end.
+  longer the last one, and would have to end. The hold adds no wait of its
+  own: a process is given one message, and a start of the next one needs
+  that process stopped, so the next message runs only after it, held or
+  not. It ends with that message or that process: when the turn begins, at
+  the process's fence (a Stop, the end of the reservation, the end of its
+  activity lease, the time bound once it goes silent), at its first work
+  poll after a pool Agent's period has turned (which ends work from the
+  earlier period), or when a budget is applied to the Agent. The message's
+  24 hours do not end it: they end a message that waits, and this one is
+  given to the process. So a process that keeps renewing its lease and
+  never begins its message (one whose room key never arrives, for
+  example) keeps the Agent's later messages waiting until one of those
+  happens; only a Stop of the Agent ends that sooner. Ending the hold
+  earlier would not let the next message run, and would let it end once
+  the first is taken back.
 - One message has its first attempt and at most three more. While an attempt
   is being offered again, the room shows the message as waiting for the
   Agent, never as failed.
@@ -184,8 +198,7 @@ message that was taken back and then ends, the message's status says that
 the Agent did not process it, names the Agent, and names the record that
 ended it. One taken back reads as any other end of a waiting message of the
 earlier protocol: state `blocked`, reason `head_changed`, and as the record
-that ended it the reason of its block (`retry_lapsed`, `retry_exhausted`,
-`retry_unsupported`, `reoffer_unsupported` or `head_changed`). Hagency
+that ended it the cause its block records (`endReason`, below). Hagency
 Desktop reads that as "did not process" when the status names the Agent; a
 released Hagency Desktop up to rc.19 shows "Message could not start. Check
 the resource and Agent connection." instead. Its sender
@@ -238,9 +251,11 @@ also when the budget's queue recorded it (as `expired`), and so does one
 blocked on allowance once its time is over, never the reason of its block,
 which says it still waits. A message that the earlier protocol ended keeps that end when a
 budget is applied later, also once the budget's queue has recorded an end of
-its own for it. A message taken back reads `head_changed` once a budget is
-applied to its Agent, as the budget's queue then records it, and its bound
-later records the same reason for its computer.
+its own for it. A message that it had started and not ended, one taken
+back included, reads `budget_applied` as its `endReason` (its reason stays
+`head_changed`) once a budget is applied to its Agent, as the budget's
+queue then records its end, and a block that ends it later for its
+computer records the same cause.
 
 A block on usage (`usage_unrepresentable`) ends the message at once, with
 or without an applied budget. The computer blocks a
@@ -303,7 +318,21 @@ Beside its state and reason, a row of the status says:
 
 - `endReason`: the reason of the record that ended it (above). A message
   that still waits, or waits for allowance in its period, has none, and so
-  has one taken back while it waits to be offered again.
+  has one taken back while it waits to be offered again. A message of the
+  earlier protocol that ended while it waited has the cause its block
+  records: `head_changed` (a later process took the Agent's queue),
+  `retry_not_requested` (its process stopped, and its computer reported
+  that without asking for a retry, or the process had reported before it
+  stopped), `time_bound_stopped` (the server's time bound gave up its
+  process, which had reported), `retry_exhausted`, `retry_unsupported`,
+  `usage_unrepresentable`, `budget_applied` (a budget was applied to the
+  Agent after the message had started: read so from then on, whether the
+  budget's queue or a block records the end), and, for one taken back,
+  `retry_lapsed` or `reoffer_unsupported`. Its state stays `blocked` and
+  its reason `head_changed` for each of them but `usage_unrepresentable`
+  (above), and a computer reads the demand's state `head_changed`: those
+  are what computers and Hagency Desktop read. Of these values Hagency
+  Desktop reads only `usage_unrepresentable`, and 0.5.0-rc.19 reads none.
 - `canSendAgain`: true when the reader sent the message, a copy sent now
   could run (after a block on usage or on allowance, as above), its Agent
   can serve a new message, and the row names the Agent by its Matrix ID
@@ -501,8 +530,8 @@ renewal offers (7 days).
 | 6. A window over 30 s only for a client that says it can hold one | implemented: granted only through `x-hagency-authorization-window-v2-ms`; the first header gives 30 s |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A start that was never claimed is tried again | implemented (demand retries, `shared-demand-retry-v1`) |
-| 3. A process that ended before the turn began is tried again | implemented on the server (migration `2026-11-27-000159`, `shared-demand-retry-v2`), off unless the operator sets `enable_shared_demand_reoffers`, for a computer that says, in each demand start and read, that it takes messages back (`reoffers`): the message is a waiting message again at the fence, a retry is opened by the evidence that the process stopped, a message whose computer does not come back for it ends after one bound counted from its first process (`retry_lapsed`), and while a process holds a message before its turn the next one is not offered. A computer says it from the Hagency Desktop change that is in review; an earlier daemon does not, and for it the message ends as before |
-| 3. A message that ended without a turn can be sent again | implemented. Every message that ended without a turn (one given to a process that never began it, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one taken back that then ended, and one blocked on usage) says whether its reader can send it again (`canSendAgain`: the reader sent it, a copy could run, the Agent can serve a new message, and the row names it; see rule 3), which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance once its time was over), `head_changed`, `retry_exhausted`, `usage_unrepresentable` or, for one taken back, `retry_lapsed`), and, to its sender only, why it is not offered when nothing but its Agent stands in the way (`notOfferedBecause`: `agent_stopped`, `agent_unavailable` or `agent_unnamed`). A row whose outcome is unknown says whether its reader may review the Agent's original task records (`viewerCanReview`). The status lists the reader's 16 newest messages, each with every Agent's row. Hagency Desktop names the Agent in the room from the row's `agentMxid` and offers the sender "Send again" where `canSendAgain` is true |
+| 3. A process that ended before the turn began is tried again | implemented on the server (migration `2026-11-28-000161`, `shared-demand-retry-v2`), off unless the operator sets `enable_shared_demand_reoffers`, for a computer that says, in each demand start and read, that it takes messages back (`reoffers`): the message is a waiting message again at the fence, a retry is opened by the evidence that the process stopped, a message whose computer does not come back for it ends after one bound counted from its first process (`retry_lapsed`), and while a process holds a message before its turn the next one is not offered. A computer says it from the Hagency Desktop change that is in review; an earlier daemon does not, and for it the message ends as before |
+| 3. A message that ended without a turn can be sent again | implemented. Every message that ended without a turn (one given to a process that never began it, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one taken back that then ended, and one blocked on usage) says whether its reader can send it again (`canSendAgain`: the reader sent it, a copy could run, the Agent can serve a new message, and the row names it; see rule 3), which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance once its time was over), `head_changed`, `retry_not_requested`, `retry_exhausted`, `budget_applied`, `usage_unrepresentable` or, for one taken back, `retry_lapsed`; the list is under `endReason` above), and, to its sender only, why it is not offered when nothing but its Agent stands in the way (`notOfferedBecause`: `agent_stopped`, `agent_unavailable` or `agent_unnamed`). A row whose outcome is unknown says whether its reader may review the Agent's original task records (`viewerCanReview`). The status lists the reader's 16 newest messages, each with every Agent's row. Hagency Desktop names the Agent in the room from the row's `agentMxid` and offers the sender "Send again" where `canSendAgain` is true |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop |
 | 5. The wall clock only ends a lease early | holds for a ticket and a start window. Not yet for the session's proof: Hagency Desktop refuses a proof that comes without a date it can read when the proof's end lies more than 31 s away on its wall clock, which a clock behind by more than a second makes of every such proof under the default window (rule 5); in review in Hagency Desktop (#246). Not yet for the activity lease: its store still refuses an activity lease that reads longer than allowed by the wall clock, which a slow clock makes of every fresh lease; in review in Hagency Desktop (#243, #251). Not yet for the Agent execution lease, which Hagency Desktop reads without the answer's date (rule 5); in review in Hagency Desktop (#246) |
@@ -532,7 +561,8 @@ Each of these is a bound that was looked at and left, with its reason.
   has no retry: a start that fails ends the message. Its status says so and
   its sender can send it again, as for every other message that ended
   without a turn. A message that the earlier protocol had started when the
-  budget was applied ends the same way (`head_changed`), and one that it had
+  budget was applied ends the same way (`head_changed`, with the `endReason`
+  `budget_applied`), and one that it had
   already ended keeps that end: the budget's queue can take neither up, and
   offers the next message instead of waiting behind it. A message that the
   earlier protocol had given to a process, which had not begun it, does not
@@ -624,7 +654,8 @@ only together with demand retries (`shared-demand-retry-v1`), which keep
 their own switches and keep working when it is off. While it is on,
 discovery lists `shared-demand-retry-v2`, and a computer says `reoffers`
 only while discovery lists it. The service also sets the database session
-setting `hagency.shared_demand_reoffers` in every transaction; the database
+setting `hagency.shared_demand_reoffers` in every transaction of its agent
+domain store; the database
 takes a message back only when that setting is `on`, so a binary that does
 not set it (an older release) takes nothing back.
 
@@ -647,16 +678,20 @@ Going back:
    (`retry_lapsed`), or earlier when its computer reads it without
    `reoffers` (`reoffer_unsupported`), or at the computer's next demand
    poll when the stop that gave it back came on the plain route and no
-   retry was asked for (`head_changed`). A retry that was already opened
-   may still be started; if that process also ends before its turn, the
+   retry was asked for (`retry_not_requested`). A retry that was already
+   opened may still be started; if that process also ends before its turn, the
    message ends as for any start, as before.
-2. **Let those answers settle**: until no message that was taken back is
-   still waiting. Each one ends by its bound (the table above), so this
-   takes minutes; the operations guide has the query.
+2. **Let those answers settle**: until no message still waits for a
+   computer that takes messages back, whether it was taken back or its
+   process stopped before it was given the message. Each one ends by its
+   bound (the table above), on or off, so this takes minutes; the
+   operations guide's query counts them by the bound's own condition. An
+   older binary would wait for such a message's evidence until its own
+   time ends.
 3. **Then move the binary back**, to the reader release (rule 6) or a later
    one. Going further back needs every start that said `reoffers` finished
    first: a computer sends a saved start again with its original bytes.
-4. **The down migration of `2026-11-27-000159` later, if at all.** It
+4. **The down migration of `2026-11-28-000161` later, if at all.** It
    removes the trigger that takes messages back, puts the four guards it
    relaxed and the guard on work starts back as they were, and puts back
    the fence record of `2026-11-26-000156` without the release counts and

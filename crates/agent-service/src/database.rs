@@ -126,7 +126,7 @@ impl Database {
                             let outcome = callback(conn).await?;
                             // What the database gave back to the queue, or
                             // could not, it notes only while the re-offer is
-                            // on (migration 2026-11-27-000159).
+                            // on (migration 2026-11-28-000161).
                             if self.shared_demand_reoffers.load(Ordering::Acquire) {
                                 for note in database_notes(conn).await? {
                                     after_commit(note);
@@ -253,7 +253,7 @@ use tokio::sync::{Mutex, MutexGuard};
 /// What a write did to a message that was given back to the queue at its
 /// process's fence (time-limit rule 3), for the service log: ids and reasons,
 /// never content. The database notes `released`, `release_failed` and
-/// `release_search_failed` (migration 2026-11-27-000159); the service notes
+/// `release_search_failed` (migration 2026-11-28-000161); the service notes
 /// `ended`, with the block's reason.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub(crate) struct ReofferNote {
