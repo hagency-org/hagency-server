@@ -737,6 +737,8 @@ async fn start_refusal(
     }
     Ok(None)
 }
-async fn has_applied_budget(db: &mut AsyncPgConnection, id: &str) -> Result<bool> {
+/// Whether a budget change was applied to the Agent of request `id`. Applied
+/// results are permanent (migration 2026-11-19-000122).
+pub(super) async fn has_applied_budget(db: &mut AsyncPgConnection, id: &str) -> Result<bool> {
     Ok(sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_agent_budget_commands c JOIN hagency_agent_v1.management_agent_budget_results r ON r.command_id=c.id WHERE c.request_id=$1 AND r.state='applied') AS matched").bind::<Text,_>(id).get_result::<Flag>(db).await?.matched)
 }

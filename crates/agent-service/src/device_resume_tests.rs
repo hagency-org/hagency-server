@@ -233,14 +233,19 @@ async fn renew(app: &Service, token: &str, status: StatusCode) -> Value {
     assert_eq!(response.status_code, Some(status));
     response.take_json().await.unwrap()
 }
-/// How far ahead a renewal that asked for `window` left the session valid.
-async fn renewed_ahead(app: &Service, token: &str, window: Option<&str>) -> i64 {
+/// The header by which the first clients asked for a window. It gives the
+/// default window whatever it asks.
+const FIRST: &str = "x-hagency-authorization-window-ms";
+/// The header of a client that shares one local session per server session.
+const SECOND: &str = "x-hagency-authorization-window-v2-ms";
+/// How far ahead a renewal with these request headers left the session valid.
+async fn renewed_ahead(app: &Service, token: &str, headers: &[(&'static str, &str)]) -> i64 {
     let mut request =
         TestClient::post("https://example.test/hagency/api/v1/sessions/current/renew")
             .add_header("host", "example.test", true)
             .bearer_auth(token);
-    if let Some(window) = window {
-        request = request.add_header("x-hagency-authorization-window-ms", window, true);
+    for (name, value) in headers {
+        request = request.add_header(*name, *value, true);
     }
     let mut response = request
         .json(&json!({"accessToken":"synthetic-fresh-upstream-token"}))
@@ -250,9 +255,25 @@ async fn renewed_ahead(app: &Service, token: &str, window: Option<&str>) -> i64 
     let renewed: Value = response.take_json().await.unwrap();
     renewed["validUntilMs"].as_i64().unwrap() - now_ms()
 }
+/// How far ahead a sign-in with these request headers left its new session
+/// valid. Each sign-in is a session of its own, so no earlier end is kept.
+async fn signed_in_ahead(app: &Service, headers: &[(&'static str, &str)]) -> i64 {
+    let mut request = TestClient::post("https://example.test/hagency/api/v1/sessions/pasion")
+        .add_header("host", "example.test", true);
+    for (name, value) in headers {
+        request = request.add_header(*name, *value, true);
+    }
+    let mut response = request
+        .json(&json!({"accessToken":"synthetic-fresh-upstream-token"}))
+        .send(app)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::OK));
+    let grant: Value = response.take_json().await.unwrap();
+    grant["validUntilMs"].as_i64().unwrap() - now_ms()
+}
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
-async fn postgres_longer_authorization_window_needs_the_host_and_the_request_header() {
+async fn postgres_longer_authorization_window_needs_the_host_and_the_second_header() {
     let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
     let store = Store::open(&url, "example.test", ISSUER).await.unwrap();
     let name = format!("window_{}", secret_token());
@@ -260,30 +281,101 @@ async fn postgres_longer_authorization_window_needs_the_host_and_the_request_hea
     let (upstream, task) = upstream(name, Arc::new(AtomicBool::new(false))).await;
     // A host that was not configured grants thirty seconds whatever is asked.
     let default = service(store.clone(), &upstream);
-    let ahead = renewed_ahead(&default, &owner.token, Some("120000")).await;
+    let ahead = renewed_ahead(&default, &owner.token, &[(SECOND, "120000")]).await;
     assert!((1..=30_000).contains(&ahead), "{ahead}");
-    // A configured host grants more only to a request that asks, never more
-    // than was asked, and thirty seconds to a request it cannot read.
-    let longer = service_within(store.clone(), &upstream, 120_000);
-    let ahead = renewed_ahead(&longer, &owner.token, None).await;
+    // A configured host grants more only to a request that asks with the
+    // second header, never more than was asked nor more than the host is
+    // configured for, and thirty seconds to a request it cannot read.
+    let longer = service_within(store.clone(), &upstream, 90_000);
+    let ahead = renewed_ahead(&longer, &owner.token, &[]).await;
     assert!((1..=30_000).contains(&ahead), "{ahead}");
-    let ahead = renewed_ahead(&longer, &owner.token, Some("soon")).await;
+    let ahead = renewed_ahead(&longer, &owner.token, &[(SECOND, "soon")]).await;
     assert!((1..=30_000).contains(&ahead), "{ahead}");
-    let ahead = renewed_ahead(&longer, &owner.token, Some("60000")).await;
+    let ahead = renewed_ahead(&longer, &owner.token, &[(SECOND, "60000")]).await;
     assert!((40_000..=60_000).contains(&ahead), "{ahead}");
-    let ahead = renewed_ahead(&longer, &owner.token, Some("120000")).await;
+    let ahead = renewed_ahead(&longer, &owner.token, &[(SECOND, "120000")]).await;
+    assert!((70_000..=90_000).contains(&ahead), "{ahead}");
+    let ahead = signed_in_ahead(&longer, &[(SECOND, "120000")]).await;
+    assert!((70_000..=90_000).contains(&ahead), "{ahead}");
+    let longest = service_within(store.clone(), &upstream, 120_000);
+    let ahead = renewed_ahead(&longest, &owner.token, &[(SECOND, "120000")]).await;
     assert!((100_000..=120_000).contains(&ahead), "{ahead}");
     // A renewal never shortens a session. One that asks for less, cannot be
-    // read, asks for nothing, or reaches a host that grants less is answered
-    // with the end the session already has.
-    for (app, window) in [
-        (&longer, Some("60000")),
-        (&longer, Some("soon")),
-        (&longer, None),
-        (&default, Some("120000")),
+    // read, asks for nothing or only with the first header, or reaches a
+    // host that grants less is answered with the end the session already has.
+    for (app, headers) in [
+        (&longest, &[(SECOND, "60000")][..]),
+        (&longest, &[(SECOND, "soon")][..]),
+        (&longest, &[][..]),
+        (&longest, &[(FIRST, "120000")][..]),
+        (&default, &[(SECOND, "120000")][..]),
     ] {
-        let ahead = renewed_ahead(app, &owner.token, window).await;
-        assert!((100_000..=120_000).contains(&ahead), "{window:?}: {ahead}");
+        let ahead = renewed_ahead(app, &owner.token, headers).await;
+        assert!((100_000..=120_000).contains(&ahead), "{headers:?}: {ahead}");
+    }
+    store.sign_out(&owner.token).await.unwrap();
+    task.abort();
+}
+/// The first clients to ask for a longer window (Hagency Desktop
+/// 0.5.0-rc.19) make one local session per call and refuse their own calls
+/// under one. The header they send still gives the default window.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_first_window_header_alone_keeps_the_default_window() {
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let store = Store::open(&url, "example.test", ISSUER).await.unwrap();
+    let name = format!("window_{}", secret_token());
+    let owner = store.sign_in(identity(&name), now_ms()).await.unwrap();
+    let (upstream, task) = upstream(name, Arc::new(AtomicBool::new(false))).await;
+    let longest = service_within(store.clone(), &upstream, 120_000);
+    for window in ["60000", "120000"] {
+        let ahead = signed_in_ahead(&longest, &[(FIRST, window)]).await;
+        assert!((1..=30_000).contains(&ahead), "sign-in {window}: {ahead}");
+        let ahead = renewed_ahead(&longest, &owner.token, &[(FIRST, window)]).await;
+        assert!((1..=30_000).contains(&ahead), "renewal {window}: {ahead}");
+    }
+    store.sign_out(&owner.token).await.unwrap();
+    task.abort();
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_second_window_header_decides_when_both_are_sent() {
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let store = Store::open(&url, "example.test", ISSUER).await.unwrap();
+    let name = format!("window_{}", secret_token());
+    let owner = store.sign_in(identity(&name), now_ms()).await.unwrap();
+    let (upstream, task) = upstream(name, Arc::new(AtomicBool::new(false))).await;
+    let longest = service_within(store.clone(), &upstream, 120_000);
+    let shorter = [(FIRST, "120000"), (SECOND, "60000")];
+    let ahead = signed_in_ahead(&longest, &shorter).await;
+    assert!((40_000..=60_000).contains(&ahead), "{ahead}");
+    let ahead = renewed_ahead(&longest, &owner.token, &shorter).await;
+    assert!((40_000..=60_000).contains(&ahead), "{ahead}");
+    let longer = [(SECOND, "120000"), (FIRST, "30000")];
+    let ahead = signed_in_ahead(&longest, &longer).await;
+    assert!((100_000..=120_000).contains(&ahead), "{ahead}");
+    let ahead = renewed_ahead(&longest, &owner.token, &longer).await;
+    assert!((100_000..=120_000).contains(&ahead), "{ahead}");
+    store.sign_out(&owner.token).await.unwrap();
+    task.abort();
+}
+/// A second header whose value cannot be read gives the default window, as
+/// the first header did, also beside a first header that asks for more.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_unreadable_second_window_header_keeps_the_default_window() {
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let store = Store::open(&url, "example.test", ISSUER).await.unwrap();
+    let name = format!("window_{}", secret_token());
+    let owner = store.sign_in(identity(&name), now_ms()).await.unwrap();
+    let (upstream, task) = upstream(name, Arc::new(AtomicBool::new(false))).await;
+    let longest = service_within(store.clone(), &upstream, 120_000);
+    for window in ["soon", "120000ms", "99999999999999999999", "1.5e5"] {
+        let headers = [(FIRST, "120000"), (SECOND, window)];
+        let ahead = signed_in_ahead(&longest, &headers).await;
+        assert!((1..=30_000).contains(&ahead), "sign-in {window}: {ahead}");
+        let ahead = renewed_ahead(&longest, &owner.token, &headers).await;
+        assert!((1..=30_000).contains(&ahead), "renewal {window}: {ahead}");
     }
     store.sign_out(&owner.token).await.unwrap();
     task.abort();

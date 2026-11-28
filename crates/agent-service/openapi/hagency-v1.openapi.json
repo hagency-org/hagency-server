@@ -174,10 +174,21 @@
         "security": [],
         "parameters": [
           {
+            "name": "x-hagency-authorization-window-v2-ms",
+            "in": "header",
+            "required": false,
+            "description": "Milliseconds the client asks its verified proof to be trusted for. By sending it the client declares that it shares one local session per server session. The host grants at least the default 30000 and at most its configured authorization_window_ms (30000 unless configured, never above 120000); absent or unreadable keeps the default. When x-hagency-authorization-window-ms is sent too, this header decides.",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
             "name": "x-hagency-authorization-window-ms",
             "in": "header",
             "required": false,
-            "description": "Milliseconds the client asks its verified proof to be trusted for. The host grants at least the default 30000 and at most its configured authorization_window_ms (30000 unless configured, never above 120000); absent or unreadable keeps the default.",
+            "deprecated": true,
+            "description": "The header the first clients asked with. Accepted and not read: the window stays the default 30000 whatever it asks. A client that can use a longer window sends x-hagency-authorization-window-v2-ms, and may send this one beside it for an earlier host.",
             "schema": {
               "type": "integer",
               "format": "int64"
@@ -279,10 +290,21 @@
         ],
         "parameters": [
           {
+            "name": "x-hagency-authorization-window-v2-ms",
+            "in": "header",
+            "required": false,
+            "description": "Milliseconds the client asks its verified proof to be trusted for. By sending it the client declares that it shares one local session per server session. The host grants at least the default 30000 and at most its configured authorization_window_ms (30000 unless configured, never above 120000); absent or unreadable keeps the default. When x-hagency-authorization-window-ms is sent too, this header decides.",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
             "name": "x-hagency-authorization-window-ms",
             "in": "header",
             "required": false,
-            "description": "Milliseconds the client asks its verified proof to be trusted for. The host grants at least the default 30000 and at most its configured authorization_window_ms (30000 unless configured, never above 120000); absent or unreadable keeps the default.",
+            "deprecated": true,
+            "description": "The header the first clients asked with. Accepted and not read: the window stays the default 30000 whatever it asks. A client that can use a longer window sends x-hagency-authorization-window-v2-ms, and may send this one beside it for an earlier host.",
             "schema": {
               "type": "integer",
               "format": "int64"
@@ -22583,7 +22605,7 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "e23f10a531d9cff5641c62b30f88ccde7879639fe7907d95d670d7bb0872ade0",
+    "crates/agent-service/src/api.rs": "f22c442e387c66b12b2d5b327a99d33237edc6df0da6ede7fdd1aaf935f6d47c",
     "crates/agent-service/src/api_transport.rs": "6ae8f015419f7d02db2e1dc252e27c24659beab94658264195cff8046c84ddf7",
     "crates/agent-service/src/transport_history.rs": "1d61b13ea345751e23d7d9078acb5c389d1fc8e71a827a25db9ebfb3c389266e",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",

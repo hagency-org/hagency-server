@@ -1253,17 +1253,25 @@ impl App {
         Err(Error::Invalid("unsupported_operation"))
     }
 }
-/// The one `roomId` parameter of a Room lookup; any other query is malformed.
 /// The authorization window a client asks for when it presents its proof.
-/// A client that sends nothing readable keeps the default window.
+///
+/// Only the second header asks for more than the default window. A client
+/// sends it to declare that it shares one local session per server session,
+/// so that a longer window costs it nothing. The first header,
+/// `x-hagency-authorization-window-ms`, is what the first clients sent while
+/// they still made one local session per call, and under a longer window
+/// they refuse their own calls: it is accepted and not read, so it keeps the
+/// default window. When both are sent, the second decides. A client that
+/// sends nothing readable in it keeps the default window.
 fn requested_window(req: &Request) -> Option<i64> {
     req.headers()
-        .get("x-hagency-authorization-window-ms")?
+        .get("x-hagency-authorization-window-v2-ms")?
         .to_str()
         .ok()?
         .parse()
         .ok()
 }
+/// The one `roomId` parameter of a Room lookup; any other query is malformed.
 fn room_query(req: &Request) -> Result<String> {
     let mut room = None;
     for (key, value) in url::form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes()) {

@@ -38,7 +38,7 @@ The live accepted example remains 4,813 consumed/retained against4,096 allocated
 
 A changed immutable offer head or unresolved native custody can require explicit resolution. Uncertain process issuance, start or stop is time-bounded (below). No automatic rebase or invented stopped receipt exists. Stop cancels pending events with recorded reason; old work and reply outcomes remain auditable/nonreplayable. Schema16 queue limits remain100 pending,24h expiry,10,000 retained rows per assignment. A reviewed archive/retention policy is still required before production; this checkpoint never discards audit to make room. Native paired transport/worker and actual multi-turn acceptance are separate qualification steps.
 
-A plain successor that `attempts/start` gives an Agent with an applied budget (that route checks no budget) gets no work, so it cannot spend outside that budget: the v2 work poll binds nothing for such an Agent and the budget work poll serves only v3 processes; until it stops, though, it is the Agent's head, and the budget queue offers nothing for the Agent.
+A plain successor that `attempts/start` gives an Agent with an applied budget (that route checks no budget) gets no work, so it cannot spend outside that budget: the v2 work poll binds nothing for such an Agent and the budget work poll serves only v3 processes; until it stops, though, it is the Agent's head, and the budget queue offers nothing for the Agent. With durable intake off, messages reach processes by direct routing instead, and it too gives a plain process of an Agent with an applied budget no work; it still gives work to the Agent's budget processes, whose work poll checks the budget head and the ceiling.
 
 ## Mini-app control display
 

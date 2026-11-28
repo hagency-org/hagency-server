@@ -311,6 +311,58 @@ async fn stopped_missing_usage_v3_remains_discoverable_without_execution_authori
             .is_none()
     );
 }
+/// With durable intake off, messages reach Agents by direct routing. Once a
+/// budget is applied to an Agent, its plain process, which no budget limits,
+/// is given no work; budget processes still are (the tests above), and their
+/// work poll holds them to the budget.
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn direct_routing_gives_a_plain_process_no_work_once_a_budget_is_applied() {
+    let (mut f, r, admin, _, m) = Box::pin(prepared()).await;
+    f.policy = f
+        .policy
+        .with_shared_successors(true)
+        .with_agent_budget_deltas(true)
+        .with_shared_budget_execution(true);
+    assert!(!f.policy.shared_durable_intake());
+    let (d, a) = qualify(&f).await;
+    apply_delta(&f, &r, &admin, 25, 230).await;
+    let e = work::message(&f, &r, "plain_after_budget").await;
+    let now = {
+        let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+        sql_query("SELECT (extract(epoch from clock_timestamp())*1000)::bigint AS now")
+            .get_result::<Clock>(&mut db)
+            .await
+            .unwrap()
+            .now
+    };
+    f.domain
+        .route_shared_event(&f.policy, &e, now, &m.gateway)
+        .await
+        .unwrap();
+    #[derive(QueryableByName)]
+    struct Rows {
+        #[diesel(sql_type = BigInt)]
+        n: i64,
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let rows = sql_query(
+        "SELECT count(*)::bigint AS n FROM hagency_agent_v1.management_shared_work WHERE runtime_id=$1",
+    )
+    .bind::<Text, _>(&d.command.command_id)
+    .get_result::<Rows>(&mut db)
+    .await
+    .unwrap()
+    .n;
+    assert_eq!(rows, 0, "the plain process is given no work");
+    assert!(
+        f.domain
+            .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
 #[tokio::test]
 #[ignore = "dedicated PostgreSQL"]
 async fn budget_execution_v3_original_assignment_applied_head_replay_and_old_routes_refuse() {
