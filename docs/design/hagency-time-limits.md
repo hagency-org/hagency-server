@@ -125,6 +125,15 @@ Before acceptance everything is redone:
   ended before it was given the message, any failed start of an Agent with an
   applied budget, and any failed start on a computer whose daemon does not ask
   for retries.
+  The server waits for the computer's report a bounded time, once per
+  message. When the time bound has given up an attempt that never reported
+  a process (180 s after its window), the computer has another 180 s to
+  report it as `not_started` and start the retry it asks for; a first
+  request for a retry that comes later is given 180 s of its own. Later
+  attempts do not move this end. Then the message ends as never started
+  (`never_started`), its sender can send it again, and the next message is
+  offered. A message that was given to a process is never ended so, and one
+  whose retry has started is not ended while that retry runs.
 - **An answer that did not arrive** is asked for again with the exact same
   request, and the server answers a replay with what it already did.
 
@@ -174,8 +183,10 @@ After acceptance:
   whichever record ended it: work that was given to a process that never
   began it, a message that was stopped while it waited or arrived while the
   Agent was stopped, one whose start failed for good (for an Agent with an
-  applied budget too), one blocked on usage (below), and one that waited
-  out its 24 hours or its period. The status derives that end when it is
+  applied budget too), one whose start the computer did not report on in
+  time (above), one that was waiting when its Agent's executor ledger was
+  replaced, one blocked on usage (below), and one that waited out its 24
+  hours or its period. The status derives that end when it is
   read, from every record that can end a message, and writes nothing: a
   message whose time is over reads as ended before any poll has recorded
   it, one claim window (30 s) after its time is over. A poll binds a
@@ -418,6 +429,7 @@ back").
 | A reservation for one encryption exchange | 15 s, of which 12 s are for the exchange | offered | server |
 | A waiting message at the turn of a pool's period | ended as expired (`event_expired`): a message is answered in the period it arrived in. One blocked on allowance ends the same way. One blocked on usage has ended already, with or without an applied budget (rule 3); from the turn on, its sender can send it again. The status reads this end when it is read, one claim window (30 s) after the turn, whether or not a poll has recorded it (none records it for a blocked message: no poll offers it again) | recovery | server |
 | Attempts for one message | the first and at most 3 more | recovery | server |
+| How long a message waits for its computer after an attempt that never reported a process was given up | 180 s after that, or after the computer's first request for a retry when that is later; once per message. Then it ends as never started (`never_started`) and the next message is offered (rule 3) | recovery | server |
 | How long a message waits for an Agent | 24 h, fixed (not `queue.event_ttl_ms`, which is for an owner's own Agents), read like the period's end: the status shows the message as expired one claim window (30 s) after its time is over, whether or not a poll has recorded it. A message blocked on usage does not wait (rule 3) | recovery | server |
 
 What must stay ordered:
@@ -444,7 +456,7 @@ renewal offers (7 days).
 | 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window is in review (#97), and renewing them early enough for it to matter is in review in Hagency Desktop (#243, #251) |
 | 6. A window over 30 s only for a client that says it can hold one | implemented: granted only through `x-hagency-authorization-window-v2-ms`; the first header gives 30 s |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
-| 3. A failed start is tried again | implemented for a start that never reported a process (demand retries); see rule 3 for the three that are not |
+| 3. A failed start is tried again | implemented for a start that never reported a process (demand retries); see rule 3 for the three that are not. A message whose computer does not report on such a start in time ends as never started (see the table of time limits) |
 | 3. Accepted work that never began is run again | open decision, see rule 3. Today it is not run again. The server reads the field by which a computer would say that it takes such a message back (`reoffers`) and acts on nothing in it (rule 6). Its status has the reason `never_started` and names the Agent. Every message that ended without a turn (this one, one that was stopped while it waited, one that arrived while the Agent was stopped, one that waited out its 24 hours or its period, one whose start failed for good, also for an Agent with an applied budget, one blocked on usage) says whether its reader can send it again (`canSendAgain`: the reader sent it, a copy could run, the Agent can serve a new message, and the row names it; see rule 3), which record ended it (`endReason`, present only then: for example `never_started`, `explicit_stop`, `event_expired` (also for one blocked on allowance once its time was over), `head_changed`, `retry_exhausted`, `assignment_authority_changed` (its Agent's executor ledger was replaced while it waited) or `usage_unrepresentable`), and, to its sender only, why it is not offered when nothing but its Agent stands in the way (`notOfferedBecause`: `agent_stopped`, `agent_unavailable` or `agent_unnamed`). A row whose outcome is unknown says whether its reader may review the Agent's original task records (`viewerCanReview`). The status lists the reader's 16 newest messages, each with every Agent's row. Hagency Desktop names the Agent in the room from the row's `agentMxid` and offers the sender "Send again" where `canSendAgain` is true |
 | 4. Three classes of failure on the computer | in review in Hagency Desktop |
 | 5. A lease ends when the server's lease ends | in review in Hagency Desktop |
@@ -553,6 +565,11 @@ Going back:
   `000158` (for a reservation) and `000156` (for a process): a record that
   cannot be written is again dropped without the warning. The fences and
   the records are unchanged, and its up step can run again.
+- A message that the wait for its computer ended (rule 3) is ended by an
+  ordinary block (`head_changed`, whose cause `never_started` is its
+  payload), and a message that a replaced ledger ended is blocked as one
+  that arrived after it. An older binary reads both as ended; it waits
+  again up to a message's 24 hours for a computer that does not report.
 - Migration `2026-11-26-000154`, which comes with activity leases that follow
   the window (in review, #97), has a lower number than `000155` and `000156`. A
   database that already has those applies it out of version order, because

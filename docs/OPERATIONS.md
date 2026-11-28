@@ -226,6 +226,13 @@ next pass tries it again. A computer's attempt polls first give up that
 computer's silent processes the same way, inside their own transaction: one
 they cannot give up is logged with the same line and rolled back alone, and
 the poll goes on.
+The same pass ends a pooled message whose start was given up without its
+process ever reporting, once the computer has neither reported the start as
+not begun nor started the retry it asked for within 180 seconds of that, or
+of its first request for a retry when that came later (rule 3 of the time
+limits). Such a message ends as never started, and its sender can send it
+again. One it cannot end is logged (`Shared message wait bound failed`, with
+its demand id and error code), and the pass counts as failed in the same way.
 
 SIGTERM stops new work admission, keeps the internal Matrix listener alive for
 up to 35 seconds while claimed uploads/sends save their receipts, then stops

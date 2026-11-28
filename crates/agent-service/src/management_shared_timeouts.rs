@@ -3,14 +3,31 @@
 //! unconfirmed never holds an Agent's queue indefinitely.
 //!
 //! After the grace period the server fences and stops the attempt and ends the
-//! demand that started it. It invents no receipt, process identity or usage:
-//! the executor then supplies explicit evidence, `not_started` when nothing
-//! was claimed or a `stopped` receipt with reason `uncertain_timeout`, and the
-//! next attempt names that evidence as its predecessor stop.
+//! demand that started it. A demand whose attempt never reported a process
+//! waits for the executor's evidence instead, a bounded time (see
+//! `STOPPED_WAIT_MS`). The server invents no receipt, process identity or
+//! usage: the executor then supplies explicit evidence, `not_started` when
+//! nothing was claimed or a `stopped` receipt with reason `uncertain_timeout`,
+//! and the next attempt names that evidence as its predecessor stop.
 use super::*;
 
 /// Grace after the attempt's own deadline or the last process evidence.
 pub(super) const UNCERTAIN_GRACE_MS: i64 = 180_000;
+/// How long a message whose attempt stopped without its turn, and without
+/// reporting a process, waits for the executor beyond the time bound above:
+/// for its evidence that nothing was claimed (`not_started`), which may ask
+/// for the event to be retried, and for that retry's start. It is counted
+/// once per message, from its first process: from the end of that process's
+/// time bound (its last evidence and `UNCERTAIN_GRACE_MS`) or from the
+/// executor's first request for a retry, whichever is later. Later attempts
+/// do not move it. Then the message ends (`head_changed`, with the cause
+/// `never_started`, or `head_changed` once a budget was applied to its
+/// Agent), no new attempt starts for it, and the queue moves on. No turn of
+/// such a message began: it was never bound to a process, so no work of it
+/// exists. A message bound to work is never ended here. An attempt whose
+/// start is committed is not ended while it runs; if it stops without its
+/// turn after the bound, the message ends at once.
+pub(super) const STOPPED_WAIT_MS: i64 = UNCERTAIN_GRACE_MS;
 
 // Execute tickets never outlive `expires_at_ms`, so the attempt deadline also
 // bounds every execute lease. Observe and cleanup tickets are not evidence of
@@ -81,6 +98,34 @@ async fn candidates(
         .load::<Id>(db).await?)
 }
 
+// A demand whose latest attempt has stopped and which still waits: no
+// binding, no block. `$1` narrows it to one demand.
+const WAITING: &str = "SELECT d.id FROM hagency_agent_v1.management_shared_intake q \
+ JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=q.id \
+ JOIN LATERAL (SELECT runtime_id FROM (SELECT 0::bigint AS retry,runtime_id FROM hagency_agent_v1.management_shared_demand_starts WHERE demand_id=d.id \
+  UNION ALL SELECT retry,runtime_id FROM hagency_agent_v1.management_shared_demand_retry_starts WHERE demand_id=d.id) x ORDER BY retry DESC LIMIT 1) s ON true \
+ JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=s.runtime_id \
+ WHERE q.state='pending' AND ($1::text IS NULL OR d.id=$1) AND r.state='stopped' \
+  AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings b WHERE b.demand_id=d.id) \
+  AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks k WHERE k.demand_id=d.id)";
+
+/// True when the wait of such a demand for its executor has ended.
+pub(super) async fn wait_over(db: &mut AsyncPgConnection, demand: &str, now: i64) -> Result<bool> {
+    Ok(!waits_over(db, Some(demand), now).await?.is_empty())
+}
+
+// The first process is the one of the demand's original start (`r` below is
+// that process, not the latest one), and the first request is retry 1.
+async fn waits_over(db: &mut AsyncPgConnection, demand: Option<&str>, now: i64) -> Result<Vec<Id>> {
+    Ok(sql_query(format!("{WAITING} AND GREATEST((SELECT {LAST_EVIDENCE} FROM hagency_agent_v1.management_shared_runtimes r WHERE r.id=(SELECT o.runtime_id FROM hagency_agent_v1.management_shared_demand_starts o WHERE o.demand_id=d.id))+$3,coalesce((SELECT t.created_at_ms FROM hagency_agent_v1.management_shared_demand_retries t WHERE t.demand_id=d.id AND t.retry=1),0))+$4<=$2 ORDER BY d.id LIMIT 64"))
+        .bind::<Nullable<Text>, _>(demand)
+        .bind::<BigInt, _>(now)
+        .bind::<BigInt, _>(UNCERTAIN_GRACE_MS)
+        .bind::<BigInt, _>(STOPPED_WAIT_MS)
+        .load::<Id>(db)
+        .await?)
+}
+
 async fn stop(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
     sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET state='stopped',permanent_fence=true,activity_until_ms=0 WHERE id=$1")
         .bind::<Text,_>(id).execute(db).await?;
@@ -89,11 +134,12 @@ async fn stop(db: &mut AsyncPgConnection, id: &str) -> Result<()> {
 
 impl DomainStore {
     /// Background enforcement: no executor poll or healthy client is needed
-    /// to stop an uncertain attempt and release its Agent's queue.
+    /// to stop an uncertain attempt, end a message whose wait for its
+    /// executor is over, and release its Agent's queue.
     ///
-    /// An attempt that cannot be stopped does not hold back the others: it is
-    /// logged by its id and the pass goes on. The first such error is returned
-    /// once every attempt was tried.
+    /// An attempt that cannot be stopped, or a message that cannot be ended,
+    /// does not hold back the others: it is logged by its id and the pass
+    /// goes on. The first such error is returned once every one was tried.
     pub(crate) async fn sweep_shared_attempt_timeouts(&self) -> Result<()> {
         let ids = self
             .db
@@ -116,6 +162,33 @@ impl DomainStore {
                 .await;
             if let Err(error) = swept {
                 tracing::warn!(runtime_id = %id.id, code = %error, "Shared attempt time bound failed");
+                failed.get_or_insert(error);
+            }
+        }
+        // Messages whose wait for their executor is over end, whatever
+        // became of the attempts above, each in its own write.
+        let ids = match self
+            .db
+            .transaction(async |db| {
+                let now = clock(db).await?;
+                waits_over(db, None, now).await
+            })
+            .await
+        {
+            Ok(ids) => ids,
+            // The first error stands for the pass.
+            Err(error) => return Err(failed.unwrap_or(error)),
+        };
+        for id in ids {
+            let ended = self
+                .db
+                .write_transaction(async |db| {
+                    let now = clock(db).await?;
+                    demands::lapse(db, &id.id, now).await
+                })
+                .await;
+            if let Err(error) = ended {
+                tracing::warn!(demand_id = %id.id, code = %error, "Shared message wait bound failed");
                 failed.get_or_insert(error);
             }
         }

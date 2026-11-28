@@ -224,8 +224,9 @@ async fn shared_demand_v2_time_bound_never_replays_but_later_not_started_retries
         runtime_state(&f, &issued.command.command_id).await,
         ("stopped".into(), true)
     );
-    // The server's own bound neither replays nor ends the event: it waits for
-    // the executor's evidence and holds the FIFO place.
+    // The server's own bound neither replays nor ends the event at once: it
+    // waits for the executor's evidence, a bounded time, and holds the FIFO
+    // place.
     let held = recovered(&f, &lost).await;
     assert_eq!((held.state.as_str(), held.retry), ("start_committed", None));
     assert_eq!(next_offer(&f).await.offer.demand_id, lost.offer.demand_id);
@@ -264,6 +265,169 @@ async fn shared_demand_v2_time_bound_never_replays_but_later_not_started_retries
         .unwrap();
     assert_eq!(w.event_id, "$late_lost");
     assert_eq!(work_items(&f, "$late_lost").await, 1);
+    // Work that was given to a process is never ended by that wait's bound.
+    f.domain
+        .set_management_test_clock(retry_asked(&f, &lost).await + 180_000 + 1_000)
+        .await
+        .unwrap();
+    f.domain.sweep_shared_attempt_timeouts().await.unwrap();
+    assert_eq!(recovered(&f, &lost).await.state, "bound");
+    assert_eq!(work_items(&f, "$late_lost").await, 1);
+    f.domain.reset_management_test_clock().await.unwrap();
+}
+
+/// When the executor first asked to retry `o`'s event.
+async fn retry_asked(f: &Fixture, o: &SharedDemandStatus) -> i64 {
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("SELECT created_at_ms AS count FROM hagency_agent_v1.management_shared_demand_retries WHERE demand_id=$1 AND retry=1")
+        .bind::<Text, _>(&o.offer.demand_id)
+        .get_result::<Count>(&mut db)
+        .await
+        .unwrap()
+        .count
+}
+
+/// The executor declares its protocol on each request, for five minutes by
+/// the real clock. This test clock runs further ahead than that: the
+/// declaration lasts until `at`, as later requests would keep it.
+async fn declared_until(f: &Fixture, at: i64) {
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("UPDATE hagency_agent_v1.management_shared_executor_protocols SET expires_at_ms=$2 WHERE owner_user_id=$1 AND expires_at_ms<$2")
+        .bind::<Text, _>(&f.owner.p.user_id)
+        .bind::<BigInt, _>(at)
+        .execute(&mut db)
+        .await
+        .unwrap();
+}
+
+/// The state of `o`'s intake, read without any call that could change it.
+async fn intake_state(f: &Fixture, o: &SharedDemandStatus) -> String {
+    #[derive(QueryableByName)]
+    struct Row {
+        #[diesel(sql_type=Text)]
+        state: String,
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query("SELECT q.state FROM hagency_agent_v1.management_shared_intake q JOIN hagency_agent_v1.management_shared_demands d ON d.intake_id=q.id WHERE d.id=$1")
+        .bind::<Text, _>(&o.offer.demand_id)
+        .get_result::<Row>(&mut db)
+        .await
+        .unwrap()
+        .state
+}
+
+/// An attempt that never reported a process, whose executor does not come
+/// back, holds its message and the queue behind it a bounded time, once:
+/// three minutes past the attempt's own time bound, or past the executor's
+/// first request to retry the event if that came later. Then the message
+/// ends as never started without any poll, its sender may send it again,
+/// and the next message is offered. Nothing of it ever runs.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn shared_demand_v2_unreported_attempt_waits_a_bounded_time_once() {
+    for asks in [false, true] {
+        let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+        // Event ids are unique in the database: one pair for each run.
+        let (lost_id, next_id) = (format!("away_lost_{asks}"), format!("away_next_{asks}"));
+        let (lost_event, next_event) = (format!("${lost_id}"), format!("${next_id}"));
+        let (d, _) = qualify(&f).await;
+        let stopped = attempts::stop(&f, &d, 201).await;
+        retain(&f, &r, &m, &lost_id).await;
+        retain(&f, &r, &m, &next_id).await;
+        let lost = demand(&f).await;
+        let issued = start_lapsed(&f, &m, &lost, start_input(&lost, &d, &stopped)).await;
+        declared_until(&f, issued.command.expires_at_ms + 3_600_000).await;
+        // Never claimed: its last evidence is the end of its window, and the
+        // time bound stops it three minutes later.
+        let stopped_at = issued.command.expires_at_ms + 180_000;
+        f.domain
+            .set_management_test_clock(stopped_at)
+            .await
+            .unwrap();
+        for _ in 0..64 {
+            if runtime_state(&f, &issued.command.command_id).await.0 == "stopped" {
+                break;
+            }
+            let _ = f.domain.sweep_shared_attempt_timeouts().await;
+        }
+        assert_eq!(
+            runtime_state(&f, &issued.command.command_id).await,
+            ("stopped".into(), true)
+        );
+        // Up to the end of its wait, neither the sweep nor a poll ends it.
+        let mut bound = stopped_at + 180_000;
+        f.domain.set_management_test_clock(bound - 1).await.unwrap();
+        f.domain.sweep_shared_attempt_timeouts().await.unwrap();
+        assert_eq!(next_offer(&f).await.offer.demand_id, lost.offer.demand_id);
+        assert_eq!(recovered(&f, &lost).await.state, "start_committed");
+        let receipt = if asks {
+            // The executor comes back just in time and asks for a retry,
+            // which it then never starts: the wait is bounded from that
+            // request, and only from the first one.
+            let evidence = unstarted(&f, &issued, 210).await;
+            let reply = retry(&f, &lost, &issued, 1, evidence).await.unwrap();
+            assert_eq!(reply.demand.state, "retry_offered");
+            bound = retry_asked(&f, &lost).await + 180_000;
+            assert!(bound > stopped_at + 180_000);
+            f.domain.set_management_test_clock(bound - 1).await.unwrap();
+            f.domain.sweep_shared_attempt_timeouts().await.unwrap();
+            assert_eq!(recovered(&f, &lost).await.state, "retry_offered");
+            reply.acknowledgement.receipt_digest
+        } else {
+            String::new()
+        };
+        // At its end the sweep ends it, with no poll.
+        f.domain.set_management_test_clock(bound).await.unwrap();
+        f.domain.sweep_shared_attempt_timeouts().await.unwrap();
+        assert_eq!(intake_state(&f, &lost).await, "blocked", "asks={asks}");
+        assert_eq!(recovered(&f, &lost).await.state, "head_changed");
+        assert_eq!(work_items(&f, &lost_event).await, 0);
+        let room = work::message(&f, &r, "scope").await.room_id;
+        for (reader, again) in [(&f.outsider.p, true), (&f.owner.p, false)] {
+            assert_eq!(
+                status_of(&f, &room, reader, &lost_event).await,
+                json!(["blocked", "head_changed", "never_started", again])
+            );
+        }
+        // The executor's evidence, given late, ends the process for the
+        // chain; the event is not retried, and the next one runs on top.
+        let receipt = if asks {
+            receipt
+        } else {
+            let evidence = unstarted(&f, &issued, 210).await;
+            let ack = record(&f, &issued, evidence).await.unwrap();
+            assert_eq!(recovered(&f, &lost).await.state, "head_changed");
+            ack.receipt_digest
+        };
+        let next = next_offer(&f).await;
+        assert_eq!(next.offer.event_id, next_event);
+        assert_eq!(next.offer.predecessor_command_id, issued.command.command_id);
+        let started = f
+            .domain
+            .start_shared_demand(
+                &f.owner.p,
+                &f.policy,
+                &next.offer.demand_id,
+                after(&next, &issued, &receipt, "", 220),
+                &m.gateway,
+            )
+            .await
+            .unwrap();
+        let activity = record(&f, &started, attempts::result(&started, "qualified", 221))
+            .await
+            .unwrap()
+            .activity
+            .unwrap();
+        let w = f
+            .domain
+            .poll_shared_work(&f.owner.p, &f.policy, activity.authority, &m.gateway)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(w.event_id, next_event, "the ended event is never replayed");
+        assert_eq!(work_items(&f, &lost_event).await, 0);
+        f.domain.reset_management_test_clock().await.unwrap();
+    }
 }
 
 #[tokio::test]

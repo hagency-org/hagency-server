@@ -316,7 +316,13 @@ async fn ensure(db: &mut AsyncPgConnection, q: &Queued, h: &Runtime) -> Result<D
         .await?;
     load(db, &id).await
 }
-async fn refresh(db: &mut AsyncPgConnection, d: &Demand, q: &Queued, h: &Runtime) -> Result<()> {
+async fn refresh(
+    db: &mut AsyncPgConnection,
+    d: &Demand,
+    q: &Queued,
+    h: &Runtime,
+    now: i64,
+) -> Result<()> {
     if q.state != "pending" || binding(db, &d.id).await?.is_some() {
         return Ok(());
     }
@@ -329,25 +335,64 @@ async fn refresh(db: &mut AsyncPgConnection, d: &Demand, q: &Queued, h: &Runtime
     if h.id != expected {
         return block(db, d, q, "head_changed", "\"head_changed\"").await;
     }
-    if s.is_none() || h.state != "stopped" || retries::offered(db, &d.id).await?.is_some() {
+    if s.is_none() || h.state != "stopped" {
         return Ok(());
     }
-    // An attempt that never reported a process, stopped by the time bound,
-    // waits for the executor's evidence: not_started may still retry its
-    // event, and only the executor can prove it (ADR-193 amendment).
-    if h.process_digest.is_none()
-        && h.activity_epoch == 0
-        && attempts::latest_evidence(db, &h.id, None).await?.is_none()
+    // A retry the executor asked for waits for its start. An attempt that
+    // never reported a process, stopped by the time bound, waits for the
+    // executor's evidence: not_started may still retry its event, and only
+    // the executor can prove it (ADR-193 amendment). Both waits are bounded,
+    // once per message, so that a message never waits for an executor that
+    // does not come back (`timeouts::STOPPED_WAIT_MS`).
+    if retries::offered(db, &d.id).await?.is_some()
+        || (h.process_digest.is_none()
+            && h.activity_epoch == 0
+            && attempts::latest_evidence(db, &h.id, None).await?.is_none())
     {
+        if timeouts::wait_over(db, &d.id, now).await? {
+            return end_wait(db, d, q).await;
+        }
         return Ok(());
     }
+    // Evidence that came without a request to retry ends the event.
     block(db, d, q, "head_changed", "\"head_changed\"").await
+}
+/// End a message whose wait for its executor is over. No turn of it began:
+/// it is not bound to a process, and the one it was started for stopped. It
+/// ends as never started (`never_started`), so its sender may send it again,
+/// unless a budget was applied to its Agent since: then it ends as every
+/// message the earlier protocol had started when the budget was applied
+/// (`head_changed`), which its status has read since then and the budget's
+/// queue records as it moves on. So it reads one way whichever record ends
+/// it first.
+async fn end_wait(db: &mut AsyncPgConnection, d: &Demand, q: &Queued) -> Result<()> {
+    let w = intake::assignment(db, &q.assignment_id).await?;
+    let payload = if has_applied_budget(db, &w.request_id).await? {
+        "\"head_changed\""
+    } else {
+        "\"never_started\""
+    };
+    block(db, d, q, "head_changed", payload).await
+}
+/// What the next poll would record for demand `id`, once its wait for its
+/// executor is over (`timeouts::wait_over`, checked again in refresh in
+/// this transaction): the time limits of its intake first, as the poll
+/// applies them, then its end. The queue then moves on.
+pub(super) async fn lapse(db: &mut AsyncPgConnection, id: &str, now: i64) -> Result<()> {
+    let d = load(db, id).await?;
+    let q = queued(db, &d.intake_id).await?;
+    intake::expire(db, &q.assignment_id, now).await?;
+    let q = queued(db, &d.intake_id).await?;
+    let Some(h) = head(db, &q.assignment_id).await? else {
+        return Ok(());
+    };
+    refresh(db, &d, &q, &h, now).await
 }
 /// The time bound stopped `runtime` without a work binding. If it reported a
 /// process, end the demand that started it now (as a later poll would). A v2
-/// attempt that never did keeps its demand for the executor's evidence (see
-/// refresh): only that evidence may retry the event. Only a still-current,
-/// unbound, unblocked demand changes.
+/// attempt that never did keeps its demand for the executor's evidence, a
+/// bounded time (see refresh): only that evidence may retry the event. Only
+/// a still-current, unbound, unblocked demand changes.
 pub(super) async fn interrupt(db: &mut AsyncPgConnection, runtime: &str) -> Result<()> {
     let v2 = sql_query("SELECT s.demand_id AS id FROM (SELECT demand_id,runtime_id FROM hagency_agent_v1.management_shared_demand_starts UNION ALL SELECT demand_id,runtime_id FROM hagency_agent_v1.management_shared_demand_retry_starts) s JOIN hagency_agent_v1.management_shared_demands d ON d.id=s.demand_id JOIN hagency_agent_v1.management_shared_intake q ON q.id=d.intake_id JOIN hagency_agent_v1.management_shared_runtimes r ON r.id=s.runtime_id WHERE s.runtime_id=$1 AND (r.process_digest IS NOT NULL OR r.activity_epoch>0) AND q.state='pending' AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_bindings b WHERE b.demand_id=d.id) AND NOT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks k WHERE k.demand_id=d.id) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_controls c WHERE c.assignment_id=q.assignment_id AND c.mode='running' AND c.revision=q.control_revision)")
         .bind::<Text, _>(runtime)
@@ -450,7 +495,7 @@ impl DomainStore {
         self.db.write_transaction(async|db:&mut AsyncPgConnection|{
  Self::authorize(db,p,0).await?;let (device,generation)=device(p)?;let now=clock(db).await?;
  let ids=sql_query("SELECT a.id FROM hagency_agent_v1.management_shared_assignments a JOIN hagency_agent_v1.management_shared_controls c ON c.assignment_id=a.id WHERE a.executor_owner_user_id=$1 AND a.executor_device_id=$2 AND a.executor_generation=$3 AND NOT hagency_agent_v1.executor_ledger_replaced_request(a.request_id) AND c.mode='running' AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_runtimes root WHERE root.assignment_id=a.id AND NOT root.issuance_void AND (root.payload::jsonb->>'version'='1' OR ($5 AND root.payload::jsonb->>'version'='4') OR ($6 AND root.payload::jsonb->>'version'='5'))) AND EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_intake q WHERE q.assignment_id=a.id AND q.control_revision=c.revision AND q.state='pending') ORDER BY (a.id<=$4),a.id LIMIT 16").bind::<Text,_>(&p.user_id).bind::<Text,_>(device).bind::<BigInt,_>(generation).bind::<Text,_>(input.after.as_deref().unwrap_or("")).bind::<Bool,_>(allow_claude).bind::<Bool,_>(allow_octos).load::<Id>(db).await?;
- let mut found=None;let mut after=None;for id in ids {after=Some(id.id.clone());intake::expire(db,&id.id,now).await?;let revision=intake::running_revision(db,&id.id).await?;let Some(q)=oldest(db,&id.id,revision).await? else{continue};let w=match authorize(db,p,&q,&self.server,now,true).await {Ok(w)=>w,Err(Error::Conflict(_)|Error::NotFound(_))=>continue,Err(e)=>return Err(e)};let Some(h)=head(db,&id.id).await? else{continue};if runtime_version(&h)?==3 || has_applied_budget(db,&w.request_id).await? || awaits_first_start(db,&q,&h).await? {continue;}let d=ensure(db,&q,&h).await?;refresh(db,&d,&q,&h).await?;if status(db,&d).await?.state!="offered" && started(db,&d.id).await?.is_none(){continue}let c:ManagedAgentReserveCommand=decode(&w.payload)?;if known(db,&id.id).await?>=c.requested_tokens && started(db,&d.id).await?.is_none(){block(db,&d,&q,"budget_blocked",r#"{"reason":"budget_blocked","source":"known_consumption_exhausted"}"#).await?;}let value=visible(db,&d,input.retries).await?;if matches!(value.state.as_str(),"offered"|"start_committed"|"retry_offered"){found=Some(value);break}}
+ let mut found=None;let mut after=None;for id in ids {after=Some(id.id.clone());intake::expire(db,&id.id,now).await?;let revision=intake::running_revision(db,&id.id).await?;let Some(q)=oldest(db,&id.id,revision).await? else{continue};let w=match authorize(db,p,&q,&self.server,now,true).await {Ok(w)=>w,Err(Error::Conflict(_)|Error::NotFound(_))=>continue,Err(e)=>return Err(e)};let Some(h)=head(db,&id.id).await? else{continue};if runtime_version(&h)?==3 || has_applied_budget(db,&w.request_id).await? || awaits_first_start(db,&q,&h).await? {continue;}let d=ensure(db,&q,&h).await?;refresh(db,&d,&q,&h,now).await?;if status(db,&d).await?.state!="offered" && started(db,&d.id).await?.is_none(){continue}let c:ManagedAgentReserveCommand=decode(&w.payload)?;if known(db,&id.id).await?>=c.requested_tokens && started(db,&d.id).await?.is_none(){block(db,&d,&q,"budget_blocked",r#"{"reason":"budget_blocked","source":"known_consumption_exhausted"}"#).await?;}let value=visible(db,&d,input.retries).await?;if matches!(value.state.as_str(),"offered"|"start_committed"|"retry_offered"){found=Some(value);break}}
  record_discovery(db,p,false).await?;
  Ok(SharedDemandPoll{demand:found,next_after:after})
  }).await
@@ -521,7 +566,7 @@ pub(super) async fn promote(
         return Ok(());
     }
     let d = ensure(db, &q, r).await?;
-    refresh(db, &d, &q, r).await?;
+    refresh(db, &d, &q, r, now).await?;
     let s = status(db, &d).await?;
     if !matches!(s.state.as_str(), "offered" | "start_committed") {
         return Ok(());
