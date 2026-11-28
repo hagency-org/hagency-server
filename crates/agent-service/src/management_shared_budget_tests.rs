@@ -363,6 +363,229 @@ async fn direct_routing_gives_a_plain_process_no_work_once_a_budget_is_applied()
             .is_none()
     );
 }
+/// A work row's state, and whether it began.
+async fn work_state(f: &Fixture, id: &str) -> (String, bool) {
+    #[derive(QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = Text)]
+        state: String,
+        #[diesel(sql_type = Bool)]
+        begun: bool,
+    }
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    let row = sql_query(
+        "SELECT state,started_at_ms IS NOT NULL AS begun FROM hagency_agent_v1.management_shared_work WHERE id=$1",
+    )
+    .bind::<Text, _>(id)
+    .get_result::<Row>(&mut db)
+    .await
+    .unwrap();
+    (row.state, row.begun)
+}
+fn plain_and_budget(f: &mut Fixture) {
+    f.policy = f
+        .policy
+        .clone()
+        .with_shared_successors(true)
+        .with_agent_budget_deltas(true)
+        .with_shared_budget_execution(true);
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn direct_routing_work_given_before_a_budget_is_not_acknowledged_or_handed_out_again() {
+    let (mut f, r, admin, _, m) = Box::pin(prepared()).await;
+    plain_and_budget(&mut f);
+    assert!(!f.policy.shared_durable_intake());
+    let (_, a) = qualify(&f).await;
+    // One message begins before the budget is applied; the next is only
+    // handed out.
+    let begun = work::started(&f, &r, &m, &a, "begun_before_budget").await;
+    let given = work::queued(&f, &r, &m, &a, "given_before_budget").await;
+    apply_delta(&f, &r, &admin, 25, 230).await;
+    assert!(matches!(
+        f.domain
+            .acknowledge_shared_work(&f.owner.p, &f.policy, input(&a, &given), &m.gateway)
+            .await,
+        Err(crate::Error::Conflict(
+            "shared_work_definitively_not_started"
+        ))
+    ));
+    // What began is left alone: a replay of its start still says it began.
+    assert!(
+        !f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &begun), &m.gateway)
+            .await
+            .unwrap()
+            .newly_started
+    );
+    assert!(
+        f.domain
+            .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(work_state(&f, &given.id).await, ("cancelled".into(), false));
+    assert_eq!(work_state(&f, &begun.id).await, ("started".into(), true));
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn direct_routing_work_accepted_before_a_budget_does_not_start() {
+    let (mut f, r, admin, _, m) = Box::pin(prepared()).await;
+    plain_and_budget(&mut f);
+    let (_, a) = qualify(&f).await;
+    let w = work::queued(&f, &r, &m, &a, "accepted_before_budget").await;
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .await
+        .unwrap();
+    apply_delta(&f, &r, &admin, 25, 230).await;
+    // Unencrypted work starts through its frozen context.
+    assert!(!w.encrypted);
+    assert!(matches!(
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .await,
+        Err(crate::Error::Conflict(
+            "shared_work_definitively_not_started"
+        ))
+    ));
+    assert_eq!(work_state(&f, &w.id).await, ("acknowledged".into(), false));
+    assert!(
+        f.domain
+            .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(work_state(&f, &w.id).await, ("cancelled".into(), false));
+}
+/// An encrypted message that the v2 work poll bound to a plain process, and
+/// acknowledged: (fixture, request, administrator, Matrix, lease, work, room,
+/// event).
+#[allow(clippy::type_complexity)]
+async fn bound_and_acknowledged(
+    id: &str,
+) -> (
+    Fixture,
+    ManagedAgentRequest,
+    Actor,
+    MatrixFixture,
+    SharedActivityLease,
+    SharedWorkItem,
+    String,
+    String,
+) {
+    let (mut f, r, admin, assignment, m) = Box::pin(prepared()).await;
+    plain_and_budget(&mut f);
+    f.policy = f
+        .policy
+        .clone()
+        .with_shared_durable_intake(true)
+        .with_shared_demands(true);
+    intake_tests::arm(&f, &assignment, &m).await;
+    let (_, a) = qualify(&f).await;
+    let room = read_matrix(&f, &r).await.room_id;
+    m.states.lock().unwrap().get_mut(&room).unwrap().push(json!({"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}));
+    let mut e = work::message(&f, &r, id).await;
+    e.encrypted = true;
+    e.body.clear();
+    e.mentioned_mxids.clear();
+    f.domain
+        .route_shared_event(&f.policy, &e, crate::api::now_ms(), &m.gateway)
+        .await
+        .unwrap();
+    f.domain.shared_crypto_confirm(&f.owner.p,serde_json::from_value(json!({"assignmentId":assignment.id,"eventId":e.event_id,"addressed":true,"mentioned":true})).unwrap(),&m.gateway).await.unwrap();
+    // The v2 work poll binds the message to the plain process.
+    let w = f
+        .domain
+        .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(w.encrypted);
+    f.domain
+        .acknowledge_shared_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+        .await
+        .unwrap();
+    (f, r, admin, m, a, w, room, e.event_id)
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn a_message_bound_before_a_budget_does_not_start_and_reads_never_started() {
+    let (f, r, admin, m, a, w, room, event) =
+        Box::pin(bound_and_acknowledged("bound_before_budget")).await;
+    apply_delta(&f, &r, &admin, 25, 230).await;
+    // Encrypted work starts through the plain start.
+    assert!(matches!(
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .await,
+        Err(crate::Error::Conflict(
+            "shared_work_definitively_not_started"
+        ))
+    ));
+    assert!(
+        f.domain
+            .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(work_state(&f, &w.id).await, ("cancelled".into(), false));
+    // The room reads that end when it reads the message: not begun.
+    let query = serde_json::from_value(json!({"roomId":room})).unwrap();
+    let row = f
+        .domain
+        .shared_approvals(&f.outsider.p, query)
+        .await
+        .unwrap()["executions"][0]
+        .clone();
+    assert_eq!(
+        (
+            &row["eventId"],
+            &row["state"],
+            &row["reason"],
+            &row["endReason"]
+        ),
+        (
+            &json!(event),
+            &json!("cancelled"),
+            &json!("never_started"),
+            &json!("never_started")
+        )
+    );
+}
+#[tokio::test]
+#[ignore = "dedicated PostgreSQL"]
+async fn a_message_begun_before_a_budget_is_left_alone() {
+    let (f, r, admin, m, a, w, _, _) = Box::pin(bound_and_acknowledged("begun_bound")).await;
+    assert!(
+        f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .await
+            .unwrap()
+            .newly_started
+    );
+    apply_delta(&f, &r, &admin, 25, 230).await;
+    // Its end is unknown: a replay of its start still says it began, and
+    // nothing ends it.
+    assert!(
+        !f.domain
+            .start_current_work(&f.owner.p, &f.policy, input(&a, &w), &m.gateway)
+            .await
+            .unwrap()
+            .newly_started
+    );
+    assert!(
+        f.domain
+            .poll_shared_work(&f.owner.p, &f.policy, a.authority.clone(), &m.gateway)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(work_state(&f, &w.id).await, ("started".into(), true));
+}
 #[tokio::test]
 #[ignore = "dedicated PostgreSQL"]
 async fn budget_execution_v3_original_assignment_applied_head_replay_and_old_routes_refuse() {
