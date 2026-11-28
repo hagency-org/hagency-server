@@ -1336,6 +1336,8 @@ async fn chat_status_case(begun: bool) {
         assert_eq!(row["canSendAgain"], false);
         // What the answer is worked out from stays on the server.
         assert!(row.get("fromViewer").is_none() && row.get("agentAvailable").is_none());
+        // Only an outcome that is unknown offers a review of the records.
+        assert!(row.get("viewerCanReview").is_none());
     }
     // The process ends.
     attempts::stop(&f, &runtime, 103).await;
@@ -1346,11 +1348,46 @@ async fn chat_status_case(begun: bool) {
             (&ended["state"], &ended["reason"], &ended["canSendAgain"]),
             (&json!("unknown"), &Value::Null, &json!(false))
         );
+        // Who may review the Agent's original task records, by the rule of
+        // the review's own list: its manager, who sent the message here,
+        // and the owner of its pool.
+        for who in [&f.outsider.p, &f.owner.p] {
+            assert_eq!(read(who).await["viewerCanReview"], true);
+        }
+        // A sender who neither manages nor administers the Agent may not:
+        // the same message, as sent by someone else.
+        db.batch_execute(
+            "ALTER TABLE hagency_agent_v1.management_shared_intake DISABLE TRIGGER USER",
+        )
+        .await
+        .unwrap();
+        sql_query("UPDATE hagency_agent_v1.management_shared_intake SET event_payload=jsonb_set(event_payload::jsonb,'{sender_mxid}',to_jsonb($2::text))::text WHERE assignment_id=$1 AND event_id='$status_work'")
+            .bind::<Text, _>(&assignment.id)
+            .bind::<Text, _>(&f.admin.p.mxid)
+            .execute(&mut db)
+            .await
+            .unwrap();
+        db.batch_execute(
+            "ALTER TABLE hagency_agent_v1.management_shared_intake ENABLE TRIGGER USER",
+        )
+        .await
+        .unwrap();
+        let other = read(&f.admin.p).await;
+        assert_eq!(
+            (
+                &other["eventId"],
+                &other["state"],
+                &other["viewerCanReview"]
+            ),
+            (&json!("$status_work"), &json!("unknown"), &json!(false))
+        );
+        assert_eq!(read(&f.owner.p).await["viewerCanReview"], true);
     } else {
         assert_eq!(
             (&ended["state"], &ended["reason"]),
             (&json!("cancelled"), &json!("never_started"))
         );
+        assert!(ended.get("viewerCanReview").is_none());
         // The reason is a fact: a start is refused from now on.
         assert!(
             f.domain
@@ -1805,14 +1842,9 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         )
         .await
         .unwrap();
-    let usage = |again: bool| {
-        json!([
-            "blocked",
-            "usage_unrepresentable",
-            "usage_unrepresentable",
-            again
-        ])
-    };
+    // It reads as cancelled, its cause as its end (Hagency Desktop
+    // 0.5.0-rc.19 reads the reason `usage_unrepresentable` as a wait).
+    let usage = |again: bool| json!(["cancelled", null, "usage_unrepresentable", again]);
     assert_eq!(
         status_of(&f, &request.room_id, &f.outsider.p, &event.event_id).await,
         usage(false)
@@ -1823,9 +1855,12 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
     // sender may send it, and the one blocked on usage, again once the Agent
     // serves in the new period: once its pool's grant for that period is in
     // place. Before that, its reservation's time is over.
+    //
+    // The status reads that end one claim window after the turn, so that a
+    // poll that read its clock before the turn has committed what it bound.
     let turn = period_end(&mut db, &assignment.id, now_ms()).await;
-    let at_turn = async || {
-        f.domain.set_management_test_clock(turn).await.unwrap();
+    let read_at = async |at: i64| {
+        f.domain.set_management_test_clock(at).await.unwrap();
         let mut read = Vec::new();
         for reader in [&f.outsider.p, &f.owner.p] {
             for message in [&budget_blocked, &event.event_id] {
@@ -1835,6 +1870,30 @@ async fn pool_chat_status_reports_interruption_and_budget_block_without_cross_us
         f.domain.reset_management_test_clock().await.unwrap();
         read
     };
+    let at_turn = async || read_at(turn + crate::identity::CLAIM_WINDOW_MS).await;
+    #[derive(QueryableByName)]
+    struct Ends {
+        #[diesel(sql_type=BigInt)]
+        expires_at_ms: i64,
+    }
+    let waits_until = sql_query("SELECT expires_at_ms FROM hagency_agent_v1.management_shared_intake WHERE assignment_id=$1 AND event_id=$2")
+        .bind::<Text, _>(&assignment.id)
+        .bind::<Text, _>(&budget_blocked)
+        .get_result::<Ends>(&mut db)
+        .await
+        .unwrap()
+        .expires_at_ms;
+    // Unless its own 24 hours ended before the turn (a day of 25 hours), it
+    // has not ended yet just before then: it reads as a wait, with no end.
+    if waits_until > turn {
+        let before = read_at(turn + crate::identity::CLAIM_WINDOW_MS - 1).await;
+        for waits in [&before[0], &before[2]] {
+            assert_eq!(waits[0], "blocked", "not ended yet: {waits}");
+            assert_eq!(waits[2], Value::Null, "not ended yet: {waits}");
+            assert_eq!(waits[3], false, "not ended yet: {waits}");
+        }
+        assert_eq!([&before[1], &before[3]], [&usage(false), &usage(false)]);
+    }
     let expired = |again: bool| json!(["expired", "event_expired", "event_expired", again]);
     assert_eq!(
         at_turn().await,
