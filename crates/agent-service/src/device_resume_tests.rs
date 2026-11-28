@@ -433,14 +433,16 @@ async fn postgres_expired_original_session_http_renew_preserves_exact_device_and
     current(&app, &device.token, "", StatusCode::UNAUTHORIZED).await;
     task.abort();
 }
-/// Renews as a client that sends these headers, and returns the window the
-/// session then follows for the activity leases issued to its device, if any.
+/// The header by which a client says that it follows its window.
+const FOLLOW: (&str, &str) = ("x-hagency-activity-window", "session");
+/// Renews as a client that sends these request headers, and returns the
+/// window the session then follows for the activity leases issued to its
+/// device, if any.
 async fn activity_window_after_renewal(
     app: &Service,
     url: &str,
     token: &str,
-    window: Option<&str>,
-    activity_window: Option<&str>,
+    headers: &[(&'static str, &str)],
 ) -> Option<i64> {
     #[derive(diesel::QueryableByName)]
     struct Row {
@@ -451,11 +453,8 @@ async fn activity_window_after_renewal(
         TestClient::post("https://example.test/hagency/api/v1/sessions/current/renew")
             .add_header("host", "example.test", true)
             .bearer_auth(token);
-    if let Some(window) = window {
-        request = request.add_header("x-hagency-authorization-window-ms", window, true);
-    }
-    if let Some(activity_window) = activity_window {
-        request = request.add_header("x-hagency-activity-window", activity_window, true);
+    for (name, value) in headers {
+        request = request.add_header(*name, *value, true);
     }
     let response = request
         .json(&json!({"accessToken":"synthetic-fresh-upstream-token"}))
@@ -479,38 +478,49 @@ async fn postgres_activity_window_is_the_granted_window_only_for_a_client_that_f
     let owner = store.sign_in(identity(&name), now_ms()).await.unwrap();
     let (upstream, task) = upstream(name, Arc::new(AtomicBool::new(false))).await;
     let longer = service_within(store.clone(), &upstream, 120_000);
-    let kept = |app, window, activity_window| {
-        activity_window_after_renewal(app, &url, &owner.token, window, activity_window)
-    };
+    let kept = |app, headers| activity_window_after_renewal(app, &url, &owner.token, headers);
     // A client that asks for the longer window and says nothing more checks
     // a lease against thirty seconds: it follows no window.
-    assert_eq!(kept(&longer, Some("120000"), None).await, None);
+    assert_eq!(kept(&longer, &[(SECOND, "120000")]).await, None);
     // A client that follows its window follows what it was granted, no more.
     assert_eq!(
-        kept(&longer, Some("120000"), Some("session")).await,
+        kept(&longer, &[(SECOND, "120000"), FOLLOW]).await,
         Some(120_000)
     );
     assert_eq!(
-        kept(&longer, Some("60000"), Some("session")).await,
+        kept(&longer, &[(SECOND, "60000"), FOLLOW]).await,
         Some(60_000)
     );
     // One that asked for no longer window follows the thirty seconds it has.
     // That is not the same as following none: see `activity_until`.
-    assert_eq!(kept(&longer, None, Some("session")).await, Some(30_000));
+    assert_eq!(kept(&longer, &[FOLLOW]).await, Some(30_000));
+    // So does one that asked with the first header alone: it is granted the
+    // default window (`requested_window`), and follows no more than that.
+    assert_eq!(
+        kept(&longer, &[(FIRST, "120000"), FOLLOW]).await,
+        Some(30_000)
+    );
     // Any other value of the header is not that statement.
-    assert_eq!(kept(&longer, Some("120000"), Some("120000")).await, None);
+    assert_eq!(
+        kept(
+            &longer,
+            &[(SECOND, "120000"), ("x-hagency-activity-window", "120000")]
+        )
+        .await,
+        None
+    );
     // A host that grants thirty seconds has nothing longer to follow.
     let default = service(store.clone(), &upstream);
     assert_eq!(
-        kept(&default, Some("120000"), Some("session")).await,
+        kept(&default, &[(SECOND, "120000"), FOLLOW]).await,
         Some(30_000)
     );
     // Each renewal says it again: one without it follows none.
     assert_eq!(
-        kept(&longer, Some("120000"), Some("session")).await,
+        kept(&longer, &[(SECOND, "120000"), FOLLOW]).await,
         Some(120_000)
     );
-    assert_eq!(kept(&longer, Some("120000"), None).await, None);
+    assert_eq!(kept(&longer, &[(SECOND, "120000")]).await, None);
     store.sign_out(&owner.token).await.unwrap();
     task.abort();
 }
