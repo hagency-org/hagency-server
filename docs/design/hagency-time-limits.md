@@ -175,9 +175,13 @@ After acceptance:
     its own 16. Each message comes with every Agent's row of it, so that no
     message is listed, nor offered, for only some of its Agents; a message
     that waits for a computer that can read it (an encrypted one) counts
-    among the 16 as well. An older message is not offered by that read.
-    Hagency Desktop keeps what an earlier read offered of a message that a
-    later read does not list.
+    among the 16 as well, and is listed in its thread too (Matrix keeps a
+    message's thread outside its ciphertext). An older message is not
+    offered by that read. Hagency Desktop keeps the offers of the latest
+    read of each scope (the room, or one of its threads): a later read of
+    the same scope replaces them, and so drops an offer of a message that it
+    no longer lists; a later read of another scope replaces what they say
+    only of the messages it lists.
 
   Every message that ended without a turn ends the same way for this rule,
   whichever record ended it: work that was given to a process that never

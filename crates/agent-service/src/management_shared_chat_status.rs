@@ -415,12 +415,15 @@ pub(super) async fn query(
     // Expose only this sender's reference (or the resource owner's), never
     // pretend that its encrypted body has already been admitted as work.
     // Cut at a message boundary too: the newest 16 such messages, each with
-    // every Agent's row.
+    // every Agent's row. Matrix keeps a message's thread outside its
+    // ciphertext, so a candidate has its thread root, read as an admitted
+    // message's is: its row names it, and a read of that thread lists it.
     let candidates=sql_query(r#"
         WITH listed AS (SELECT c.event_id, c.received_at_ms, jsonb_build_object(
             'agentId',a.agent_id,'agentMxid',m.puppet_mxid,
             'roomId',c.payload::jsonb->>'room_id',
-            'eventId',c.event_id,'threadRoot',c.event_id,
+            'eventId',c.event_id,
+            'threadRoot',coalesce(c.payload::jsonb->>'thread_root',c.event_id),
             'receivedAtMs',c.received_at_ms,'state','blocked','reason',protocol.reason,
             'canSendAgain',false
         )::text AS payload
@@ -434,7 +437,7 @@ pub(super) async fn query(
         CROSS JOIN LATERAL (SELECT hagency_agent_v1.shared_executor_protocol_reason(
             a.executor_owner_user_id,a.executor_device_id,a.executor_generation,$4) AS reason) protocol
         WHERE c.payload::jsonb->>'room_id'=$3 AND c.state<>'ignored'
-            AND ($5::text IS NULL OR c.event_id=$5)
+            AND ($5::text IS NULL OR coalesce(c.payload::jsonb->>'thread_root',c.event_id)=$5)
             AND c.received_at_ms>$4-86400000 AND control.mode='running' AND a.state='pending_native'
             AND (a.executor_owner_user_id=$1 OR c.payload::jsonb->>'sender_mxid'=$2)
             AND protocol.reason IS NOT NULL

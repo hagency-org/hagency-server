@@ -1351,3 +1351,77 @@ async fn a_replaced_ledger_ends_the_messages_its_agents_had_waiting() {
         );
     }
 }
+
+/// A message that waits, encrypted, for a daemon that can read it is listed
+/// with its thread, as an admitted one is: Matrix keeps its thread outside
+/// the ciphertext. A reply names its thread's root, which the client lists
+/// it under instead of the room's main line, and a read of that thread
+/// lists it.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_waiting_encrypted_thread_reply_is_listed_in_its_thread() {
+    let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+    // The owner's computer has not said that it can read them.
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query(
+        "DELETE FROM hagency_agent_v1.management_shared_executor_protocols WHERE device_id=$1",
+    )
+    .bind::<Text, _>(f.owner.p.device_id.as_ref().unwrap())
+    .execute(&mut db)
+    .await
+    .unwrap();
+    let sealed = async |id: &str, root: Option<&str>| {
+        let mut event = work::message(&f, &r, id).await;
+        event.body = String::new();
+        event.mentioned_mxids = Default::default();
+        event.encrypted = true;
+        event.thread_root = root.map(str::to_owned);
+        f.domain
+            .route_shared_event(&f.policy, &event, now_ms(), &m.gateway)
+            .await
+            .unwrap();
+        event.room_id
+    };
+    let room = sealed("sealed_root", None).await;
+    sealed("sealed_reply", Some("$sealed_root")).await;
+    sealed("sealed_aside", Some("$another_root")).await;
+    // Each listed message, and the thread root its row names.
+    let listed = async |reader: &Principal, thread: Option<&str>| {
+        let query =
+            serde_json::from_value(json!({"roomId": room, "executionThread": thread})).unwrap();
+        let read = f.domain.shared_approvals(reader, query).await.unwrap();
+        let mut rows: Vec<_> = read["executions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                assert_eq!(row["reason"], "owner_daemon_update_required");
+                json!([row["eventId"], row["threadRoot"]])
+            })
+            .collect();
+        rows.sort_by_key(|row| row.to_string());
+        rows
+    };
+    for reader in [&f.outsider.p, &f.owner.p] {
+        assert_eq!(
+            listed(reader, None).await,
+            [
+                json!(["$sealed_aside", "$another_root"]),
+                json!(["$sealed_reply", "$sealed_root"]),
+                json!(["$sealed_root", "$sealed_root"]),
+            ]
+        );
+        assert_eq!(
+            listed(reader, Some("$sealed_root")).await,
+            [
+                json!(["$sealed_reply", "$sealed_root"]),
+                json!(["$sealed_root", "$sealed_root"]),
+            ],
+            "the root and its reply"
+        );
+        assert_eq!(
+            listed(reader, Some("$another_root")).await,
+            [json!(["$sealed_aside", "$another_root"])]
+        );
+    }
+}
