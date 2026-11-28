@@ -2171,9 +2171,134 @@ async fn a_fence_the_service_makes_is_recorded_as_its_own() {
     ))
     .await
     .unwrap();
+    // And migration 000160's rules over both, as the tests after this one
+    // expect them.
+    db.batch_execute(FENCE_WARNINGS_UP).await.unwrap();
     assert_eq!(back, (0, record.clone()));
     assert_eq!(rules(&mut db).await, 2);
     assert_eq!(fence_record(&mut db, &request.id).await, record);
+}
+
+const FENCE_WARNINGS_UP: &str =
+    include_str!("../migrations/domain/2026-11-28-000160_fence_record_failure_warning/up.sql");
+const FENCE_WARNINGS_DOWN: &str =
+    include_str!("../migrations/domain/2026-11-28-000160_fence_record_failure_warning/down.sql");
+
+/// Fences `runtime` and the reservation of `request` in one transaction in
+/// which every insert of a fence record fails, and rolls it back. Returns
+/// whether both fences stood, how many records they left, and the warnings
+/// of the database. diesel-async drops those, so this uses a connection of
+/// its own.
+async fn fence_with_failing_records(
+    f: &Fixture,
+    runtime: &str,
+    request: &str,
+) -> (bool, i64, Vec<String>) {
+    let (owned, mut connection) = tokio_postgres::connect(&f.url, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let reader = tokio::spawn(async move {
+        while let Some(message) = std::future::poll_fn(|cx| connection.poll_message(cx)).await {
+            if let Ok(tokio_postgres::AsyncMessage::Notice(notice)) = message {
+                let _ = sent.send(format!("{} {}", notice.severity(), notice.message()));
+            }
+        }
+    });
+    owned
+        .batch_execute(
+            "BEGIN;\
+             ALTER TABLE hagency_agent_v1.management_shared_runtime_fences \
+              ADD CONSTRAINT refuse_records CHECK(false) NOT VALID;\
+             ALTER TABLE hagency_agent_v1.management_agent_fences \
+              ADD CONSTRAINT refuse_records CHECK(false) NOT VALID",
+        )
+        .await
+        .unwrap();
+    // Through a reference, so that the client's own `execute` is called and
+    // not diesel's, which takes its receiver by value.
+    let client = &owned;
+    client
+        .execute(
+            "UPDATE hagency_agent_v1.management_shared_runtimes \
+             SET permanent_fence=true,activity_until_ms=0 WHERE id=$1",
+            &[&runtime],
+        )
+        .await
+        .unwrap();
+    let fenced = client
+        .execute(
+            "UPDATE hagency_agent_v1.management_agent_intents SET state='fenced' \
+             WHERE request_id=$1 AND state<>'fenced'",
+            &[&request],
+        )
+        .await
+        .unwrap();
+    assert!(fenced > 0, "the reservation was not fenced before");
+    let row = client
+        .query_one(
+            "SELECT (SELECT permanent_fence FROM hagency_agent_v1.management_shared_runtimes WHERE id=$1) \
+              AND (SELECT bool_and(state='fenced') FROM hagency_agent_v1.management_agent_intents WHERE request_id=$2) AS stood,\
+             (SELECT count(*) FROM hagency_agent_v1.management_shared_runtime_fences WHERE runtime_id=$1)\
+             +(SELECT count(*) FROM hagency_agent_v1.management_agent_fences x \
+               JOIN hagency_agent_v1.management_agent_intents i ON i.id=x.intent_id WHERE i.request_id=$2) AS records",
+            &[&runtime, &request],
+        )
+        .await
+        .unwrap();
+    let (stood, records) = (row.get::<_, bool>("stood"), row.get::<_, i64>("records"));
+    client.batch_execute("ROLLBACK").await.unwrap();
+    drop(owned);
+    reader.await.unwrap();
+    let warnings = std::iter::from_fn(|| received.try_recv().ok()).collect();
+    (stood, records, warnings)
+}
+
+/// A fence record that cannot be written still never stands in the way of
+/// the fence, and it no longer goes without a trace: the database warns
+/// with the ids and the error's SQLSTATE, and nothing else.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_fence_whose_record_fails_goes_ahead_with_a_warning() {
+    let (f, r, _admin, _a, _m) = Box::pin(prepared()).await;
+    let (d, _activity) = qualify(&f).await;
+    let runtime = &d.command.command_id;
+    let (stood, records, warnings) = fence_with_failing_records(&f, runtime, &r.id).await;
+    assert!(stood);
+    assert_eq!(records, 0);
+    // 23514 is check_violation, the refusal the test put on the records.
+    assert!(
+        warnings.contains(&format!(
+            "WARNING shared_runtime_fence_record_failed runtime={runtime} assignment={} sqlstate=23514",
+            d.command.assignment_id
+        )),
+        "{warnings:?}"
+    );
+    let reservation = format!(" request={} sqlstate=23514", r.id);
+    assert!(
+        warnings.iter().any(
+            |w| w.starts_with("WARNING agent_fence_record_failed intent=")
+                && w.ends_with(&reservation)
+        ),
+        "{warnings:?}"
+    );
+    for w in &warnings {
+        assert!(
+            w.starts_with("WARNING ") && w.ends_with(" sqlstate=23514"),
+            "{warnings:?}"
+        );
+    }
+    // Going back past migration 000160 drops the record again without a
+    // word, and the fences still stand; its up step runs again over it.
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    db.batch_execute(FENCE_WARNINGS_DOWN).await.unwrap();
+    let back = fence_with_failing_records(&f, runtime, &r.id).await;
+    for _ in 0..2 {
+        db.batch_execute(FENCE_WARNINGS_UP).await.unwrap();
+    }
+    assert_eq!(back, (true, 0, Vec::new()));
+    let again = fence_with_failing_records(&f, runtime, &r.id).await;
+    assert_eq!(again, (true, 0, warnings));
 }
 
 /// Moves the end of `request`'s allocation five seconds into the past by the
@@ -2237,6 +2362,7 @@ async fn a_fence_for_a_time_that_is_over_names_its_source_and_that_time() {
         .await
         .unwrap();
     }
+    db.batch_execute(FENCE_WARNINGS_UP).await.unwrap();
     assert!(names(&mut db).await);
     assert_eq!(fence_record(&mut db, &r.id).await, record);
 }

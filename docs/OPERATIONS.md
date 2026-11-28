@@ -200,11 +200,13 @@ An allocation or a grant keeps its state when its time runs out, so the record a
 - `matrix_readiness`: the check before Matrix work found the reservation no longer live, for example because its time was over, and nothing kept the Agent. `matrix_membership`: its Matrix membership had been fenced. `matrix_identity`: the Agent, or its room and space, no longer matched the reservation. `matrix_observation`: its room could no longer be read as the project's or the pool's room. `matrix_pool_invitation`: the pool room's invitation of the service was refused.
 - `executor_delivery`, `executor_result`, `executor_acknowledgement`, `assignment_read`: the computer was sent a command, reported a result, had it acknowledged, or read the assignment, for a reservation that nothing kept any more.
 - `request_cancelled`: the manager cancelled the request.
-- `ledger_replaced`: the computer's ledger was replaced.
+- `ledger_replaced`: the computer's ledger was replaced. A message still waiting for one of the computer's pooled Agents ends with it (`assignment_authority_changed`, as one that arrives later), so that its sender reads the end at once.
 
 A fence by a rule of the database has no `source`, and neither has one made by a server from before migration `2026-11-27-000158`. The down step of that migration keeps every record; while it is down, a new record has neither `source` nor the four times.
 
 A fenced process of a pooled Agent leaves the same kind of record in `hagency_agent_v1.management_shared_runtime_fences`: `fenced_at_ms`, a `cause` of `dependency` (a rule of the database did it: the Agent was stopped, or its reservation was withdrawn) or `service` (the service did it: it found the lease over, or the time bound gave the process up), and `facts`: `stateBefore`, `stopped`, `leaseEndedMsAgo` (how long before the fence the activity lease had ended; negative when the lease still had time, so the lease was not the reason), `startWindowEndedMsAgo`, `controlMode`, `assignmentState`, `reservationFenced`, and how many messages the process had been given that never began (`workNeverStarted`) or whose outcome is unknown (`workUnknown`). Read it to tell which limit ended a run. The down step of migration `2026-11-26-000156` stops new records of both kinds and keeps the existing ones.
+
+A record never stands in the way of its fence: when one cannot be written, the fence goes ahead without it. From migration `2026-11-28-000160` on, the database then writes a warning to its own log, naming the ids and the error's SQLSTATE and nothing else: `agent_fence_record_failed intent=… request=… sqlstate=…` for a reservation, `shared_runtime_fence_record_failed runtime=… assignment=… sqlstate=…` for a process. The service does not see these warnings (its database driver does not pass them on), so look for them in the PostgreSQL server's log, which keeps warnings at its default `log_min_messages`. The down step of that migration drops such an error without a warning again, as before.
 
 Configure unstarted offline request age with `queue.event_ttl_ms`: 24 hours by default, bounded to one second through thirty days, measured from trusted AS receipt time. Routing retries do not reset it. It does not apply to a message to a pool Agent, which waits a fixed 24 hours (see [Time limits of Agent execution](design/hagency-time-limits.md)). Expired requests cannot be polled, acknowledged or start new model/tool actions; known original results of started work still require current authority for settlement and delivery. Unknown work and usage holds are not released automatically. Device poll requires `bindingId` for the explicitly started Room. Observed owner membership/link loss or removal of the puppet moves the binding through leaving to confirmed left, advances generation and revokes old dispatches. Suspended bindings are also reconciled. Matrix observation failures retain pending state; confirmed loss triggers durable departure, not automatic rejoin. Restore real authorization and explicitly rebind/re-adopt after confirmed left. Ordinary service pause remains separately resumable. Sending also checks the puppet's current `m.room.message` power level; replies blocked by observed revocation do not automatically send after permission restoration.
 
@@ -224,6 +226,13 @@ next pass tries it again. A computer's attempt polls first give up that
 computer's silent processes the same way, inside their own transaction: one
 they cannot give up is logged with the same line and rolled back alone, and
 the poll goes on.
+The same pass ends a pooled message whose start was given up without its
+process ever reporting, once the computer has neither reported the start as
+not begun nor started the retry it asked for within 180 seconds of that, or
+of its first request for a retry when that came later (rule 3 of the time
+limits). Such a message ends as never started, and its sender can send it
+again. One it cannot end is logged (`Shared message wait bound failed`, with
+its demand id and error code), and the pass counts as failed in the same way.
 
 SIGTERM stops new work admission, keeps the internal Matrix listener alive for
 up to 35 seconds while claimed uploads/sends save their receipts, then stops

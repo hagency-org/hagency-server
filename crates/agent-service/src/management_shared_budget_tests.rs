@@ -1477,8 +1477,9 @@ async fn current_budget_block_is_visible_until_a_new_revision_is_applied() {
 
 /// A message blocked on allowance under an applied budget, once its time is
 /// over, is not offered again while that budget is the one applied: a copy
-/// would wait for the same allowance and end the same way a day later. A
-/// budget applied since lifts that.
+/// would wait for the same allowance and end the same way a day later. Its
+/// sender reads that its allowance is spent. A budget applied since lifts
+/// that.
 #[tokio::test]
 #[ignore = "dedicated PostgreSQL"]
 async fn an_allowance_block_is_offered_again_only_under_a_new_budget() {
@@ -1546,7 +1547,7 @@ async fn an_allowance_block_is_offered_again_only_under_a_new_budget() {
     };
     assert_eq!(
         read().await,
-        json!(["expired", "event_expired", false, null]),
+        json!(["expired", "event_expired", false, "allowance_spent"]),
         "not under the budget that blocked it"
     );
     apply_delta(&f, &r, &admin, 25, 250).await;

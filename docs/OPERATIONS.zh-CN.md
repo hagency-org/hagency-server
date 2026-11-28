@@ -167,11 +167,13 @@ PostgreSQL runner 创建并删除专用随机测试库，不对现有业务库�
 - `matrix_readiness`：Matrix 工作之前的检查发现预留已不再有效（例如时间已到），且没有任何东西保留这个 Agent。`matrix_membership`：它的 Matrix 成员资格已被作废。`matrix_identity`：Agent 本身或它的房间和空间已与预留不符。`matrix_observation`：它的房间已不能再作为项目或资源池的房间读取。`matrix_pool_invitation`：资源池房间对服务的邀请被拒绝。
 - `executor_delivery`、`executor_result`、`executor_acknowledgement`、`assignment_read`：电脑收到命令、报告结果、得到确认或读取分配时，这个预留已经不再被保留。
 - `request_cancelled`：管理者取消了请求。
-- `ledger_replaced`：电脑的账本被替换。
+- `ledger_replaced`：电脑的账本被替换。仍在等待该电脑上资源池 Agent 的消息随之结束（`assignment_authority_changed`，与之后才到达的消息相同），发送者立即就能看到它已结束。
 
 数据库规则所做的收回没有 `source`，迁移 `2026-11-27-000158` 之前的服务器所做的收回也没有。该迁移的回退保留所有记录；回退期间新写的记录既没有 `source`，也没有这四个时间。
 
 资源池 Agent 的进程被作废（fenced）时，同样在 `hagency_agent_v1.management_shared_runtime_fences` 留下一条记录：`fenced_at_ms`；`cause` 为 `dependency`（数据库规则所为：Agent 被停止，或它的预留被收回）或 `service`（服务所为：发现租约已过期，或超时兜底放弃了该进程）；`facts` 记下 `stateBefore`、`stopped`、`leaseEndedMsAgo`（作废时活动租约已过期多久；为负表示租约当时还有时间，即原因不是租约）、`startWindowEndedMsAgo`、`controlMode`、`assignmentState`、`reservationFenced`，以及该进程已拿到但从未开始的消息数（`workNeverStarted`）和结果未知的消息数（`workUnknown`）。据此可以判断是哪个时限结束了一次运行。迁移 `2026-11-26-000156` 的回退只停止写入这两类新记录，已有记录保留。
+
+记录从不妨碍它所记的收回：写不进时，收回照常进行，只是没有记录。从迁移 `2026-11-28-000160` 起，数据库此时会在自己的日志里写一条警告，只写 ID 和错误的 SQLSTATE，不写别的：预留为 `agent_fence_record_failed intent=… request=… sqlstate=…`，进程为 `shared_runtime_fence_record_failed runtime=… assignment=… sqlstate=…`。服务看不到这些警告（它的数据库驱动不转交），请在 PostgreSQL 服务器日志中查找；按默认的 `log_min_messages`，警告会写入该日志。该迁移的回退恢复原来的做法：这类错误不再留下警告。
 
 离线未开始请求的期限由 `queue.event_ttl_ms` 配置，默认 24 小时，范围 1 秒至 30 天，按可信 AS 入站时间计时，路由重试不延长。发给资源池 Agent 的消息不受此项影响，固定等待 24 小时（见 [Agent 执行的时限](design/hagency-time-limits.md)（英文））。过期请求不能领取、ACK 或开始新的模型/工具动作；已开始任务的已知原结果仍须核验当前权限后结算及发送，unknown 与成本保留不自动释放。设备 poll 必须指定 `bindingId`，只领取明确启动的 Room。发现所有者成员资格或关联失效、傀儡被移除后，撤销受影响 binding 并递增 generation，进入 leaving 并在确认实际退群后 left；重新加入不自动恢复，需显式重新绑定/采纳，旧 dispatch 不复活。发送还核验傀儡当前 `m.room.message` power level；已观测撤权的旧回复不会在恢复权限后自动发送。
 
@@ -197,6 +199,11 @@ leaving，实际 Matrix 退群确认后成为 left。后台也检查 suspended�
 和错误码），这一轮记为失败（`shared_attempt_timeouts_failed`），下一轮再试。
 执行端的尝试轮询也会在自己的事务里先以同样方式放弃该电脑上无消息的进程：放弃失败的
 那个进程以同一行日志记录、单独回滚，轮询继续进行。
+同一轮还会结束这样的资源池消息：它的启动被放弃时进程从未报告过，此后 180 秒内（若电脑之后才
+首次请求重试，则从该请求起 180 秒内）电脑既没有报告这次启动未开始，也没有启动它请求的重试
+（时限规则 3）。这样的消息以"从未开始"（`never_started`）结束，发送者可以再发一次。某条
+消息结束失败时记入日志（`Shared message wait bound failed`，带需求 ID 和错误码），这一轮
+同样记为失败。
 
 SIGTERM 先停止领取新工作，内部 Matrix listener 继续处理已领取的上传/发送，
 最多排空 35 秒并保存原回执，再优雅停止 HTTP 与 Pasion。Compose 停机宽限为

@@ -761,7 +761,13 @@ async fn row_of(f: &Fixture, room: &str, reader: &Principal, event: &str) -> Val
 async fn offer_of(f: &Fixture, room: &str, reader: &Principal, event: &str) -> Value {
     let row = row_of(f, room, reader, event).await;
     // What the answer is worked out from stays on the server.
-    for kept in ["fromViewer", "agentAvailable", "agentRuns", "copyCanRun"] {
+    for kept in [
+        "fromViewer",
+        "agentAvailable",
+        "agentRuns",
+        "copyCanRun",
+        "allowanceSpent",
+    ] {
         assert!(row.get(kept).is_none(), "{kept}");
     }
     json!([row["canSendAgain"], row["notOfferedBecause"]])
@@ -952,13 +958,22 @@ async fn status_at(f: &Fixture, room: &str, reader: &Principal, event: &str, at:
     read
 }
 
+/// What `reader` is offered of `event` once the database's clock is `at`.
+async fn offer_at(f: &Fixture, room: &str, reader: &Principal, event: &str, at: i64) -> Value {
+    f.domain.set_management_test_clock(at).await.unwrap();
+    let read = offer_of(f, room, reader, event).await;
+    f.domain.reset_management_test_clock().await.unwrap();
+    read
+}
+
 /// Without an applied budget, a message blocked on allowance is offered
 /// again only where a copy could have the allowance. While the Agent's known
 /// use in its period still covers its reservation's tokens, a copy would be
 /// blocked the same way, and end the same way a day later, so the message
-/// is not offered once its time is over. It is while that use is below them,
-/// as when the computer blocked it on tokens its work still held, and once a
-/// budget has been applied.
+/// is not offered once its time is over, and its sender reads why
+/// (`allowance_spent`). It is offered while that use is below them, as when
+/// the computer blocked it on tokens its work still held, and once a budget
+/// has been applied.
 #[tokio::test]
 #[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
 async fn a_spent_allowance_without_a_budget_offers_no_copy() {
@@ -1019,6 +1034,11 @@ async fn a_spent_allowance_without_a_budget_offers_no_copy() {
         status_of(&f, &room, &f.outsider.p, "$spent_blocked").await,
         json!(["blocked", "budget_blocked", null, false])
     );
+    assert_eq!(
+        offer_of(&f, &room, &f.outsider.p, "$spent_blocked").await,
+        json!([false, null]),
+        "it still waits"
+    );
     // Its time ends a millisecond after it arrived.
     let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
     db.batch_execute(&format!(
@@ -1035,6 +1055,17 @@ async fn a_spent_allowance_without_a_budget_offers_no_copy() {
         status_at(&f, &room, &f.outsider.p, "$spent_blocked", over).await,
         ended(false),
         "the known use covers the reservation"
+    );
+    let spent = json!([false, "allowance_spent"]);
+    assert_eq!(
+        offer_at(&f, &room, &f.outsider.p, "$spent_blocked", over).await,
+        spent
+    );
+    // The same while its end is a claim window away, when the message
+    // still waits.
+    assert_eq!(
+        offer_at(&f, &room, &f.outsider.p, "$spent_blocked", over - 1).await,
+        json!([false, null])
     );
     // As if the computer had blocked it on tokens its work still held: the
     // known use is below the reservation's tokens.
@@ -1054,16 +1085,45 @@ async fn a_spent_allowance_without_a_budget_offers_no_copy() {
         ended(true),
         "a token is left"
     );
+    assert_eq!(
+        offer_at(&f, &room, &f.outsider.p, "$spent_blocked", over).await,
+        json!([true, null])
+    );
     known(&mut db, tokens).await;
     assert_eq!(
         status_at(&f, &room, &f.outsider.p, "$spent_blocked", over).await,
         ended(false)
     );
     assert_eq!(
+        offer_at(&f, &room, &f.outsider.p, "$spent_blocked", over).await,
+        spent
+    );
+    assert_eq!(
         status_at(&f, &room, &f.owner.p, "$spent_blocked", over).await,
         ended(false),
         "never to the owner"
     );
+    assert_eq!(
+        offer_at(&f, &room, &f.owner.p, "$spent_blocked", over).await,
+        json!([false, null]),
+        "nor why"
+    );
+    // Whatever its Agent, here one the row cannot name: a copy would wait
+    // for the same allowance wherever it went.
+    let hide = async |db: &mut AsyncPgConnection, from: &str, to: &str| {
+        db.batch_execute(&format!(
+            "SET session_replication_role=replica;\
+             UPDATE hagency_agent_v1.management_agent_matrix SET assignment_id='{to}' WHERE assignment_id='{from}';\
+             SET session_replication_role=origin"
+        ))
+        .await
+        .unwrap();
+    };
+    let hidden = format!("{}_hidden", a.id);
+    hide(&mut db, &a.id, &hidden).await;
+    let unnamed = offer_at(&f, &room, &f.outsider.p, "$spent_blocked", over).await;
+    hide(&mut db, &hidden, &a.id).await;
+    assert_eq!(unnamed, spent, "not agent_unnamed");
     f.policy = f
         .policy
         .clone()
@@ -1074,6 +1134,10 @@ async fn a_spent_allowance_without_a_budget_offers_no_copy() {
         status_at(&f, &room, &f.outsider.p, "$spent_blocked", over).await,
         ended(true),
         "a budget applied since"
+    );
+    assert_eq!(
+        offer_at(&f, &room, &f.outsider.p, "$spent_blocked", over).await,
+        json!([true, null])
     );
 }
 
@@ -1236,6 +1300,128 @@ async fn chat_status_lists_whole_encrypted_messages_that_wait_for_a_daemon() {
             listed(reader).await,
             (16, 32, 0),
             "neither row of the oldest"
+        );
+    }
+}
+
+/// A replaced ledger fences the Agents of its device for good. A message
+/// that was waiting for one of them ends with that, as one that arrives
+/// afterwards does, and its sender reads the end at once: not a wait until
+/// the message's time is over.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_replaced_ledger_ends_the_messages_its_agents_had_waiting() {
+    let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+    let room = work::message(&f, &r, "scope").await.room_id;
+    retain(&f, &r, &m, "ledger_waiting").await;
+    assert_eq!(
+        status_of(&f, &room, &f.outsider.p, "$ledger_waiting").await,
+        json!(["pending", null, null, false])
+    );
+    f.domain
+        .declare_executor_ledger(
+            &f.owner.p,
+            &f.policy,
+            crate::management_agent_executor_types::ExecutorLedgerInput {
+                ledger_id: "5a".repeat(32),
+                fresh: true,
+            },
+        )
+        .await
+        .unwrap();
+    retain(&f, &r, &m, "ledger_after").await;
+    for event in ["$ledger_waiting", "$ledger_after"] {
+        let row = row_of(&f, &room, &f.outsider.p, event).await;
+        assert_eq!(
+            json!([
+                row["state"],
+                row["reason"],
+                row["endReason"],
+                row["canSendAgain"],
+                row["notOfferedBecause"]
+            ]),
+            json!([
+                "blocked",
+                "assignment_authority_changed",
+                "assignment_authority_changed",
+                false,
+                "agent_unavailable"
+            ]),
+            "{event}"
+        );
+    }
+}
+
+/// A message that waits, encrypted, for a daemon that can read it is listed
+/// with its thread, as an admitted one is: Matrix keeps its thread outside
+/// the ciphertext. A reply names its thread's root, which the client lists
+/// it under instead of the room's main line, and a read of that thread
+/// lists it.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_waiting_encrypted_thread_reply_is_listed_in_its_thread() {
+    let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+    // The owner's computer has not said that it can read them.
+    let mut db = AsyncPgConnection::establish(&f.url).await.unwrap();
+    sql_query(
+        "DELETE FROM hagency_agent_v1.management_shared_executor_protocols WHERE device_id=$1",
+    )
+    .bind::<Text, _>(f.owner.p.device_id.as_ref().unwrap())
+    .execute(&mut db)
+    .await
+    .unwrap();
+    let sealed = async |id: &str, root: Option<&str>| {
+        let mut event = work::message(&f, &r, id).await;
+        event.body = String::new();
+        event.mentioned_mxids = Default::default();
+        event.encrypted = true;
+        event.thread_root = root.map(str::to_owned);
+        f.domain
+            .route_shared_event(&f.policy, &event, now_ms(), &m.gateway)
+            .await
+            .unwrap();
+        event.room_id
+    };
+    let room = sealed("sealed_root", None).await;
+    sealed("sealed_reply", Some("$sealed_root")).await;
+    sealed("sealed_aside", Some("$another_root")).await;
+    // Each listed message, and the thread root its row names.
+    let listed = async |reader: &Principal, thread: Option<&str>| {
+        let query =
+            serde_json::from_value(json!({"roomId": room, "executionThread": thread})).unwrap();
+        let read = f.domain.shared_approvals(reader, query).await.unwrap();
+        let mut rows: Vec<_> = read["executions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                assert_eq!(row["reason"], "owner_daemon_update_required");
+                json!([row["eventId"], row["threadRoot"]])
+            })
+            .collect();
+        rows.sort_by_key(|row| row.to_string());
+        rows
+    };
+    for reader in [&f.outsider.p, &f.owner.p] {
+        assert_eq!(
+            listed(reader, None).await,
+            [
+                json!(["$sealed_aside", "$another_root"]),
+                json!(["$sealed_reply", "$sealed_root"]),
+                json!(["$sealed_root", "$sealed_root"]),
+            ]
+        );
+        assert_eq!(
+            listed(reader, Some("$sealed_root")).await,
+            [
+                json!(["$sealed_reply", "$sealed_root"]),
+                json!(["$sealed_root", "$sealed_root"]),
+            ],
+            "the root and its reply"
+        );
+        assert_eq!(
+            listed(reader, Some("$another_root")).await,
+            [json!(["$sealed_aside", "$another_root"])]
         );
     }
 }

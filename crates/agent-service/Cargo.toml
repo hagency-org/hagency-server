@@ -35,3 +35,5 @@ palpo-core.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Reads the warnings of the database, which diesel-async does not pass on.
+tokio-postgres = "0.7"
