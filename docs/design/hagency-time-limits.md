@@ -549,6 +549,10 @@ Going back:
   down leaves a record without `source` and without the times that had
   ended. A server that names its fences runs on such a database unchanged:
   the earlier rule does not read the name. Its up step can run again.
+- The down migration of `2026-11-28-000160` puts back the record rules of
+  `000158` (for a reservation) and `000156` (for a process): a record that
+  cannot be written is again dropped without the warning. The fences and
+  the records are unchanged, and its up step can run again.
 - Migration `2026-11-26-000154`, which comes with activity leases that follow
   the window (in review, #97), has a lower number than `000155` and `000156`. A
   database that already has those applies it out of version order, because

@@ -173,6 +173,8 @@ PostgreSQL runner 创建并删除专用随机测试库，不对现有业务库�
 
 资源池 Agent 的进程被作废（fenced）时，同样在 `hagency_agent_v1.management_shared_runtime_fences` 留下一条记录：`fenced_at_ms`；`cause` 为 `dependency`（数据库规则所为：Agent 被停止，或它的预留被收回）或 `service`（服务所为：发现租约已过期，或超时兜底放弃了该进程）；`facts` 记下 `stateBefore`、`stopped`、`leaseEndedMsAgo`（作废时活动租约已过期多久；为负表示租约当时还有时间，即原因不是租约）、`startWindowEndedMsAgo`、`controlMode`、`assignmentState`、`reservationFenced`，以及该进程已拿到但从未开始的消息数（`workNeverStarted`）和结果未知的消息数（`workUnknown`）。据此可以判断是哪个时限结束了一次运行。迁移 `2026-11-26-000156` 的回退只停止写入这两类新记录，已有记录保留。
 
+记录从不妨碍它所记的收回：写不进时，收回照常进行，只是没有记录。从迁移 `2026-11-28-000160` 起，数据库此时会在自己的日志里写一条警告，只写 ID 和错误的 SQLSTATE，不写别的：预留为 `agent_fence_record_failed intent=… request=… sqlstate=…`，进程为 `shared_runtime_fence_record_failed runtime=… assignment=… sqlstate=…`。服务看不到这些警告（它的数据库驱动不转交），请在 PostgreSQL 服务器日志中查找；按默认的 `log_min_messages`，警告会写入该日志。该迁移的回退恢复原来的做法：这类错误不再留下警告。
+
 离线未开始请求的期限由 `queue.event_ttl_ms` 配置，默认 24 小时，范围 1 秒至 30 天，按可信 AS 入站时间计时，路由重试不延长。发给资源池 Agent 的消息不受此项影响，固定等待 24 小时（见 [Agent 执行的时限](design/hagency-time-limits.md)（英文））。过期请求不能领取、ACK 或开始新的模型/工具动作；已开始任务的已知原结果仍须核验当前权限后结算及发送，unknown 与成本保留不自动释放。设备 poll 必须指定 `bindingId`，只领取明确启动的 Room。发现所有者成员资格或关联失效、傀儡被移除后，撤销受影响 binding 并递增 generation，进入 leaving 并在确认实际退群后 left；重新加入不自动恢复，需显式重新绑定/采纳，旧 dispatch 不复活。发送还核验傀儡当前 `m.room.message` power level；已观测撤权的旧回复不会在恢复权限后自动发送。
 
 
