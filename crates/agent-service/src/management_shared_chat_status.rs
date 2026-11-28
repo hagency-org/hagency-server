@@ -132,12 +132,16 @@ pub(super) async fn query(
             -- same holds after a block on allowance under the budget that
             -- is applied now: a copy would wait for the same allowance, and
             -- end the same way a day later. A budget applied since lifts it.
-            'copyCanRun', (ended.reason IS DISTINCT FROM 'usage_unrepresentable'
+            -- After a block on allowance without an applied budget, it could
+            -- not while the Agent's allowance is still spent (`spent`), also
+            -- in a period that has turned since.
+            'copyCanRun', ((ended.reason IS DISTINCT FROM 'usage_unrepresentable'
                     AND NOT (applied.revision IS NOT NULL AND EXISTS(
                         SELECT 1 FROM hagency_agent_v1.management_shared_budget_demand_blocks ab
                         WHERE ab.demand_id=d.id AND ab.budget_revision=applied.revision
                           AND ab.reason='budget_blocked')))
-                OR i.received_at_ms<shown.period_start::bigint,
+                OR i.received_at_ms<shown.period_start::bigint)
+                AND allowance.spent IS NOT TRUE,
             'threadRoot', coalesce(i.event_payload::jsonb->>'thread_root', i.event_id),
             'receivedAtMs', i.received_at_ms,
             -- A block on usage has ended the message, in either lane. It
@@ -216,6 +220,27 @@ pub(super) async fn query(
             JOIN hagency_agent_v1.management_agent_budget_results br ON br.command_id=bc.id
             WHERE bc.request_id=a.request_id AND br.state='applied'
         ) applied ON true
+        -- Without an applied budget, the Agent's allowance in a period is
+        -- its reservation's tokens, and the demand poll blocks a message
+        -- before offering it once the Agent's known use in the period has
+        -- reached them. Known use only grows, and the reservation does not
+        -- change, so while that holds in the period read here a copy of a
+        -- message blocked on allowance would be blocked the same way. Read
+        -- only for such a message. Tokens that work still in flight holds
+        -- are not counted: the computer may block a copy on those, but only
+        -- until that work ends.
+        LEFT JOIN LATERAL (
+            SELECT (SELECT coalesce(sum(sw.known_consumed_tokens), 0)
+                    FROM hagency_agent_v1.management_shared_work sw
+                    JOIN hagency_agent_v1.management_shared_runtimes sr ON sr.id=sw.runtime_id
+                    WHERE sr.assignment_id=a.id AND sw.created_at_ms>=shown.period_start::bigint)
+                >= (SELECT (ri.payload::jsonb->>'requestedTokens')::bigint
+                    FROM hagency_agent_v1.management_agent_intents ri
+                    WHERE ri.request_id=a.request_id) AS spent
+            WHERE applied.revision IS NULL AND EXISTS(
+                SELECT 1 FROM hagency_agent_v1.management_shared_demand_blocks vb
+                WHERE vb.demand_id=d.id AND vb.reason='budget_blocked')
+        ) allowance ON true
         LEFT JOIN LATERAL (
             SELECT b.payload,b.reason FROM hagency_agent_v1.management_shared_demand_blocks b
             WHERE b.demand_id=d.id AND (b.reason<>'budget_blocked' OR applied.revision IS NULL)

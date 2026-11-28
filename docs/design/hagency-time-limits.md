@@ -212,9 +212,21 @@ After acceptance:
   A copy sent while the budget that blocked it is still the one applied
   would wait for the same allowance and end the same way a day later, so
   its sender is offered to send it again only once another budget has been
-  applied, or the Agent's period has turned since it arrived. A message
-  that the earlier protocol blocked on allowance, for an Agent without an
-  applied budget, is offered once its time is over, as before.
+  applied, or the Agent's period has turned since it arrived.
+
+  Without an applied budget, the earlier protocol blocks a message on
+  allowance when the Agent's known use in its period has reached its
+  reservation's tokens, or when its computer reports that none of them are
+  left. In a period the known use only grows, and the reservation does not
+  change, so while that use still covers the reservation a copy would be
+  blocked the same way and end the same way a day later. The sender of such
+  a message is therefore offered to send it again only while the Agent's
+  known use in its current period is below its reservation's tokens (its
+  period has turned since, or the computer blocked it on tokens that work
+  still in flight held, which the server does not count), or once a budget
+  has been applied. A copy offered after a block on held tokens can be
+  blocked once more while that work holds them; once it has ended, its use
+  is known and read here.
 
   Under an applied budget, the budget's queue records the end of a message
   blocked on usage as `head_changed` and offers the next message. A
