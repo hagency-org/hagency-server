@@ -211,6 +211,16 @@ async fn sweep(
         .bind::<Text, _>(device)
         .execute(db)
         .await?;
+    // Their Agents are fenced for good, so a message still waiting for one
+    // of them can never run. It ends now, as a message that arrives after
+    // this does (`assignment_authority_changed`), and its sender reads that
+    // at once instead of a wait until the message's time is over. A message
+    // given to a process ended with that process above.
+    sql_query("UPDATE hagency_agent_v1.management_shared_intake SET state='blocked',reason='assignment_authority_changed' WHERE state='pending' AND assignment_id IN (SELECT id FROM hagency_agent_v1.management_shared_assignments WHERE executor_owner_user_id=$1 AND executor_device_id=$2)")
+        .bind::<Text, _>(owner)
+        .bind::<Text, _>(device)
+        .execute(db)
+        .await?;
 
     // A native close can no longer be confirmed or continued. The settlement
     // ends with the amounts the server holds; its stored receipt is unchanged.

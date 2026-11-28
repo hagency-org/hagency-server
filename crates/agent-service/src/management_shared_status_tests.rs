@@ -1239,3 +1239,51 @@ async fn chat_status_lists_whole_encrypted_messages_that_wait_for_a_daemon() {
         );
     }
 }
+
+/// A replaced ledger fences the Agents of its device for good. A message
+/// that was waiting for one of them ends with that, as one that arrives
+/// afterwards does, and its sender reads the end at once: not a wait until
+/// the message's time is over.
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn a_replaced_ledger_ends_the_messages_its_agents_had_waiting() {
+    let (f, r, _admin, _a, m) = Box::pin(setup()).await;
+    let room = work::message(&f, &r, "scope").await.room_id;
+    retain(&f, &r, &m, "ledger_waiting").await;
+    assert_eq!(
+        status_of(&f, &room, &f.outsider.p, "$ledger_waiting").await,
+        json!(["pending", null, null, false])
+    );
+    f.domain
+        .declare_executor_ledger(
+            &f.owner.p,
+            &f.policy,
+            crate::management_agent_executor_types::ExecutorLedgerInput {
+                ledger_id: "5a".repeat(32),
+                fresh: true,
+            },
+        )
+        .await
+        .unwrap();
+    retain(&f, &r, &m, "ledger_after").await;
+    for event in ["$ledger_waiting", "$ledger_after"] {
+        let row = row_of(&f, &room, &f.outsider.p, event).await;
+        assert_eq!(
+            json!([
+                row["state"],
+                row["reason"],
+                row["endReason"],
+                row["canSendAgain"],
+                row["notOfferedBecause"]
+            ]),
+            json!([
+                "blocked",
+                "assignment_authority_changed",
+                "assignment_authority_changed",
+                false,
+                "agent_unavailable"
+            ]),
+            "{event}"
+        );
+    }
+}

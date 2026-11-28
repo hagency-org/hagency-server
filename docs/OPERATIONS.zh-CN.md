@@ -167,7 +167,7 @@ PostgreSQL runner 创建并删除专用随机测试库，不对现有业务库�
 - `matrix_readiness`：Matrix 工作之前的检查发现预留已不再有效（例如时间已到），且没有任何东西保留这个 Agent。`matrix_membership`：它的 Matrix 成员资格已被作废。`matrix_identity`：Agent 本身或它的房间和空间已与预留不符。`matrix_observation`：它的房间已不能再作为项目或资源池的房间读取。`matrix_pool_invitation`：资源池房间对服务的邀请被拒绝。
 - `executor_delivery`、`executor_result`、`executor_acknowledgement`、`assignment_read`：电脑收到命令、报告结果、得到确认或读取分配时，这个预留已经不再被保留。
 - `request_cancelled`：管理者取消了请求。
-- `ledger_replaced`：电脑的账本被替换。
+- `ledger_replaced`：电脑的账本被替换。仍在等待该电脑上资源池 Agent 的消息随之结束（`assignment_authority_changed`，与之后才到达的消息相同），发送者立即就能看到它已结束。
 
 数据库规则所做的收回没有 `source`，迁移 `2026-11-27-000158` 之前的服务器所做的收回也没有。该迁移的回退保留所有记录；回退期间新写的记录既没有 `source`，也没有这四个时间。
 

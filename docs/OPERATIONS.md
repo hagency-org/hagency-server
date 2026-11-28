@@ -200,7 +200,7 @@ An allocation or a grant keeps its state when its time runs out, so the record a
 - `matrix_readiness`: the check before Matrix work found the reservation no longer live, for example because its time was over, and nothing kept the Agent. `matrix_membership`: its Matrix membership had been fenced. `matrix_identity`: the Agent, or its room and space, no longer matched the reservation. `matrix_observation`: its room could no longer be read as the project's or the pool's room. `matrix_pool_invitation`: the pool room's invitation of the service was refused.
 - `executor_delivery`, `executor_result`, `executor_acknowledgement`, `assignment_read`: the computer was sent a command, reported a result, had it acknowledged, or read the assignment, for a reservation that nothing kept any more.
 - `request_cancelled`: the manager cancelled the request.
-- `ledger_replaced`: the computer's ledger was replaced.
+- `ledger_replaced`: the computer's ledger was replaced. A message still waiting for one of the computer's pooled Agents ends with it (`assignment_authority_changed`, as one that arrives later), so that its sender reads the end at once.
 
 A fence by a rule of the database has no `source`, and neither has one made by a server from before migration `2026-11-27-000158`. The down step of that migration keeps every record; while it is down, a new record has neither `source` nor the four times.
 
