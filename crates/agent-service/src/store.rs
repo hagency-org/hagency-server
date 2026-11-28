@@ -1,3 +1,4 @@
+use crate::identity::{DEFAULT_AUTHORIZATION_WINDOW_MS, MAX_AUTHORIZATION_WINDOW_MS};
 use crate::{Error, Result, entity_id, hash, identity::Identity, key, secret_token};
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl, SelectableHelper};
 use diesel::{
@@ -77,6 +78,13 @@ struct Device {
     id: String,
     #[diesel(sql_type=BigInt)]
     generation: i64,
+}
+/// The window a session follows for the activity leases issued to its
+/// device, if its client follows one: never under the default, and never
+/// over the longest window a server grants. `None` is a client that checks
+/// each lease against thirty seconds.
+fn activity_window(ms: Option<i64>) -> Option<i64> {
+    ms.map(|ms| ms.clamp(DEFAULT_AUTHORIZATION_WINDOW_MS, MAX_AUTHORIZATION_WINDOW_MS))
 }
 impl Store {
     /// Explicit, one-way rename of this deployment's embedded auth mount.
@@ -161,6 +169,18 @@ impl Store {
         })
     }
     pub async fn sign_in(&self, identity: Identity, now: i64) -> Result<SessionGrant> {
+        self.sign_in_with_window(identity, None, now).await
+    }
+    /// `sign_in` for a client that follows its authorization window:
+    /// `activity_window_ms` is the window it was granted, and an activity
+    /// lease issued to its device lasts that long instead of thirty seconds.
+    pub async fn sign_in_with_window(
+        &self,
+        identity: Identity,
+        activity_window_ms: Option<i64>,
+        now: i64,
+    ) -> Result<SessionGrant> {
+        let activity_window_ms = activity_window(activity_window_ms);
         if identity.issuer != self.issuer || identity.valid_until_ms <= now {
             return Err(Error::Unauthorized("authentication_required"));
         }
@@ -244,6 +264,7 @@ impl Store {
                             q::token_hash.eq(&params.2),
                             q::client_id.eq(&params.3),
                             q::valid_until_ms.eq(&params.4),
+                            q::activity_window_ms.eq(activity_window_ms),
                         ))
                         .execute(db)
                         .await
@@ -313,6 +334,22 @@ impl Store {
             .await
     }
     pub async fn renew(&self, credential: &str, identity: Identity, now: i64) -> Result<i64> {
+        self.renew_with_window(credential, identity, None, now)
+            .await
+    }
+    /// `renew` for a client that follows its authorization window. Each
+    /// renewal says so again, so a session keeps the longer window only while
+    /// the client that holds it checks against it: an older client that takes
+    /// the session over is back at thirty seconds at its first renewal. A
+    /// lease already issued is not cut by that (`activity_until`).
+    pub async fn renew_with_window(
+        &self,
+        credential: &str,
+        identity: Identity,
+        activity_window_ms: Option<i64>,
+        now: i64,
+    ) -> Result<i64> {
+        let activity_window_ms = activity_window(activity_window_ms);
         if identity.issuer != self.issuer || identity.valid_until_ms <= now {
             return Err(Error::Unauthorized("authentication_required"));
         }
@@ -360,15 +397,29 @@ impl Store {
                     #[diesel(sql_type = BigInt)]
                     valid_until_ms: i64,
                 }
+                // The window is not merged that way: it is what the client
+                // that renews now says. It may follow a shorter window than
+                // before, or none (an older client took the session over).
+                // What that does to a lease in hand is `activity_until`'s.
                 let kept = sql_query(
                     "UPDATE hagency_agent_v1.sessions \
-                     SET valid_until_ms=GREATEST(valid_until_ms,$1) WHERE id=$2 \
-                     RETURNING valid_until_ms",
+                     SET valid_until_ms=GREATEST(valid_until_ms,$1),activity_window_ms=$3 \
+                     WHERE id=$2 RETURNING valid_until_ms",
                 )
                 .bind::<BigInt, _>(identity.valid_until_ms)
                 .bind::<Text, _>(&p.session_id)
+                .bind::<Nullable<BigInt>, _>(activity_window_ms)
                 .get_result::<Kept>(db)
                 .await?;
+                if kept.valid_until_ms > identity.valid_until_ms {
+                    // So that an operator sees why a session outlives the
+                    // proof it was last renewed with.
+                    tracing::info!(
+                        stage = "session_renew_kept_end",
+                        kept_beyond_proof_ms = kept.valid_until_ms - identity.valid_until_ms,
+                        "Session renewal kept a later end than its proof sets"
+                    );
+                }
                 Ok(kept.valid_until_ms)
         })).await
     }

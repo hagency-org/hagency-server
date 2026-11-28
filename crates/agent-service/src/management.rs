@@ -67,6 +67,42 @@ async fn clock(db: &mut AsyncPgConnection) -> Result<i64> {
             .now,
     )
 }
+/// The end of an activity lease issued now to this session's device.
+///
+/// An activity lease is what a host holds for a process that exists. Losing
+/// it cannot be made good: the run becomes unknown. So it lasts as long as
+/// the authorization the host holds, the window its session was granted,
+/// once its client says it follows that window, and never past the proof the
+/// session holds. Everything else a host is issued for pooled work is an
+/// offer, which is made again when it runs out (a command's start window, a
+/// ticket, a delivery lease), and keeps thirty seconds.
+///
+/// `held` is the end of the lease being renewed, or zero. A session that
+/// follows a window is never given an end before the one it holds: its
+/// window may have been made shorter since, down to thirty seconds, and
+/// lowering a window shortens nothing that was already given. A session
+/// that follows none is an older client, which checks each end against
+/// thirty seconds and would refuse a longer one: it gets thirty seconds
+/// from now as it always did, also when that is before the end it holds.
+async fn activity_until(
+    db: &mut AsyncPgConnection,
+    p: &Principal,
+    now: i64,
+    held: i64,
+) -> Result<i64> {
+    Ok(sql_query(
+        "SELECT least(valid_until_ms,CASE WHEN activity_window_ms IS NULL \
+         THEN $2+$3 ELSE greatest($2+activity_window_ms,$4) END) AS now \
+         FROM hagency_agent_v1.sessions WHERE id=$1",
+    )
+    .bind::<Text, _>(&p.session_id)
+    .bind::<BigInt, _>(now)
+    .bind::<BigInt, _>(crate::identity::DEFAULT_AUTHORIZATION_WINDOW_MS)
+    .bind::<BigInt, _>(held)
+    .get_result::<Clock>(db)
+    .await?
+    .now)
+}
 /// The start of a statement that fences Agent reservations. It names the part
 /// of the service that fences, `source`, for the record of each reservation
 /// the statement fences (migration `2026-11-27-000158`), and for no later

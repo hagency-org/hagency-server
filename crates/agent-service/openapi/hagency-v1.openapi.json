@@ -193,6 +193,18 @@
               "type": "integer",
               "format": "int64"
             }
+          },
+          {
+            "name": "x-hagency-activity-window",
+            "in": "header",
+            "required": false,
+            "description": "The value session states that the client checks an activity lease of pooled work against the authorization window of its session. An activity lease then lasts as long as the window this request was granted, never longer; that window is longer than 30000 only for a request that also carries x-hagency-authorization-window-v2-ms. Absent or any other value keeps 30000. A command's start window, a ticket and a delivery lease are offers that are made again when they run out, and stay at 30000 either way. The statement holds until the next renewal of the session, which says it again or not. While it holds, also under a window that was made shorter, the renewal of a lease never ends before the lease it renews. A session that no longer says it gets 30000 from then on.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "session"
+              ]
+            }
           }
         ],
         "responses": {
@@ -308,6 +320,18 @@
             "schema": {
               "type": "integer",
               "format": "int64"
+            }
+          },
+          {
+            "name": "x-hagency-activity-window",
+            "in": "header",
+            "required": false,
+            "description": "The value session states that the client checks an activity lease of pooled work against the authorization window of its session. An activity lease then lasts as long as the window this request was granted, never longer; that window is longer than 30000 only for a request that also carries x-hagency-authorization-window-v2-ms. Absent or any other value keeps 30000. A command's start window, a ticket and a delivery lease are offers that are made again when they run out, and stay at 30000 either way. The statement holds until the next renewal of the session, which says it again or not. While it holds, also under a window that was made shorter, the renewal of a lease never ends before the lease it renews. A session that no longer says it gets 30000 from then on.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "session"
+              ]
             }
           }
         ],
@@ -22605,7 +22629,7 @@
     }
   },
   "x-source-sha256": {
-    "crates/agent-service/src/api.rs": "4f5e518a0877adf63f803e6b69416d1c929415b5dc479c7286e95970abf71938",
+    "crates/agent-service/src/api.rs": "9a9e63f123c1d6088dda460e8c472ec02a732d073a8e39eac8cd9d9958253c83",
     "crates/agent-service/src/api_transport.rs": "6ae8f015419f7d02db2e1dc252e27c24659beab94658264195cff8046c84ddf7",
     "crates/agent-service/src/transport_history.rs": "1d61b13ea345751e23d7d9078acb5c389d1fc8e71a827a25db9ebfb3c389266e",
     "crates/agent-service/src/api_configuration.rs": "300a8bc39ea2de23d653b7492787d7392323cc37c2fb979d6a60c83d6fa6c81f",

@@ -454,6 +454,7 @@ impl App {
                 .map_err(|_| Error::Invalid("invalid_arguments"))?;
             let started = std::time::Instant::now();
             let window = self.verifier.window_for(requested_window(req));
+            let activity_window = activity_window(req, window);
             let identity = self
                 .verifier
                 .verify_within(&body.access_token, now_ms(), window)
@@ -463,7 +464,10 @@ impl App {
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "OAuth proof verified; creating owner session"
             );
-            let grant = self.store.sign_in(identity, now_ms()).await?;
+            let grant = self
+                .store
+                .sign_in_with_window(identity, activity_window, now_ms())
+                .await?;
             tracing::debug!(
                 stage = "session_create_store",
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -485,6 +489,7 @@ impl App {
                 .map_err(|_| Error::Invalid("invalid_arguments"))?;
             let started = std::time::Instant::now();
             let window = self.verifier.window_for(requested_window(req));
+            let activity_window = activity_window(req, window);
             let identity = self
                 .verifier
                 .verify_within(&body.access_token, now_ms(), window)
@@ -494,7 +499,10 @@ impl App {
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "OAuth proof verified; renewing owner session"
             );
-            let until = self.store.renew(&credential, identity, now).await?;
+            let until = self
+                .store
+                .renew_with_window(&credential, identity, activity_window, now)
+                .await?;
             tracing::debug!(
                 stage = "session_renew_store",
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -1259,6 +1267,19 @@ fn requested_window(req: &Request) -> Option<i64> {
         .ok()?
         .parse()
         .ok()
+}
+/// A client that sends `x-hagency-activity-window: session` takes an activity
+/// lease issued to its device as long as the authorization window it was
+/// granted, and follows that window: the answer is the window. That window is
+/// longer than the default only for a client that asked for one with the
+/// second header (`requested_window`), so a client that sends this header
+/// alone follows thirty seconds. Any other client checks each lease against
+/// thirty seconds and follows none.
+fn activity_window(req: &Request, granted: i64) -> Option<i64> {
+    req.headers()
+        .get("x-hagency-activity-window")
+        .is_some_and(|value| value.as_bytes() == b"session")
+        .then_some(granted)
 }
 /// The one `roomId` parameter of a Room lookup; any other query is malformed.
 fn room_query(req: &Request) -> Result<String> {

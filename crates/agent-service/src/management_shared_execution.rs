@@ -424,8 +424,9 @@ async fn mint_activity(
         return Ok(None);
     }
     // Exact receipt replay may recover a current lease, never extend its end.
-    let expiry = if r.activity_epoch == 0 {
-        until(db, p, now)
+    let first = r.activity_epoch == 0;
+    let expiry = if first {
+        activity_until(db, p, now, 0)
             .await?
             .min(reserve_lifetime(db, &c.reserve_command, now).await?)
     } else {
@@ -436,6 +437,13 @@ async fn mint_activity(
     }
     let token = secret_token();
     sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET activity_epoch=greatest(activity_epoch,1),activity_hash=$2,activity_until_ms=$3 WHERE id=$1").bind::<Text,_>(&r.id).bind::<Text,_>(hash(&token)).bind::<BigInt,_>(expiry).execute(db).await?;
+    if first {
+        // The first lease keeps its end as every renewal does, in a row of
+        // its own from epoch 0. A fence clears the runtime's current end, and
+        // what the sweep then reads is what was issued here. The row's ID is
+        // the server's: no host can name it first.
+        sql_query("INSERT INTO hagency_agent_v1.management_shared_activity_renewals(id,runtime_id,from_epoch,to_epoch,expires_at_ms,authority_hash) VALUES($1,$2,0,1,$3,$4)").bind::<Text,_>(format!("sal_{}",entity_id()?)).bind::<Text,_>(&r.id).bind::<BigInt,_>(expiry).bind::<Text,_>(hash(&token)).execute(db).await?;
+    }
     Ok(Some(activity(&runtime(db, &r.id).await?, token)?))
 }
 impl DomainStore {
@@ -689,7 +697,7 @@ impl DomainStore {
             if r.last_renewal_id.as_deref()==Some(&input.renewal_id)&&r.last_renewal_epoch==Some(input.authority.epoch) {return activity(&r,input.authority.token);}
             let reused=sql_query("SELECT EXISTS(SELECT 1 FROM hagency_agent_v1.management_shared_activity_renewals WHERE id=$1) AS matched").bind::<Text,_>(&input.renewal_id).get_result::<Flag>(db).await?.matched;
             if reused {return Err(Error::Conflict("shared_activity_renewal_changed"));}
-            let expiry=until(db,p,now).await?.min(reserve_lifetime(db,&c.reserve_command,now).await?);
+            let expiry=activity_until(db,p,now,r.activity_until_ms).await?.min(reserve_lifetime(db,&c.reserve_command,now).await?);
             if r.activity_epoch>=MAX_EXACT {return Err(Error::Conflict("shared_activity_epoch_exhausted"));}
             sql_query("UPDATE hagency_agent_v1.management_shared_runtimes SET activity_epoch=activity_epoch+1,activity_until_ms=$2,last_renewal_id=$3,last_renewal_epoch=$4 WHERE id=$1").bind::<Text,_>(&r.id).bind::<BigInt,_>(expiry).bind::<Text,_>(&input.renewal_id).bind::<BigInt,_>(input.authority.epoch).execute(db).await?;
             sql_query("INSERT INTO hagency_agent_v1.management_shared_activity_renewals(id,runtime_id,from_epoch,to_epoch,expires_at_ms,authority_hash) VALUES($1,$2,$3,$4,$5,$6)").bind::<Text,_>(&input.renewal_id).bind::<Text,_>(&r.id).bind::<BigInt,_>(input.authority.epoch).bind::<BigInt,_>(input.authority.epoch+1).bind::<BigInt,_>(expiry).bind::<Text,_>(hash(&input.authority.token)).execute(db).await?;

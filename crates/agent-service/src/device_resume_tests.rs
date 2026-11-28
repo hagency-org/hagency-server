@@ -433,3 +433,94 @@ async fn postgres_expired_original_session_http_renew_preserves_exact_device_and
     current(&app, &device.token, "", StatusCode::UNAUTHORIZED).await;
     task.abort();
 }
+/// The header by which a client says that it follows its window.
+const FOLLOW: (&str, &str) = ("x-hagency-activity-window", "session");
+/// Renews as a client that sends these request headers, and returns the
+/// window the session then follows for the activity leases issued to its
+/// device, if any.
+async fn activity_window_after_renewal(
+    app: &Service,
+    url: &str,
+    token: &str,
+    headers: &[(&'static str, &str)],
+) -> Option<i64> {
+    #[derive(diesel::QueryableByName)]
+    struct Row {
+        #[diesel(sql_type=diesel::sql_types::Nullable<BigInt>)]
+        activity_window_ms: Option<i64>,
+    }
+    let mut request =
+        TestClient::post("https://example.test/hagency/api/v1/sessions/current/renew")
+            .add_header("host", "example.test", true)
+            .bearer_auth(token);
+    for (name, value) in headers {
+        request = request.add_header(*name, *value, true);
+    }
+    let response = request
+        .json(&json!({"accessToken":"synthetic-fresh-upstream-token"}))
+        .send(app)
+        .await;
+    assert_eq!(response.status_code, Some(StatusCode::OK));
+    let mut db = AsyncPgConnection::establish(url).await.unwrap();
+    sql_query("SELECT activity_window_ms FROM hagency_agent_v1.sessions WHERE token_hash=$1")
+        .bind::<Text, _>(crate::hash(token))
+        .get_result::<Row>(&mut db)
+        .await
+        .unwrap()
+        .activity_window_ms
+}
+#[tokio::test]
+#[ignore = "requires dedicated PostgreSQL database via HAGENCY_AGENT_TEST_DATABASE_URL"]
+async fn postgres_activity_window_is_the_granted_window_only_for_a_client_that_follows_it() {
+    let url = std::env::var("HAGENCY_AGENT_TEST_DATABASE_URL").unwrap();
+    let store = Store::open(&url, "example.test", ISSUER).await.unwrap();
+    let name = format!("window_{}", secret_token());
+    let owner = store.sign_in(identity(&name), now_ms()).await.unwrap();
+    let (upstream, task) = upstream(name, Arc::new(AtomicBool::new(false))).await;
+    let longer = service_within(store.clone(), &upstream, 120_000);
+    let kept = |app, headers| activity_window_after_renewal(app, &url, &owner.token, headers);
+    // A client that asks for the longer window and says nothing more checks
+    // a lease against thirty seconds: it follows no window.
+    assert_eq!(kept(&longer, &[(SECOND, "120000")]).await, None);
+    // A client that follows its window follows what it was granted, no more.
+    assert_eq!(
+        kept(&longer, &[(SECOND, "120000"), FOLLOW]).await,
+        Some(120_000)
+    );
+    assert_eq!(
+        kept(&longer, &[(SECOND, "60000"), FOLLOW]).await,
+        Some(60_000)
+    );
+    // One that asked for no longer window follows the thirty seconds it has.
+    // That is not the same as following none: see `activity_until`.
+    assert_eq!(kept(&longer, &[FOLLOW]).await, Some(30_000));
+    // So does one that asked with the first header alone: it is granted the
+    // default window (`requested_window`), and follows no more than that.
+    assert_eq!(
+        kept(&longer, &[(FIRST, "120000"), FOLLOW]).await,
+        Some(30_000)
+    );
+    // Any other value of the header is not that statement.
+    assert_eq!(
+        kept(
+            &longer,
+            &[(SECOND, "120000"), ("x-hagency-activity-window", "120000")]
+        )
+        .await,
+        None
+    );
+    // A host that grants thirty seconds has nothing longer to follow.
+    let default = service(store.clone(), &upstream);
+    assert_eq!(
+        kept(&default, &[(SECOND, "120000"), FOLLOW]).await,
+        Some(30_000)
+    );
+    // Each renewal says it again: one without it follows none.
+    assert_eq!(
+        kept(&longer, &[(SECOND, "120000"), FOLLOW]).await,
+        Some(120_000)
+    );
+    assert_eq!(kept(&longer, &[(SECOND, "120000")]).await, None);
+    store.sign_out(&owner.token).await.unwrap();
+    task.abort();
+}

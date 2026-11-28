@@ -404,7 +404,7 @@ back").
 | Authorization window | 30 s by default; up to 120 s when `authorization_window_ms` is configured and the client asks with `x-hagency-authorization-window-v2-ms`. The first header, `x-hagency-authorization-window-ms`, gives 30 s whatever it asks (rule 6) | held | host configuration and the client's request |
 | Session end | see above; only grows | held | server |
 | Agent execution lease | `least(session end, now + asked length)`; a length outside 1 s to the host's `max_lease_ms` (120 s unless configured lower) is refused | held | server, from the client's request |
-| Activity lease of a working process | `least(session end, now + 30 s)` whatever the window, and never past the pool reservation it runs under. A lease that follows the window, `least(session end, now + window)` for a session whose client asks for it, is in review (#97); see the state table | held | server |
+| Activity lease of a working process | for a session whose client follows its window (it sends `x-hagency-activity-window: session` when it presents its proof): `least(session end, now + window)`, and a renewal never ends before the lease it renews. The window is the one that proof was granted, so a client that does not ask with `x-hagency-authorization-window-v2-ms` follows 30 s (rule 6). For a session that follows none (an older client, which refuses a longer lease): `least(session end, now + 30 s)`. Never past the pool reservation it runs under | held | server |
 | Start window of a start command | 30 s from issue, or the end of the reservation it runs under when that is sooner (so also the challenge that checks an Agent's Matrix membership) | offered | server |
 | Ticket for one exchange about a process | 30 s; the ticket that lets a process report ready also ends with its command's start window | offered | server |
 | A command, challenge or grant handed out by a poll | not handed out again for 30 s or until the session's end, whichever is sooner (the hand-outs of allocation and parent commands and of replies use the plain 30 s), then handed out again until it is answered | offered | server |
@@ -427,7 +427,7 @@ What must stay ordered:
 | 30 s ≤ window ≤ 120 s | shorter loses Agents on a busy computer; longer delays noticing a revocation | a host configuration outside the range is refused |
 | `max_lease_ms` ≥ window | an Agent execution lease shorter than the window gives away the tolerance the window bought | not enforced; both default so that it holds |
 | access token life > window | otherwise a full proof never exists | the server only sees each token's expiry and cuts the session to it; the computer's refresh rule keeps the lead near the window |
-| A held lease is renewed while at least two more renewals fit before its end | two lost renewals in a row must not lose a lease | the Agent execution lease is renewed every 5 s, which meets it under every window. The activity lease does not meet it today. A request from the computer is given up after 15 s, so a renewal that hangs that long, with the 2 s before it is asked again, uses 17 s of the lease: a 30 s lease renewed when 20 s are left has 3 s for one more try, and one the Claude driver renews when 15 s are left has none. A lease as long as a 120 s window (in review, #97), renewed 10 s after its grant (in review in Hagency Desktop, #243 and #251), has room for about six tries |
+| A held lease is renewed while at least two more renewals fit before its end | two lost renewals in a row must not lose a lease | the Agent execution lease is renewed every 5 s, which meets it under every window. The activity lease does not meet it today. A request from the computer is given up after 15 s, so a renewal that hangs that long, with the 2 s before it is asked again, uses 17 s of the lease: a 30 s lease renewed when 20 s are left has 3 s for one more try, and one the Claude driver renews when 15 s are left has none. A lease as long as a 120 s window (issued by this server to a client that follows its window), renewed 10 s after its grant (in review in Hagency Desktop, #243 and #251), has room for about six tries |
 | claim window ≤ window | an offer must not outlive what it would become | the server's `CLAIM_WINDOW_MS` (30 s) names the claim window, and the server is not built when it is longer than the default window, the smallest a host grants. The database holds several records to the same 30 s (see below) |
 
 Clocks that are not part of this design, because no computer's authority
@@ -441,7 +441,7 @@ renewal offers (7 days).
 | Rule | State |
 |---|---|
 | 2. A session's end only grows; fencing only on withdrawal | implemented (migration `2026-11-26-000155`) |
-| 1. Held follows the window | the session and Agent execution leases do. Activity leases are still 30 s; following the window is in review (#97), and renewing them early enough for it to matter is in review in Hagency Desktop (#243, #251) |
+| 1. Held follows the window | the session and Agent execution leases do. The server issues an activity lease as long as the window to a session that follows it. The computer taking such a lease, holding it to its end and renewing it early enough for the length to matter is in review in Hagency Desktop (#243, #251); until then every session follows none and every activity lease is 30 s |
 | 6. A window over 30 s only for a client that says it can hold one | implemented: granted only through `x-hagency-authorization-window-v2-ms`; the first header gives 30 s |
 | 1. Offered keeps 30 s | holds today for every start command, ticket and poll |
 | 3. A failed start is tried again | implemented for a start that never reported a process (demand retries); see rule 3 for the three that are not |
@@ -463,13 +463,14 @@ Each of these is a bound that was looked at and left, with its reason.
   computer (rule 4), asked again until the lease ends. So a stall of the
   server's Matrix observation, or of the path between computer and server,
   that outlasts the lead a lease had when the stall began ends the pooled
-  processes it covers. Today that lead is about 20 s under every window: an
-  activity lease is `least(session end, now + 30 s)` whatever the window,
-  and the computer renews it when 20 s or less of it are left (the premise;
-  a runtime that renews later has less). Once activity leases follow the
-  window (in review, #97) and are renewed when they have lost 10 s (in review
-  in Hagency Desktop), the lead becomes the window less about 10 s: about
-  110 s under a 120 s window.
+  processes it covers. Today that lead is about 20 s under every window: a
+  computer that does not follow its window holds an activity lease of
+  `least(session end, now + 30 s)`, and renews it when 20 s or less of it
+  are left (the premise; a runtime that renews later has less). A lease that
+  follows the window (#97, for a client that sends
+  `x-hagency-activity-window: session`) and is renewed when it has lost 10 s
+  (in review in Hagency Desktop) has a lead of the window less about 10 s:
+  about 110 s under a 120 s window.
   What such a process had been given and not begun is rule 3's subject.
 - **An Agent with an applied budget has no further attempts.** Its protocol
   has no retry: a start that fails ends the message. Its status says so and
@@ -537,6 +538,15 @@ Going back:
   though, grants a longer window through the first header, so to Hagency
   Desktop 0.5.0-rc.19 too. While a computer may run that release, lower the
   window to 30 s before moving the server back so far.
+- Run the down migrations of #97, `2026-11-26-000154` and the identity
+  migration `2026-11-26-000002`, only once the server runs a binary from
+  before #97 again. A server with #97 writes what they take away: the first
+  lease's row from epoch 0, which the down migration of `000154` refuses
+  again, and the window a session follows (`sessions.activity_window_ms`),
+  the column that the down migration of `000002` drops. While such a server
+  still serves, either down migration makes every first activity lease
+  fail, and the second also every renewal of a lease, every sign-in and
+  every renewal of a session.
 - Do not run the down migration of `2026-11-26-000155` while pool Agents
   exist: it puts back the rule that fences on a smaller end.
 - The down migration of `2026-11-26-000156` removes the rules that write
@@ -550,7 +560,7 @@ Going back:
   ended. A server that names its fences runs on such a database unchanged:
   the earlier rule does not read the name. Its up step can run again.
 - Migration `2026-11-26-000154`, which comes with activity leases that follow
-  the window (in review, #97), has a lower number than `000155` and `000156`. A
+  the window (#97), has a lower number than `000155` and `000156`. A
   database that already has those applies it out of version order, because
   the server applies every migration it has not recorded, whatever its
   number. That is harmless: it only replaces the CHECK constraint on the
