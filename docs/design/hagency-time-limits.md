@@ -508,7 +508,10 @@ Each of these is a bound that was looked at and left, with its reason.
   that process's next work poll ends it without a turn (`cancelled`, which
   the status reads as `never_started`, as for work given to a process that
   never began it), and an acknowledgement or a start of it is refused
-  (`shared_work_definitively_not_started`). Only the budget's process is
+  (`shared_work_definitively_not_started`). A released Hagency Desktop, up
+  to 0.5.0-rc.19, ends its run on that refusal as on any refused step of a
+  run: it stops the process, reports the stop, and asks for nothing of that
+  run again. Only the budget's process is
   held to the budget's head and ceiling. Work that had begun is left alone:
   its end is unknown, and it is never run again.
 - **A block on usage is not settled.** A message that the computer blocked
