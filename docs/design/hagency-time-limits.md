@@ -392,7 +392,15 @@ Each of these is a bound that was looked at and left, with its reason.
   without a turn. A message that the earlier protocol had started when the
   budget was applied ends the same way (`head_changed`), and one that it had
   already ended keeps that end: the budget's queue can take neither up, and
-  offers the next message instead of waiting behind it.
+  offers the next message instead of waiting behind it. A message that the
+  earlier protocol had given to a process, which had not begun it, does not
+  begin either, whether it came by direct routing or through a v2 binding:
+  that process's next work poll ends it without a turn (`cancelled`, which
+  the status reads as `never_started`, as for work given to a process that
+  never began it), and an acknowledgement or a start of it is refused
+  (`shared_work_definitively_not_started`). Only the budget's process is
+  held to the budget's head and ceiling. Work that had begun is left alone:
+  its end is unknown, and it is never run again.
 - **A block on usage is not settled.** A message that the computer blocked
   on usage ends at once, with or without an applied budget (rule 3): the
   computer cannot account for the Agent's earlier calls and keeps that until
